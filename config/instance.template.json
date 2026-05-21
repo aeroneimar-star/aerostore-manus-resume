@@ -1,0 +1,31 @@
+{
+  "instance_id": "store_slug",
+  "store": {
+    "id": "store_slug",
+    "label": "Nome da Loja",
+    "phone": "(47) 9xxxx-0000",
+    "address": "Endereco da loja"
+  },
+  "server": {
+    "port": 3000,
+    "host": "0.0.0.0"
+  },
+  "whatsapp": {
+    "session_name": "aerostore_store_slug",
+    "session_path": "./data/whatsapp-sessions/store_slug",
+    "auto_connect": true,
+    "qr_timeout_ms": 60000
+  },
+  "features": {
+    "pdv_enabled": true,
+    "crm_enabled": true,
+    "campaigns_enabled": true,
+    "humanized_sending": true,
+    "aerointel_enabled": true
+  },
+  "warmup": {
+    "account_age_days": 0,
+    "daily_limit_override": null,
+    "last_increment_date": ""
+  }
+}

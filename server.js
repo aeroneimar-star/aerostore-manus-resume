@@ -1,0 +1,24072 @@
+require("dotenv").config();
+
+const express = require("express");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const multer = require("multer");
+const XLSX = require("xlsx");
+const puppeteer = require("puppeteer");
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
+require('dotenv').config();
+const {
+  all,
+  get,
+  run,
+  dbPath,
+  normalizeTags,
+  initializeDatabase
+} = require("./db");
+const { gerarRespostaVendedor, gerarRespostaAtendimentoAerostore, gerarDecisaoConversacionalAerostore } = require("./services/openaiService");
+const { PagBankError, getPagBankConfig, createPagBankCheckout, getPagBankCheckout } = require("./services/pagbankService");
+const {
+  listStoreSettings,
+  getStoreSettingsById,
+  findStoreSettingsRecord,
+  getStorePublicContext,
+  saveStoreSettingsRecord,
+  normalizeStringArray: normalizeStoreSettingsStringArray,
+  normalizeBoolean: normalizeStoreSettingsBoolean,
+  STORE_STATUSES,
+  STORE_TYPES
+} = require("./services/storeSettingsService");
+const { PDV_WEB_ROUTES } = require("./modules/pdv/routes/pdvRoutes");
+const { getPdvFoundationManifest } = require("./modules/pdv/services/pdvFoundationService");
+const { pdvImportRouter } = require("./modules/pdv/routes/pdvImportRoutes");
+const { pdvConsolidationRouter } = require("./modules/pdv/consolidation/routes/pdvConsolidationRoutes");
+const { pdvOperationalRouter } = require("./modules/pdv/routes/pdvOperationalRoutes");
+const { pdvSalesRouter } = require("./modules/pdv/routes/pdvSalesRoutes");
+const { pdvControlRouter } = require("./modules/pdv/routes/pdvControlRoutes");
+const { pdvExperienceRouter } = require("./modules/pdv/routes/pdvExperienceRoutes");
+const { pdvInventoryRouter } = require("./modules/pdv/inventory/pdvInventoryRoutes");
+const { pdvLabelRouter } = require("./modules/pdv/routes/pdvLabelRoutes");
+const { previewTinyInventoryImport, commitTinyInventoryImport } = require("./modules/pdv/inventory/pdvInventoryService");
+const { pdvReportsRouter } = require("./modules/pdv/reports/pdvReportsRoutes");
+const { pdvInsightsRouter } = require("./modules/pdv/insights/pdvInsightsRoutes");
+const { pdvSeedRouter } = require("./modules/pdv/seed/pdvSeedRoutes");
+const { createPdvWhatsappRouter } = require("./modules/pdv/routes/pdvWhatsappRoutes");
+const { applyPagBankWebhookToSale } = require("./modules/pdv/sales/pdvSalesService");
+const { getActiveOperationalStoreOptions } = require("./modules/pdv/utils/pdvStoreUtils");
+const { normalizeStoreKey, formatStoreLabel, storesMatch } = require("./modules/pdv/utils/pdvStoreUtils");
+const { searchInventoryProducts } = require("./modules/pdv/inventory/pdvInventoryService");
+const {
+  searchProductsDetailed: searchOperationalProductsDetailed,
+  searchCustomersDetailed: searchOperationalCustomersDetailed,
+  buildCustomerBehaviorSnapshot
+} = require("./modules/pdv/services/pdvOperationalService");
+
+const CONFIG_DIR = path.join(__dirname, "config");
+const INSTANCE_CONFIG_ENV_PATH = String(process.env.AEROSTORE_INSTANCE_CONFIG || "").trim();
+const INSTANCE_CONFIG_PATH = INSTANCE_CONFIG_ENV_PATH
+  ? path.resolve(__dirname, INSTANCE_CONFIG_ENV_PATH)
+  : path.join(CONFIG_DIR, "instance.json");
+const DEFAULT_INSTANCE_CONFIG = {
+  instance_id: "vila_masc",
+  store: {
+    id: "vila_masc",
+    label: "Vila Masc.",
+    phone: "(47) 99622-3644",
+    address: "Rua exemplo, Vila — Joinville/SC"
+  },
+  server: {
+    port: 3000,
+    host: "0.0.0.0"
+  },
+  whatsapp: {
+    session_name: "aerostore_vila_masc",
+    session_path: "./data/whatsapp-sessions/vila_masc",
+    auth_mode: "scoped",
+    legacy_qr_fallback: true,
+    auto_connect: true,
+    qr_timeout_ms: 60000
+  },
+  features: {
+    pdv_enabled: true,
+    crm_enabled: true,
+    campaigns_enabled: true,
+    humanized_sending: true,
+    aerointel_enabled: true
+  },
+  warmup: {
+    account_age_days: 0,
+    daily_limit_override: null,
+    last_increment_date: ""
+  }
+};
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function mergeInstanceConfig(base = {}, override = {}) {
+  return {
+    ...base,
+    ...override,
+    store: {
+      ...(base.store || {}),
+      ...(override.store || {})
+    },
+    server: {
+      ...(base.server || {}),
+      ...(override.server || {})
+    },
+    whatsapp: {
+      ...(base.whatsapp || {}),
+      ...(override.whatsapp || {})
+    },
+    features: {
+      ...(base.features || {}),
+      ...(override.features || {})
+    },
+    warmup: {
+      ...(base.warmup || {}),
+      ...(override.warmup || {})
+    }
+  };
+}
+
+function ensureInstanceConfigFile() {
+  if (!fs.existsSync(CONFIG_DIR)) {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(INSTANCE_CONFIG_PATH)) {
+    fs.writeFileSync(INSTANCE_CONFIG_PATH, `${JSON.stringify(DEFAULT_INSTANCE_CONFIG, null, 2)}\n`, "utf8");
+  }
+}
+
+function loadInstanceConfig() {
+  ensureInstanceConfigFile();
+  try {
+    const raw = JSON.parse(fs.readFileSync(INSTANCE_CONFIG_PATH, "utf8"));
+    return mergeInstanceConfig(deepClone(DEFAULT_INSTANCE_CONFIG), raw || {});
+  } catch (error) {
+    console.warn("[INSTANCE CONFIG] Falha ao ler config. Usando default.", error.message || error);
+    return deepClone(DEFAULT_INSTANCE_CONFIG);
+  }
+}
+
+let instanceConfig = loadInstanceConfig();
+
+function saveInstanceConfig(nextConfig = instanceConfig) {
+  instanceConfig = mergeInstanceConfig(deepClone(DEFAULT_INSTANCE_CONFIG), nextConfig || {});
+  if (!fs.existsSync(CONFIG_DIR)) {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  }
+  fs.writeFileSync(INSTANCE_CONFIG_PATH, `${JSON.stringify(instanceConfig, null, 2)}\n`, "utf8");
+  return instanceConfig;
+}
+
+function getInstanceSessionPath() {
+  return path.resolve(__dirname, instanceConfig.whatsapp?.session_path || DEFAULT_INSTANCE_CONFIG.whatsapp.session_path);
+}
+
+function getLegacyWhatsAppSessionPath() {
+  return path.resolve(__dirname, ".wwebjs_auth");
+}
+
+function getInstanceBrowserProfilePath() {
+  return path.resolve(__dirname, "data", "whatsapp-browser", instanceConfig.instance_id || "default");
+}
+
+function getConfiguredWhatsAppAuthMode() {
+  const authMode = String(instanceConfig.whatsapp?.auth_mode || DEFAULT_INSTANCE_CONFIG.whatsapp.auth_mode || "scoped").trim().toLowerCase();
+  return authMode === "legacy" ? "legacy" : "scoped";
+}
+
+function isLegacyWhatsAppQrFallbackEnabled() {
+  return instanceConfig.whatsapp?.legacy_qr_fallback !== false;
+}
+
+function getConfiguredWhatsAppSessionName() {
+  return String(instanceConfig.whatsapp?.session_name || DEFAULT_INSTANCE_CONFIG.whatsapp.session_name || "default").trim() || "default";
+}
+
+function getWhatsAppAuthProfiles() {
+  const scopedProfile = {
+    key: "scoped",
+    label: "LocalAuth por instância",
+    clientId: getConfiguredWhatsAppSessionName(),
+    sessionPath: getInstanceSessionPath(),
+    browserProfilePath: getInstanceBrowserProfilePath(),
+    useDedicatedBrowserProfile: true,
+    createAuthStrategy() {
+      return new LocalAuth({
+        clientId: scopedProfile.clientId,
+        dataPath: scopedProfile.sessionPath
+      });
+    }
+  };
+
+  const legacyProfile = {
+    key: "legacy",
+    label: "LocalAuth compatível legado",
+    clientId: "default",
+    sessionPath: getLegacyWhatsAppSessionPath(),
+    browserProfilePath: null,
+    useDedicatedBrowserProfile: false,
+    createAuthStrategy() {
+      return new LocalAuth();
+    }
+  };
+
+  if (getConfiguredWhatsAppAuthMode() === "legacy") {
+    return [legacyProfile];
+  }
+
+  if (isLegacyWhatsAppQrFallbackEnabled()) {
+    return [scopedProfile, legacyProfile];
+  }
+
+  return [scopedProfile];
+}
+
+function getInstanceWarmupDay() {
+  const configured = Number(instanceConfig.warmup?.account_age_days || 0);
+  return Math.max(0, configured);
+}
+
+function setInstanceWarmupDay(day = 0) {
+  instanceConfig.warmup = {
+    ...(instanceConfig.warmup || {}),
+    account_age_days: Math.max(0, Number(day || 0)),
+    last_increment_date: getToday()
+  };
+  saveInstanceConfig(instanceConfig);
+  return getInstanceWarmupDay();
+}
+
+function syncWarmupDayWithCalendar() {
+  const today = getToday();
+  const lastDate = String(instanceConfig.warmup?.last_increment_date || "").trim();
+  if (!lastDate) {
+    instanceConfig.warmup = {
+      ...(instanceConfig.warmup || {}),
+      last_increment_date: today
+    };
+    saveInstanceConfig(instanceConfig);
+    return getInstanceWarmupDay();
+  }
+  const diffDays = Math.floor((new Date(`${today}T00:00:00`).getTime() - new Date(`${lastDate}T00:00:00`).getTime()) / 86400000);
+  if (diffDays > 0) {
+    instanceConfig.warmup = {
+      ...(instanceConfig.warmup || {}),
+      account_age_days: Math.max(0, Number(instanceConfig.warmup?.account_age_days || 0)) + diffDays,
+      last_increment_date: today
+    };
+    saveInstanceConfig(instanceConfig);
+  }
+  return getInstanceWarmupDay();
+}
+
+function scheduleWarmupIncrement() {
+  syncWarmupDayWithCalendar();
+  const now = new Date();
+  const nextMidnight = new Date(now);
+  nextMidnight.setHours(24, 0, 5, 0);
+  const msUntilMidnight = Math.max(60000, nextMidnight.getTime() - now.getTime());
+  setTimeout(() => {
+    syncWarmupDayWithCalendar();
+    setInterval(() => {
+      syncWarmupDayWithCalendar();
+    }, 24 * 60 * 60 * 1000);
+  }, msUntilMidnight);
+}
+
+function getInstancePublicInfo() {
+  return {
+    instance_id: instanceConfig.instance_id,
+    store: instanceConfig.store,
+    server: instanceConfig.server,
+    whatsapp: {
+      connected: whatsappState.status === "conectado",
+      status: whatsappState.status,
+      phone: whatsappState.connectedNumber || null,
+      session: instanceConfig.whatsapp?.session_name || DEFAULT_INSTANCE_CONFIG.whatsapp.session_name,
+      session_path: instanceConfig.whatsapp?.session_path || DEFAULT_INSTANCE_CONFIG.whatsapp.session_path,
+      warmup_day: syncWarmupDayWithCalendar(),
+      daily_limit: Number(instanceConfig.warmup?.daily_limit_override || 0) || getWarmupDailyLimit(Math.max(1, syncWarmupDayWithCalendar() || 1))
+    },
+    features: instanceConfig.features
+  };
+}
+
+const AI_SELLER_BRANDS = [
+  "reserva", "osklen", "colcci", "calvin klein", "ck", "lacoste",
+  "ralph lauren", "tommy", "nike", "adidas", "aramis", "richards",
+  "animale", "farm", "maria filo"
+];
+
+const AI_SELLER_CATEGORIES = [
+  "camiseta", "camisa", "polo", "calca", "calça", "jeans", "bermuda",
+  "short", "vestido", "saia", "blusa", "tenis", "tênis", "sapato",
+  "sandalia", "sandália", "bolsa", "carteira", "cinto", "relogio",
+  "relógio", "jaqueta", "casaco", "moletom", "regata", "bone", "boné", "oculos", "óculos"
+];
+
+const AI_SELLER_SIZES = [
+  "pp", "p", "m", "g", "gg", "xg", "xxg",
+  "36", "37", "38", "39", "40", "41", "42", "43", "44"
+];
+
+const AI_SELLER_COLORS = [
+  "preto", "preta", "branco", "branca", "azul", "vermelho", "vermelha",
+  "verde", "amarelo", "amarela", "rosa", "cinza", "bege", "marrom",
+  "vinho", "bordo", "bordô", "caramelo", "off white"
+];
+
+const TRANSFER_POLICY = {
+  transfer_days: {
+    "VILA_MASC→VILA_FEM_INFANT": 0,
+    "VILA_FEM_INFANT→VILA_MASC": 0,
+    "VILA_MASC→BOTANICO": 1,
+    "BOTANICO→VILA_MASC": 1,
+    "VILA_MASC→SUL": 2,
+    "SUL→VILA_MASC": 2,
+    "VILA_FEM_INFANT→BOTANICO": 1,
+    "BOTANICO→VILA_FEM_INFANT": 1,
+    "VILA_FEM_INFANT→SUL": 2,
+    "SUL→VILA_FEM_INFANT": 2,
+    "BOTANICO→SUL": 2,
+    "SUL→BOTANICO": 2
+  },
+  rules: {
+    min_quantity_to_transfer: 2,
+    max_items_per_transfer: 5,
+    requires_manager_approval: false,
+    auto_reserve_on_request: true,
+    cancel_if_not_picked_up_days: 3
+  },
+  cannot_transfer: [
+    "last_unit",
+    "reserved",
+    "damaged",
+    "display_only",
+    "promotional_exclusive"
+  ]
+};
+
+const app = express();
+const PORT = Number(instanceConfig.server?.port || 3000);
+const HOST = String(instanceConfig.server?.host || "0.0.0.0");
+const RUNTIME_VERSION = "IA_CONVERSATIONAL_VITRINE_CONFIG_V1";
+const BOOT_TIME = new Date().toISOString();
+const uploadDir = path.join(__dirname, "data", "uploads");
+const tinyVitrineImportBaseDir = path.join(__dirname, "data", "imports", "tiny-vitrine");
+const aeroIntelImportBaseDir = path.join(__dirname, "data", "imports", "aerointel");
+const crmContactImportBaseDir = path.join(__dirname, "data", "imports", "crm-contacts");
+const tinyVitrineImportIncomingDir = path.join(tinyVitrineImportBaseDir, "incoming");
+const tinyVitrineImportProcessedDir = path.join(tinyVitrineImportBaseDir, "processed");
+const tinyVitrineImportErrorsDir = path.join(tinyVitrineImportBaseDir, "errors");
+const tinyVitrineImportLogPath = path.join(tinyVitrineImportBaseDir, "import-log.json");
+const aeroIntelImportIncomingDir = path.join(aeroIntelImportBaseDir, "incoming");
+const aeroIntelImportProcessedDir = path.join(aeroIntelImportBaseDir, "processed");
+const aeroIntelImportErrorsDir = path.join(aeroIntelImportBaseDir, "errors");
+const aeroIntelImportLogPath = path.join(aeroIntelImportBaseDir, "import-log.json");
+const aeroIntelAbcImportLogPath = path.join(aeroIntelImportBaseDir, "abc-import-log.json");
+const crmContactImportIncomingDir = path.join(crmContactImportBaseDir, "incoming");
+const crmContactImportProcessedDir = path.join(crmContactImportBaseDir, "processed");
+const crmContactImportErrorsDir = path.join(crmContactImportBaseDir, "errors");
+const crmContactImportLogPath = path.join(crmContactImportBaseDir, "import-log.json");
+const publicIndexPath = path.join(__dirname, "public", "index.html");
+const TERMS_LINK = "https://seudominio.com/termos";
+const CASHBACK_PIN_EXPIRATION_MINUTES = 10;
+const CASHBACK_PIN_MAX_ATTEMPTS = 3;
+const PIN_HASH_PEPPER = process.env.CASHBACK_PIN_PEPPER || "aerostore-cashback-pin";
+const STORES = getActiveOperationalStoreOptions().map((item) => item.label);
+const CONTACT_GENDERS = ["Masculino", "Feminino", "Infantil"];
+const CONTACT_STATUSES = ["ativo", "pendente", "inativo", "bloqueado", "sem whatsapp"];
+const SELLER_STATUSES = ["ativo", "inativo"];
+const CASHBACK_STATUSES = ["pending_pin", "disponivel", "a_receber", "vencido", "usado", "cancelado"];
+const WHATSAPP_PROTOCOL_TIMEOUT_MS = Number(process.env.WHATSAPP_PROTOCOL_TIMEOUT_MS || 240000);
+const WHATSAPP_SEND_HEALTH_TIMEOUT_MS = Number(process.env.WHATSAPP_SEND_HEALTH_TIMEOUT_MS || 25000);
+const WHATSAPP_BOOTSTRAP_TIMEOUT_MS = Number(process.env.WHATSAPP_BOOTSTRAP_TIMEOUT_MS || 120000);
+const CANCEL_REASONS = [
+  "Arrependimento da compra",
+  "Não recebimento do PIN",
+  "Troca do produto",
+  "Alteração da compra",
+  "Outro motivo"
+];
+const CASHBACK_EVENT_TYPES = [
+  "cashback_gerado",
+  "cashback_resgatado",
+  "cashback_vencido",
+  "cashback_cancelado",
+  "cashback_reativado",
+  "cashback_antecipado",
+  "pin_gerado",
+  "pin_enviado",
+  "pin_reenviado",
+  "pin_invalido",
+  "pin_expirado",
+  "pin_validado",
+  "whatsapp_enviado"
+];
+const pdvInventoryRecordsPath = path.join(__dirname, "data", "pdv", "inventory", "inventory.json");
+const pdvCashRegistersPath = path.join(__dirname, "data", "pdv", "control", "cash-registers.json");
+
+function readJsonSafe(filePath, fallback = []) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return fallback;
+    }
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    return fallback;
+  }
+}
+
+async function getRegisteredOperationalStoreOptions() {
+  return getActiveOperationalStoreOptions();
+}
+
+function servePublicIndex(res) {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.sendFile(publicIndexPath);
+}
+
+// WhatsApp Client
+let whatsappClient = null;
+let isWhatsAppInitializing = false;
+let whatsappInitializationPromise = null;
+let whatsappInitializationStartedAt = 0;
+let whatsappClientLifecycleNonce = 0;
+let whatsappRuntimeProfile = {
+  key: getConfiguredWhatsAppAuthMode(),
+  label: getConfiguredWhatsAppAuthMode() === "legacy" ? "LocalAuth compatível legado" : "LocalAuth por instância",
+  clientId: getConfiguredWhatsAppSessionName(),
+  sessionPath: getConfiguredWhatsAppAuthMode() === "legacy" ? getLegacyWhatsAppSessionPath() : getInstanceSessionPath(),
+  browserProfilePath: getConfiguredWhatsAppAuthMode() === "legacy" ? null : getInstanceBrowserProfilePath()
+};
+let whatsappState = {
+  status: 'desconectado', // 'conectado', 'desconectado', 'aguardando qr', 'autenticando', 'erro'
+  qrBase64: null,
+  lastQrRaw: null,
+  connectedNumber: null,
+  lastConnectedAt: null,
+  lastError: null
+};
+const campaignHumanizedOperations = new Map();
+const CAMPAIGN_HUMANIZED_LOG_LIMIT = 40;
+const CAMPAIGN_BREAKER_COOLDOWN_MINUTES = 30;
+const CAMPAIGN_WARMUP_SCHEDULE = {
+  1: 20,
+  2: 30,
+  3: 40,
+  4: 50,
+  5: 70,
+  6: 90,
+  7: 120,
+  8: 150,
+  9: 180,
+  10: 200,
+  11: 220,
+  12: 250,
+  13: 280,
+  14: 300,
+  15: 350,
+  21: 400,
+  28: 500,
+  30: 600
+};
+const CAMPAIGN_ACTIVITY_WINDOWS = {
+  weekday: [
+    { key: "morning", start: "09:00", end: "12:00", label: "Manhã (09:00–12:00)" },
+    { key: "lunch", start: "12:00", end: "13:30", type: "pause", label: "Pausa de almoço (12:00–13:30)" },
+    { key: "afternoon", start: "13:30", end: "18:00", label: "Tarde (13:30–18:00)" },
+    { key: "evening", start: "18:00", end: "20:00", label: "Noite (18:00–20:00)" }
+  ],
+  saturday: [
+    { key: "morning", start: "09:00", end: "12:00", label: "Sábado manhã (09:00–12:00)" },
+    { key: "afternoon", start: "13:00", end: "16:00", label: "Sábado tarde (13:00–16:00)" }
+  ]
+};
+
+function resolveWhatsAppPuppeteerLaunchConfig(options = {}) {
+  const executablePath = typeof puppeteer.executablePath === "function"
+    ? puppeteer.executablePath()
+    : "";
+  const useDedicatedBrowserProfile = options.useDedicatedBrowserProfile !== false;
+  const userDataDir = useDedicatedBrowserProfile
+    ? (options.browserProfilePath || getInstanceBrowserProfilePath())
+    : null;
+  return {
+    headless: true,
+    protocolTimeout: WHATSAPP_PROTOCOL_TIMEOUT_MS,
+    executablePath: executablePath || undefined,
+    ...(userDataDir ? { userDataDir } : {}),
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-quic',
+      '--disable-http2',
+      '--disable-extensions',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--no-zygote',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-features=IsolateOrigins,site-per-process,Translate,BackForwardCache'
+    ]
+  };
+}
+
+function normalizeWhatsAppBootstrapError(error) {
+  const rawMessage = String(error?.message || error || "").trim();
+  if (!rawMessage) {
+    return "Não foi possível iniciar o motor do WhatsApp CRM.";
+  }
+  if (/Execution context was destroyed/i.test(rawMessage)) {
+    return "A sessão interna do WhatsApp CRM perdeu o contexto do navegador antes de gerar o QR Code. Limpe a sessão, feche processos presos do Chromium e verifique se esta máquina consegue acessar https://web.whatsapp.com/.";
+  }
+  if (/ERR_NETWORK_ACCESS_DENIED/i.test(rawMessage)) {
+    return "O navegador local do WhatsApp CRM não conseguiu acessar o WhatsApp Web nesta máquina. Libere o acesso a https://web.whatsapp.com/ e tente novamente.";
+  }
+  if (/ERR_QUIC_PROTOCOL_ERROR/i.test(rawMessage)) {
+    return "O Chromium interno do WhatsApp CRM falhou negociando QUIC com o WhatsApp Web. A reconexao vai precisar rodar com QUIC desativado ou aguardar a rede estabilizar.";
+  }
+  if (/Target closed/i.test(rawMessage) || /Protocol error/i.test(rawMessage)) {
+    return "O navegador interno do WhatsApp CRM foi encerrado antes de concluir a conexão. Limpe a sessão da loja e confirme o acesso local ao WhatsApp Web antes de reconectar.";
+  }
+  if (/bootstrap timed out/i.test(rawMessage) || /QR Code was not generated/i.test(rawMessage)) {
+    return "O WhatsApp CRM ficou preso inicializando e não gerou QR Code. Verifique se o Chromium local consegue abrir o WhatsApp Web e tente reconectar novamente.";
+  }
+  if (/Page\.addScriptToEvaluateOnNewDocument/i.test(rawMessage) || /Target closed/i.test(rawMessage)) {
+    return "O navegador local do WhatsApp CRM foi encerrado antes de concluir a sessão. Tente reconectar ou limpar a sessão.";
+  }
+  return rawMessage;
+}
+const aiRecentReplies = new Map();
+
+function sleep(ms) {
+  const safeMs = Math.max(0, Number(ms || 0));
+  return new Promise((resolve) => setTimeout(resolve, safeMs));
+}
+
+function randomInt(min, max) {
+  const safeMin = Math.ceil(Number(min || 0));
+  const safeMax = Math.floor(Number(max || safeMin));
+  if (safeMax <= safeMin) {
+    return safeMin;
+  }
+  return Math.floor(Math.random() * (safeMax - safeMin + 1)) + safeMin;
+}
+
+function humanDelay(meanMs = 45000, stdDevMs = 15000, minMs = 12000, maxMs = 120000) {
+  const u1 = Math.max(Math.random(), Number.EPSILON);
+  const u2 = Math.max(Math.random(), Number.EPSILON);
+  const gaussian = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  let delay = Number(meanMs || 45000) + (gaussian * Number(stdDevMs || 15000));
+  delay = Math.max(Number(minMs || 12000), Math.min(Number(maxMs || 120000), delay));
+  delay += (Math.random() - 0.5) * 6000;
+  delay = Math.max(Number(minMs || 12000), Math.min(Number(maxMs || 120000), delay));
+  return Math.round(delay);
+}
+
+function hashString(value = "") {
+  const raw = String(value || "");
+  let hash = 0;
+  for (let index = 0; index < raw.length; index += 1) {
+    hash = ((hash << 5) - hash) + raw.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function pickDeterministicVariant(list = [], seed = 0, offset = 0) {
+  if (!Array.isArray(list) || !list.length) {
+    return "";
+  }
+  const index = Math.abs(Number(seed || 0) + Number(offset || 0)) % list.length;
+  return String(list[index] || "").trim();
+}
+
+function humanizeMessage(baseMessage = "", context = {}) {
+  const body = String(baseMessage || "").trim();
+  if (!body) {
+    return "";
+  }
+  const firstName = String(context.name || "").trim().split(/\s+/).filter(Boolean)[0] || "cliente";
+  const phoneSeed = hashString(String(context.phone || firstName || body));
+  const greetings = [
+    `Olá ${firstName}!`,
+    `Oi ${firstName}!`,
+    `Oi ${firstName}, tudo bem?`,
+    `Olá ${firstName}, tudo certo?`,
+    `${firstName}, oi!`,
+    `Fala ${firstName}!`,
+    `E aí ${firstName}!`
+  ];
+  const connectors = [
+    "Passando para avisar que",
+    "Queria te contar que",
+    "Tenho uma novidade:",
+    "Vim te avisar que",
+    "Olha só,",
+    "Sabia que",
+    ""
+  ];
+  const closings = [
+    "Te espero aqui!",
+    "Passa na loja quando puder!",
+    "Vai ser um prazer te atender!",
+    "Qualquer coisa me chama!",
+    "Fica à vontade para responder!",
+    "Te aguardo!",
+    "Abraço!"
+  ];
+  const normalizedBodyStart = normalizeSearchText(body.slice(0, 60));
+  const normalizedFirstName = normalizeSearchText(firstName);
+  const alreadyStartsWithGreeting = /^(oi|ola|olá|fala|e ai|e aí|bom dia|boa tarde|boa noite)\b/i.test(normalizedBodyStart)
+    || (normalizedFirstName && normalizedBodyStart.startsWith(normalizedFirstName));
+  let message = body;
+  if (!alreadyStartsWithGreeting) {
+    const greeting = pickDeterministicVariant(greetings, phoneSeed, 0);
+    const connector = pickDeterministicVariant(connectors, phoneSeed, 1);
+    message = connector
+      ? `${greeting}\n\n${connector} ${body}`
+      : `${greeting}\n\n${body}`;
+  }
+  const closing = pickDeterministicVariant(closings, phoneSeed, 2);
+  if (closing && !normalizeSearchText(message).includes(normalizeSearchText(closing))) {
+    message = `${message}\n\n${closing}`;
+  }
+  if (phoneSeed % 5 === 0) {
+    message = message.replace(/!\s*$/m, ".");
+  }
+  if (phoneSeed % 7 === 0) {
+    message = message.replace(/\s+$/g, "");
+  }
+  return message.trim();
+}
+
+function maskPhoneNumber(phone = "") {
+  const digits = sanitizePhone(phone);
+  if (!digits) {
+    return "";
+  }
+  if (digits.length <= 4) {
+    return `***${digits.slice(-2)}`;
+  }
+  return `${digits.slice(0, 2)}***${digits.slice(-4)}`;
+}
+
+function getCampaignDelayProfile(totalRecipients = 0) {
+  const total = Math.max(0, Number(totalRecipients || 0));
+  if (total <= 50) return { mean: 30000, stdDev: 10000, min: 10000, max: 90000, estimatedPerHour: "80–100" };
+  if (total <= 200) return { mean: 45000, stdDev: 15000, min: 15000, max: 120000, estimatedPerHour: "50–70" };
+  if (total <= 500) return { mean: 60000, stdDev: 20000, min: 20000, max: 180000, estimatedPerHour: "30–50" };
+  return { mean: 90000, stdDev: 30000, min: 30000, max: 300000, estimatedPerHour: "15–30" };
+}
+
+function getWarmupDailyLimit(accountAgeDays = 1) {
+  const safeDays = Math.max(1, Number(accountAgeDays || 1));
+  const milestones = Object.keys(CAMPAIGN_WARMUP_SCHEDULE)
+    .map(Number)
+    .sort((left, right) => left - right);
+  let limit = CAMPAIGN_WARMUP_SCHEDULE[1];
+  for (const day of milestones) {
+    if (safeDays >= day) {
+      limit = CAMPAIGN_WARMUP_SCHEDULE[day];
+    }
+  }
+  return limit;
+}
+
+function parseTimeToMinutes(value = "") {
+  const [hours, minutes] = String(value || "00:00").split(":").map((item) => Number(item || 0));
+  return (hours * 60) + minutes;
+}
+
+function formatTime(value = "") {
+  const [hours, minutes] = String(value || "00:00").split(":");
+  return `${String(hours || "00").padStart(2, "0")}:${String(minutes || "00").padStart(2, "0")}`;
+}
+
+function getSendingScheduleForDate(date = new Date()) {
+  const day = Number(date.getDay());
+  if (day === 0) {
+    return null;
+  }
+  return day === 6 ? CAMPAIGN_ACTIVITY_WINDOWS.saturday : CAMPAIGN_ACTIVITY_WINDOWS.weekday;
+}
+
+function getNextSendingWindowLabel(date = new Date()) {
+  const current = new Date(date);
+  for (let offset = 0; offset < 7; offset += 1) {
+    const probe = new Date(current);
+    probe.setDate(current.getDate() + offset);
+    const schedule = getSendingScheduleForDate(probe);
+    if (!schedule) {
+      continue;
+    }
+    const minutes = (offset === 0)
+      ? (probe.getHours() * 60) + probe.getMinutes()
+      : -1;
+    const nextWindow = schedule.find((window) => window.type !== "pause" && parseTimeToMinutes(window.start) > minutes);
+    if (nextWindow) {
+      const prefix = offset === 0
+        ? "hoje"
+        : offset === 1
+          ? "amanhã"
+          : probe.toLocaleDateString("pt-BR");
+      return `${prefix} às ${formatTime(nextWindow.start)}`;
+    }
+  }
+  return "próximo horário comercial";
+}
+
+function isWithinSendingWindow(date = new Date()) {
+  const schedule = getSendingScheduleForDate(date);
+  if (!schedule) {
+    return { allowed: false, reason: "Domingo — sem envios", nextWindow: getNextSendingWindowLabel(date) };
+  }
+  const currentMinutes = (date.getHours() * 60) + date.getMinutes();
+  const activeWindow = schedule.find((window) => {
+    const start = parseTimeToMinutes(window.start);
+    const end = parseTimeToMinutes(window.end);
+    return currentMinutes >= start && currentMinutes < end;
+  });
+  if (!activeWindow) {
+    return {
+      allowed: false,
+      reason: `Fora do horário de envio. Próxima janela: ${getNextSendingWindowLabel(date)}`,
+      nextWindow: getNextSendingWindowLabel(date)
+    };
+  }
+  if (activeWindow.type === "pause") {
+    return {
+      allowed: false,
+      reason: `Pausa operacional em andamento. Próxima janela: ${getNextSendingWindowLabel(date)}`,
+      nextWindow: getNextSendingWindowLabel(date)
+    };
+  }
+  return {
+    allowed: true,
+    period: activeWindow.key,
+    label: activeWindow.label,
+    until: activeWindow.end
+  };
+}
+
+function createCampaignCircuitBreakerState() {
+  return {
+    state: "closed",
+    errors: [],
+    blocks: [],
+    reports: [],
+    lastTrip: 0,
+    cooldownMinutes: CAMPAIGN_BREAKER_COOLDOWN_MINUTES,
+    maxErrorsPerHour: 10,
+    maxBlocksPerDay: 5,
+    maxReportsPerDay: 3,
+    maxConsecutiveErrors: 3,
+    lastReason: ""
+  };
+}
+
+function createCampaignHumanizedOperation(campaign, contacts = [], stats = {}) {
+  const nowIso = new Date().toISOString();
+  return {
+    campaignId: Number(campaign.id),
+    campaignName: campaign.name || "",
+    status: "idle",
+    startedAt: "",
+    completedAt: "",
+    pausedAt: "",
+    updatedAt: nowIso,
+    stopRequested: false,
+    pauseRequested: false,
+    loopPromise: null,
+    contactsQueue: contacts,
+    queueIndex: 0,
+    totalRecipients: contacts.length,
+    alreadySentBeforeStart: Number(stats.sent || 0),
+    alreadyErroredBeforeStart: Number(stats.errors || 0),
+    processed: 0,
+    sent: 0,
+    errors: 0,
+    skipped: 0,
+    blocked: 0,
+    lastRecipient: "",
+    lastEvent: "",
+    lastError: "",
+    nextDelayMs: 0,
+    nextEligibleAt: "",
+    currentWindowLabel: "",
+    accountAgeDays: 1,
+    dailyLimit: 0,
+    sentToday: 0,
+    messagesSentThisWindow: 0,
+    nextBreakAfter: randomInt(15, 25),
+    progressLog: [],
+    circuitBreaker: createCampaignCircuitBreakerState(),
+    typingSupported: false,
+    typingAttempted: false,
+    pauseReason: ""
+  };
+}
+
+function pushCampaignHumanizedLog(operation, entry = {}) {
+  if (!operation) {
+    return;
+  }
+  operation.updatedAt = new Date().toISOString();
+  operation.progressLog.unshift({
+    timestamp: operation.updatedAt,
+    ...entry
+  });
+  operation.progressLog = operation.progressLog.slice(0, CAMPAIGN_HUMANIZED_LOG_LIMIT);
+}
+
+function serializeCampaignHumanizedOperation(operation) {
+  if (!operation) {
+    return null;
+  }
+  const breaker = operation.circuitBreaker || createCampaignCircuitBreakerState();
+  const now = Date.now();
+  const remainingCooldownMs = breaker.state === "open" && breaker.lastTrip
+    ? Math.max(0, (breaker.cooldownMinutes * 60000) - (now - breaker.lastTrip))
+    : 0;
+  return {
+    campaignId: operation.campaignId,
+    campaignName: operation.campaignName,
+    status: operation.status,
+    startedAt: operation.startedAt,
+    completedAt: operation.completedAt,
+    pausedAt: operation.pausedAt,
+    updatedAt: operation.updatedAt,
+    processed: operation.processed,
+    sent: operation.sent,
+    errors: operation.errors,
+    skipped: operation.skipped,
+    blocked: operation.blocked,
+    totalRecipients: operation.totalRecipients,
+    remainingRecipients: Math.max(0, operation.totalRecipients - operation.queueIndex),
+    nextDelayMs: operation.nextDelayMs,
+    nextEligibleAt: operation.nextEligibleAt,
+    currentWindowLabel: operation.currentWindowLabel,
+    accountAgeDays: operation.accountAgeDays,
+    dailyLimit: operation.dailyLimit,
+    sentToday: operation.sentToday,
+    lastRecipient: operation.lastRecipient,
+    lastEvent: operation.lastEvent,
+    lastError: operation.lastError,
+    pauseReason: operation.pauseReason,
+    typingSupported: Boolean(operation.typingSupported),
+    typingAttempted: Boolean(operation.typingAttempted),
+    breaker: {
+      state: breaker.state,
+      lastReason: breaker.lastReason || "",
+      cooldownMinutes: breaker.cooldownMinutes,
+      remainingCooldownMs,
+      errorsLastHour: breaker.errors.length,
+      blocksToday: breaker.blocks.length,
+      reportsToday: breaker.reports.length
+    },
+    logs: operation.progressLog.slice(0, 12)
+  };
+}
+
+console.log("[AEROSTORE BOOT]");
+console.log("runtime version:", RUNTIME_VERSION);
+console.log("cwd:", process.cwd());
+console.log("__dirname:", __dirname);
+console.log("server file:", __filename);
+console.log("boot time:", BOOT_TIME);
+console.log("node version:", process.version);
+console.log("database path:", dbPath);
+
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+[tinyVitrineImportBaseDir, tinyVitrineImportIncomingDir, tinyVitrineImportProcessedDir, tinyVitrineImportErrorsDir, aeroIntelImportBaseDir, aeroIntelImportIncomingDir, aeroIntelImportProcessedDir, aeroIntelImportErrorsDir, crmContactImportBaseDir, crmContactImportIncomingDir, crmContactImportProcessedDir, crmContactImportErrorsDir].forEach((dir) => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
+if (!fs.existsSync(tinyVitrineImportLogPath)) {
+  fs.writeFileSync(tinyVitrineImportLogPath, "[]", "utf8");
+}
+
+if (!fs.existsSync(aeroIntelImportLogPath)) {
+  fs.writeFileSync(aeroIntelImportLogPath, "[]", "utf8");
+}
+
+if (!fs.existsSync(aeroIntelAbcImportLogPath)) {
+  fs.writeFileSync(aeroIntelAbcImportLogPath, "[]", "utf8");
+}
+
+if (!fs.existsSync(crmContactImportLogPath)) {
+  fs.writeFileSync(crmContactImportLogPath, "[]", "utf8");
+}
+
+const upload = multer({ dest: uploadDir });
+const campaignMediaDir = path.join(__dirname, "data", "campaign-media");
+const productPhotoUploadDir = path.join(__dirname, "public", "uploads", "products");
+
+if (!fs.existsSync(campaignMediaDir)) {
+  fs.mkdirSync(campaignMediaDir, { recursive: true });
+}
+
+if (!fs.existsSync(productPhotoUploadDir)) {
+  fs.mkdirSync(productPhotoUploadDir, { recursive: true });
+}
+
+function resolveMediaExtension(originalName = "", mimeType = "") {
+  const directExtension = path.extname(String(originalName || "")).trim();
+  if (directExtension) {
+    return directExtension.toLowerCase();
+  }
+  const extensionByMime = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "application/pdf": ".pdf"
+  };
+  return extensionByMime[String(mimeType || "").toLowerCase()] || "";
+}
+
+const campaignMediaStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, campaignMediaDir),
+  filename: (req, file, cb) => {
+    const extension = resolveMediaExtension(file.originalname, file.mimetype);
+    cb(null, `${crypto.randomBytes(16).toString("hex")}${extension}`);
+  }
+});
+
+const mediaUpload = multer({
+  storage: campaignMediaStorage,
+  limits: {
+    fileSize: 16 * 1024 * 1024 // 16MB max
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'video/mp4',
+      'audio/mpeg',
+      'audio/ogg',
+      'audio/wav',
+      'audio/x-wav',
+      'application/pdf'
+    ];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Tipo de arquivo não permitido. Apenas imagens (jpg, png, webp), vídeos (mp4), áudios (mp3, ogg, wav) e PDF são suportados.'));
+    }
+  }
+});
+
+const productPhotoMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+const productPhotoExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+const productPhotoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, productPhotoUploadDir),
+    filename: (req, file, cb) => {
+      const extension = resolveMediaExtension(file.originalname, file.mimetype);
+      cb(null, `product-${Date.now()}-${crypto.randomBytes(10).toString("hex")}${extension}`);
+    }
+  }),
+  limits: {
+    fileSize: 5 * 1024 * 1024
+  },
+  fileFilter: (req, file, cb) => {
+    const extension = resolveMediaExtension(file.originalname, file.mimetype);
+    if (!productPhotoMimeTypes.has(String(file.mimetype || "").toLowerCase()) || !productPhotoExtensions.has(extension)) {
+      cb(new Error("Foto do produto invalida. Envie JPG, PNG ou WEBP."));
+      return;
+    }
+    cb(null, true);
+  }
+});
+const contactImportPreviews = new Map();
+const tinyVitrineImportPreviews = new Map();
+const top100CuratedImportPreviews = new Map();
+const pdvTinyProductImportPreviews = new Map();
+const aeroIntelImportPreviews = new Map();
+const aeroIntelAbcImportPreviews = new Map();
+const crmContactImportPreviews = new Map();
+const tinyImportStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, tinyVitrineImportIncomingDir),
+  filename: (req, file, cb) => {
+    const extension = path.extname(String(file.originalname || "")).toLowerCase() || ".xlsx";
+    cb(null, `${Date.now()}-${crypto.randomBytes(8).toString("hex")}${extension}`);
+  }
+});
+
+const tinyImportUpload = multer({
+  storage: tinyImportStorage,
+  limits: {
+    fileSize: 20 * 1024 * 1024
+  },
+  fileFilter: (req, file, cb) => {
+    const extension = path.extname(String(file.originalname || "")).toLowerCase();
+    if (![".xls", ".xlsx", ".csv"].includes(extension)) {
+      cb(new Error("Somente arquivos .csv, .xls ou .xlsx são permitidos."));
+      return;
+    }
+    cb(null, true);
+  }
+});
+
+const curatedTop100ImportFilePath = path.join(
+  __dirname,
+  "_tiny_exports",
+  "2026-05-15-pre-stage-tests",
+  "staging-output",
+  "vitrine-selection",
+  "vitrine_ia_top_100.csv"
+);
+
+const aeroIntelImportStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, aeroIntelImportIncomingDir),
+  filename: (req, file, cb) => {
+    const extension = path.extname(String(file.originalname || "")).toLowerCase() || ".csv";
+    cb(null, `${Date.now()}-${crypto.randomBytes(8).toString("hex")}${extension}`);
+  }
+});
+
+const aeroIntelImportUpload = multer({
+  storage: aeroIntelImportStorage,
+  limits: {
+    fileSize: 25 * 1024 * 1024
+  },
+  fileFilter: (req, file, cb) => {
+    const extension = path.extname(String(file.originalname || "")).toLowerCase();
+    if (![".csv", ".xls", ".xlsx"].includes(extension)) {
+      cb(new Error("Somente arquivos .csv, .xls ou .xlsx são permitidos para o histórico do AEROINTEL."));
+      return;
+    }
+    cb(null, true);
+  }
+});
+
+const crmContactImportStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, crmContactImportIncomingDir),
+  filename: (req, file, cb) => {
+    const extension = path.extname(String(file.originalname || "")).toLowerCase() || ".xlsx";
+    cb(null, `${Date.now()}-${crypto.randomBytes(8).toString("hex")}${extension}`);
+  }
+});
+
+const crmContactImportUpload = multer({
+  storage: crmContactImportStorage,
+  limits: {
+    fileSize: 25 * 1024 * 1024,
+    files: 50
+  },
+  fileFilter: (req, file, cb) => {
+    const extension = path.extname(String(file.originalname || "")).toLowerCase();
+    if (![".csv", ".xls", ".xlsx"].includes(extension)) {
+      cb(new Error("Somente arquivos .csv, .xls ou .xlsx são permitidos para a base de clientes."));
+      return;
+    }
+    cb(null, true);
+  }
+});
+
+app.use((req, res, next) => {
+  res.charset = "utf-8";
+  if (req.path.startsWith("/api/")) {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+  }
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
+app.use(express.json({ limit: "4mb" }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, "public"), {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith(".html")) {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+    } else if (filePath.endsWith(".js")) {
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+    } else if (filePath.endsWith(".css")) {
+      res.setHeader("Content-Type", "text/css; charset=utf-8");
+    }
+  }
+}));
+app.use("/samples", express.static(path.join(__dirname, "samples")));
+
+function sanitizePhone(phone) {
+  return String(phone || "").replace(/\D/g, "");
+}
+
+function normalizeDigits(value = "") {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function normalizeText(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeLookup(value = "") {
+  return normalizeText(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N} ]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function uniqueStrings(values = []) {
+  return Array.from(new Set((Array.isArray(values) ? values : [values]).map((item) => normalizeText(item || "")).filter(Boolean)));
+}
+
+function toNumber(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatCurrencyBRL(value) {
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL"
+  }).format(Number(value || 0));
+}
+
+function parseLocalizedNumberToFloat(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return null;
+  }
+  const cleaned = raw.replace(/[^\d,.-]/g, "");
+  if (!cleaned) {
+    return null;
+  }
+  const lastComma = cleaned.lastIndexOf(",");
+  const lastDot = cleaned.lastIndexOf(".");
+  let normalized = cleaned;
+  if (lastComma > lastDot) {
+    normalized = cleaned.replace(/\./g, "").replace(",", ".");
+  } else if (lastDot > lastComma && lastComma !== -1) {
+    normalized = cleaned.replace(/,/g, "");
+  } else {
+    normalized = cleaned.replace(",", ".");
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizePhone(phone) {
+  let digits = sanitizePhone(phone);
+  if (digits && !digits.startsWith("55")) {
+    digits = `55${digits}`;
+  }
+  return digits;
+}
+
+function formatWhatsAppNumber(phone) {
+  const digits = sanitizePhone(phone);
+  if (!digits) {
+    return "";
+  }
+
+  let normalized = digits;
+  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith("55")) {
+    normalized = `55${digits}`;
+  }
+
+  if (!/^55\d{10,11}$/.test(normalized)) {
+    return "";
+  }
+
+  return `${normalized}@c.us`;
+}
+
+function createWhatsAppDestinationError(message, code, context = {}) {
+  const error = new Error(message);
+  error.code = code;
+  Object.assign(error, context);
+  return error;
+}
+
+function normalizeWhatsAppSendError(error, context = {}) {
+  const rawMessage = String(error?.message || error || "").trim();
+  if (/Runtime\.callFunctionOn timed out/i.test(rawMessage) || /Protocol error/i.test(rawMessage)) {
+    return createWhatsAppDestinationError(
+      "WhatsApp CRM ficou sem resposta durante o envio. O motor será reconectado antes de uma nova tentativa.",
+      "WHATSAPP_PROTOCOL_TIMEOUT",
+      {
+        originalError: rawMessage,
+        userMessage: "WhatsApp CRM ficou sem resposta durante o envio. Reconecte o motor ou tente novamente em instantes.",
+        ...context
+      }
+    );
+  }
+  if (/Target closed/i.test(rawMessage) || /Session closed/i.test(rawMessage)) {
+    return createWhatsAppDestinationError(
+      "A sessão interna do WhatsApp CRM foi encerrada e precisa ser reconectada.",
+      "WHATSAPP_CLIENT_CLOSED",
+      {
+        originalError: rawMessage,
+        userMessage: "A sessão interna do WhatsApp CRM foi encerrada. Reconecte o motor antes de tentar novamente.",
+        ...context
+      }
+    );
+  }
+  if (rawMessage.includes("No LID for user")) {
+    return createWhatsAppDestinationError(
+      "WhatsApp não conseguiu resolver o destinatário. Verifique se o número possui WhatsApp e está correto.",
+      "WHATSAPP_LID_NOT_FOUND",
+      {
+        originalError: rawMessage,
+        userMessage: "WhatsApp não conseguiu resolver o destinatário. Verifique se o número possui WhatsApp e está correto.",
+        ...context
+      }
+    );
+  }
+  return error;
+}
+
+function isWhatsAppRuntimeHealthyState(runtimeState = "") {
+  return ["CONNECTED", "OPENING", "PAIRING"].includes(String(runtimeState || "").trim().toUpperCase());
+}
+
+function resetWhatsAppState(status = "desconectado", overrides = {}) {
+  whatsappState.status = status;
+  whatsappState.qrBase64 = null;
+  whatsappState.lastQrRaw = null;
+  whatsappState.connectedNumber = null;
+  whatsappState.lastConnectedAt = null;
+  whatsappState.lastError = null;
+  Object.assign(whatsappState, overrides || {});
+}
+
+function bumpWhatsAppLifecycleNonce() {
+  whatsappClientLifecycleNonce += 1;
+  return whatsappClientLifecycleNonce;
+}
+
+function isRecoverableWhatsAppRuntimeError(error) {
+  const rawMessage = String(error?.message || error || "").trim();
+  return /Execution context was destroyed/i.test(rawMessage)
+    || /Target closed/i.test(rawMessage)
+    || /Session closed/i.test(rawMessage)
+    || /Protocol error/i.test(rawMessage)
+    || /bootstrap timed out/i.test(rawMessage)
+    || /ERR_QUIC_PROTOCOL_ERROR/i.test(rawMessage)
+    || /ERR_NETWORK_ACCESS_DENIED/i.test(rawMessage);
+}
+
+function isWhatsAppInitializationStale() {
+  if (!whatsappInitializationPromise || !whatsappInitializationStartedAt) {
+    return false;
+  }
+  return (Date.now() - whatsappInitializationStartedAt) > WHATSAPP_BOOTSTRAP_TIMEOUT_MS;
+}
+
+async function destroyWhatsAppClientSafely(reason = "") {
+  const clientToDestroy = whatsappClient;
+  whatsappClient = null;
+  if (!clientToDestroy) {
+    return;
+  }
+  try {
+    if (typeof clientToDestroy.removeAllListeners === "function") {
+      clientToDestroy.removeAllListeners();
+    }
+    if (clientToDestroy.pupPage && typeof clientToDestroy.pupPage.isClosed === "function" && !clientToDestroy.pupPage.isClosed()) {
+      try {
+        await clientToDestroy.pupPage.close();
+      } catch (pageError) {
+        // noop
+      }
+    }
+    if (clientToDestroy.pupBrowser && typeof clientToDestroy.pupBrowser.close === "function") {
+      try {
+        await clientToDestroy.pupBrowser.close();
+      } catch (browserError) {
+        // noop
+      }
+    }
+    await clientToDestroy.destroy();
+  } catch (error) {
+    console.warn(`[WHATSAPP] Falha ao destruir client (${reason || "sem motivo"}):`, error.message || error);
+  }
+}
+
+async function recycleWhatsAppClient(reason = "", options = {}) {
+  const {
+    clearSession = false,
+    clearBrowserRuntime = clearSession,
+    clearLegacySession = false,
+    nextStatus = "desconectado",
+    resetError = true,
+    resetWarmup = false
+  } = options || {};
+
+  const lifecycleNonce = bumpWhatsAppLifecycleNonce();
+  whatsappInitializationPromise = null;
+  whatsappInitializationStartedAt = 0;
+  await destroyWhatsAppClientSafely(reason || "recycle");
+  await sleep(400);
+
+  if (clearSession) {
+    const authPath = getInstanceSessionPath();
+    await fs.promises.rm(authPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 });
+    await sleep(250);
+  }
+
+  if (clearLegacySession) {
+    const legacyAuthPath = getLegacyWhatsAppSessionPath();
+    await fs.promises.rm(legacyAuthPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 });
+    await sleep(250);
+  }
+
+  if (clearBrowserRuntime) {
+    const browserProfilePath = getInstanceBrowserProfilePath();
+    await fs.promises.rm(browserProfilePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 });
+    await sleep(250);
+  }
+
+  resetWhatsAppState(nextStatus, {
+    lastError: resetError ? null : whatsappState.lastError
+  });
+  whatsappRuntimeProfile = {
+    key: getConfiguredWhatsAppAuthMode(),
+    label: getConfiguredWhatsAppAuthMode() === "legacy" ? "LocalAuth compatível legado" : "LocalAuth por instância",
+    clientId: getConfiguredWhatsAppSessionName(),
+    sessionPath: getConfiguredWhatsAppAuthMode() === "legacy" ? getLegacyWhatsAppSessionPath() : getInstanceSessionPath(),
+    browserProfilePath: getConfiguredWhatsAppAuthMode() === "legacy" ? null : getInstanceBrowserProfilePath()
+  };
+  if (resetWarmup) {
+    setInstanceWarmupDay(0);
+  }
+  return lifecycleNonce;
+}
+
+async function recoverWhatsAppClientAfterFailure(error, context = "send") {
+  const normalizedError = normalizeWhatsAppSendError(error);
+  const shouldReconnect = ["WHATSAPP_PROTOCOL_TIMEOUT", "WHATSAPP_CLIENT_CLOSED"].includes(normalizedError.code)
+    || /Execution context was destroyed/i.test(String(normalizedError.originalError || normalizedError.message || ""));
+  if (!shouldReconnect) {
+    return normalizedError;
+  }
+  resetWhatsAppState("erro", {
+    lastError: normalizedError.userMessage || normalizedError.message || "Falha no motor do WhatsApp CRM."
+  });
+  await recycleWhatsAppClient(`${context}_failure`, { nextStatus: "desconectado", resetError: false });
+  initializeWhatsAppClient().catch((reconnectError) => {
+    console.error("[WHATSAPP] Falha ao reinicializar após erro de envio:", reconnectError.message || reconnectError);
+    whatsappState.status = "erro";
+    whatsappState.lastError = normalizeWhatsAppBootstrapError(reconnectError);
+  });
+  return normalizedError;
+}
+
+async function ensureWhatsAppClientReadyForSend(context = "send") {
+  if (whatsappInitializationPromise) {
+    await whatsappInitializationPromise.catch(() => null);
+  }
+  if (whatsappState.status !== "conectado" || !whatsappClient) {
+    throw createWhatsAppDestinationError("WhatsApp não está conectado", "WHATSAPP_NOT_CONNECTED", {
+      userMessage: "WhatsApp CRM desconectado. Conecte o motor antes de enviar."
+    });
+  }
+
+  try {
+    if (typeof whatsappClient.getState === "function") {
+      const runtimeState = await whatsappClient.getState();
+      if (!isWhatsAppRuntimeHealthyState(runtimeState)) {
+        throw createWhatsAppDestinationError(
+          `WhatsApp CRM não está pronto para envio (${runtimeState || "sem estado"}).`,
+          "WHATSAPP_RUNTIME_NOT_READY",
+          {
+            userMessage: "WhatsApp CRM ainda não está pronto para enviar mensagens. Aguarde a sessão estabilizar."
+          }
+        );
+      }
+    }
+
+    const page = whatsappClient.pupPage;
+    if (!page || (typeof page.isClosed === "function" && page.isClosed())) {
+      throw createWhatsAppDestinationError(
+        "A página interna do WhatsApp CRM não está disponível.",
+        "WHATSAPP_CLIENT_CLOSED",
+        {
+          userMessage: "A página interna do WhatsApp CRM não está disponível. Reconecte o motor antes de enviar."
+        }
+      );
+    }
+
+    await Promise.race([
+      page.evaluate(() => document.readyState),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("WhatsApp CRM page healthcheck timed out")), WHATSAPP_SEND_HEALTH_TIMEOUT_MS))
+    ]);
+  } catch (error) {
+    throw await recoverWhatsAppClientAfterFailure(error, context);
+  }
+}
+
+async function resolveWhatsAppDestination(phone, options = {}) {
+  if (whatsappState.status !== "conectado" || !whatsappClient) {
+    throw new Error("WhatsApp não está conectado");
+  }
+
+  const originalPhone = String(options.originalPhone || phone || "");
+  const formattedPhone = formatWhatsAppNumber(phone);
+  if (!formattedPhone) {
+    throw createWhatsAppDestinationError(
+      "Telefone inválido para envio por WhatsApp",
+      "INVALID_WHATSAPP_PHONE",
+      {
+        originalPhone,
+        normalizedPhone: "",
+        cleanNumber: "",
+        chatId: null,
+        userMessage: "Telefone inválido para envio por WhatsApp."
+      }
+    );
+  }
+
+  const cleanNumber = formattedPhone.replace(/@c\.us$/i, "");
+  let numberId = null;
+
+  if (typeof whatsappClient.getNumberId === "function") {
+    try {
+      numberId = await whatsappClient.getNumberId(cleanNumber);
+    } catch (error) {
+      throw normalizeWhatsAppSendError(error, {
+        originalPhone,
+        normalizedPhone: cleanNumber,
+        cleanNumber,
+        chatId: null
+      });
+    }
+
+    if (!numberId?._serialized) {
+      throw createWhatsAppDestinationError(
+        "Número não encontrado no WhatsApp",
+        "WHATSAPP_NUMBER_NOT_FOUND",
+        {
+          originalPhone,
+          normalizedPhone: cleanNumber,
+          cleanNumber,
+          chatId: null,
+          userMessage: "Número não encontrado no WhatsApp."
+        }
+      );
+    }
+  }
+
+  return {
+    originalPhone,
+    normalizedPhone: cleanNumber,
+    cleanNumber,
+    formattedPhone,
+    numberId,
+    chatId: numberId?._serialized || formattedPhone
+  };
+}
+
+function buildPhoneVariants(phone) {
+  const sanitized = sanitizePhone(phone);
+  const normalized = normalizePhone(phone);
+  const variants = new Set([sanitized, normalized]);
+  if (sanitized.startsWith("55")) {
+    variants.add(sanitized.slice(2));
+  }
+  if (normalized.startsWith("55")) {
+    variants.add(normalized.slice(2));
+  }
+  return Array.from(variants).filter(Boolean);
+}
+
+async function findContactByPhone(phone) {
+  const variants = buildPhoneVariants(phone);
+  const rawDigits = sanitizePhone(phone);
+  if (!variants.length && !rawDigits) {
+    return null;
+  }
+
+  const phoneExpr = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, '+', ''), '(', ''), ')', ''), '-', ''), ' ', '')";
+  if (variants.length) {
+    const placeholders = variants.map(() => "?").join(", ");
+    const exactMatch = await get(
+      `SELECT * FROM contacts
+      WHERE ${phoneExpr} IN (${placeholders})
+      ORDER BY id DESC
+      LIMIT 1`,
+      variants
+    );
+    if (exactMatch) {
+      return exactMatch;
+    }
+  }
+
+  return get(
+    `SELECT * FROM contacts
+    WHERE ${phoneExpr} LIKE ?
+    ORDER BY id DESC
+    LIMIT 1`,
+    [`%${rawDigits}`]
+  );
+}
+
+async function getAiSettings() {
+  const row = await get("SELECT * FROM ai_settings ORDER BY id ASC LIMIT 1");
+  return {
+    autoReplyEnabled: Boolean(Number(row?.auto_reply_enabled || 0)),
+    autoReplyTestMode: Boolean(Number(row?.auto_reply_test_mode || 0)),
+    autoReplyAllowedNumbers: String(row?.auto_reply_allowed_numbers || ""),
+    autoSendProductPhotoEnabled: Boolean(Number(row?.auto_send_product_photo_enabled || 0)),
+    replyCooldownSeconds: Number(row?.reply_cooldown_seconds || 30),
+    connectedNumber: whatsappState.connectedNumber || null,
+    connectedAt: whatsappState.lastConnectedAt || null,
+    whatsappStatus: whatsappState.status || "desconectado"
+  };
+}
+
+async function saveAiSettings(payload = {}) {
+  const current = await getAiSettings();
+  const autoReplyEnabled = payload.autoReplyEnabled === undefined
+    ? current.autoReplyEnabled
+    : Boolean(payload.autoReplyEnabled);
+  const autoReplyTestMode = payload.autoReplyTestMode === undefined
+    ? current.autoReplyTestMode
+    : Boolean(payload.autoReplyTestMode);
+  const autoReplyAllowedNumbers = payload.autoReplyAllowedNumbers === undefined
+    ? current.autoReplyAllowedNumbers
+    : String(payload.autoReplyAllowedNumbers || "").trim();
+  const autoSendProductPhotoEnabled = payload.autoSendProductPhotoEnabled === undefined
+    ? current.autoSendProductPhotoEnabled
+    : Boolean(payload.autoSendProductPhotoEnabled);
+  const replyCooldownSeconds = Math.max(10, Number(payload.replyCooldownSeconds || current.replyCooldownSeconds || 30));
+  await run(
+    `UPDATE ai_settings
+    SET auto_reply_enabled = ?, auto_reply_test_mode = ?, auto_reply_allowed_numbers = ?, auto_send_product_photo_enabled = ?, reply_cooldown_seconds = ?, updated_at = datetime('now')
+    WHERE id = (SELECT id FROM ai_settings ORDER BY id ASC LIMIT 1)`,
+    [
+      autoReplyEnabled ? 1 : 0,
+      autoReplyTestMode ? 1 : 0,
+      autoReplyAllowedNumbers,
+      autoSendProductPhotoEnabled ? 1 : 0,
+      replyCooldownSeconds
+    ]
+  );
+  return getAiSettings();
+}
+
+function normalizeAllowedPhoneList(value = "") {
+  return Array.from(new Set(
+    String(value || "")
+      .split(/[\n,;]+/)
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .flatMap((item) => buildComparablePhoneIdentifiers(item))
+      .filter(Boolean)
+  ));
+}
+
+function isLikelyPhoneNumber(value = "") {
+  return /^55\d{10,11}$/.test(String(value || "").trim());
+}
+
+function buildComparablePhoneIdentifiers(value = "") {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const normalizedPhone = normalizePhone(trimmed);
+  const values = new Set();
+
+  if (isLikelyPhoneNumber(normalizedPhone)) {
+    values.add(normalizedPhone);
+    const localDigits = normalizedPhone.slice(2);
+    values.add(localDigits);
+
+    if (/^\d{10}$/.test(localDigits)) {
+      values.add(`55${localDigits.slice(0, 2)}9${localDigits.slice(2)}`);
+      values.add(`${localDigits.slice(0, 2)}9${localDigits.slice(2)}`);
+    }
+
+    if (/^\d{11}$/.test(localDigits) && localDigits[2] === "9") {
+      values.add(`55${localDigits.slice(0, 2)}${localDigits.slice(3)}`);
+      values.add(`${localDigits.slice(0, 2)}${localDigits.slice(3)}`);
+    }
+  } else {
+    values.add(trimmed);
+  }
+
+  return Array.from(values);
+}
+
+function normalizeAllowedIdentifier(value = "") {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  const normalizedPhone = normalizePhone(trimmed);
+  if (isLikelyPhoneNumber(normalizedPhone)) {
+    return normalizedPhone;
+  }
+  return trimmed;
+}
+
+async function resolveInboundSender(message, contact = null) {
+  const inboundChatId = String(message?.from || "").trim();
+  const resolvedContact = contact || (typeof message?.getContact === "function" ? await message.getContact() : null);
+  const phoneOriginal = String(
+    resolvedContact?.number
+    || resolvedContact?.id?.user
+    || inboundChatId.replace(/@(c|s)\.us$/i, "").replace(/@lid$/i, "")
+    || ""
+  ).trim();
+  const contactNumber = String(resolvedContact?.number || "").trim();
+  const senderUserId = String(resolvedContact?.id?.user || "").trim();
+  const normalizedFromContact = normalizePhone(contactNumber);
+  const normalizedFromUserId = normalizePhone(senderUserId);
+  const normalizedFromOriginal = normalizePhone(phoneOriginal);
+  const phoneNormalized = isLikelyPhoneNumber(normalizedFromContact)
+    ? normalizedFromContact
+    : isLikelyPhoneNumber(normalizedFromUserId)
+      ? normalizedFromUserId
+      : isLikelyPhoneNumber(normalizedFromOriginal)
+        ? normalizedFromOriginal
+        : null;
+  const displayName = String(
+    resolvedContact?.pushname
+    || resolvedContact?.name
+    || resolvedContact?.shortName
+    || ""
+  ).trim();
+
+  return {
+    inboundChatId,
+    phoneOriginal,
+    phoneNormalized,
+    lid: inboundChatId.includes("@lid") ? inboundChatId : "",
+    displayName,
+    isLid: inboundChatId.includes("@lid"),
+    contactNumber,
+    senderUserId,
+    contact: resolvedContact || null
+  };
+}
+
+function resolveInboundAllowedMatch({ allowedIdentifiers = [], sender = {} } = {}) {
+  const candidates = [
+    ...buildComparablePhoneIdentifiers(sender.phoneNormalized || "").map((value) => ({ value, reason: "phoneNormalized" })),
+    ...buildComparablePhoneIdentifiers(sender.contactNumber || "").map((value) => ({ value, reason: "contact.number" })),
+    ...buildComparablePhoneIdentifiers(sender.senderUserId || "").map((value) => ({ value, reason: "contact.id.user" })),
+    { value: String(sender.inboundChatId || "").trim(), reason: "message.from" },
+    { value: String(sender.inboundChatId || "").trim().replace(/@lid$/i, ""), reason: "message.from_no_suffix" }
+  ].filter((entry) => entry.value);
+
+  for (const candidate of candidates) {
+    if (allowedIdentifiers.includes(candidate.value)) {
+      return { allowed: true, reason: candidate.reason, matchedValue: candidate.value };
+    }
+  }
+
+  return { allowed: false, reason: "no_match", matchedValue: "" };
+}
+
+function isLikelyProductCodeMessage(message = "") {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    return false;
+  }
+  const normalizedDigits = normalizeDigits(raw);
+  if (normalizedDigits.length >= 8 && normalizedDigits.length === raw.replace(/\D/g, "").length) {
+    return true;
+  }
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  if (tokens.length > 4) {
+    return false;
+  }
+  return tokens.some((token) => /^[A-Za-z0-9][A-Za-z0-9._/-]{3,}$/.test(token) && /\d/.test(token));
+}
+
+function classifyAiIntent(message = "") {
+  const text = String(message || "").toLowerCase();
+  const includesAny = (terms) => terms.some((term) => text.includes(term));
+
+  if (includesAny(["atendente", "humano", "vendedor", "gerente"])) {
+    return { intencao: "humano", precisaHumano: true };
+  }
+  if (includesAny(["troca", "devolução", "devolucao"])) {
+    return { intencao: "troca", precisaHumano: true };
+  }
+  if (includesAny(["desconto", "negociar", "negociação", "negociacao"])) {
+    return { intencao: "desconto", precisaHumano: false };
+  }
+  if (includesAny(["entrega", "frete", "motoboy", "cep", "chega hoje", "entrega hoje"])) {
+    return { intencao: "entrega", precisaHumano: false };
+  }
+  if (includesAny(["parcela", "parcelamento", "pix", "debito", "débito", "cartão", "cartao", "pagamento", "pagar", "link de pagamento"])) {
+    return { intencao: "pagamento", precisaHumano: false };
+  }
+  if (includesAny(["reservar", "reserva", "segurar"])) {
+    return { intencao: "reserva", precisaHumano: false };
+  }
+  if (includesAny(["cashback", "bônus", "bonus", "saldo", "validade", "vence", "vencimento"])) {
+    return { intencao: "cashback", precisaHumano: false };
+  }
+  if (includesAny(["reclama", "problema"])) {
+    return { intencao: "humano", precisaHumano: true };
+  }
+  if (includesAny(["loja", "endereço", "endereco", "horário", "horario", "aberta", "funciona", "retirada"])) {
+    return { intencao: "loja", precisaHumano: false };
+  }
+  if (isLikelyProductCodeMessage(message)) {
+    return { intencao: "produto", precisaHumano: false };
+  }
+  if (includesAny([
+    "camiseta", "calça", "calca", "jeans", "vestido", "sapato", "tênis", "tenis", "blusa", "jaqueta",
+    "tamanho", "cor", "modelo", "preço", "preco", "disponível", "disponivel", "tem ",
+    "bermuda", "camisa", "polo", "short", "farm", "osklen", "aviator", "aramis", "zara", "hering",
+    "calvin klein", "reserva", "lançamento", "lançamento", "premium", "presente", "marido", "infantil",
+    "masculina", "masculino", "feminina", "noite", "praia", "arrumado", "básica", "basica", "barato"
+  ])) {
+    return { intencao: "produto", precisaHumano: false };
+  }
+  return { intencao: "outro", precisaHumano: false };
+}
+
+async function createAiMessageLog({
+  contactId = null,
+  phone = "",
+  phoneOriginal = "",
+  inboundChatId = "",
+  senderUserId = "",
+  debugContext = null,
+  customerName = "",
+  customerMessage = "",
+  direction = "suggested",
+  source = "panel",
+  connectedNumber = "",
+  messageText = "",
+  intent = "outro",
+  needsHuman = false,
+  autoSent = false,
+  productId = null,
+  mediaId = null,
+  status = "ok",
+  errorMessage = "",
+  whatsappMessageId = ""
+}) {
+  await run(
+    `INSERT INTO ai_message_logs
+    (contact_id, phone, phone_original, inbound_chat_id, sender_user_id, debug_context, customer_name, customer_message, direction, source, connected_number, message_text, intent, needs_human, auto_sent, product_id, media_id, status, error_message, whatsapp_message_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [
+      contactId || null,
+      String(phone || ""),
+      String(phoneOriginal || ""),
+      String(inboundChatId || ""),
+      String(senderUserId || ""),
+      debugContext ? JSON.stringify(debugContext) : "",
+      String(customerName || ""),
+      String(customerMessage || ""),
+      String(direction || "suggested"),
+      String(source || "panel"),
+      String(connectedNumber || ""),
+      String(messageText || ""),
+      String(intent || "outro"),
+      needsHuman ? 1 : 0,
+      autoSent ? 1 : 0,
+      productId || null,
+      mediaId || null,
+      String(status || "ok"),
+      String(errorMessage || ""),
+      String(whatsappMessageId || "")
+    ]
+  );
+}
+
+async function listAiMessageLogs({ limit = 25, page = 1, filter = "all" } = {}) {
+  const normalizedFilter = String(filter || "all").trim().toLowerCase();
+  const safeLimit = Math.max(1, Math.min(100, Number(limit || 25)));
+  const safePage = Math.max(1, Number(page || 1));
+  const offset = (safePage - 1) * safeLimit;
+  const conditions = [];
+  const params = [];
+
+  if (["produto", "cashback", "humano", "loja", "outro"].includes(normalizedFilter)) {
+    conditions.push("l.intent = ?");
+    params.push(normalizedFilter);
+  } else if (normalizedFilter === "enviados") {
+    conditions.push("l.direction = 'sent'");
+    conditions.push("l.status = 'ok'");
+  } else if (normalizedFilter === "erros") {
+    conditions.push("(l.status = 'erro' OR COALESCE(l.error_message, '') <> '')");
+  }
+
+  const whereSql = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const totalRow = await get(
+    `SELECT COUNT(*) AS total
+     FROM ai_message_logs l
+     ${whereSql}`,
+    params
+  );
+  const rows = await all(
+    `SELECT l.*,
+            p.name AS product_name,
+            p.commercial_name AS product_commercial_name,
+            p.main_media_id AS product_main_media_id,
+            p.store AS product_store
+     FROM ai_message_logs l
+     LEFT JOIN ai_products p ON p.id = l.product_id
+     ${whereSql}
+     ORDER BY l.id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, safeLimit, offset]
+  );
+
+  return {
+    rows: rows.map((row) => ({
+      ...row,
+      debug_context: row.debug_context || "",
+      media_url: row.media_id ? `/api/uploads/media/${row.media_id}/file` : null,
+      preview_url: row.media_id ? `/api/uploads/media/${row.media_id}/preview` : null
+    })),
+    pagination: {
+      page: safePage,
+      perPage: safeLimit,
+      total: Number(totalRow?.total || 0),
+      totalPages: Math.max(1, Math.ceil(Number(totalRow?.total || 0) / safeLimit))
+    }
+  };
+}
+
+async function buildAiCustomerFacts({ telefone = "", nome = "", contact = null } = {}) {
+  const normalizedPhone = normalizePhone(telefone || contact?.phone || "");
+  const resolvedContact = contact || (normalizedPhone ? await findContactByPhone(normalizedPhone) : null);
+  const normalizedName = String(nome || resolvedContact?.name || "").trim();
+  const normalizedDocument = normalizeDigits(contact?.document || "");
+  const customerQueries = Array.from(new Set([
+    normalizedPhone,
+    normalizedDocument,
+    normalizedName
+  ].filter(Boolean)));
+  let operationalMatches = [];
+  for (const candidateQuery of customerQueries) {
+    try {
+      const result = await searchOperationalCustomersDetailed(candidateQuery, { limit: 6 });
+      const rows = Array.isArray(result?.unified) ? result.unified : [];
+      operationalMatches = [...operationalMatches, ...rows];
+      if (rows.length) {
+        break;
+      }
+    } catch (error) {
+      operationalMatches = operationalMatches;
+    }
+  }
+  const uniqueOperationalMatches = [];
+  const seenOperationalCustomerKeys = new Set();
+  operationalMatches.forEach((item) => {
+    const key = [
+      String(item.master_customer_id || "").trim(),
+      normalizePhone(item.phone || ""),
+      normalizeDigits(item.document || ""),
+      normalizeLookup(item.name || "")
+    ].find(Boolean);
+    if (!key || seenOperationalCustomerKeys.has(key)) {
+      return;
+    }
+    seenOperationalCustomerKeys.add(key);
+    uniqueOperationalMatches.push(item);
+  });
+  const operationalCustomer = uniqueOperationalMatches.find((item) => normalizePhone(item.phone || "") === normalizedPhone)
+    || uniqueOperationalMatches.find((item) => normalizedDocument && normalizeDigits(item.document || "") === normalizedDocument)
+    || uniqueOperationalMatches[0]
+    || null;
+  const mergedCustomer = {
+    id: resolvedContact?.id || operationalCustomer?.legacy_contact_id || operationalCustomer?.crm_contact_id || null,
+    name: resolvedContact?.name || operationalCustomer?.name || normalizedName,
+    phone: resolvedContact?.phone || operationalCustomer?.phone || normalizedPhone,
+    document: resolvedContact?.document || operationalCustomer?.document || "",
+    email: resolvedContact?.email || operationalCustomer?.email || "",
+    zipcode: resolvedContact?.zipcode || operationalCustomer?.zipcode || "",
+    city: resolvedContact?.city || operationalCustomer?.city || "",
+    state: resolvedContact?.state || operationalCustomer?.state || "",
+    neighborhood: resolvedContact?.neighborhood || operationalCustomer?.neighborhood || "",
+    gender: resolvedContact?.gender || operationalCustomer?.gender || "",
+    store: resolvedContact?.store || operationalCustomer?.loja_favorita || "",
+    seller_name: resolvedContact?.seller_name || operationalCustomer?.vendedor_favorito || "",
+    top_size: resolvedContact?.top_size || operationalCustomer?.top_size || "",
+    bottom_size: resolvedContact?.bottom_size || operationalCustomer?.bottom_size || "",
+    shoe_size: resolvedContact?.shoe_size || operationalCustomer?.shoe_size || "",
+    notes: resolvedContact?.notes || operationalCustomer?.notes || "",
+    cashback: resolvedContact?.cashback || operationalCustomer?.cashback_legado || 0,
+    validade: resolvedContact?.validity || ""
+  };
+  const availableCashback = resolvedContact?.id ? await getAvailableCashbackTotal(resolvedContact.id) : null;
+  let behaviorSnapshot = null;
+  try {
+    behaviorSnapshot = await buildCustomerBehaviorSnapshot(mergedCustomer);
+  } catch (error) {
+    behaviorSnapshot = null;
+  }
+  const aerointelProfile = await getCustomerCommercialProfileEnriched({
+    phone: normalizedPhone,
+    document: normalizeDigits(mergedCustomer.document || ""),
+    name: mergedCustomer.name || ""
+  });
+  const aerointelSignals = summarizeAeroIntelSignals(aerointelProfile);
+  const officialCashbackAvailable = behaviorSnapshot
+    ? Number(behaviorSnapshot.cashback_operacional || 0)
+    : (resolvedContact?.id ? Number(availableCashback || 0) : null);
+  const safeCommercialHint = sanitizeAiCommercialHint(
+    behaviorSnapshot?.notes
+    || mergedCustomer.notes
+    || ""
+  );
+  return {
+    normalizedPhone,
+    contact: resolvedContact,
+    facts: {
+      nome: mergedCustomer.name || "",
+      telefone: mergedCustomer.phone || normalizedPhone || "",
+      cpf: normalizeDigits(mergedCustomer.document || ""),
+      email: mergedCustomer.email || "",
+      cep: normalizeDigits(mergedCustomer.zipcode || ""),
+      cidade: mergedCustomer.city || "",
+      bairro: mergedCustomer.neighborhood || "",
+      stores: STORES,
+      cashbackAvailable: officialCashbackAvailable,
+      cashbackPending: behaviorSnapshot ? Number(behaviorSnapshot.cashback_pendente || 0) : 0,
+      cashbackLegacy: behaviorSnapshot ? Number(behaviorSnapshot.cashback_legado || 0) : 0,
+      cashbackKnown: Boolean(behaviorSnapshot || resolvedContact?.id || operationalCustomer),
+      contactFound: Boolean(resolvedContact?.id || operationalCustomer),
+      topSize: normalizeText(behaviorSnapshot?.top_size || mergedCustomer.top_size || ""),
+      bottomSize: normalizeText(behaviorSnapshot?.bottom_size || mergedCustomer.bottom_size || ""),
+      shoeSize: normalizeText(behaviorSnapshot?.shoe_size || mergedCustomer.shoe_size || ""),
+      favoriteStore: normalizeText(behaviorSnapshot?.loja_favorita || mergedCustomer.store || ""),
+      favoriteSeller: normalizeText(behaviorSnapshot?.vendedor_favorito || mergedCustomer.seller_name || ""),
+      lastPurchase: behaviorSnapshot?.ultima_compra || "",
+      averageTicket: behaviorSnapshot ? Number(behaviorSnapshot.ticket_medio || 0) : 0,
+      totalSpent: behaviorSnapshot ? Number(behaviorSnapshot.total_comprado || 0) : 0,
+      commercialHint: safeCommercialHint,
+      behaviorSnapshot,
+      dataSources: Array.from(new Set([
+        resolvedContact?.id ? "Clientes / Contatos" : "",
+        operationalCustomer ? "Busca operacional de clientes" : "",
+        behaviorSnapshot ? "Comportamento comercial PDV" : "",
+        aerointelProfile?.customerFound ? "AEROINTEL (somente insights comerciais)" : "",
+        officialCashbackAvailable !== null && officialCashbackAvailable !== undefined ? "Ledger oficial de cashback" : ""
+      ].filter(Boolean))),
+      aerointelProfileFound: Boolean(aerointelProfile?.customerFound),
+      aerointelSignals
+    },
+    aerointel: {
+      used: true,
+      profileFound: Boolean(aerointelProfile?.customerFound),
+      summary: aerointelSignals,
+      profile: aerointelProfile?.profile || null
+    }
+  };
+}
+
+function sanitizeAiCommercialHint(value = "") {
+  const text = normalizeText(value || "");
+  if (!text) {
+    return "";
+  }
+  const lowered = text.toLowerCase();
+  if (lowered.includes("presente")) {
+    return "Pode funcionar bem em abordagem de presente e curadoria consultiva.";
+  }
+  if (lowered.includes("oversized")) {
+    return "Cliente tende a responder bem a modelagens oversized.";
+  }
+  if (lowered.includes("preto")) {
+    return "Cliente demonstra preferencia por tons escuros ou preto.";
+  }
+  if (lowered.includes("basic") || lowered.includes("b[aá]sic")) {
+    return "Cliente costuma responder bem a pecas basicas e faceis de combinar.";
+  }
+  return text.length > 180 ? `${text.slice(0, 177).trim()}...` : text;
+}
+
+function normalizeConversationProductId(value = "") {
+  return String(value || "").trim();
+}
+
+function sameConversationProductId(left = "", right = "") {
+  const leftId = normalizeConversationProductId(left);
+  const rightId = normalizeConversationProductId(right);
+  return Boolean(leftId && rightId && leftId === rightId);
+}
+
+function findConversationProductById(products = [], productId = "") {
+  return (products || []).find((product) => sameConversationProductId(product?.id, productId)) || null;
+}
+
+function buildConversationProductIdentifierList(product = {}) {
+  return [
+    product.sku,
+    product.codigo_tiny,
+    product.codigo_etiqueta,
+    product.ean,
+    product.codigo_barras,
+    product.codigo_interno,
+    product.codigo
+  ].map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function parseConversationSizes(product = {}) {
+  return uniqueStrings([
+    ...(Array.isArray(product.sizes) ? product.sizes : []),
+    ...parseDelimitedValues(product.grade || ""),
+    ...parseDelimitedValues(product.tamanho || product.sizesText || "")
+  ]);
+}
+
+function resolveOperationalAvailability(product = {}) {
+  const status = normalizeLookup(product.status || "");
+  const numericStock = toNumber(product.available_qty ?? product.estoque ?? product.stock ?? 0);
+  const stockReliable = ["PDV_ESTOQUE", "PDV_IMPORT"].includes(String(product.origin || "").trim()) && Number.isFinite(numericStock);
+  if (status.includes("inactive") || status.includes("inativo")) {
+    return { availability: "out_of_stock", stockReliable, stockValue: numericStock };
+  }
+  if (status.includes("pending") || status.includes("pendente")) {
+    return { availability: "check_stock", stockReliable: false, stockValue: numericStock };
+  }
+  if (stockReliable && numericStock > 0) {
+    return { availability: "in_stock", stockReliable: true, stockValue: numericStock };
+  }
+  if (stockReliable && numericStock <= 0) {
+    return { availability: "out_of_stock", stockReliable: true, stockValue: numericStock };
+  }
+  return { availability: "check_stock", stockReliable: false, stockValue: numericStock };
+}
+
+function mapOperationalProductForConversation(product = {}) {
+  const availabilityMeta = resolveOperationalAvailability(product);
+  const displayName = normalizeText(product.nome || product.name || "");
+  const color = normalizeText(product.cor || product.color || "");
+  const sizes = parseConversationSizes(product);
+  return {
+    ...product,
+    id: normalizeConversationProductId(product.product_id || product.id || product.sku || product.codigo || product.nome || ""),
+    product_id: normalizeConversationProductId(product.product_id || product.id || ""),
+    display_name: displayName,
+    name: displayName,
+    sku: normalizeText(product.sku || ""),
+    codigo: normalizeText(product.codigo || ""),
+    codigo_tiny: normalizeText(product.codigo_tiny || ""),
+    codigo_etiqueta: normalizeText(product.codigo_etiqueta || ""),
+    ean: normalizeDigits(product.ean || product.codigo_barras || ""),
+    codigo_barras: normalizeDigits(product.codigo_barras || product.ean || ""),
+    codigo_interno: normalizeText(product.codigo_interno || ""),
+    brand: normalizeText(product.marca || product.brand || ""),
+    marca: normalizeText(product.marca || product.brand || ""),
+    category: normalizeText(product.categoria || product.category || ""),
+    categoria: normalizeText(product.categoria || product.category || ""),
+    gender: normalizeText(product.linha_genero || product.gender || ""),
+    linha_genero: normalizeText(product.linha_genero || product.gender || ""),
+    color,
+    cor: color,
+    sizes,
+    sizesText: sizes.join(", "),
+    tamanho: normalizeText(product.tamanho || sizes[0] || ""),
+    grade: normalizeText(product.grade || ""),
+    description: normalizeText(product.descricao || product.description || ""),
+    short_description: normalizeText(product.descricao || product.short_description || ""),
+    price: toNumber(product.preco_venda ?? product.price ?? 0),
+    promotional_price: null,
+    stock: availabilityMeta.stockValue,
+    estoque: availabilityMeta.stockValue,
+    available_qty: availabilityMeta.stockValue,
+    availability: availabilityMeta.availability,
+    stock_reliable: availabilityMeta.stockReliable,
+    image: normalizeText(product.image || product.preview_url || product.foto || product.photo_preview_url || ""),
+    preview_url: normalizeText(product.preview_url || product.image || product.foto || product.photo_preview_url || ""),
+    media_url: normalizeText(product.media_url || ""),
+    media_items: Array.isArray(product.media_items) ? product.media_items : [],
+    main_media_id: product.main_media_id || null,
+    origin: normalizeText(product.origin || "PDV"),
+    origin_label: normalizeText(product.origin_label || "Produto operacional"),
+    tags: Array.isArray(product.tags) ? product.tags : [],
+    commercial_score: Number(product.commercial_score || 0),
+    commercial_reason: normalizeText(product.commercial_reason || ""),
+    photoSendReady: false,
+    identifiers: {
+      sku: normalizeText(product.sku || ""),
+      codigo_tiny: normalizeText(product.codigo_tiny || ""),
+      codigo_etiqueta: normalizeText(product.codigo_etiqueta || ""),
+      ean: normalizeDigits(product.ean || product.codigo_barras || ""),
+      codigo_barras: normalizeDigits(product.codigo_barras || product.ean || ""),
+      codigo_interno: normalizeText(product.codigo_interno || ""),
+      codigo: normalizeText(product.codigo || "")
+    }
+  };
+}
+
+function productMatchesExactIdentifier(product = {}, rawCandidate = "") {
+  const token = String(rawCandidate || "").trim();
+  if (!token) {
+    return false;
+  }
+  const normalizedToken = normalizeLookup(token);
+  const digitToken = normalizeDigits(token);
+  return buildConversationProductIdentifierList(product).some((value) => {
+    const normalizedValue = normalizeLookup(value);
+    const digitValue = normalizeDigits(value);
+    return (digitToken && digitValue && digitValue === digitToken) || (normalizedToken && normalizedValue && normalizedValue === normalizedToken);
+  });
+}
+
+function extractConversationProductLookupCandidates(messageText = "") {
+  const raw = String(messageText || "").trim();
+  if (!raw) {
+    return [];
+  }
+  const candidates = [];
+  const exactDigits = normalizeDigits(raw);
+  if (exactDigits.length >= 8) {
+    candidates.push(exactDigits);
+  }
+  const tokenMatches = raw.match(/[A-Za-z0-9][A-Za-z0-9._/-]{3,}/g) || [];
+  tokenMatches.forEach((token) => {
+    const cleaned = String(token || "").trim();
+    if ((/\d/.test(cleaned) || /[-_/]/.test(cleaned)) && cleaned.length >= 4) {
+      candidates.push(cleaned);
+    }
+  });
+  candidates.push(raw);
+  return Array.from(new Set(candidates.map((item) => String(item || "").trim()).filter(Boolean))).slice(0, 5);
+}
+
+async function searchConversationProducts(messageText = "", { storeId = "", limit = 5 } = {}) {
+  const lookupCandidates = extractConversationProductLookupCandidates(messageText);
+  const exactMatches = [];
+  const mergedProducts = [];
+  const seenProductIds = new Set();
+  const sourceNames = new Set();
+  const rawQueries = lookupCandidates.length ? lookupCandidates : [String(messageText || "").trim()];
+  for (const lookupQuery of rawQueries) {
+    if (!lookupQuery) {
+      continue;
+    }
+    let searchResult = null;
+    try {
+      searchResult = await searchOperationalProductsDetailed(lookupQuery, { storeId, limit: Math.max(limit, 8) });
+    } catch (error) {
+      searchResult = null;
+    }
+    const rows = Array.isArray(searchResult?.unified) ? searchResult.unified : [];
+    rows.forEach((row) => {
+      const mapped = mapOperationalProductForConversation(row);
+      const productKey = normalizeConversationProductId(mapped.id || mapped.product_id || mapped.sku || mapped.codigo || mapped.display_name);
+      if (!productKey || seenProductIds.has(productKey)) {
+        return;
+      }
+      seenProductIds.add(productKey);
+      mergedProducts.push(mapped);
+      if (productMatchesExactIdentifier(mapped, lookupQuery)) {
+        exactMatches.push(mapped);
+      }
+    });
+    (searchResult?.sources_consulted || []).forEach((source) => sourceNames.add(source));
+    if (exactMatches.length) {
+      break;
+    }
+  }
+  const uniqueExactMatches = exactMatches.filter((product, index, array) => array.findIndex((item) => sameConversationProductId(item.id, product.id)) === index);
+  const prioritized = uniqueExactMatches.length
+    ? [
+      ...uniqueExactMatches,
+      ...mergedProducts.filter((product) => !uniqueExactMatches.some((item) => sameConversationProductId(item.id, product.id)))
+    ]
+    : mergedProducts;
+  return {
+    exactLookup: rawQueries[0] || "",
+    lookupCandidates: rawQueries,
+    sources: Array.from(sourceNames),
+    exactMatches: uniqueExactMatches.slice(0, limit),
+    products: prioritized.slice(0, limit)
+  };
+}
+
+function getAiStoreIdentity() {
+  const storeId = normalizeStoreKey(instanceConfig.store?.id || "") || "LOJA_GERAL";
+  const storeLabel = String(instanceConfig.store?.label || formatStoreLabel(storeId) || "Loja atual").trim();
+  return {
+    storeId,
+    storeName: storeLabel,
+    storeAddress: String(instanceConfig.store?.address || "").trim(),
+    storePhone: String(instanceConfig.store?.phone || "").trim(),
+    teamName: `equipe ${storeLabel}`
+  };
+}
+
+function extractProductIntent(message = "") {
+  const raw = String(message || "").trim();
+  const normalized = normalizeSearchText(raw);
+  const sizes = AI_SELLER_SIZES.filter((size) => new RegExp(`\\b${normalizeSearchText(size)}\\b`, "i").test(normalized));
+  return {
+    brands: AI_SELLER_BRANDS.filter((brand) => normalized.includes(normalizeSearchText(brand))),
+    categories: AI_SELLER_CATEGORIES.filter((category) => normalized.includes(normalizeSearchText(category))),
+    sizes,
+    colors: AI_SELLER_COLORS.filter((color) => normalized.includes(normalizeSearchText(color))),
+    raw_query: raw
+  };
+}
+
+function buildTransferRouteKey(fromStore = "", toStore = "") {
+  const normalizedFrom = normalizeStoreKey(fromStore || "");
+  const normalizedTo = normalizeStoreKey(toStore || "");
+  return normalizedFrom && normalizedTo ? `${normalizedFrom}→${normalizedTo}` : "";
+}
+
+function getTransferDays(fromStore = "", toStore = "") {
+  const key = buildTransferRouteKey(fromStore, toStore);
+  return Number(TRANSFER_POLICY.transfer_days[key] ?? 3);
+}
+
+function canTransfer(product = {}, fromStore = "", toStore = "") {
+  const quantity = Number(product.quantity ?? product.available_qty ?? product.stock ?? product.estoque ?? 0);
+  if (quantity < Number(TRANSFER_POLICY.rules.min_quantity_to_transfer || 2)) {
+    return {
+      viable: false,
+      reason: "Ultima unidade na loja de origem - nao disponivel para transferencia."
+    };
+  }
+  const restrictions = Array.isArray(product.restrictions) ? product.restrictions : [];
+  if (restrictions.some((item) => TRANSFER_POLICY.cannot_transfer.includes(String(item || "").trim()))) {
+    return {
+      viable: false,
+      reason: "Produto com restricao de transferencia."
+    };
+  }
+  const days = getTransferDays(fromStore, toStore);
+  return {
+    viable: true,
+    days,
+    message: days === 0
+      ? "Disponivel hoje mesmo na mesma regiao."
+      : `Chega em ${days} dia${days > 1 ? "s" : ""} util${days > 1 ? "eis" : ""}.`
+  };
+}
+
+function mapSellerInventoryItem(product = {}, destinationStoreId = "") {
+  const originStoreId = normalizeStoreKey(product.store_id || product.origem_estoque || "");
+  const transfer = originStoreId && destinationStoreId && originStoreId !== destinationStoreId
+    ? canTransfer(product, originStoreId, destinationStoreId)
+    : { viable: false, days: 0, message: "" };
+  return {
+    id: normalizeConversationProductId(product.id || product.product_id || product.sku || product.codigo || ""),
+    name: product.display_name || product.nome || product.name || "",
+    brand: product.brand || product.marca || "",
+    price: toNumber(product.price ?? product.preco_venda ?? 0),
+    sizes_available: parseConversationSizes(product),
+    colors_available: uniqueStrings([product.color || product.cor || ""]),
+    quantity: Number(product.available_qty ?? product.stock ?? product.estoque ?? 0),
+    sku: product.sku || "",
+    codigo_etiqueta: product.codigo_etiqueta || "",
+    ean: product.ean || product.codigo_barras || "",
+    category: product.category || product.categoria || "",
+    size: product.tamanho || "",
+    color: product.color || product.cor || "",
+    availability: product.availability || resolveOperationalAvailability(product).availability,
+    stock_reliable: Boolean(product.stock_reliable),
+    store_id: originStoreId,
+    store_name: formatStoreLabel(originStoreId || destinationStoreId || ""),
+    transfer_possible: Boolean(transfer.viable),
+    transfer_days: Number(transfer.days || 0),
+    transfer_message: transfer.message || "",
+    transfer_reason: transfer.reason || ""
+  };
+}
+
+async function buildAiSellerContext({
+  sender = {},
+  contact = null,
+  messageText = "",
+  customerFactsPayload = null,
+  aerointelSignals = null,
+  conversationHistory = []
+} = {}) {
+  const storeIdentity = getAiStoreIdentity();
+  const factsPayload = customerFactsPayload || await buildAiCustomerFacts({
+    telefone: sender.phoneNormalized || sender.phoneOriginal || "",
+    nome: contact?.name || sender.displayName || "",
+    contact
+  });
+  const facts = factsPayload?.facts || {};
+  const productIntent = extractProductIntent(messageText);
+  const localRows = searchInventoryProducts(messageText, { storeId: storeIdentity.storeId }) || [];
+  const allRows = searchInventoryProducts(messageText, { storeId: "" }) || [];
+  const localInventory = localRows.map((item) => mapSellerInventoryItem(item, storeIdentity.storeId)).slice(0, 6);
+  const otherStoresInventory = allRows
+    .filter((item) => {
+      const storeId = normalizeStoreKey(item.store_id || "");
+      return Boolean(storeId && storeId !== "LOJA_GERAL" && storeId !== storeIdentity.storeId);
+    })
+    .map((item) => mapSellerInventoryItem(item, storeIdentity.storeId))
+    .filter((item, index, array) => array.findIndex((candidate) => `${candidate.store_id}::${candidate.id}` === `${item.store_id}::${item.id}`) === index)
+    .slice(0, 8);
+
+  return {
+    type: "whatsapp_auto_reply",
+    origin: "whatsapp_inbound",
+    store: {
+      id: storeIdentity.storeId,
+      name: storeIdentity.storeName,
+      phone: storeIdentity.storePhone,
+      address: storeIdentity.storeAddress,
+      team_name: storeIdentity.teamName
+    },
+    customer: {
+      id: contact?.id || null,
+      name: facts.nome || contact?.name || sender.displayName || "",
+      first_name: getCleanFirstName(facts.nome || contact?.name || sender.displayName || ""),
+      phone: facts.telefone || sender.phoneNormalized || sender.phoneOriginal || "",
+      whatsapp: sender.phoneNormalized || sender.phoneOriginal || "",
+      preferred_sizes: uniqueStrings([facts.topSize || "", facts.bottomSize || "", facts.shoeSize || ""]),
+      preferred_brands: Array.isArray(aerointelSignals?.favoriteBrands) ? aerointelSignals.favoriteBrands : [],
+      cashback_available: Number(facts.cashbackAvailable || 0),
+      segment: aerointelSignals?.abcClass === "A" ? "vip" : aerointelSignals?.abcClass === "B" ? "recorrente" : "standard"
+    },
+    product_intent: productIntent,
+    local_inventory: localInventory,
+    other_stores_inventory: otherStoresInventory,
+    transfer_policy: {
+      rules: TRANSFER_POLICY.rules,
+      current_store_id: storeIdentity.storeId
+    },
+    conversation_history: conversationHistory,
+    current_message: messageText,
+    timestamp: new Date().toISOString()
+  };
+}
+
+function shouldEscalateToHuman(messageText = "", conversationHistory = []) {
+  const text = String(messageText || "");
+  const normalized = normalizeSearchText(text);
+  if (/falar com (algu[eé]m|pessoa|humano|vendedor|gerente|atendente)/i.test(text)) {
+    return { escalate: true, reason: "client_requested_human" };
+  }
+  if (/defeito|quebr|estrag|recla|devolv|troc/i.test(normalized)) {
+    return { escalate: true, reason: "complaint_detected" };
+  }
+  if (/absurdo|ridiculo|ridículo|pessimo|péssimo|nunca mais|procon|processo/i.test(normalized)) {
+    return { escalate: true, reason: "frustration_detected" };
+  }
+  const customerMessagesCount = Array.isArray(conversationHistory)
+    ? conversationHistory.filter((entry) => String(entry.role || "").toLowerCase() === "cliente").length
+    : 0;
+  if (customerMessagesCount > 8) {
+    return { escalate: true, reason: "extended_conversation_no_resolution" };
+  }
+  return { escalate: false, reason: "" };
+}
+
+function buildSafeAiReplyByIntent({ mensagem = "", intencao = "outro" } = {}) {
+  const text = String(mensagem || "").toLowerCase();
+
+  if (intencao === "cashback") {
+    return {
+      resposta: "",
+      precisaHumano: false
+    };
+  }
+
+  if (intencao === "loja") {
+    return {
+      resposta: "Me diz qual loja da AEROSTORE voce quer visitar que eu te ajudo a confirmar o horario certinho.",
+      precisaHumano: false
+    };
+  }
+
+  if (intencao === "humano") {
+    if (["desconto", "negoci", "80%"].some((term) => text.includes(term))) {
+      return {
+        resposta: "Nao consigo prometer esse desconto por aqui, mas posso encaminhar para um vendedor verificar a melhor condicao disponivel para voce.",
+        precisaHumano: true
+      };
+    }
+
+    if (["troca", "devolu", "reclam", "problema"].some((term) => text.includes(term))) {
+      return {
+        resposta: "Claro. Para troca, um vendedor precisa conferir os detalhes da compra e da peca. Vou encaminhar para atendimento humano da AEROSTORE.",
+        precisaHumano: true
+      };
+    }
+
+    return {
+      resposta: "Vou encaminhar seu atendimento para a equipe da AEROSTORE te ajudar com mais cuidado.",
+      precisaHumano: true
+    };
+  }
+
+  if (intencao === "produto") {
+    return {
+      resposta: "",
+      precisaHumano: false
+    };
+  }
+
+  return {
+    resposta: "",
+    precisaHumano: false
+  };
+}
+
+function normalizeAiProductPriority(priority = "") {
+  const value = String(priority || "").trim().toLowerCase();
+  if (["alta", "media", "baixa"].includes(value)) {
+    return value;
+  }
+  if (value === "média") {
+    return "media";
+  }
+  return "media";
+}
+
+function normalizeAiProductStatus(status = "") {
+  return String(status || "").trim().toLowerCase() === "inativo" ? "inativo" : "ativo";
+}
+
+function parseDelimitedValues(value = "") {
+  return String(value || "")
+    .split(/[,\n;|]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function stringifyDelimitedValues(value = "") {
+  return parseDelimitedValues(value).join(", ");
+}
+
+function createSlug(value = "") {
+  return normalizeSearchText(value)
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function parsePriceInput(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
+  }
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return null;
+  }
+  let sanitized = raw
+    .replace(/R\$/gi, "")
+    .replace(/\s+/g, "");
+  const hasComma = sanitized.includes(",");
+  const hasDot = sanitized.includes(".");
+  if (hasComma && hasDot) {
+    const lastComma = sanitized.lastIndexOf(",");
+    const lastDot = sanitized.lastIndexOf(".");
+    if (lastComma > lastDot) {
+      sanitized = sanitized.replace(/\./g, "").replace(",", ".");
+    } else {
+      sanitized = sanitized.replace(/,/g, "");
+    }
+  } else if (hasComma) {
+    sanitized = sanitized.replace(/\./g, "").replace(",", ".");
+  } else {
+    sanitized = sanitized.replace(/\.(?=\d{3}(?:\D|$))/g, "");
+  }
+  sanitized = sanitized.replace(/[^\d.-]/g, "");
+  const parsed = Number(sanitized);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
+}
+
+function normalizeAiProductVisibilityStatus(status = "") {
+  const value = String(status || "").trim().toLowerCase();
+  if (["inativo", "hidden", "deleted"].includes(value)) {
+    return value;
+  }
+  return "ativo";
+}
+
+function buildAiCatalogOption(row = {}) {
+  return {
+    id: Number(row.id || 0),
+    name: row.name || "",
+    slug: row.slug || createSlug(row.name || ""),
+    status: String(row.status || "ativo"),
+    sort_order: Number(row.sort_order || 0),
+    is_default: Boolean(Number(row.is_default || 0)),
+    use_gender_filter: Boolean(Number(row.use_gender_filter || 0)),
+    group_name: row.group_name || "",
+    hex_color: row.hex_color || ""
+  };
+}
+
+async function listAiCatalog(tableName, { includeInactive = true } = {}) {
+  const rows = await all(
+    `SELECT *
+     FROM ${tableName}
+     ${includeInactive ? "WHERE COALESCE(status, 'ativo') <> 'deleted'" : "WHERE status = 'ativo'"}
+     ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC`
+  );
+  return rows.map(buildAiCatalogOption);
+}
+
+async function countAiCatalogLinks(tableName, itemId) {
+  const map = {
+    ai_product_categories: "category_id",
+    ai_product_genders: "gender_id",
+    ai_product_colors: "color_id"
+  };
+  if (tableName === "ai_product_sizes") {
+    const row = await get(
+      `SELECT COUNT(*) AS total
+       FROM ai_products
+       WHERE COALESCE(deleted_at, '') = ''
+         AND (',' || REPLACE(COALESCE(size_ids, ''), ' ', '') || ',') LIKE ?`,
+      [`%,${Number(itemId)},%`]
+    );
+    return Number(row?.total || 0);
+  }
+  const column = map[tableName];
+  if (!column) {
+    return 0;
+  }
+  const row = await get(
+    `SELECT COUNT(*) AS total
+     FROM ai_products
+     WHERE COALESCE(deleted_at, '') = ''
+       AND ${column} = ?`,
+    [itemId]
+  );
+  return Number(row?.total || 0);
+}
+
+async function saveAiCatalogItem(tableName, payload = {}, options = {}) {
+  const isUpdate = Boolean(options.id);
+  const current = isUpdate ? await get(`SELECT * FROM ${tableName} WHERE id = ?`, [options.id]) : null;
+  if (isUpdate && !current) {
+    throw new Error("Item de configuração da vitrine não encontrado.");
+  }
+
+  const name = String(payload.name ?? current?.name ?? "").trim();
+  if (!name) {
+    throw new Error("O nome é obrigatório.");
+  }
+
+  const values = {
+    name,
+    slug: String(payload.slug ?? current?.slug ?? createSlug(name)).trim() || createSlug(name),
+    status: String(payload.status ?? current?.status ?? "ativo").trim() || "ativo",
+    sort_order: Number(payload.sort_order ?? current?.sort_order ?? 0),
+    is_default: payload.is_default === undefined ? Number(current?.is_default || 0) : (payload.is_default ? 1 : 0),
+    use_gender_filter: payload.use_gender_filter === undefined ? Number(current?.use_gender_filter || 0) : (payload.use_gender_filter ? 1 : 0),
+    group_name: String(payload.group_name ?? current?.group_name ?? "").trim(),
+    hex_color: String(payload.hex_color ?? current?.hex_color ?? "").trim()
+  };
+
+  const duplicate = await get(
+    `SELECT *
+     FROM ${tableName}
+     WHERE LOWER(TRIM(slug)) = LOWER(TRIM(?))
+       AND COALESCE(status, 'ativo') <> 'deleted'
+       ${isUpdate ? "AND id <> ?" : ""}
+     LIMIT 1`,
+    isUpdate ? [values.slug, options.id] : [values.slug]
+  );
+  if (duplicate) {
+    throw new Error(`Já existe ${tableName === "ai_product_categories" ? "uma categoria" : tableName === "ai_product_genders" ? "um gênero" : tableName === "ai_product_colors" ? "uma cor" : "um tamanho"} com esse nome.`);
+  }
+
+  const hasHex = tableName === "ai_product_colors";
+  const hasGroup = tableName === "ai_product_sizes";
+  const hasDefault = tableName === "ai_product_categories";
+  const hasGenderFilter = tableName === "ai_product_categories";
+
+  if (!isUpdate) {
+    const columns = ["name", "slug", "status", "sort_order"];
+    const params = [values.name, values.slug, values.status, values.sort_order];
+    if (hasDefault) {
+      columns.push("is_default");
+      params.push(values.is_default);
+    }
+    if (hasGenderFilter) {
+      columns.push("use_gender_filter");
+      params.push(values.use_gender_filter);
+    }
+    if (hasGroup) {
+      columns.push("group_name");
+      params.push(values.group_name);
+    }
+    if (hasHex) {
+      columns.push("hex_color");
+      params.push(values.hex_color);
+    }
+    const insert = await run(
+      `INSERT INTO ${tableName} (${columns.join(", ")}, created_at, updated_at)
+       VALUES (${columns.map(() => "?").join(", ")}, datetime('now'), datetime('now'))`,
+      params
+    );
+    return get(`SELECT * FROM ${tableName} WHERE id = ?`, [insert.lastID]);
+  }
+
+  const updates = ["name = ?", "slug = ?", "status = ?", "sort_order = ?", "updated_at = datetime('now')"];
+  const params = [values.name, values.slug, values.status, values.sort_order];
+  if (hasDefault) {
+    updates.push("is_default = ?");
+    params.push(values.is_default);
+  }
+  if (hasGenderFilter) {
+    updates.push("use_gender_filter = ?");
+    params.push(values.use_gender_filter);
+  }
+  if (hasGroup) {
+    updates.push("group_name = ?");
+    params.push(values.group_name);
+  }
+  if (hasHex) {
+    updates.push("hex_color = ?");
+    params.push(values.hex_color);
+  }
+  params.push(options.id);
+  await run(`UPDATE ${tableName} SET ${updates.join(", ")} WHERE id = ?`, params);
+  return get(`SELECT * FROM ${tableName} WHERE id = ?`, [options.id]);
+}
+
+async function removeAiCatalogItem(tableName, itemId) {
+  const current = await get(`SELECT * FROM ${tableName} WHERE id = ?`, [itemId]);
+  if (!current) {
+    throw new Error("Item de configuração da vitrine não encontrado.");
+  }
+  const linkedCount = await countAiCatalogLinks(tableName, itemId);
+  if (linkedCount > 0) {
+    await run(`UPDATE ${tableName} SET status = 'inativo', updated_at = datetime('now') WHERE id = ?`, [itemId]);
+    return {
+      mode: "inactivated",
+      linkedCount,
+      row: await get(`SELECT * FROM ${tableName} WHERE id = ?`, [itemId])
+    };
+  }
+  await run(`UPDATE ${tableName} SET status = 'deleted', updated_at = datetime('now') WHERE id = ?`, [itemId]);
+  return {
+    mode: "deleted",
+    linkedCount: 0,
+    row: await get(`SELECT * FROM ${tableName} WHERE id = ?`, [itemId])
+  };
+}
+
+async function getAiCatalogBundle({ includeInactive = true } = {}) {
+  const [categories, genders, colors, sizes, brands] = await Promise.all([
+    listAiCatalog("ai_product_categories", { includeInactive }),
+    listAiCatalog("ai_product_genders", { includeInactive }),
+    listAiCatalog("ai_product_colors", { includeInactive }),
+    listAiCatalog("ai_product_sizes", { includeInactive }),
+    listAiBrands()
+  ]);
+  return { categories, genders, colors, sizes, brands };
+}
+
+async function listAiBrands() {
+  const rows = await all(
+    `SELECT DISTINCT TRIM(COALESCE(ab.brand, p.marca, '')) AS marca
+     FROM ai_products p
+     LEFT JOIN ai_product_brand_meta ab ON ab.product_id = p.id
+     WHERE COALESCE(TRIM(COALESCE(ab.brand, p.marca, '')), '') <> ''
+       AND COALESCE(p.deleted_at, '') = ''
+     ORDER BY marca COLLATE NOCASE ASC`
+  );
+  const grouped = new Map();
+  for (const row of rows) {
+    const raw = formatBrandPresentation(row.marca || "");
+    if (!raw) {
+      continue;
+    }
+    const key = normalizeAiBrandKey(raw);
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, raw);
+      continue;
+    }
+    grouped.set(key, formatBrandPresentation(current));
+  }
+  return Array.from(grouped.values()).sort((a, b) => String(a).localeCompare(String(b), "pt-BR"));
+}
+
+async function upsertAiProductBrandMeta(productId, brandValue = "") {
+  const normalizedBrand = normalizeAiBrandValue(brandValue);
+  if (!productId) {
+    return;
+  }
+  if (!normalizedBrand) {
+    await run(`DELETE FROM ai_product_brand_meta WHERE product_id = ?`, [productId]);
+    return;
+  }
+  await run(
+    `INSERT INTO ai_product_brand_meta (product_id, brand, created_at, updated_at)
+     VALUES (?, ?, datetime('now'), datetime('now'))
+     ON CONFLICT(product_id) DO UPDATE SET brand = excluded.brand, updated_at = datetime('now')`,
+    [productId, normalizedBrand]
+  );
+}
+
+function normalizeAiBrandKey(value = "") {
+  return normalizeSearchText(value).replace(/[^a-z0-9]/g, "");
+}
+
+function formatBrandPresentation(value = "") {
+  const clean = String(value || "").replace(/\s+/g, " ").trim();
+  if (!clean) {
+    return "";
+  }
+  return clean.toLocaleUpperCase("pt-BR");
+}
+
+function normalizeAiBrandValue(value = "", knownBrandsMap = null) {
+  const raw = String(value || "").replace(/\s+/g, " ").trim();
+  if (!raw) {
+    return "";
+  }
+  const normalized = normalizeAiBrandKey(raw);
+  if (knownBrandsMap instanceof Map && knownBrandsMap.has(normalized)) {
+    return knownBrandsMap.get(normalized);
+  }
+  return formatBrandPresentation(raw);
+}
+
+function normalizeTinyImportBrands(items = [], knownBrands = []) {
+  const knownBrandsMap = new Map((knownBrands || []).map((brand) => [normalizeAiBrandKey(brand), brand]));
+  for (const item of items || []) {
+    const raw = formatBrandPresentation(normalizeAiBrandValue(item?.marca || "", knownBrandsMap));
+    if (!raw) {
+      item.marca = "";
+      continue;
+    }
+    const key = normalizeAiBrandKey(raw);
+    if (!knownBrandsMap.has(key) || knownBrandsMap.get(key) !== formatBrandPresentation(knownBrandsMap.get(key))) {
+      knownBrandsMap.set(key, raw);
+    }
+    item.marca = knownBrandsMap.get(key);
+  }
+  return items;
+}
+
+function normalizeProductSizeIds(value = "") {
+  return Array.from(new Set(parseDelimitedValues(value).map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0)));
+}
+
+function resolveSelectedNameById(options = [], selectedId = null) {
+  const target = options.find((item) => Number(item.id) === Number(selectedId));
+  return target?.name || "";
+}
+
+function resolveSelectedNamesByIds(options = [], selectedIds = []) {
+  const ids = Array.isArray(selectedIds) ? selectedIds.map((item) => Number(item)) : normalizeProductSizeIds(selectedIds);
+  return options
+    .filter((item) => ids.includes(Number(item.id)))
+    .map((item) => item.name);
+}
+
+function buildAiProductMediaUrls(mediaId = null) {
+  if (!mediaId) {
+    return { media_id: null, media_url: null, preview_url: null };
+  }
+  return {
+    media_id: Number(mediaId),
+    media_url: `/api/uploads/media/${mediaId}/file`,
+    preview_url: `/api/uploads/media/${mediaId}/preview`
+  };
+}
+
+async function listAiProductMediaRows(productIds = []) {
+  const ids = Array.from(new Set((productIds || []).map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0)));
+  if (!ids.length) {
+    return [];
+  }
+  const placeholders = ids.map(() => "?").join(", ");
+  return all(
+    `SELECT apm.*, cm.original_name, cm.file_path, cm.mime_type, cm.media_type, cm.status AS media_status
+     FROM ai_product_media apm
+     INNER JOIN campaign_media cm ON cm.id = apm.media_id
+     WHERE apm.product_id IN (${placeholders})
+     ORDER BY apm.product_id ASC, apm.sort_order ASC, apm.id ASC`,
+    ids
+  );
+}
+
+function serializeAiProductMediaRows(rows = []) {
+  return (rows || [])
+    .filter((row) => Number(row.media_id))
+    .slice(0, 3)
+    .map((row) => ({
+      id: Number(row.id || 0),
+      media_id: Number(row.media_id || 0),
+      sort_order: Number(row.sort_order || 0),
+      original_name: row.original_name || "",
+      media_type: row.media_type || "",
+      mime_type: row.mime_type || "",
+      ...buildAiProductMediaUrls(row.media_id)
+    }));
+}
+
+function serializeAiProduct(row = {}, catalogs = {}, mediaRows = []) {
+  const mediaItems = serializeAiProductMediaRows(mediaRows.length ? mediaRows : (row.main_media_id ? [{ media_id: row.main_media_id, sort_order: 1 }] : []));
+  const mainMediaId = mediaItems[0]?.media_id || row.main_media_id || null;
+  const media = buildAiProductMediaUrls(mainMediaId);
+  const categoryName = row.category || resolveSelectedNameById(catalogs.categories || [], row.category_id);
+  const genderName = row.gender || resolveSelectedNameById(catalogs.genders || [], row.gender_id);
+  const colorName = row.color || resolveSelectedNameById(catalogs.colors || [], row.color_id);
+  const sizesText = row.sizes || resolveSelectedNamesByIds(catalogs.sizes || [], row.size_ids || "").join(", ");
+  const displayRow = {
+    ...row,
+    category: categoryName,
+    gender: genderName,
+    color: colorName,
+    sizes: sizesText
+  };
+  const rawStockValue = row.stock === null || row.stock === undefined || row.stock === ""
+    ? row.estoque_total
+    : row.stock;
+  const stockValue = rawStockValue === null || rawStockValue === undefined || rawStockValue === "" ? null : Number(rawStockValue);
+  const availability = stockValue === null
+    ? "check_stock"
+    : stockValue > 0
+      ? "in_stock"
+      : stockValue === 0
+        ? "out_of_stock"
+        : "check_stock";
+  return {
+    id: Number(row.id || 0),
+    sku: row.sku || "",
+    codigo: row.codigo || "",
+    codigo_pai: row.codigo_pai || "",
+    name: row.name || "",
+    commercial_name: row.commercial_name || "",
+    display_name: buildAiProductDisplayName(displayRow),
+    category_id: row.category_id ? Number(row.category_id) : null,
+    gender_id: row.gender_id ? Number(row.gender_id) : null,
+    color_id: row.color_id ? Number(row.color_id) : null,
+    size_ids: normalizeProductSizeIds(row.size_ids || ""),
+    category: categoryName || "",
+    gender: genderName || "",
+    color: colorName || "",
+    sizes: parseDelimitedValues(sizesText || ""),
+    sizesText: sizesText || "",
+    price: row.price === null || row.price === undefined || row.price === "" ? null : Number(row.price),
+    promotional_price: row.promotional_price === null || row.promotional_price === undefined || row.promotional_price === "" ? null : Number(row.promotional_price),
+    promotionalPrice: row.promotional_price === null || row.promotional_price === undefined || row.promotional_price === "" ? null : Number(row.promotional_price),
+    cost_price: row.cost_price === null || row.cost_price === undefined || row.cost_price === "" ? null : Number(row.cost_price),
+    costPrice: row.cost_price === null || row.cost_price === undefined || row.cost_price === "" ? null : Number(row.cost_price),
+    marca: row.brand_meta || row.marca || "",
+    brand: row.brand_meta || row.marca || "",
+    estoque_total: stockValue,
+    estoque: stockValue,
+    stock: stockValue,
+    availability,
+    permitir_venda: row.permitir_venda || "",
+    permitirVenda: row.permitir_venda || "",
+    situacao: row.situacao || "",
+    store: row.store || "",
+    tiny_id: row.tiny_id || "",
+    location: row.location || "",
+    gtin_ean: row.gtin_ean || "",
+    ncm: row.ncm || "",
+    use_in_ai: Boolean(Number(row.use_in_ai || 0)),
+    use_in_pos: Boolean(Number(row.use_in_pos || 0)),
+    source: row.source || "",
+    notes: row.notes || "",
+    short_description: row.short_description || "",
+    sales_argument: row.sales_argument || "",
+    ai_title: row.ai_title || "",
+    ai_short_description: row.ai_short_description || "",
+    ai_sales_argument: row.ai_sales_argument || "",
+    short_description_display: row.ai_short_description || buildAiProductDisplayCopy({ short_description: row.short_description || "" }),
+    sales_argument_display: row.ai_sales_argument || buildAiProductDisplayCopy({ sales_argument: row.sales_argument || "" }),
+    tags: parseDelimitedValues(row.tags || ""),
+    tagsText: row.tags || "",
+    priority: normalizeAiProductPriority(row.priority),
+    status: normalizeAiProductVisibilityStatus(row.status),
+    main_media_id: mainMediaId ? Number(mainMediaId) : null,
+    fotos_extras: row.fotos_extras || "",
+    media_ids: mediaItems.map((item) => Number(item.media_id)),
+    media_items: mediaItems,
+    media_id: media.media_id,
+    media_url: media.media_url,
+    preview_url: media.preview_url,
+    deleted_at: row.deleted_at || "",
+    created_at: row.created_at || "",
+    updated_at: row.updated_at || ""
+  };
+}
+
+async function getAiProductById(productId, { activeOnly = false } = {}) {
+  const catalogs = await getAiCatalogBundle({ includeInactive: true });
+  const row = await get(
+    `SELECT p.*, ab.brand AS brand_meta, m.id AS joined_media_id, m.original_name AS joined_media_name, m.file_path AS joined_media_path, m.mime_type AS joined_media_type, m.media_type AS joined_media_kind
+     FROM ai_products p
+     LEFT JOIN ai_product_brand_meta ab ON ab.product_id = p.id
+     LEFT JOIN campaign_media m ON m.id = p.main_media_id
+     WHERE p.id = ? ${activeOnly ? "AND p.status = 'ativo' AND COALESCE(p.deleted_at, '') = ''" : ""}`,
+    [productId]
+  );
+  if (!row) {
+    return null;
+  }
+  const mediaRows = await listAiProductMediaRows([productId]);
+  return serializeAiProduct(row, catalogs, mediaRows);
+}
+
+async function listAiProducts({ includeInactive = true } = {}) {
+  const catalogs = await getAiCatalogBundle({ includeInactive: true });
+  const rows = await all(
+    `SELECT p.*, ab.brand AS brand_meta
+     FROM ai_products p
+     LEFT JOIN ai_product_brand_meta ab ON ab.product_id = p.id
+     ${includeInactive ? "WHERE COALESCE(p.deleted_at, '') = ''" : "WHERE p.status = 'ativo' AND COALESCE(p.deleted_at, '') = ''"}
+     ORDER BY CASE p.priority WHEN 'alta' THEN 0 WHEN 'media' THEN 1 ELSE 2 END, p.updated_at DESC, p.id DESC`
+  );
+  const mediaRows = await listAiProductMediaRows(rows.map((row) => row.id));
+  const mediaByProductId = mediaRows.reduce((map, row) => {
+    const key = Number(row.product_id || 0);
+    if (!map.has(key)) {
+      map.set(key, []);
+    }
+    map.get(key).push(row);
+    return map;
+  }, new Map());
+  return rows.map((row) => serializeAiProduct(row, catalogs, mediaByProductId.get(Number(row.id || 0)) || []));
+}
+
+function normalizeSearchText(value = "") {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function normalizeCommercialPtBrText(value = "") {
+  return String(value || "")
+    .replace(/\bALGODAO\b/gi, "Algodão")
+    .replace(/\bOPCAO\b/gi, "Opção")
+    .replace(/\bVOCE\b/gi, "Você")
+    .replace(/\bPECA\b/gi, "Peça")
+    .replace(/\bDIARIO\b/gi, "dia a dia")
+    .replace(/\bCAMISETA\b/gi, "Camiseta")
+    .replace(/\bCALCA\b/gi, "Calça")
+    .replace(/\bPERFUME\b/gi, "Perfume")
+    .replace(/\bMASCULINO\b/gi, "Masculino")
+    .replace(/\bFEMININO\b/gi, "Feminino")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toPresentationSentence(value = "") {
+  const text = normalizeCommercialPtBrText(value || "");
+  if (!text) {
+    return "";
+  }
+  const letters = text.replace(/[^A-Za-zÀ-ÿ]/g, "");
+  const upperRatio = letters ? (text.replace(/[^A-ZÀ-Ý]/g, "").length / letters.length) : 0;
+  const base = upperRatio > 0.55 ? text.toLowerCase() : text;
+  return base
+    .replace(/otima pra usar para torcer na copa do mundo agora de 2026/gi, "Ela tem cor canário, visual marcante e é ótima para torcer na Copa de 2026")
+    .replace(/camiseta amarela canario/gi, "Ela tem cor canário")
+    .replace(/^([a-zà-ÿ])/u, (match) => match.toUpperCase())
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toPresentationTitle(value = "") {
+  const text = normalizeCommercialPtBrText(value || "");
+  if (!text) {
+    return "";
+  }
+  const letters = text.replace(/[^A-Za-zÀ-ÿ]/g, "");
+  const upperRatio = letters ? (text.replace(/[^A-ZÀ-Ý]/g, "").length / letters.length) : 0;
+  const base = upperRatio > 0.55 ? text.toLowerCase() : text;
+  return base
+    .replace(/\b([a-zà-ÿ])/gu, (match) => match.toUpperCase())
+    .replace(/\b30,1\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildAiProductDisplayName(row = {}) {
+  const explicit = String(row.commercial_name || "").trim();
+  if (explicit) {
+    return toPresentationTitle(explicit);
+  }
+
+  const normalizedName = normalizeSearchText(row.name || "");
+  if (normalizedName.includes("camiseta") && normalizedName.includes("amarel")) {
+    return "Camiseta Amarela Capotão";
+  }
+
+  return toPresentationTitle(row.name || "");
+}
+
+function buildAiProductDisplayCopy(row = {}) {
+  const source = String(row.sales_argument || row.short_description || "").trim();
+  return toPresentationSentence(source);
+}
+
+function enhanceProductSalesText(product = {}) {
+  const category = String(product.category || "").trim().toLowerCase();
+  const color = String(product.color || "").trim();
+  const shortDescription = toPresentationSentence(product.short_description || "");
+  const salesArgument = toPresentationSentence(product.sales_argument || "");
+  const aiShort = String(product.ai_short_description || "").trim();
+  const aiSales = String(product.ai_sales_argument || "").trim();
+
+  if (aiShort || aiSales) {
+    return {
+      aiTitle: product.display_name || buildAiProductDisplayName(product),
+      aiShortDescription: aiShort || shortDescription || salesArgument || "",
+      aiSalesArgument: aiSales || salesArgument || shortDescription || ""
+    };
+  }
+
+  let sentence = shortDescription || salesArgument || "";
+  if (!sentence && category.includes("camiseta")) {
+    sentence = color
+      ? `Ela tem tom ${color.toLowerCase()}, toque confortável e um visual marcante para o dia a dia.`
+      : "Ela tem toque confortável, caimento leve e um visual fácil de combinar.";
+  }
+
+  if (!sentence && category.includes("perfume")) {
+    sentence = "É uma opção com presença elegante e ótima proposta para presentear ou usar no dia a dia.";
+  }
+
+  if (!sentence) {
+    sentence = "É uma opção com visual elegante, boa presença e proposta versátil para diferentes ocasiões.";
+  }
+
+  let argument = salesArgument || shortDescription || "";
+  if (!argument) {
+    argument = category.includes("camiseta")
+      ? "Tem uma proposta premium, confortável e fácil de combinar."
+      : "É uma peça com proposta comercial forte e boa leitura para atendimento.";
+  }
+
+  return {
+    aiTitle: product.display_name || buildAiProductDisplayName(product),
+    aiShortDescription: sentence,
+    aiSalesArgument: argument
+  };
+}
+
+function getGreetingByTime(date = new Date()) {
+  const hour = date.getHours();
+  if (hour >= 5 && hour <= 11) {
+    return "Bom dia";
+  }
+  if (hour >= 12 && hour <= 17) {
+    return "Boa tarde";
+  }
+  return "Boa noite";
+}
+
+function formatCustomerName(name = "") {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\b([a-zà-ÿ])/gu, (match) => match.toUpperCase());
+}
+
+function getCleanFirstName(name = "") {
+  const normalized = String(name || "")
+    .replace(/[0-9]+/g, " ")
+    .replace(/[^\p{L}\s'-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  const ignoredNames = new Set(["cliente", "teste", "sem", "nome", "contato", "whatsapp", "na", "n/a"]);
+  const parts = normalized
+    .split(/\s+/)
+    .map((part) => formatCustomerName(part))
+    .filter(Boolean);
+
+  const firstUseful = parts.find((part) => {
+    const value = normalizeSearchText(part);
+    if (!value || ignoredNames.has(value)) {
+      return false;
+    }
+    if (/^\d+$/.test(value)) {
+      return false;
+    }
+    return value.length >= 2;
+  });
+
+  return firstUseful || "";
+}
+
+function looksLikeNameAnswer(text = "") {
+  const sanitized = String(text || "").trim();
+  if (!sanitized || sanitized.length < 2 || sanitized.length > 40) {
+    return false;
+  }
+  if (/\d/.test(sanitized)) {
+    return false;
+  }
+  return /^[A-Za-zÀ-ÿ'`´^~\s.-]+$/u.test(sanitized);
+}
+
+function isPositivePhotoConfirmation(text = "") {
+  const normalized = normalizeSearchText(text);
+  return [
+    "sim",
+    "pode mandar",
+    "manda",
+    "quero ver",
+    "manda foto",
+    "me envia",
+    "me manda",
+    "envia",
+    "pode enviar",
+    "quero receber",
+    "claro",
+    "pode ser",
+    "manda as fotos"
+  ].some((term) => normalized.includes(normalizeSearchText(term)));
+}
+
+function parseGenderChoice(text = "") {
+  const normalized = normalizeSearchText(text);
+  if (["masculino", "masculina", "homem", "masculino adulto"].some((term) => normalized.includes(normalizeSearchText(term)))) return "Masculino";
+  if (["feminino", "feminina", "mulher"].some((term) => normalized.includes(normalizeSearchText(term)))) return "Feminino";
+  if (["infantil", "crianca", "criança", "menino", "menina"].some((term) => normalized.includes(normalizeSearchText(term)))) return "Infantil";
+  if (normalized.includes("unissex") || normalized.includes("unisex")) return "Unissex";
+  return "";
+}
+
+function extractAiProductSignals(query = "") {
+  const normalized = normalizeSearchText(query);
+  const terms = normalized
+    .split(/\s+/)
+    .map((item) => item.trim().replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter(Boolean)
+    .filter((item) => !["tem", "tenho", "quero", "preciso", "procuro", "uma", "um", "de", "do", "da", "para", "com"].includes(item));
+
+  const categoryKeywords = [
+    "camiseta", "polo", "perfume", "calca", "jeans", "vestido", "blusa", "jaqueta",
+    "tenis", "sapato", "short", "shorts", "bermuda", "camisa", "chinelo", "sandalia",
+    "calca sarja", "calca jeans", "vestido", "saia", "regata", "moletom", "conjunto", "bone"
+  ];
+  const colorKeywords = [
+    "preta", "preto", "amarela", "amarelo", "azul", "branca", "branco", "verde", "rosa",
+    "vermelha", "vermelho", "bege", "cinza", "marrom", "off white", "offwhite", "nude",
+    "caramelo", "areia", "caqui", "khaki", "laranja", "roxo", "lilas", "estampado"
+  ];
+  const sizeKeywords = ["pp", "p", "m", "g", "gg", "xg", "xgg", "eg", "2a", "4a", "6a", "8a", "10a", "12a", "14a", "16a"];
+  const genderKeywords = ["masculino", "feminino", "unissex", "infantil"];
+  const brandKeywords = [
+    "aerostore", "osklen", "calvin klein", "calvin klein jeans", "reserva", "reserva mini",
+    "farm", "aramis", "lacoste", "ralph lauren", "john john", "aviator", "zara", "hering", "zinzane"
+  ];
+  const occasionKeywords = {
+    noite: ["noite", "sair a noite", "saída", "saida", "jantar", "barzinho", "evento"],
+    praia: ["praia", "verao", "verão", "sol", "resort", "viagem"],
+    presente: ["presente", "presentear", "marido", "namorado", "esposa", "mulher", "filho", "filha", "pai", "mae", "mãe"],
+    arrumado: ["arrumado", "elegante", "sofisticado", "social", "trabalho"],
+    basico: ["basico", "básico", "dia a dia", "casual", "leve"],
+    premium: ["premium", "refinado", "mais chique", "melhor", "peça boa", "peca boa"]
+  };
+
+  const findFirst = (list) => list.find((item) => normalized.includes(item)) || "";
+  const numericSizeMatch = normalized.match(/\b(3[6-9]|4[0-4]|[2-9]a|10a|12a|14a|16a|50|52|54|56)\b/i);
+  const budgetMatch = normalized.match(/(?:ate|até|no maximo|no máximo)\s*r?\$?\s*([\d\.,]+)/i);
+  const skuCandidate = terms.find((term) => {
+    if (!/^(?:[a-z]*\d+[a-z\d-]*|\d{3,})$/i.test(term)) {
+      return false;
+    }
+    if (/^\d{1,2}a$/i.test(term)) {
+      return false;
+    }
+    return term.replace(/\D/g, "").length >= 3;
+  }) || "";
+  const occasion = Object.entries(occasionKeywords).find(([, matches]) => matches.some((item) => normalized.includes(item)))?.[0] || "";
+  const style = normalized.includes("premium")
+    ? "premium"
+    : normalized.includes("arrumado") || normalized.includes("sofistic")
+      ? "arrumado"
+      : normalized.includes("basic") || normalized.includes("básic") || normalized.includes("basico")
+        ? "basico"
+        : "";
+  const priceIntent = normalized.includes("barato") || normalized.includes("nao quero gastar muito") || normalized.includes("não quero gastar muito")
+    ? "budget"
+    : normalized.includes("premium") || normalized.includes("refinado") || normalized.includes("presente bom")
+      ? "premium"
+      : normalized.includes("presente")
+        ? "gift"
+        : "";
+
+  return {
+    normalized,
+    terms,
+    category: findFirst(categoryKeywords),
+    color: findFirst(colorKeywords),
+    size: numericSizeMatch?.[1] || findFirst(sizeKeywords),
+    gender: findFirst(genderKeywords),
+    brand: findFirst(brandKeywords),
+    occasion,
+    style,
+    priceIntent,
+    maxPrice: budgetMatch ? parseLocalizedNumberToFloat(budgetMatch[1]) : null,
+    requestedSku: skuCandidate,
+    isSpecific: Boolean(findFirst(categoryKeywords) || findFirst(colorKeywords) || findFirst(sizeKeywords) || findFirst(genderKeywords) || findFirst(brandKeywords) || skuCandidate)
+  };
+}
+
+function productHasValidPhoto(product) {
+  return Boolean(product?.main_media_id && (product?.preview_url || product?.media_url || product?.media_items?.[0]?.preview_url));
+}
+
+function matchesAiSignal(value = "", signal = "") {
+  if (!signal) {
+    return true;
+  }
+  return normalizeSearchText(value).includes(normalizeSearchText(signal));
+}
+
+const AEROSTORE_BRAND_PROFILES = {
+  aerostore: { tone: "curadoria da casa, boa escolha segura e custo-beneficio", tags: ["custo-beneficio", "seguro", "curadoria"] },
+  osklen: { tone: "casual premium, sofisticada, moderna e minimalista", tags: ["premium", "sofisticado", "refinado", "noite"] },
+  "calvin klein": { tone: "urbana, reconhecida e otima para presente", tags: ["premium", "urbano", "presente"] },
+  "calvin klein jeans": { tone: "urbana, casual premium e com marca forte", tags: ["premium", "urbano", "presente"] },
+  reserva: { tone: "casual brasileira, jovem e de boa aceitacao", tags: ["casual", "jovem", "presente"] },
+  "reserva mini": { tone: "infantil casual, atual e com boa aceitacao", tags: ["infantil", "presente", "casual"] },
+  farm: { tone: "feminina, colorida, estampada e com personalidade", tags: ["feminino", "colorido", "estampado"] },
+  aramis: { tone: "masculino sofisticado, bom para sair, trabalho ou presente", tags: ["masculino", "arrumado", "presente", "trabalho"] },
+  lacoste: { tone: "classico, esportivo premium e atemporal", tags: ["premium", "classico"] },
+  "ralph lauren": { tone: "classico premium, sofisticado e com boa percepcao de valor", tags: ["premium", "classico", "presente"] },
+  "john john": { tone: "jovem, urbano e moderno", tags: ["jovem", "urbano"] },
+  aviator: { tone: "casual masculino, boa para uso diario mais arrumado", tags: ["masculino", "casual", "arrumado"] },
+  zara: { tone: "moda atual, de tendencia e boa aceitacao", tags: ["moderno", "tendencia"] },
+  hering: { tone: "basico, confortavel e de uso diario", tags: ["basico", "dia a dia"] },
+  zinzane: { tone: "feminina, casual e versatil", tags: ["feminino", "casual", "leve"] }
+};
+
+function getAerostoreBrandProfile(brand = "") {
+  return AEROSTORE_BRAND_PROFILES[normalizeSearchText(brand)] || null;
+}
+
+function buildProductOccasionTags(product = {}) {
+  const tags = new Set();
+  const category = normalizeSearchText(product.category || "");
+  const name = normalizeSearchText(product.display_name || product.name || "");
+  const brandProfile = getAerostoreBrandProfile(product.brand || product.marca || "");
+  (brandProfile?.tags || []).forEach((tag) => tags.add(tag));
+  const addIf = (condition, values) => {
+    if (condition) {
+      values.forEach((value) => tags.add(value));
+    }
+  };
+
+  addIf(/camisa|polo|calca|sarja|vestido|social/.test(category) || /camisa|polo|vestido/.test(name), ["arrumado", "noite", "presente"]);
+  addIf(/bermuda|short|chinelo/.test(category) || /bermuda|short|linho/.test(name), ["casual", "praia", "dia a dia"]);
+  addIf(/camiseta|regata|moletom/.test(category) || /camiseta|regata|moletom/.test(name), ["casual", "dia a dia"]);
+  addIf(/infantil/.test(category) || /mini/.test(name), ["infantil", "presente"]);
+  addIf(/perfume|acessorio|bone/.test(category) || /perfume/.test(name), ["presente", "premium"]);
+
+  return Array.from(tags);
+}
+
+function scoreOccasionCategoryFit(product = {}, signals = {}) {
+  const category = normalizeSearchText(product.category || "");
+  const name = normalizeSearchText(product.display_name || product.name || "");
+  const combined = `${category} ${name}`;
+
+  if (signals.occasion === "noite" || signals.style === "arrumado") {
+    if (/camisa|polo|calca|sarja|vestido|social/.test(combined)) return 22;
+    if (/bermuda|short|chinelo/.test(combined)) return -10;
+  }
+
+  if (signals.occasion === "praia") {
+    if (/bermuda|short|camiseta|regata|chinelo|linho/.test(combined)) return 20;
+    if (/social|vestido festa/.test(combined)) return -8;
+  }
+
+  if (signals.priceIntent === "gift" || signals.occasion === "presente") {
+    if (/polo|camisa|camiseta|perfume|vestido|bermuda|infantil|acessorio/.test(combined)) return 12;
+  }
+
+  if (signals.style === "basico" || signals.priceIntent === "budget") {
+    if (/camiseta|basic|basico|polo|short|bermuda/.test(combined)) return 10;
+  }
+
+  return 0;
+}
+
+function buildAiProductSearchDoc(product = {}) {
+  const sizes = parseDelimitedValues(product.sizesText || "").map(normalizeSearchText);
+  const tags = parseDelimitedValues(product.tagsText || "").map(normalizeSearchText);
+  const brand = normalizeSearchText(product.brand || product.marca || "");
+  const category = normalizeSearchText(product.category || "");
+  const gender = normalizeSearchText(product.gender || "");
+  const color = normalizeSearchText(product.color || "");
+  const name = normalizeSearchText(product.display_name || product.name || "");
+  const sku = normalizeSearchText(product.sku || product.codigo || "");
+  const rawText = [
+    name,
+    brand,
+    category,
+    gender,
+    color,
+    sizes.join(" "),
+    normalizeSearchText(product.short_description || ""),
+    normalizeSearchText(product.sales_argument || ""),
+    normalizeSearchText(product.ai_short_description || ""),
+    normalizeSearchText(product.ai_sales_argument || ""),
+    tags.join(" ")
+  ].join(" ");
+
+  return {
+    sku,
+    name,
+    brand,
+    category,
+    gender,
+    color,
+    sizes,
+    tags,
+    rawText,
+    occasionTags: buildProductOccasionTags(product)
+  };
+}
+
+function scoreAiProduct(product, signals = {}, customerSignals = null) {
+  const searchDoc = buildAiProductSearchDoc(product);
+  const brandProfile = getAerostoreBrandProfile(product.brand || product.marca || "");
+  const priceValue = Number(product.promotional_price ?? product.price ?? 0) || 0;
+  const hasPrice = Number.isFinite(Number(product.price)) && Number(product.price) > 0;
+  const promotionalPrice = Number(product.promotional_price);
+  const hasPromotionalPrice = Number.isFinite(promotionalPrice) && promotionalPrice > 0;
+  const reasons = [];
+  const normalizedFields = {
+    name: searchDoc.name,
+    category: searchDoc.category,
+    gender: searchDoc.gender,
+    color: searchDoc.color,
+    sizes: searchDoc.sizes,
+    shortDescription: normalizeSearchText(product.short_description),
+    salesArgument: normalizeSearchText(product.sales_argument),
+    tags: searchDoc.tags,
+    brand: searchDoc.brand
+  };
+
+  const haystack = searchDoc.rawText;
+
+  let score = 0;
+
+  signals.terms.forEach((term) => {
+    if (haystack.includes(term)) score += 4;
+    if (normalizedFields.name.includes(term)) score += 7;
+    if (normalizedFields.tags.some((tag) => tag.includes(term))) score += 6;
+    if (normalizedFields.category.includes(term)) score += 5;
+    if (normalizedFields.color.includes(term)) score += 5;
+    if (normalizedFields.sizes.includes(term)) score += 5;
+    if (normalizedFields.brand.includes(term)) score += 8;
+  });
+
+  if (signals.requestedSku) {
+    if (normalizedFields.name.includes(signals.requestedSku) || searchDoc.sku === normalizeSearchText(signals.requestedSku)) {
+      score += 180;
+      reasons.push("sku exato");
+    }
+  }
+
+  if (signals.brand) {
+    if (normalizedFields.brand === normalizeSearchText(signals.brand)) {
+      score += 70;
+      reasons.push("marca exata");
+    } else if (normalizedFields.brand.includes(normalizeSearchText(signals.brand))) {
+      score += 40;
+      reasons.push("marca compatível");
+    } else {
+      score -= 22;
+    }
+  }
+
+  if (signals.category) {
+    if (normalizedFields.category.includes(signals.category) || normalizedFields.name.includes(signals.category)) {
+      score += 24;
+      reasons.push("categoria compatível");
+    } else {
+      score -= 40;
+    }
+  }
+
+  if (signals.color) {
+    if (normalizedFields.color.includes(signals.color) || normalizedFields.tags.some((tag) => tag.includes(signals.color)) || normalizedFields.name.includes(signals.color)) {
+      score += 28;
+      reasons.push("cor compatível");
+    } else {
+      score -= 24;
+    }
+  }
+
+  if (signals.size) {
+    if (normalizedFields.sizes.includes(signals.size) || normalizedFields.tags.some((tag) => tag === signals.size)) {
+      score += 20;
+      reasons.push("tamanho compatível");
+    } else {
+      score -= 16;
+    }
+  }
+
+  if (signals.gender) {
+    if (normalizedFields.gender.includes(signals.gender) || normalizedFields.tags.some((tag) => tag.includes(signals.gender))) {
+      score += 16;
+      reasons.push("gênero compatível");
+    } else {
+      score -= 10;
+    }
+  }
+
+  if (signals.occasion && searchDoc.occasionTags.includes(signals.occasion)) {
+    score += 22;
+    reasons.push(`boa leitura para ${signals.occasion}`);
+  }
+
+  const occasionFitScore = scoreOccasionCategoryFit(product, signals);
+  score += occasionFitScore;
+  if (occasionFitScore >= 12) {
+    reasons.push("categoria coerente com a ocasião");
+  }
+
+  if (signals.style === "premium" && (brandProfile?.tags || []).includes("premium")) {
+    score += 20;
+    reasons.push("leitura premium");
+  }
+
+  if (signals.style === "arrumado" && searchDoc.occasionTags.includes("arrumado")) {
+    score += 18;
+    reasons.push("perfil mais arrumado");
+  }
+
+  if (signals.style === "basico" && ((brandProfile?.tags || []).includes("basico") || normalizedFields.name.includes("basic"))) {
+    score += 14;
+    reasons.push("perfil básico");
+  }
+
+  if (signals.priceIntent === "gift" && searchDoc.occasionTags.includes("presente")) {
+    score += 20;
+    reasons.push("boa opção para presente");
+  }
+
+  if (signals.priceIntent === "budget" && hasPrice) {
+    score += priceValue <= 100 ? 18 : priceValue <= 150 ? 10 : 2;
+    reasons.push("faixa de preço mais enxuta");
+  }
+
+  if (signals.priceIntent === "premium" && ((brandProfile?.tags || []).includes("premium") || searchDoc.occasionTags.includes("premium"))) {
+    score += 18;
+    reasons.push("marca com boa percepção de valor");
+  }
+
+  const preferredBrands = (customerSignals?.favoriteBrands || []).map(normalizeSearchText).filter(Boolean);
+  const preferredCategories = (customerSignals?.favoriteCategories || []).map(normalizeSearchText).filter(Boolean);
+  const customerProfiles = (customerSignals?.commercialProfile || []).map(normalizeSearchText);
+  if (!signals.brand && preferredBrands.includes(normalizedFields.brand)) {
+    score += 16;
+    reasons.push("marca alinhada ao histórico do cliente");
+  }
+  if (!signals.category && preferredCategories.some((item) => normalizedFields.category.includes(item) || normalizedFields.name.includes(item))) {
+    score += 12;
+    reasons.push("categoria alinhada ao histórico do cliente");
+  }
+  if (!signals.gender) {
+    if (customerProfiles.includes(normalizeSearchText("Masculino")) && normalizedFields.gender.includes("masculino")) {
+      score += 8;
+      reasons.push("perfil masculino recorrente");
+    }
+    if (customerProfiles.includes(normalizeSearchText("Feminino")) && normalizedFields.gender.includes("feminino")) {
+      score += 8;
+      reasons.push("perfil feminino recorrente");
+    }
+    if (customerProfiles.includes(normalizeSearchText("Infantil")) && (normalizedFields.gender.includes("infantil") || normalizedFields.category.includes("infantil") || normalizedFields.name.includes("infantil"))) {
+      score += 10;
+      reasons.push("perfil infantil recorrente");
+    }
+  }
+  if (signals.priceIntent !== "budget" && customerProfiles.includes(normalizeSearchText("Sensível a Preço")) && hasPrice) {
+    score += priceValue <= 150 ? 10 : priceValue <= 220 ? 4 : -6;
+    reasons.push("boa leitura de custo-benefício");
+  }
+  if (signals.priceIntent !== "premium" && customerProfiles.includes(normalizeSearchText("Premium")) && ((brandProfile?.tags || []).includes("premium") || searchDoc.occasionTags.includes("premium"))) {
+    score += 10;
+    reasons.push("boa leitura premium para esse cliente");
+  }
+
+  if (signals.maxPrice !== null && Number.isFinite(signals.maxPrice)) {
+    if (priceValue > 0 && priceValue <= signals.maxPrice) {
+      score += 24;
+      reasons.push("dentro da faixa de preço");
+    } else if (priceValue > signals.maxPrice) {
+      score -= 35;
+    }
+  }
+
+  if (product.availability === "in_stock") {
+    score += 60;
+    reasons.push("estoque positivo");
+  } else if (product.availability === "out_of_stock") {
+    score -= 24;
+  } else if (product.availability === "check_stock") {
+    score -= 38;
+  }
+
+  if (product.priority === "alta") score += 12;
+  if (product.priority === "media") score += 6;
+  if (product.priority === "baixa") score += 1;
+
+  if (productHasValidPhoto(product)) {
+    score += 8;
+    reasons.push("tem imagem");
+  } else {
+    score -= 10;
+  }
+
+  if (hasPrice) {
+    score += 8;
+  } else {
+    score -= 18;
+  }
+
+  if (hasPromotionalPrice) {
+    score += 6;
+    reasons.push("preço promocional");
+  }
+
+  if (normalizedFields.brand) {
+    score += 6;
+  } else {
+    score -= 8;
+  }
+
+  if (String(product.status || "").trim().toLowerCase() !== "ativo") {
+    score -= 35;
+  }
+
+  return {
+    score,
+    reasons: Array.from(new Set(reasons)).slice(0, 4)
+  };
+}
+
+function buildCommercialSelectionReason(product = {}, signals = {}, reasons = []) {
+  const brandProfile = getAerostoreBrandProfile(product.brand || product.marca || "");
+  const snippets = [...reasons];
+  if (signals.occasion === "presente" && brandProfile?.tone) {
+    snippets.push(`marca com boa leitura para presente: ${brandProfile.tone}`);
+  } else if (signals.style === "premium" && brandProfile?.tone) {
+    snippets.push(brandProfile.tone);
+  } else if (signals.occasion && buildProductOccasionTags(product).includes(signals.occasion)) {
+    snippets.push(`categoria coerente para ${signals.occasion}`);
+  }
+  return Array.from(new Set(snippets)).filter(Boolean).slice(0, 3).join(", ");
+}
+
+function decorateCatalogProduct(product = {}, signals = {}, scoreEntry = {}) {
+  const promotionalPrice = Number(product.promotional_price);
+  const hasPromotionalPrice = Number.isFinite(promotionalPrice) && promotionalPrice > 0;
+  return {
+    ...product,
+    promotional_price: hasPromotionalPrice ? promotionalPrice : null,
+    promotionalPrice: hasPromotionalPrice ? promotionalPrice : null,
+    commercial_score: Number(scoreEntry.score || 0),
+    commercial_reasons: Array.isArray(scoreEntry.reasons) ? scoreEntry.reasons : [],
+    commercial_reason: buildCommercialSelectionReason(product, signals, scoreEntry.reasons || []),
+    brand_profile: getAerostoreBrandProfile(product.brand || product.marca || "")?.tone || ""
+  };
+}
+
+function dedupeCommercialProducts(products = []) {
+  const seen = new Set();
+  return (products || []).filter((product) => {
+    const key = [
+      normalizeSearchText(product.sku || product.codigo || ""),
+      normalizeSearchText(product.display_name || product.name || ""),
+      normalizeSearchText(product.color || ""),
+      normalizeSearchText(product.sizesText || product.sizes?.join(",") || "")
+    ].join("|");
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+async function searchAiProductsDetailed(query = "", { limit = 6, excludeProductIds = [], customerSignals = null } = {}) {
+  const products = await listAiProducts({ includeInactive: false });
+  const signals = extractAiProductSignals(query);
+  const blockedIds = new Set((excludeProductIds || []).map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0));
+  let candidates = [...products].filter((product) => !blockedIds.has(Number(product.id)));
+
+  if (signals.category) {
+    const categoryMatches = candidates.filter((product) =>
+      matchesAiSignal(product.category, signals.category) || matchesAiSignal(product.name, signals.category)
+    );
+    if (categoryMatches.length) {
+      candidates = categoryMatches;
+    } else {
+      return {
+        signals,
+        directMatches: [],
+        primaryMatches: [],
+        alternativeMatches: [],
+        allMatches: []
+      };
+    }
+  }
+
+  if (signals.color) {
+    const colorMatches = candidates.filter((product) =>
+      matchesAiSignal(product.color, signals.color)
+      || matchesAiSignal(product.tagsText, signals.color)
+      || matchesAiSignal(product.name, signals.color)
+    );
+    if (colorMatches.length) {
+      candidates = colorMatches;
+    }
+  }
+
+  if (signals.size) {
+    const sizeMatches = candidates.filter((product) =>
+      parseDelimitedValues(product.sizesText).map(normalizeSearchText).includes(normalizeSearchText(signals.size))
+      || parseDelimitedValues(product.tagsText).map(normalizeSearchText).includes(normalizeSearchText(signals.size))
+    );
+    if (sizeMatches.length) {
+      candidates = sizeMatches;
+    }
+  }
+
+  if (signals.gender) {
+    const genderMatches = candidates.filter((product) =>
+      matchesAiSignal(product.gender, signals.gender) || matchesAiSignal(product.tagsText, signals.gender)
+    );
+    if (genderMatches.length) {
+      candidates = genderMatches;
+    }
+  }
+
+  const scored = candidates
+    .map((product) => ({ product, ...scoreAiProduct(product, signals, customerSignals) }))
+    .filter((entry) => entry.score > -25 || !signals.normalized)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const availabilityOrder = { in_stock: 0, out_of_stock: 1, check_stock: 2 };
+      const availabilityDiff = (availabilityOrder[a.product.availability] ?? 9) - (availabilityOrder[b.product.availability] ?? 9);
+      if (availabilityDiff !== 0) return availabilityDiff;
+      const priorityOrder = { alta: 0, media: 1, baixa: 2 };
+      const priorityDiff = (priorityOrder[a.product.priority] ?? 9) - (priorityOrder[b.product.priority] ?? 9);
+      if (priorityDiff !== 0) return priorityDiff;
+      return String(b.product.updated_at || "").localeCompare(String(a.product.updated_at || ""));
+    });
+
+  const topScore = scored[0]?.score ?? 0;
+  if (!topScore) {
+    return {
+      signals,
+      directMatches: [],
+      primaryMatches: [],
+      alternativeMatches: [],
+      allMatches: []
+    };
+  }
+
+  const veryCloseMatches = scored.filter((entry, index) => {
+    if (index === 0) return true;
+    if (signals.isSpecific) {
+      return entry.score >= topScore - 3;
+    }
+    return entry.score >= topScore - 6;
+  });
+
+  const directMatches = veryCloseMatches.filter((entry) => {
+    const directBrand = !signals.brand || normalizeSearchText(entry.product.brand || entry.product.marca || "") === normalizeSearchText(signals.brand);
+    const directCategory = !signals.category || matchesAiSignal(entry.product.category, signals.category) || matchesAiSignal(entry.product.name, signals.category);
+    const directColor = !signals.color || matchesAiSignal(entry.product.color, signals.color) || matchesAiSignal(entry.product.name, signals.color);
+    const directSize = !signals.size || parseDelimitedValues(entry.product.sizesText || "").map(normalizeSearchText).includes(normalizeSearchText(signals.size));
+    const directGender = !signals.gender || matchesAiSignal(entry.product.gender, signals.gender);
+    return directBrand && directCategory && directColor && directSize && directGender;
+  });
+
+  const decorated = dedupeCommercialProducts(veryCloseMatches.map((entry) => decorateCatalogProduct(entry.product, signals, entry)));
+  const decoratedDirect = dedupeCommercialProducts(directMatches.map((entry) => decorateCatalogProduct(entry.product, signals, entry)));
+  const primaryMatches = decorated.filter((item) => item.availability === "in_stock").slice(0, Math.max(1, Math.min(Number(limit || 3), 3)));
+  const alternativeMatches = decorated
+    .filter((item) => !primaryMatches.some((primary) => Number(primary.id) === Number(item.id)))
+    .slice(0, 3);
+
+  return {
+    signals,
+    directMatches: decoratedDirect,
+    primaryMatches,
+    alternativeMatches,
+    allMatches: decorated
+  };
+}
+
+async function searchAiProducts(query = "", { limit = 6, excludeProductIds = [] } = {}) {
+  const result = await searchAiProductsDetailed(query, { limit, excludeProductIds });
+  const preferred = result.primaryMatches.length ? result.primaryMatches : (result.directMatches.length ? result.directMatches : result.allMatches);
+  return preferred.slice(0, Math.max(1, Math.min(Number(limit || 3), 6)));
+}
+
+function buildProductReplyLine(product = {}) {
+  const parts = [];
+  const title = product.display_name || product.name || "Produto";
+  const brand = product.brand || product.marca || "";
+  const color = product.color || "";
+  const size = product.sizes?.[0] || product.sizesText || "";
+  const priceValue = product.promotional_price ?? product.price;
+  parts.push(title);
+  if (brand) {
+    parts.push(`marca ${brand}`);
+  }
+  if (color) {
+    parts.push(`cor ${color}`);
+  }
+  if (size) {
+    parts.push(`tam. ${size}`);
+  }
+  if (priceValue !== null && priceValue !== undefined && priceValue !== "") {
+    parts.push(formatCurrencyBRL(priceValue));
+  }
+  if (product.availability === "in_stock") {
+    parts.push("com estoque agora");
+  } else if (product.availability === "out_of_stock") {
+    parts.push("sem estoque no momento");
+  } else if (product.availability === "check_stock") {
+    parts.push("estoque para conferência");
+  }
+  return parts.join(" — ");
+}
+
+function serializeCommercialProductForAi(product = {}) {
+  return {
+    id: normalizeConversationProductId(product.id || product.product_id || product.sku || product.codigo || ""),
+    sku: product.sku || product.codigo || "",
+    codigo: product.codigo || "",
+    codigo_tiny: product.codigo_tiny || "",
+    codigo_etiqueta: product.codigo_etiqueta || "",
+    ean: product.ean || product.codigo_barras || "",
+    codigo_barras: product.codigo_barras || product.ean || "",
+    codigo_interno: product.codigo_interno || "",
+    name: product.display_name || product.name || "",
+    display_name: product.display_name || product.name || "",
+    brand: product.brand || product.marca || "",
+    category: product.category || product.categoria || "",
+    promotionalPrice: product.promotional_price ?? null,
+    price: product.price ?? product.preco_venda ?? null,
+    stock: product.stock ?? product.estoque ?? product.estoque_total ?? null,
+    availability: product.availability || "check_stock",
+    size: product.sizes?.[0] || product.sizesText || "",
+    sizes: Array.isArray(product.sizes) ? product.sizes : parseConversationSizes(product),
+    color: product.color || "",
+    image: product.preview_url || product.media_url || product.media_items?.[0]?.preview_url || "",
+    images: (product.media_items || []).map((item) => item.preview_url || item.media_url).filter(Boolean).slice(0, 3),
+    status: product.status || "",
+    permitirVenda: product.permitirVenda || product.permitir_venda || "",
+    motivoSelecao: product.commercial_reason || "",
+    relevancia: Number(product.commercial_score || 0),
+    source: product.origin || "",
+    sourceLabel: product.origin_label || "",
+    stockReliable: Boolean(product.stock_reliable),
+    photoSendReady: Boolean(product.photoSendReady),
+    main_media_id: product.main_media_id || null,
+    media_items: Array.isArray(product.media_items) ? product.media_items : []
+  };
+}
+
+function buildCatalogGroundedProductReply({
+  customerName = "",
+  query = "",
+  searchResult = {},
+  aerointelSignals = null,
+  aerointelProfileFound = false
+} = {}) {
+  const prefix = customerName ? `${customerName}, ` : "";
+  const signals = searchResult.signals || {};
+  const directMatches = Array.isArray(searchResult.directMatches) ? searchResult.directMatches : [];
+  const primaryMatches = Array.isArray(searchResult.primaryMatches) ? searchResult.primaryMatches : [];
+  const alternativeMatches = Array.isArray(searchResult.alternativeMatches) ? searchResult.alternativeMatches : [];
+  const allMatches = Array.isArray(searchResult.allMatches) ? searchResult.allMatches : [];
+  const bestAvailable = primaryMatches.slice(0, 3);
+  const exactButUnavailable = directMatches.find((item) => item.availability !== "in_stock") || null;
+  const exactNeedsCheck = directMatches.find((item) => item.availability === "check_stock") || null;
+
+  const commercialReasoning = {
+    customerIntent: [
+      signals.brand || "",
+      signals.category || "",
+      signals.gender || "",
+      signals.color || "",
+      signals.size || "",
+      signals.occasion || "",
+      signals.style || "",
+      signals.priceIntent || ""
+    ].filter(Boolean).join(" ").trim() || normalizeCommercialPtBrText(query || "") || "busca geral no catálogo",
+    rankingCriteria: ["estoque positivo", "marca compatível", "categoria compatível", "cor/tamanho quando pedido", "imagem e preço válidos", "preferências históricas quando disponíveis"]
+  };
+  if (aerointelProfileFound && aerointelSignals?.insights?.length) {
+    commercialReasoning.customerProfileHints = aerointelSignals.insights.slice(0, 3);
+  }
+
+  if (exactNeedsCheck) {
+    return {
+      reply: `${prefix}encontrei ${exactNeedsCheck.display_name || exactNeedsCheck.name}, mas esse estoque precisa de conferência antes de eu te confirmar. Se quiser, eu já separo alternativas parecidas com estoque positivo para adiantar.`,
+      intent: "product_search",
+      products: bestAvailable.map(serializeCommercialProductForAi),
+      needsHumanHelp: true,
+      commercialReasoning
+    };
+  }
+
+  if (bestAvailable.length) {
+    const lines = bestAvailable.slice(0, 3).map((product, index) => `${index + 1}. ${buildProductReplyLine(product)}.`);
+    const intro = exactButUnavailable
+      ? `${prefix}do jeito exato que você pediu eu encontrei no catálogo, mas sem estoque agora. Separei as melhores alternativas com estoque positivo:`
+      : aerointelProfileFound
+        ? `${prefix}separei opções que combinam bem com o seu estilo de compra e estão com estoque no momento:`
+        : `${prefix}separei as melhores opções com estoque no momento:`;
+    return {
+      reply: `${intro}\n\n${lines.join("\n")}\n\nQuer que eu te envie as fotos dessas opções?`,
+      intent: "product_search",
+      products: bestAvailable.map(serializeCommercialProductForAi),
+      needsHumanHelp: false,
+      commercialReasoning
+    };
+  }
+
+  if (exactButUnavailable) {
+    return {
+      reply: `${prefix}encontrei ${exactButUnavailable.display_name || exactButUnavailable.name} no catálogo, mas não consta estoque no momento. Se quiser, eu posso te mostrar alternativas próximas que estejam disponíveis agora.`,
+      intent: "product_search",
+      products: dedupeCommercialProducts([exactButUnavailable, ...alternativeMatches.slice(0, 2)]).map(serializeCommercialProductForAi),
+      needsHumanHelp: false,
+      commercialReasoning
+    };
+  }
+
+  if (allMatches.length) {
+    const lines = allMatches.slice(0, 3).map((product, index) => `${index + 1}. ${buildProductReplyLine(product)}.`);
+    return {
+      reply: `${prefix}não achei exatamente do jeito que você pediu, mas encontrei algumas opções próximas no catálogo:\n\n${lines.join("\n")}\n\nSe quiser, eu posso refinar por marca, cor, tamanho ou faixa de preço.`,
+      intent: "product_search",
+      products: allMatches.slice(0, 3).map(serializeCommercialProductForAi),
+      needsHumanHelp: false,
+      commercialReasoning
+    };
+  }
+
+  return {
+    reply: `${prefix}não encontrei esse item exatamente no catálogo agora. Me diz se você prefere por marca, tamanho, cor ou faixa de preço que eu refino melhor para você.`,
+    intent: "product_search",
+    products: [],
+    needsHumanHelp: false,
+    commercialReasoning
+  };
+}
+
+function buildAiProductSuggestionText(product) {
+  if (!product) {
+    return "";
+  }
+  const description = String(product.short_description_display || buildAiProductDisplayCopy({ short_description: product.short_description || "" }) || "").trim();
+  const salesArgument = String(product.sales_argument_display || buildAiProductDisplayCopy({ sales_argument: product.sales_argument || "" }) || "").trim();
+  let secondSentence = description || salesArgument;
+  if (secondSentence.length > 95) {
+    secondSentence = secondSentence.slice(0, 92).trim().replace(/[,\s]+$/g, "") + "...";
+  }
+
+  const lines = [
+    `Separei uma opção que combina com o que você procura: ${String(product.display_name || buildAiProductDisplayName(product) || "").trim()}.`,
+    secondSentence && /[.!?]$/.test(secondSentence)
+      ? secondSentence
+      : `${secondSentence || "É uma opção bem versátil e com ótimo acabamento."}.`,
+    "Quer que eu te mande a foto?"
+  ];
+
+  return lines.filter(Boolean).join(" ");
+}
+
+function buildProductSuggestionCaption(product, customMessage = "") {
+  const blocks = [];
+  if (customMessage) {
+    blocks.push(String(customMessage || "").trim());
+  } else {
+    const enhanced = enhanceProductSalesText(product);
+    blocks.push("Separei essa opção da AEROSTORE para você:");
+    blocks.push(product.display_name || buildAiProductDisplayName(product) || product.name || "");
+    if (enhanced.aiShortDescription) {
+      blocks.push(enhanced.aiShortDescription);
+    } else if (enhanced.aiSalesArgument) {
+      blocks.push(enhanced.aiSalesArgument);
+    }
+    if (product.price !== null && product.price !== undefined) {
+      blocks.push(`Valor: ${formatCurrencyBRL(product.price)}`);
+    }
+    if (product.store) {
+      blocks.push(`Disponível para atendimento na unidade: ${product.store}`);
+    }
+    blocks.push("Se quiser, posso te ajudar com tamanho, cor ou outras opções.");
+  }
+  return blocks.filter(Boolean).join("\n\n").trim();
+}
+
+async function syncAiProductMedia(productId, mediaIds = []) {
+  const normalizedMediaIds = Array.from(new Set((mediaIds || []).map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0))).slice(0, 3);
+  if (normalizedMediaIds.length > 3) {
+    throw new Error("Cada produto estratégico pode ter no máximo 3 fotos.");
+  }
+  await run(`DELETE FROM ai_product_media WHERE product_id = ?`, [productId]);
+  for (let index = 0; index < normalizedMediaIds.length; index += 1) {
+    await run(
+      `INSERT INTO ai_product_media (product_id, media_id, sort_order, created_at)
+       VALUES (?, ?, ?, datetime('now'))`,
+      [productId, normalizedMediaIds[index], index + 1]
+    );
+  }
+  await run(
+    `UPDATE ai_products
+     SET main_media_id = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+    [normalizedMediaIds[0] || null, productId]
+  );
+}
+
+async function getAiProductMediaItems(product = null) {
+  if (!product?.id) {
+    return [];
+  }
+  const mediaRows = await listAiProductMediaRows([product.id]);
+  const serializedRows = serializeAiProductMediaRows(mediaRows);
+  if (serializedRows.length) {
+    return serializedRows;
+  }
+  if (product.main_media_id) {
+    return [buildAiProductMediaUrls(product.main_media_id)];
+  }
+  return [];
+}
+
+async function sendProductMediaSequenceToChatId({
+  chatId = "",
+  product = null,
+  customMessage = "",
+  source = "ai_auto_reply",
+  autoSent = true,
+  customerMessage = "",
+  contactId = null,
+  phone = "",
+  customerName = "",
+  connectedNumber = ""
+} = {}) {
+  const finalChatId = String(chatId || "").trim();
+  if (!finalChatId) {
+    throw new Error("Chat de destino inválido para envio da foto do produto.");
+  }
+
+  const mediaItems = await getAiProductMediaItems(product);
+  if (!mediaItems.length) {
+    throw new Error("O produto não possui foto cadastrada.");
+  }
+
+  let firstMessageId = "";
+  const sentMediaIds = [];
+  for (let index = 0; index < mediaItems.length; index += 1) {
+    const item = mediaItems[index];
+    const media = await get(`SELECT * FROM campaign_media WHERE id = ? AND status = 'active'`, [item.media_id]);
+    if (!media) {
+      continue;
+    }
+    if (media.media_type !== "image") {
+      continue;
+    }
+    if (!fs.existsSync(media.file_path)) {
+      continue;
+    }
+    const { messageMedia } = buildStoredMessageMedia(media);
+    const caption = index === 0
+      ? buildProductSuggestionCaption(product, customMessage)
+      : index === 1
+        ? "Detalhe da peça"
+        : "Mais um detalhe";
+    const sentMessage = await whatsappClient.sendMessage(finalChatId, messageMedia, {
+      caption: caption || undefined
+    });
+    const messageId = sentMessage?.id?._serialized || sentMessage?.id?.id || "";
+    if (!firstMessageId && messageId) {
+      firstMessageId = messageId;
+    }
+    sentMediaIds.push(Number(item.media_id));
+    await createAiMessageLog({
+      contactId: contactId || null,
+      phone: normalizePhone(phone || ""),
+      phoneOriginal: String(phone || ""),
+      inboundChatId: finalChatId,
+      customerName,
+      customerMessage,
+      direction: "sent",
+      source,
+      connectedNumber: connectedNumber || whatsappState.connectedNumber || "",
+      messageText: caption,
+      intent: "produto",
+      needsHuman: false,
+      autoSent,
+      productId: product.id,
+      mediaId: Number(item.media_id),
+      status: "ok",
+      whatsappMessageId: messageId,
+      debugContext: {
+        photoIndex: index + 1,
+        photosSentCount: mediaItems.length
+      }
+    });
+  }
+
+  if (!sentMediaIds.length) {
+    throw new Error("Nenhuma foto válida do produto pôde ser enviada.");
+  }
+
+  return {
+    success: true,
+    product,
+    mediaIds: sentMediaIds,
+    messageId: firstMessageId,
+    photosSentCount: sentMediaIds.length,
+    chatId: finalChatId
+  };
+}
+
+async function sendAiProductSuggestionToWhatsApp({ contactId = null, phone = "", productId, customMessage = "", source = "product_suggestion", autoSent = false, customerMessage = "" } = {}) {
+  if (!productId) {
+    throw new Error("productId é obrigatório.");
+  }
+
+  const product = await getAiProductById(productId, { activeOnly: true });
+  if (!product) {
+    throw new Error("Produto estratégico não encontrado ou inativo.");
+  }
+  const productMediaItems = await getAiProductMediaItems(product);
+  if (!productMediaItems.length) {
+    throw new Error("O produto não possui foto cadastrada.");
+  }
+
+  let contact = null;
+  let finalPhone = normalizePhone(phone);
+  if (contactId) {
+    contact = await get(`SELECT * FROM contacts WHERE id = ?`, [contactId]);
+    if (!contact) {
+      throw new Error("Contato não encontrado.");
+    }
+    finalPhone = normalizePhone(contact.phone);
+  } else if (finalPhone) {
+    contact = await findContactByPhone(finalPhone);
+  }
+
+  if (!finalPhone) {
+    throw new Error("Telefone inválido para envio do produto.");
+  }
+
+  let firstSendResult = null;
+  for (let index = 0; index < productMediaItems.length; index += 1) {
+    const mediaItem = productMediaItems[index];
+    const media = await get(`SELECT * FROM campaign_media WHERE id = ? AND status = 'active'`, [mediaItem.media_id]);
+    if (!media) {
+      continue;
+    }
+    const caption = index === 0
+      ? buildProductSuggestionCaption(product, customMessage)
+      : index === 1
+        ? "Detalhe da peça"
+        : "Mais um detalhe";
+    const sendResult = await sendAutomatedMediaMessage({
+      phone: finalPhone,
+      media: {
+        ...media,
+        contact_id: contact?.id || null
+      },
+      caption,
+      sendType: "image"
+    });
+    if (!firstSendResult) {
+      firstSendResult = sendResult;
+    }
+    await createAiMessageLog({
+      contactId: contact?.id || null,
+      phone: finalPhone,
+      customerName: contact?.name || "",
+      customerMessage,
+      direction: "sent",
+      source,
+      connectedNumber: whatsappState.connectedNumber || "",
+      messageText: caption,
+      intent: "produto",
+      needsHuman: false,
+      autoSent,
+      productId: product.id,
+      mediaId: Number(mediaItem.media_id),
+      status: "ok",
+      whatsappMessageId: sendResult.messageId || "",
+      debugContext: {
+        photoIndex: index + 1,
+        photosSentCount: productMediaItems.length
+      }
+    });
+  }
+
+  if (!firstSendResult) {
+    throw new Error("Nenhuma foto válida do produto pôde ser enviada.");
+  }
+
+  return {
+    success: true,
+    product,
+    caption: buildProductSuggestionCaption(product, customMessage),
+    contact,
+    phone: finalPhone,
+    messageId: firstSendResult?.messageId || "",
+    chatId: firstSendResult?.chatId || ""
+  };
+}
+
+async function sendWhatsAppTextToChatId(chatId, message, options = {}) {
+  if (whatsappState.status !== "conectado" || !whatsappClient) {
+    throw new Error("WhatsApp não está conectado");
+  }
+
+  const finalChatId = String(chatId || "").trim();
+  if (!finalChatId) {
+    throw new Error("Chat de destino inválido para resposta inbound.");
+  }
+
+  const finalMessage = String(message || "").trim();
+  if (!finalMessage) {
+    throw new Error("Mensagem vazia para envio por WhatsApp.");
+  }
+
+  try {
+    const sentMessage = await whatsappClient.sendMessage(finalChatId, finalMessage);
+    return {
+      success: true,
+      chatId: finalChatId,
+      messageId: sentMessage?.id?._serialized || sentMessage?.id?.id || ""
+    };
+  } catch (error) {
+    throw normalizeWhatsAppSendError(error, {
+      chatId: finalChatId,
+      debugLabel: String(options.debugLabel || "WHATSAPP_INBOUND_CHAT")
+    });
+  }
+}
+
+async function sendAiProductSuggestionToChatId({
+  chatId = "",
+  productId,
+  customMessage = "",
+  source = "ai_auto_reply",
+  autoSent = true,
+  customerMessage = "",
+  contactId = null,
+  phone = "",
+  customerName = "",
+  connectedNumber = ""
+} = {}) {
+  if (!productId) {
+    throw new Error("productId é obrigatório.");
+  }
+
+  const finalChatId = String(chatId || "").trim();
+  if (!finalChatId) {
+    throw new Error("Chat de destino inválido para envio da foto do produto.");
+  }
+
+  const product = await getAiProductById(productId, { activeOnly: true });
+  if (!product) {
+    throw new Error("Produto estratégico não encontrado ou inativo.");
+  }
+  const productMediaItems = await getAiProductMediaItems(product);
+  if (!productMediaItems.length) {
+    throw new Error("O produto não possui foto cadastrada.");
+  }
+  return sendProductMediaSequenceToChatId({
+    chatId: finalChatId,
+    product,
+    customMessage,
+    source,
+    autoSent,
+    customerMessage,
+    contactId,
+    phone,
+    customerName,
+    connectedNumber
+  });
+}
+
+async function buildAiReplyPayload({ mensagem, telefone = "", nome = "", contexto = "" } = {}) {
+  const classification = classifyAiIntent(mensagem);
+  const { normalizedPhone, contact, facts } = await buildAiCustomerFacts({ telefone, nome });
+  const storeIdentity = getAiStoreIdentity();
+  const aerointelUsed = true;
+  const aerointelProfileFound = Boolean(facts?.aerointelProfileFound);
+  const aerointelSignals = facts?.aerointelSignals || {
+    favoriteBrands: [],
+    favoriteCategories: [],
+    styleHint: "",
+    priceProfile: "",
+    commercialProfile: [],
+    insights: []
+  };
+  const sellerContext = await buildAiSellerContext({
+    sender: {
+      phoneNormalized: normalizedPhone || "",
+      phoneOriginal: telefone || "",
+      displayName: facts.nome || nome || "",
+      inboundChatId: ""
+    },
+    contact,
+    messageText: mensagem,
+    customerFactsPayload: { normalizedPhone, contact, facts },
+    aerointelSignals,
+    conversationHistory: []
+  });
+  const aiResult = await gerarRespostaAtendimentoAerostore({
+    mensagem,
+    nome: facts.nome || nome || "",
+    intencao: classification.intencao,
+    precisaHumano: classification.precisaHumano,
+    facts,
+    contexto
+  });
+
+  let resposta = String(aiResult.resposta || "").trim();
+  let precisaHumano = Boolean(aiResult.precisaHumano || classification.precisaHumano);
+  const safeReply = buildSafeAiReplyByIntent({ mensagem, intencao: classification.intencao });
+  let produtosSugeridos = [];
+  let products = [];
+  let commercialReasoning = null;
+  const contextSources = Array.from(new Set(facts?.dataSources || []));
+
+  if (classification.intencao === "produto") {
+    const searchResult = await searchConversationProducts(mensagem, { limit: 5 });
+    const exactProducts = Array.isArray(searchResult.exactMatches) ? searchResult.exactMatches : [];
+    const candidateProducts = Array.isArray(searchResult.products) ? searchResult.products : [];
+    produtosSugeridos = (exactProducts.length ? exactProducts : candidateProducts).slice(0, 3);
+    products = produtosSugeridos.map(serializeCommercialProductForAi);
+    commercialReasoning = {
+      customerIntent: normalizeCommercialPtBrText(mensagem || "") || "busca de produto",
+      rankingCriteria: [
+        "match exato por código quando existir",
+        "nome/categoria/cor/tamanho",
+        "preço cadastrado",
+        "estoque operacional quando confiável",
+        "preferências comerciais do cliente quando disponíveis"
+      ],
+      source: "base operacional de produtos do PDV"
+    };
+    if (produtosSugeridos.length) {
+      const hasReliableStock = produtosSugeridos.some((item) => item.availability === "in_stock" && item.stock_reliable);
+      const topLines = produtosSugeridos.slice(0, 3).map((product, index) => `${index + 1}. ${buildProductReplyLine(product)}.`).join("\n");
+      const hasOnlyCheckStock = produtosSugeridos.every((item) => item.availability === "check_stock");
+      resposta = hasOnlyCheckStock
+        ? `${facts.nome ? `${facts.nome}, ` : ""}encontrei opções reais no cadastro, mas preciso confirmar o saldo antes de te prometer disponibilidade:\n\n${topLines}\n\nSe quiser, eu já valido tamanho e estoque certinho para você.`
+        : `${facts.nome ? `${facts.nome}, ` : ""}encontrei estas opções reais para você:\n\n${topLines}\n\n${hasReliableStock ? "Se quiser, eu filtro por tamanho, cor ou estilo." : "Se quiser, eu confirmo o saldo certinho antes de te prometer disponibilidade."}`;
+      precisaHumano = !hasReliableStock && hasOnlyCheckStock;
+      if (!hasReliableStock && Array.isArray(sellerContext.other_stores_inventory) && sellerContext.other_stores_inventory.length) {
+        resposta = buildStoreAwareTransferReply({
+          customerName: facts.nome || nome || "",
+          currentStoreName: storeIdentity.storeName,
+          item: sellerContext.other_stores_inventory[0]
+        });
+        precisaHumano = false;
+      }
+    } else {
+      if (Array.isArray(sellerContext.other_stores_inventory) && sellerContext.other_stores_inventory.length) {
+        resposta = buildStoreAwareTransferReply({
+          customerName: facts.nome || nome || "",
+          currentStoreName: storeIdentity.storeName,
+          item: sellerContext.other_stores_inventory[0]
+        });
+        precisaHumano = false;
+      } else {
+        resposta = "Não encontrei esse produto pelo nome ou código informado agora. Você pode me mandar uma foto da etiqueta, SKU ou mais detalhes para eu refinar melhor?";
+      }
+      precisaHumano = false;
+    }
+    contextSources.push("Produtos cadastrados do PDV");
+    contextSources.push(`Loja ativa: ${storeIdentity.storeName}`);
+  }
+
+  if (classification.intencao === "cashback") {
+    resposta = buildCashbackReplyFromFacts({
+      facts,
+      customerName: facts.nome || nome || ""
+    });
+    precisaHumano = /confer/i.test(resposta);
+    commercialReasoning = {
+      customerIntent: "consulta de cashback",
+      rankingCriteria: ["ledger oficial", "cadastro do cliente", "snapshot comercial"],
+      source: "cashback oficial do CRM/PDV"
+    };
+    contextSources.push("Cashback oficial do cliente");
+  }
+
+  if (safeReply.resposta && !["produto", "cashback"].includes(classification.intencao)) {
+    resposta = safeReply.resposta;
+    precisaHumano = safeReply.precisaHumano;
+  }
+
+  if (classification.intencao === "produto" && produtosSugeridos.length) {
+    if (!products.length) {
+      products = produtosSugeridos.map(serializeCommercialProductForAi);
+    }
+  } else if (classification.intencao === "produto") {
+    products = [];
+    commercialReasoning = commercialReasoning || {
+      customerIntent: normalizeCommercialPtBrText(mensagem || "") || "busca ampla por produto",
+      rankingCriteria: ["catálogo real", "estoque positivo", "categoria e marca compatíveis", "preferências históricas do cliente quando disponíveis"]
+    };
+  }
+
+  if (!resposta) {
+    resposta = "Posso te ajudar sim. Me conta um pouco melhor o que você procura para eu te direcionar da melhor forma.";
+  }
+
+  return {
+    resposta,
+    intencao: classification.intencao,
+    precisaHumano,
+    telefoneNormalizado: normalizedPhone,
+    contact,
+    produtosSugeridos,
+    products,
+    commercialReasoning,
+    needsHumanHelp: precisaHumano,
+    aerointelUsed,
+    aerointelProfileFound,
+    aerointelSignals,
+    storeId: storeIdentity.storeId,
+    storeName: storeIdentity.storeName,
+    sellerContext,
+    customerFacts: {
+      nome: facts.nome || "",
+      telefone: facts.telefone || "",
+      topSize: facts.topSize || "",
+      bottomSize: facts.bottomSize || "",
+      shoeSize: facts.shoeSize || "",
+      cashbackAvailable: facts.cashbackAvailable,
+      cashbackPending: facts.cashbackPending,
+      favoriteStore: facts.favoriteStore || "",
+      favoriteSeller: facts.favoriteSeller || "",
+      commercialHint: facts.commercialHint || ""
+    },
+    contextSources: Array.from(new Set(contextSources.filter(Boolean)))
+  };
+}
+
+async function normalizeAiProductPayload(payload = {}, current = null) {
+  const catalogs = await getAiCatalogBundle({ includeInactive: true });
+  const categoryId = payload.category_id === undefined ? current?.category_id : (payload.category_id || null);
+  const genderId = payload.gender_id === undefined ? current?.gender_id : (payload.gender_id || null);
+  const colorId = payload.color_id === undefined ? current?.color_id : (payload.color_id || null);
+  const sizeIds = payload.size_ids === undefined ? normalizeProductSizeIds(current?.size_ids || "") : normalizeProductSizeIds(payload.size_ids || "");
+  if (Array.isArray(payload.media_ids) && payload.media_ids.filter(Boolean).length > 3) {
+    throw new Error("Cada produto estratégico pode ter no máximo 3 fotos.");
+  }
+  const mediaIds = Array.from(new Set(
+    (Array.isArray(payload.media_ids) ? payload.media_ids : (current?.media_ids || []))
+      .map((item) => Number(item))
+      .filter((item) => Number.isFinite(item) && item > 0)
+  )).slice(0, 3);
+  const fallbackMainMediaId = payload.main_media_id === undefined ? (current?.main_media_id || null) : (payload.main_media_id || null);
+
+  const resolvedProduct = {
+    name: String(payload.name ?? current?.name ?? "").trim(),
+    commercial_name: String(payload.commercial_name ?? current?.commercial_name ?? "").trim(),
+    marca: normalizeAiBrandValue(payload.marca ?? payload.brand ?? current?.marca ?? current?.brand ?? ""),
+    category_id: categoryId ? Number(categoryId) : null,
+    gender_id: genderId ? Number(genderId) : null,
+    color_id: colorId ? Number(colorId) : null,
+    size_ids: sizeIds.join(", "),
+    category: String(payload.category ?? current?.category ?? resolveSelectedNameById(catalogs.categories, categoryId) ?? "").trim(),
+    gender: String(payload.gender ?? current?.gender ?? resolveSelectedNameById(catalogs.genders, genderId) ?? "").trim(),
+    color: String(payload.color ?? current?.color ?? resolveSelectedNameById(catalogs.colors, colorId) ?? "").trim(),
+    sizes: stringifyDelimitedValues(payload.sizes ?? current?.sizesText ?? resolveSelectedNamesByIds(catalogs.sizes, sizeIds).join(", ")),
+    price: payload.price === undefined ? parsePriceInput(current?.price) : parsePriceInput(payload.price),
+    store: String(payload.store ?? current?.store ?? "").trim(),
+    short_description: String(payload.short_description ?? current?.short_description ?? "").trim(),
+    sales_argument: String(payload.sales_argument ?? current?.sales_argument ?? "").trim(),
+    tags: stringifyDelimitedValues(payload.tags ?? current?.tagsText ?? ""),
+    priority: normalizeAiProductPriority(payload.priority ?? current?.priority),
+    status: normalizeAiProductVisibilityStatus(payload.status ?? current?.status),
+    main_media_id: mediaIds[0] || fallbackMainMediaId || null,
+    media_ids: mediaIds
+  };
+
+  const categoryOption = catalogs.categories.find((item) => Number(item.id) === Number(resolvedProduct.category_id));
+  if (categoryOption?.use_gender_filter && !resolvedProduct.gender_id && !resolvedProduct.gender) {
+    throw new Error("Selecione o gênero para essa categoria.");
+  }
+
+  const enhanced = enhanceProductSalesText({
+    ...resolvedProduct,
+    display_name: buildAiProductDisplayName(resolvedProduct)
+  });
+
+  return {
+    ...resolvedProduct,
+    ai_title: enhanced.aiTitle,
+    ai_short_description: enhanced.aiShortDescription,
+    ai_sales_argument: enhanced.aiSalesArgument
+  };
+}
+
+function areMessagesVerySimilar(currentMessage = "", previousMessage = "") {
+  const current = normalizeSearchText(currentMessage);
+  const previous = normalizeSearchText(previousMessage);
+  if (!current || !previous) {
+    return false;
+  }
+  if (current === previous) {
+    return true;
+  }
+  if (current.length >= 6 && previous.length >= 6) {
+    return current.includes(previous) || previous.includes(current);
+  }
+  return false;
+}
+
+function analyzeAiAutoReplyCooldown({
+  cooldownKey = "",
+  cooldownSeconds = 30,
+  messageText = "",
+  classification = { intencao: "outro" },
+  conversationState = null,
+  expectedStageReply = false
+} = {}) {
+  const key = String(cooldownKey || "").trim();
+  if (!key) {
+    return { blocked: false, reason: "allowed_new_intent" };
+  }
+
+  const lastReply = aiRecentReplies.get(key);
+  if (!lastReply) {
+    return { blocked: false, reason: "allowed_new_intent" };
+  }
+
+  const cooldownWindowMs = Number(cooldownSeconds || 30) * 1000;
+  if (Date.now() - Number(lastReply.at || 0) >= cooldownWindowMs) {
+    return { blocked: false, reason: "allowed_new_intent" };
+  }
+
+  if (expectedStageReply) {
+    return { blocked: false, reason: "allowed_expected_stage_reply" };
+  }
+
+  const previousMessage = String(conversationState?.last_customer_message || lastReply.messageText || "").trim();
+  const previousIntent = String(conversationState?.last_intent || lastReply.intent || "").trim() || "outro";
+  const repeated = areMessagesVerySimilar(messageText, previousMessage);
+
+  if (repeated) {
+    return {
+      blocked: true,
+      reason: normalizeSearchText(messageText).length <= 4 ? "spam" : "repeated_message"
+    };
+  }
+
+  if (String(classification?.intencao || "outro") !== previousIntent) {
+    return { blocked: false, reason: "allowed_new_intent" };
+  }
+
+  return { blocked: false, reason: "allowed_new_intent" };
+}
+
+function registerAiAutoReply(phone, payload = {}) {
+  const key = String(phone || "").trim();
+  if (key) {
+    aiRecentReplies.set(key, {
+      at: Date.now(),
+      messageText: String(payload.messageText || "").trim(),
+      intent: String(payload.intent || "").trim() || "outro"
+    });
+  }
+}
+
+function getCurrentConnectedNumber() {
+  return whatsappClient?.info?.wid?.user || whatsappState.connectedNumber || null;
+}
+
+async function getAiConversationState(chatId) {
+  if (!chatId) {
+    return null;
+  }
+  return get(`SELECT * FROM ai_conversation_state WHERE chat_id = ?`, [chatId]);
+}
+
+async function upsertAiConversationState(chatId, payload = {}) {
+  const current = await getAiConversationState(chatId);
+  const currentSuggestedIds = parseStoredIdList(current?.suggested_product_ids || "");
+  const nextSuggestedIds = payload.suggestedProductIds === undefined
+    ? currentSuggestedIds
+    : Array.isArray(payload.suggestedProductIds)
+      ? payload.suggestedProductIds
+      : parseStoredIdList(payload.suggestedProductIds || "");
+  const base = {
+    phone: String(payload.phone ?? current?.phone ?? "").trim(),
+    contact_id: payload.contactId ?? current?.contact_id ?? null,
+    customer_name: String(payload.customerName ?? current?.customer_name ?? "").trim(),
+    stage: String(payload.stage ?? current?.stage ?? "idle").trim() || "idle",
+    last_intent: String(payload.lastIntent ?? current?.last_intent ?? "outro").trim() || "outro",
+    desired_product: String(payload.desiredProduct ?? current?.desired_product ?? "").trim(),
+    desired_category: String(payload.desiredCategory ?? current?.desired_category ?? "").trim(),
+    desired_color: String(payload.desiredColor ?? current?.desired_color ?? "").trim(),
+    desired_size: String(payload.desiredSize ?? current?.desired_size ?? "").trim(),
+    desired_gender: String(payload.desiredGender ?? current?.desired_gender ?? "").trim(),
+    desired_style: String(payload.desiredStyle ?? current?.desired_style ?? "").trim(),
+    last_question: String(payload.lastQuestion ?? current?.last_question ?? "").trim(),
+    suggested_product_id: payload.suggestedProductId ?? current?.suggested_product_id ?? null,
+    suggested_product_ids: stringifyIdList(nextSuggestedIds),
+    photos_sent_count: payload.photosSentCount ?? current?.photos_sent_count ?? 0,
+    waiting_for: String(payload.waitingFor ?? current?.waiting_for ?? "").trim(),
+    last_customer_message: String(payload.lastCustomerMessage ?? current?.last_customer_message ?? "").trim(),
+    last_ai_response: String(payload.lastAiResponse ?? current?.last_ai_response ?? "").trim()
+  };
+
+  if (!current) {
+    await run(
+      `INSERT INTO ai_conversation_state
+      (chat_id, phone, contact_id, customer_name, stage, last_intent, desired_product, desired_category, desired_color, desired_size, desired_gender, desired_style, last_question, suggested_product_id, suggested_product_ids, photos_sent_count, waiting_for, last_customer_message, last_ai_response, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      [
+        String(chatId),
+        base.phone,
+        base.contact_id,
+        base.customer_name,
+        base.stage,
+        base.last_intent,
+        base.desired_product,
+        base.desired_category,
+        base.desired_color,
+        base.desired_size,
+        base.desired_gender,
+        base.desired_style,
+        base.last_question,
+        base.suggested_product_id,
+        base.suggested_product_ids,
+        base.photos_sent_count,
+        base.waiting_for,
+        base.last_customer_message,
+        base.last_ai_response
+      ]
+    );
+  } else {
+    await run(
+      `UPDATE ai_conversation_state
+       SET phone = ?, contact_id = ?, customer_name = ?, stage = ?, last_intent = ?, desired_product = ?, desired_category = ?, desired_color = ?, desired_size = ?, desired_gender = ?, desired_style = ?, last_question = ?, suggested_product_id = ?, suggested_product_ids = ?, photos_sent_count = ?, waiting_for = ?, last_customer_message = ?, last_ai_response = ?, updated_at = datetime('now')
+       WHERE chat_id = ?`,
+      [
+        base.phone,
+        base.contact_id,
+        base.customer_name,
+        base.stage,
+        base.last_intent,
+        base.desired_product,
+        base.desired_category,
+        base.desired_color,
+        base.desired_size,
+        base.desired_gender,
+        base.desired_style,
+        base.last_question,
+        base.suggested_product_id,
+        base.suggested_product_ids,
+        base.photos_sent_count,
+        base.waiting_for,
+        base.last_customer_message,
+        base.last_ai_response,
+        String(chatId)
+      ]
+    );
+  }
+
+  return getAiConversationState(chatId);
+}
+
+function resolveCustomerGenderLabel(product) {
+  if (!product) {
+    return "uma opção";
+  }
+  const gender = String(product.gender || "").trim().toLowerCase();
+  if (gender === "masculino") {
+    return "uma opção masculina";
+  }
+  if (gender === "feminino") {
+    return "uma opção feminina";
+  }
+  if (gender === "infantil") {
+    return "uma opção infantil";
+  }
+  return "uma opção";
+}
+
+function isExpectedConversationReply(state = null, messageText = "") {
+  if (!state?.waiting_for) {
+    return false;
+  }
+  if (state.waiting_for === "name") {
+    return looksLikeNameAnswer(messageText);
+  }
+  if (state.waiting_for === "gender") {
+    return Boolean(parseGenderChoice(messageText));
+  }
+  if (state.waiting_for === "photo_confirmation") {
+    return isPositivePhotoConfirmation(messageText);
+  }
+  return false;
+}
+
+function buildProductRequestLabel({ category = "", color = "", size = "" } = {}) {
+  return [category, color, size ? String(size).toUpperCase() : ""]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+function parseStoredIdList(value = "") {
+  return Array.from(new Set(
+    String(value || "")
+      .split(/[,\n]+/)
+      .map((item) => normalizeConversationProductId(item))
+      .filter(Boolean)
+  ));
+}
+
+function stringifyIdList(values = []) {
+  return Array.from(new Set((values || []).map((item) => normalizeConversationProductId(item)).filter(Boolean))).join(", ");
+}
+
+function parseSqliteDateTime(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return null;
+  }
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  const date = new Date(normalized.endsWith("Z") ? normalized : `${normalized}Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isGreetingOnlyMessage(messageText = "", classification = { intencao: "outro" }) {
+  return isGreetingMessage(messageText) && String(classification?.intencao || "outro") === "outro";
+}
+
+function hasConversationContextExpired(state = null, { minutes = 30 } = {}) {
+  if (!state?.updated_at) {
+    return false;
+  }
+  const updatedAt = parseSqliteDateTime(state.updated_at);
+  if (!updatedAt) {
+    return false;
+  }
+  return Date.now() - updatedAt.getTime() > Number(minutes || 30) * 60 * 1000;
+}
+
+function buildSafeConversationalReply(text = "") {
+  const cleaned = String(text || "")
+    .replace(/opcao cadastrada/gi, "opção")
+    .replace(/opção cadastrada/gi, "opção")
+    .replace(/produto cadastrado/gi, "opção")
+    .replace(/base de dados/gi, "")
+    .replace(/vitrine ia/gi, "")
+    .replace(/sistema/gi, "")
+    .replace(/\bpra\b/gi, "para")
+    .replace(/copa do mundo agora de 2026/gi, "Copa de 2026")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "Entendi. Me fala um pouco mais do que você procura que eu te ajudo a encontrar a melhor opção.";
+}
+
+function isGreetingMessage(text = "") {
+  const normalized = normalizeSearchText(text);
+  return [
+    "oi",
+    "ola",
+    "olá",
+    "bom dia",
+    "boa tarde",
+    "boa noite"
+  ].some((term) => normalized.includes(normalizeSearchText(term)));
+}
+
+function isAlternativeProductRequest(text = "") {
+  const normalized = normalizeSearchText(text);
+  return [
+    "tem outras",
+    "tem mais",
+    "outras opcoes",
+    "outras opções",
+    "manda outra",
+    "tem outro modelo",
+    "quero ver mais",
+    "tem outras ai",
+    "tem outras aí"
+  ].some((term) => normalized.includes(normalizeSearchText(term)));
+}
+
+function isOtherColorRequest(text = "") {
+  const normalized = normalizeSearchText(text);
+  return [
+    "quero outra cor",
+    "tem outra cor",
+    "tem em outra cor",
+    "queria outra cor",
+    "outra cor"
+  ].some((term) => normalized.includes(normalizeSearchText(term)));
+}
+
+function parseStylePreference(text = "") {
+  const normalized = normalizeSearchText(text);
+  if (["premium", "pima", "diferenciada", "sofisticada"].some((term) => normalized.includes(normalizeSearchText(term)))) {
+    return "premium";
+  }
+  if (["estampada", "estampa", "estampado"].some((term) => normalized.includes(normalizeSearchText(term)))) {
+    return "estampada";
+  }
+  if (["basica", "básica", "lisa", "mais basica", "mais básica"].some((term) => normalized.includes(normalizeSearchText(term)))) {
+    return "basica";
+  }
+  return "";
+}
+
+function buildDecisionPrefix(name = "", fallback = "Perfeito") {
+  return name ? `${fallback}, ${name}.` : `${fallback}.`;
+}
+
+function buildStoreAwareTransferReply({ customerName = "", currentStoreName = "", item = null } = {}) {
+  if (!item) {
+    return customerName
+      ? `${buildDecisionPrefix(customerName, "Deixa comigo")} vou verificar outras opções reais para você e já te passo.`
+      : "Deixa comigo, vou verificar outras opções reais para você e já te passo.";
+  }
+  const name = item.name || "essa opção";
+  const price = item.price > 0 ? ` por *${formatCurrencyBRL(item.price)}*` : "";
+  if (item.transfer_possible) {
+    const transferLine = item.transfer_days === 0
+      ? `Na ${item.store_name} eu consigo pegar ${name}${price} hoje mesmo.`
+      : `Achei ${name}${price} na ${item.store_name}. Posso verificar a transferência para ${currentStoreName} e o prazo é de ${item.transfer_days} dia${item.transfer_days > 1 ? "s úteis" : " útil"}.`;
+    return `${transferLine} Quer que eu veja isso certinho para você?`;
+  }
+  return `Aqui na ${currentStoreName} eu não tenho esse item agora, mas encontrei na ${item.store_name}${price}. Como é a última unidade ou tem restrição, prefiro não prometer transferência. Se quiser, eu te passo essa loja ou vejo uma alternativa parecida para você.`;
+}
+
+function buildStoreAwareProductReply({ customerName = "", currentStoreName = "", item = null } = {}) {
+  if (!item) {
+    return customerName
+      ? `${buildDecisionPrefix(customerName, "Me ajuda com mais um detalhe")} você quer algo mais casual, social ou mais premium?`
+      : "Me ajuda com mais um detalhe: você quer algo mais casual, social ou mais premium?";
+  }
+  const parts = [];
+  const title = item.name || "essa opção";
+  const size = Array.isArray(item.sizes_available) && item.sizes_available.length ? item.sizes_available.join(", ") : "";
+  const colors = Array.isArray(item.colors_available) && item.colors_available.length ? item.colors_available.join(", ") : "";
+  parts.push(`Tenho *${title}* aqui na ${currentStoreName}`);
+  if (size) {
+    parts.push(`nos tamanhos ${size}`);
+  }
+  if (colors) {
+    parts.push(`em ${colors}`);
+  }
+  if (item.price > 0) {
+    parts.push(`por *${formatCurrencyBRL(item.price)}*`);
+  }
+  const urgency = Number(item.quantity || 0) === 1 ? " Última unidade!" : "";
+  return `${customerName ? `${customerName}, ` : ""}${parts.join(" ")}.${urgency} Quer que eu já te separe ou te mostro outra cor também?`;
+}
+
+function buildAskPreferenceReply({ customerName = "", categoryLabel = "essa peça" } = {}) {
+  const baseLabel = String(categoryLabel || "essa peça").trim();
+  return `${buildDecisionPrefix(customerName, "Perfeito")} Você prefere ${baseLabel} mais básica, estampada ou uma opção premium?`;
+}
+
+function buildSuggestProductReply({ customerName = "", product = null, currentStoreName = "" } = {}) {
+  const displayName = product?.display_name || buildAiProductDisplayName(product || {}) || "essa opção";
+  const priceLine = Number(product?.price || 0) > 0 ? ` por *${formatCurrencyBRL(product.price)}*` : "";
+  const stockLine = Number(product?.stock || 0) === 1 ? " É a última unidade." : "";
+  const storeLine = currentStoreName ? ` aqui na ${currentStoreName}` : "";
+  return `${buildDecisionPrefix(customerName, "Perfeito")} Tenho uma sugestão que combina com esse perfil: *${displayName}*${storeLine}${priceLine}.${stockLine} Quer que eu te mande as fotos?`;
+}
+
+function buildConversationalProductPrompt({ greeting = "", customerName = "", knownName = false, requestedProduct = "" } = {}) {
+  const intro = knownName
+    ? `${greeting}, ${customerName}!`
+    : `${greeting}! Seja bem-vindo à AEROSTORE.`;
+  const suffix = requestedProduct ? ` Já te ajudo com ${requestedProduct}.` : "";
+  return `${intro} Qual é o seu nome?${suffix}`.trim();
+}
+
+function buildAskGenderReply({ greeting = "", customerName = "", knownName = false, categoryLabel = "esse produto" } = {}) {
+  const intro = knownName ? `${greeting}, ${customerName}!` : `${greeting}!`;
+  return `${intro} Você procura ${categoryLabel} masculina, feminina ou infantil?`;
+}
+
+async function categoryRequiresGender(categoryName = "") {
+  const normalizedCategory = normalizeSearchText(categoryName);
+  if (!normalizedCategory) {
+    return true;
+  }
+  const catalogs = await getAiCatalogBundle({ includeInactive: true });
+  const category = (catalogs.categories || []).find((item) => normalizeSearchText(item.name) === normalizedCategory);
+  if (!category) {
+    return true;
+  }
+  return Boolean(category.use_gender_filter);
+}
+
+async function getRecentConversationHistory(chatId, limit = 6) {
+  if (!chatId) {
+    return [];
+  }
+  const rows = await all(
+    `SELECT direction, customer_message, message_text, created_at
+     FROM ai_message_logs
+     WHERE inbound_chat_id = ?
+     ORDER BY id DESC
+     LIMIT ?`,
+    [chatId, Math.max(1, Math.min(12, Number(limit || 6)))]
+  );
+  return rows
+    .reverse()
+    .map((row) => ({
+      role: row.direction === "sent" ? "ia" : "cliente",
+      text: row.direction === "sent" ? String(row.message_text || "").trim() : String(row.customer_message || "").trim(),
+      createdAt: row.created_at || ""
+    }))
+    .filter((entry) => entry.text);
+}
+
+function buildCandidateSearchQuery({
+  state = null,
+  signals = {},
+  desiredCategory = "",
+  desiredColor = "",
+  desiredSize = "",
+  desiredGender = "",
+  desiredStyle = "",
+  messageText = ""
+} = {}) {
+  return [
+    desiredCategory || signals.category,
+    desiredColor || signals.color,
+    desiredSize || signals.size,
+    desiredGender || signals.gender,
+    desiredStyle,
+    messageText
+  ].filter(Boolean).join(" ");
+}
+
+async function getAiConversationCandidates({
+  messageText = "",
+  state = null,
+  desiredCategory = "",
+  desiredColor = "",
+  desiredSize = "",
+  desiredGender = "",
+  desiredStyle = "",
+  alternativeRequest = false,
+  otherColorRequest = false,
+  customerSignals = null
+} = {}) {
+  const signals = extractAiProductSignals(messageText);
+  const suggestedIds = parseStoredIdList(state?.suggested_product_ids || "");
+  let excludeProductIds = [];
+  if (alternativeRequest && suggestedIds.length) {
+    excludeProductIds = suggestedIds;
+  }
+  const searchQuery = buildCandidateSearchQuery({
+    state,
+    signals,
+    desiredCategory,
+    desiredColor,
+    desiredSize,
+    desiredGender,
+    desiredStyle,
+    messageText
+  });
+  const operationalSearch = await searchConversationProducts(searchQuery, {
+    limit: alternativeRequest ? 4 : 3
+  });
+  let products = (operationalSearch.exactMatches.length
+    ? operationalSearch.exactMatches
+    : operationalSearch.products)
+    .filter((product) => !excludeProductIds.some((id) => sameConversationProductId(id, product.id)));
+
+  if (otherColorRequest) {
+    const previousProduct = state?.suggested_product_id
+      ? products.find((product) => sameConversationProductId(product.id, state.suggested_product_id)) || null
+      : null;
+    const previousColor = normalizeSearchText(previousProduct?.color || desiredColor || "");
+    products = products.filter((product) => normalizeSearchText(product.color || "") !== previousColor);
+  }
+
+  return products;
+}
+
+function buildCashbackReplyFromFacts({ facts = {}, customerName = "" } = {}) {
+  const prefix = customerName ? `${customerName}, ` : "";
+  const available = Number(facts.cashbackAvailable || 0);
+  const pending = Number(facts.cashbackPending || 0);
+  const legacy = Number(facts.cashbackLegacy || 0);
+  const behavior = facts.behaviorSnapshot || null;
+  if (!facts.cashbackKnown) {
+    return `${prefix}consigo verificar isso para você, mas preciso localizar seu cadastro certinho antes de confirmar o cashback.`;
+  }
+  if (available > 0) {
+    const pendingText = pending > 0 ? ` Também aparece R$ ${formatCurrencyNumber(pending)} aguardando liberação.` : "";
+    return `${prefix}você tem R$ ${formatCurrencyNumber(available)} de cashback disponível para usar.${pendingText}`;
+  }
+  if (legacy > 0 || Number(behavior?.cashback_vencendo || 0) > 0) {
+    return `${prefix}encontrei um histórico de cashback que precisa de conferência antes de eu te prometer uso agora. Se quiser, eu já peço essa validação para a equipe.`;
+  }
+  return `${prefix}no momento não encontrei cashback disponível no seu cadastro. Se quiser, eu posso conferir se existe alguma campanha ativa para você.`;
+}
+
+function buildConversationalDecisionFallback({
+  greeting = "",
+  classification = { intencao: "outro", precisaHumano: false },
+  knownName = false,
+  customerName = "",
+  desiredCategory = "",
+  desiredColor = "",
+  desiredSize = "",
+  desiredGender = "",
+  desiredStyle = "",
+  desiredProductLabel = "",
+  greetingOnly = false,
+  positivePhotoConfirmation = false,
+  alternativeRequest = false,
+  otherColorRequest = false,
+  categoryNeedsGender = true,
+  candidateProducts = [],
+  currentSuggestedProduct = null,
+  currentStoreName = "",
+  localInventory = [],
+  otherStoresInventory = [],
+  escalation = { escalate: false, reason: "" },
+  cashbackAvailable = null
+} = {}) {
+  const safeName = knownName ? customerName : "";
+  const categoryLabel = desiredCategory || desiredProductLabel || "esse produto";
+  const firstCandidate = candidateProducts[0] || null;
+  const firstLocalItem = localInventory[0] || null;
+  const firstOtherStoreItem = otherStoresInventory[0] || null;
+
+  if (escalation.escalate || classification.intencao === "humano" || classification.precisaHumano) {
+    return {
+      resposta: safeName
+        ? `${buildDecisionPrefix(safeName, "Claro")} Vou te passar para um vendedor da ${currentStoreName || "AEROSTORE"} te ajudar melhor com isso 😊`
+        : `Claro. Vou te passar para um vendedor da ${currentStoreName || "AEROSTORE"} te ajudar melhor com isso 😊`,
+      intencao: classification.intencao || "humano",
+      acao: "chamar_humano",
+      precisaHumano: true,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: currentSuggestedProduct?.id || null,
+      sendPhoto: false,
+      waitingFor: "",
+      reasoningSummary: "fallback_human_handoff"
+    };
+  }
+
+  if (classification.intencao === "cashback") {
+    if (Number(cashbackAvailable || 0) > 0) {
+      return {
+        resposta: safeName
+          ? `${safeName}, você tem *${formatCurrencyBRL(cashbackAvailable)}* de cashback disponível aqui na ${currentStoreName || "AEROSTORE"}. Quer que eu te mostre opções para aproveitar isso?`
+          : `Você tem *${formatCurrencyBRL(cashbackAvailable)}* de cashback disponível aqui na ${currentStoreName || "AEROSTORE"}. Quer que eu te mostre opções para aproveitar isso?`,
+        intencao: "cashback",
+        acao: "responder",
+        precisaHumano: false,
+        desiredCategory,
+        desiredGender,
+        desiredColor,
+        desiredSize,
+        desiredStyle,
+        suggestedProductId: null,
+        sendPhoto: false,
+        waitingFor: "",
+        reasoningSummary: "fallback_cashback_real_balance"
+      };
+    }
+    return {
+      resposta: safeName
+        ? `${buildDecisionPrefix(safeName, "Consigo te ajudar")} Vou conferir seu cashback certinho aqui na ${currentStoreName || "AEROSTORE"} antes de te confirmar, tudo bem?`
+        : `Consigo te ajudar com isso. Vou conferir seu cashback certinho aqui na ${currentStoreName || "AEROSTORE"} antes de te confirmar, tudo bem?`,
+      intencao: "cashback",
+      acao: "responder",
+      precisaHumano: false,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: null,
+      sendPhoto: false,
+      waitingFor: "",
+      reasoningSummary: "fallback_cashback_safe"
+    };
+  }
+
+  if (classification.intencao === "desconto") {
+    return {
+      resposta: "No Pix ou dinheiro a gente trabalha com 10% de desconto. No débito, 5%. No cartão, parcelamos em até 10x para compras a partir de R$ 200.\n\nSe você quiser algo fora disso, eu consulto meu gerente rapidinho para você.",
+      intencao: "desconto",
+      acao: "chamar_humano",
+      precisaHumano: true,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: null,
+      sendPhoto: false,
+      waitingFor: "",
+      reasoningSummary: "fallback_discount_policy"
+    };
+  }
+
+  if (classification.intencao === "pagamento") {
+    return {
+      resposta: "No Pix ou dinheiro, conseguimos 10% de desconto.\n\nNo débito, 5%. No cartão, parcelamos em até 10x para compras a partir de R$ 200, sem desconto extra.",
+      intencao: "pagamento",
+      acao: "responder",
+      precisaHumano: false,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: null,
+      sendPhoto: false,
+      waitingFor: "",
+      reasoningSummary: "fallback_payment_policy"
+    };
+  }
+
+  if (classification.intencao === "entrega") {
+    return {
+      resposta: "Em Ribeirão Preto, fechando até as 16h, conseguimos entrega grátis por motoboy no mesmo dia.\n\nDepois disso, preciso confirmar com a equipe. Se for fora de Ribeirão, me passa o CEP que eu consulto para você.",
+      intencao: "entrega",
+      acao: "responder",
+      precisaHumano: false,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: null,
+      sendPhoto: false,
+      waitingFor: "",
+      reasoningSummary: "fallback_delivery_policy"
+    };
+  }
+
+  if (classification.intencao === "reserva") {
+    return {
+      resposta: safeName
+        ? `${buildDecisionPrefix(safeName, "Posso te ajudar")} Me confirma o tamanho e a loja de preferência que eu verifico com a equipe a melhor forma de segurar essa opção para você.`
+        : "Posso te ajudar com isso. Me confirma o tamanho e a loja de preferência que eu verifico com a equipe a melhor forma de segurar essa opção para você.",
+      intencao: "reserva",
+      acao: "chamar_humano",
+      precisaHumano: true,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: currentSuggestedProduct?.id || null,
+      sendPhoto: false,
+      waitingFor: "",
+      reasoningSummary: "fallback_reservation_policy"
+    };
+  }
+
+  if (!knownName) {
+    return {
+      resposta: buildConversationalProductPrompt({
+        greeting,
+        knownName: false,
+        requestedProduct: desiredProductLabel
+      }),
+      intencao: classification.intencao,
+      acao: "perguntar_nome",
+      precisaHumano: false,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: null,
+      sendPhoto: false,
+      waitingFor: "name",
+      reasoningSummary: "fallback_missing_name"
+    };
+  }
+
+  if (positivePhotoConfirmation && currentSuggestedProduct) {
+    return {
+      resposta: `${buildDecisionPrefix(safeName, "Perfeito")} Já vou te mandar as fotos agora.`,
+      intencao: "produto",
+      acao: "enviar_fotos",
+      precisaHumano: false,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: currentSuggestedProduct.id,
+      sendPhoto: true,
+      waitingFor: "",
+      reasoningSummary: "fallback_photo_confirmation"
+    };
+  }
+
+  if (greetingOnly) {
+    return {
+      resposta: safeName
+        ? `${greeting}, ${safeName}! Como posso te ajudar?`
+        : `${greeting}! Como posso te ajudar?`,
+      intencao: "saudacao",
+      acao: "responder",
+      precisaHumano: false,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: null,
+      sendPhoto: false,
+      waitingFor: "",
+      reasoningSummary: "fallback_greeting_only"
+    };
+  }
+
+  if (alternativeRequest) {
+    if (firstCandidate) {
+      return {
+        resposta: `${buildDecisionPrefix(safeName, "Tenho sim")} Outra opção que pode combinar com o que você procura é ${firstCandidate.display_name}. Quer que eu te mande as fotos?`,
+        intencao: "produto",
+        acao: "perguntar_foto",
+        precisaHumano: false,
+        desiredCategory,
+        desiredGender,
+        desiredColor,
+        desiredSize,
+        desiredStyle,
+        suggestedProductId: firstCandidate.id,
+        sendPhoto: false,
+        waitingFor: "photo_confirmation",
+        reasoningSummary: "fallback_alternative_candidate"
+      };
+    }
+
+    return {
+      resposta: safeName
+        ? `${buildDecisionPrefix(safeName, "Tenho sim")} Você quer ver algo mais básico, estampado ou premium?`
+        : "Tenho sim. Você quer ver algo mais básico, estampado ou premium?",
+      intencao: "produto",
+      acao: "perguntar_preferencia",
+      precisaHumano: false,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: currentSuggestedProduct?.id || null,
+      sendPhoto: false,
+      waitingFor: "preferencia_estilo",
+      reasoningSummary: "fallback_alternative_preference"
+    };
+  }
+
+  if (otherColorRequest) {
+    if (firstCandidate) {
+      return {
+        resposta: `${buildDecisionPrefix(safeName, "Claro")} Tenho outra cor que combina com esse perfil: ${firstCandidate.display_name}. Quer que eu te mande as fotos?`,
+        intencao: "produto",
+        acao: "perguntar_foto",
+        precisaHumano: false,
+        desiredCategory,
+        desiredGender,
+        desiredColor: firstCandidate.color || desiredColor,
+        desiredSize,
+        desiredStyle,
+        suggestedProductId: firstCandidate.id,
+        sendPhoto: false,
+        waitingFor: "photo_confirmation",
+        reasoningSummary: "fallback_other_color_candidate"
+      };
+    }
+
+    return {
+      resposta: safeName
+        ? `${buildDecisionPrefix(safeName, "Claro")} Você prefere uma cor mais neutra, como preta ou branca, ou algo mais chamativo?`
+        : "Claro. Você prefere uma cor mais neutra, como preta ou branca, ou algo mais chamativo?",
+      intencao: "produto",
+      acao: "perguntar_preferencia",
+      precisaHumano: false,
+      desiredCategory,
+      desiredGender,
+      desiredColor: "",
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: currentSuggestedProduct?.id || null,
+      sendPhoto: false,
+      waitingFor: "preferencia_cor",
+      reasoningSummary: "fallback_other_color_preference"
+    };
+  }
+
+  if (classification.intencao === "produto") {
+    if (categoryNeedsGender && !desiredGender) {
+      return {
+        resposta: safeName
+          ? `${buildDecisionPrefix(safeName, "Temos sim")} Você procura ${desiredCategory || "esse produto"} masculina, feminina ou infantil?`
+          : `${greeting}! Você procura ${desiredCategory || "esse produto"} masculina, feminina ou infantil?`,
+        intencao: "produto",
+        acao: "perguntar_genero",
+        precisaHumano: false,
+        desiredCategory,
+        desiredGender: "",
+        desiredColor,
+        desiredSize,
+        desiredStyle,
+        suggestedProductId: null,
+        sendPhoto: false,
+        waitingFor: "gender",
+        reasoningSummary: "fallback_missing_gender"
+      };
+    }
+
+    if (firstLocalItem) {
+      return {
+        resposta: buildStoreAwareProductReply({
+          customerName: safeName,
+          currentStoreName,
+          item: firstLocalItem
+        }),
+        intencao: "produto",
+        acao: "perguntar_foto",
+        precisaHumano: false,
+        desiredCategory,
+        desiredGender,
+        desiredColor: firstLocalItem.color || desiredColor,
+        desiredSize,
+        desiredStyle,
+        suggestedProductId: firstCandidate?.id || null,
+        sendPhoto: false,
+        waitingFor: "photo_confirmation",
+        reasoningSummary: "fallback_local_inventory_suggestion"
+      };
+    }
+
+    if (firstCandidate) {
+      return {
+        resposta: buildSuggestProductReply({ customerName: safeName, product: firstCandidate, currentStoreName }),
+        intencao: "produto",
+        acao: "perguntar_foto",
+        precisaHumano: false,
+        desiredCategory,
+        desiredGender,
+        desiredColor: firstCandidate.color || desiredColor,
+        desiredSize,
+        desiredStyle,
+        suggestedProductId: firstCandidate.id,
+        sendPhoto: false,
+        waitingFor: "photo_confirmation",
+        reasoningSummary: "fallback_candidate_suggestion"
+      };
+    }
+
+    if (firstOtherStoreItem) {
+      return {
+        resposta: buildStoreAwareTransferReply({
+          customerName: safeName,
+          currentStoreName,
+          item: firstOtherStoreItem
+        }),
+        intencao: "produto",
+        acao: "responder",
+        precisaHumano: false,
+        desiredCategory,
+        desiredGender,
+        desiredColor: desiredColor,
+        desiredSize,
+        desiredStyle,
+        suggestedProductId: null,
+        sendPhoto: false,
+        waitingFor: "",
+        reasoningSummary: "fallback_cross_store_transfer"
+      };
+    }
+
+    return {
+      resposta: buildAskPreferenceReply({
+        customerName: safeName,
+        categoryLabel: desiredCategory || "essa peça"
+      }),
+      intencao: "produto",
+      acao: "perguntar_preferencia",
+      precisaHumano: false,
+      desiredCategory,
+      desiredGender,
+      desiredColor,
+      desiredSize,
+      desiredStyle,
+      suggestedProductId: null,
+      sendPhoto: false,
+      waitingFor: "preferencia_estilo",
+      reasoningSummary: "fallback_preference_question"
+    };
+  }
+
+  return {
+    resposta: safeName
+      ? `${buildDecisionPrefix(safeName, "Entendi")} Me fala um pouco mais do que você procura que eu te ajudo a encontrar a melhor opção.`
+      : "Entendi. Me fala um pouco mais do que você procura que eu te ajudo a encontrar a melhor opção.",
+    intencao: classification.intencao || "outro",
+    acao: "responder",
+    precisaHumano: false,
+    desiredCategory,
+    desiredGender,
+    desiredColor,
+    desiredSize,
+    desiredStyle,
+    suggestedProductId: currentSuggestedProduct?.id || null,
+    sendPhoto: false,
+    waitingFor: "",
+    reasoningSummary: "fallback_generic_contextual"
+  };
+}
+
+function validateConversationalDecision({
+  decision = {},
+  state = null,
+  candidateProducts = [],
+  positivePhotoConfirmation = false,
+  customerName = "",
+  desiredCategory = "",
+  desiredGender = "",
+  desiredColor = "",
+  desiredSize = "",
+  desiredStyle = "",
+  alternativeRequest = false,
+  otherColorRequest = false,
+  currentSuggestedProduct = null
+} = {}) {
+  const allowedActions = new Set([
+    "responder",
+    "perguntar",
+    "perguntar_nome",
+    "perguntar_genero",
+    "perguntar_preferencia",
+    "sugerir_produto",
+    "oferecer_alternativas",
+    "perguntar_foto",
+    "enviar_fotos",
+    "chamar_humano",
+    "ignorar_repeticao",
+    "ignorar"
+  ]);
+
+  const rawUpdateContext = decision.atualizarContexto || {};
+  const mappedAction = (() => {
+    const action = String(decision.acao || "").trim();
+    if (!action) return "responder";
+    if (action === "perguntar") {
+      if (rawUpdateContext.aguardando === "nome") return "perguntar_nome";
+      if (rawUpdateContext.aguardando === "genero") return "perguntar_genero";
+      if (String(rawUpdateContext.aguardando || "").trim()) return "perguntar_preferencia";
+      return "responder";
+    }
+    if (action === "oferecer_alternativas") return "perguntar_preferencia";
+    if (action === "ignorar") return "ignorar_repeticao";
+    return action;
+  })();
+
+  const safe = {
+    ...decision,
+    resposta: buildSafeConversationalReply(decision.resposta || ""),
+    intencao: String(decision.intencao || "outro").trim() || "outro",
+    acao: allowedActions.has(mappedAction) ? mappedAction : "responder",
+    precisaHumano: Boolean(decision.precisaHumano) || ["troca", "humano"].includes(String(decision.intencao || "").trim()),
+    desiredCategory: decision.desiredCategory || rawUpdateContext.categoria || desiredCategory || "",
+    desiredGender: decision.desiredGender || rawUpdateContext.genero || desiredGender || "",
+    desiredColor: decision.desiredColor || rawUpdateContext.cor || desiredColor || "",
+    desiredSize: decision.desiredSize || rawUpdateContext.tamanho || desiredSize || "",
+    desiredStyle: decision.desiredStyle || rawUpdateContext.estilo || desiredStyle || "",
+    suggestedProductId: decision.suggestedProductId || decision.produtoSugeridoId || rawUpdateContext.produtoSugeridoId || null,
+    alternativeProductIds: Array.isArray(decision.produtosAlternativosIds) ? decision.produtosAlternativosIds : [],
+    sendPhoto: Boolean(decision.sendPhoto || decision.enviarFotos),
+    waitingFor: String(decision.waitingFor || rawUpdateContext.aguardando || "").trim(),
+    reasoningSummary: String(decision.reasoningSummary || decision.motivo || "").trim() || "validated_decision"
+  };
+
+  const productMap = new Map((candidateProducts || []).map((product) => [normalizeConversationProductId(product.id), product]));
+  const stateSuggestedProduct = state?.suggested_product_id
+    ? productMap.get(normalizeConversationProductId(state.suggested_product_id)) || currentSuggestedProduct || null
+    : currentSuggestedProduct || null;
+  const selectedProduct = safe.suggestedProductId
+    ? productMap.get(normalizeConversationProductId(safe.suggestedProductId)) || null
+    : null;
+
+  if (customerName && safe.acao === "perguntar_nome") {
+    safe.acao = selectedProduct || candidateProducts[0] ? "perguntar_foto" : "responder";
+    safe.reasoningSummary = "name_already_known";
+  }
+
+  if (safe.acao === "perguntar_genero" && safe.desiredGender) {
+    safe.acao = selectedProduct ? "perguntar_foto" : "perguntar_preferencia";
+    safe.reasoningSummary = "gender_already_known";
+  }
+
+  if (safe.acao === "enviar_fotos") {
+    const authorizedPhotoProduct = stateSuggestedProduct || selectedProduct || currentSuggestedProduct || null;
+    if (!positivePhotoConfirmation || !(state?.suggested_product_id || stateSuggestedProduct?.id) || !authorizedPhotoProduct?.photoSendReady) {
+      safe.acao = "responder";
+      safe.sendPhoto = false;
+      safe.reasoningSummary = "photo_not_authorized";
+    } else {
+      safe.sendPhoto = true;
+      safe.suggestedProductId = state?.suggested_product_id || stateSuggestedProduct?.id || null;
+    }
+  }
+
+  if ((safe.acao === "sugerir_produto" || safe.acao === "perguntar_foto") && !selectedProduct && candidateProducts[0]) {
+    safe.suggestedProductId = candidateProducts[0].id;
+  }
+
+  if ((safe.acao === "sugerir_produto" || safe.acao === "perguntar_foto") && !safe.suggestedProductId) {
+    safe.acao = "perguntar_preferencia";
+    safe.reasoningSummary = "no_valid_candidate_product";
+  }
+
+  if ((alternativeRequest || otherColorRequest) && safe.acao === "perguntar_genero" && safe.desiredGender) {
+    safe.acao = candidateProducts[0] ? "perguntar_foto" : "perguntar_preferencia";
+    safe.reasoningSummary = alternativeRequest ? "alternative_without_repeat_gender" : "other_color_without_repeat_gender";
+  }
+
+  if (safe.sendPhoto && !safe.suggestedProductId) {
+    safe.sendPhoto = false;
+    safe.acao = "responder";
+    safe.reasoningSummary = "photo_without_product";
+  }
+
+  const resolvedSelectedProduct = safe.suggestedProductId
+    ? productMap.get(normalizeConversationProductId(safe.suggestedProductId)) || null
+    : selectedProduct;
+  const selectedOrStateProduct = resolvedSelectedProduct || stateSuggestedProduct || null;
+  if (safe.sendPhoto && !(selectedOrStateProduct?.photoSendReady)) {
+    safe.sendPhoto = false;
+    safe.acao = "responder";
+    safe.reasoningSummary = "photo_not_available_for_product";
+  }
+
+  const mentionedPrice = /r\$\s*\d|parcel|pix|debito|d[eé]bito|cart[aã]o/i.test(safe.resposta);
+  if (mentionedPrice && !selectedOrStateProduct?.price && !["pagamento", "desconto", "cashback"].includes(safe.intencao)) {
+    safe.resposta = customerName
+      ? `${buildDecisionPrefix(customerName, "Consigo te ajudar")} Se quiser, eu te mostro a opção certa e um vendedor confirma o valor certinho para você.`
+      : "Consigo te ajudar. Se quiser, eu te mostro a opção certa e um vendedor confirma o valor certinho para você.";
+    safe.reasoningSummary = "price_reference_blocked";
+  }
+
+  if (["desconto", "pagamento", "entrega", "reserva", "cashback", "troca"].includes(safe.intencao)) {
+    safe.suggestedProductId = null;
+    safe.sendPhoto = false;
+  }
+
+  if (safe.intencao === "troca") {
+    safe.acao = "chamar_humano";
+    safe.precisaHumano = true;
+  }
+
+  if (!safe.resposta) {
+    safe.resposta = customerName
+      ? `${buildDecisionPrefix(customerName, "Entendi")} Me fala um pouco mais do que você procura que eu te ajudo a encontrar a melhor opção.`
+      : "Entendi. Me fala um pouco mais do que você procura que eu te ajudo a encontrar a melhor opção.";
+  }
+
+  return safe;
+}
+
+async function buildInboundAiConversationReply({
+  messageText = "",
+  sender = {},
+  contact = null,
+  classification = { intencao: "outro", precisaHumano: false }
+} = {}) {
+  const greeting = getGreetingByTime();
+  const rawState = await getAiConversationState(sender.inboundChatId);
+  const contextExpired = hasConversationContextExpired(rawState, { minutes: 30 });
+  const greetingOnly = isGreetingOnlyMessage(messageText, classification);
+  const shouldResetProductContext = contextExpired && greetingOnly;
+  const state = shouldResetProductContext
+    ? {
+      ...rawState,
+      stage: "greeting",
+      last_intent: "outro",
+      desired_product: "",
+      desired_category: "",
+      desired_color: "",
+      desired_size: "",
+      desired_gender: "",
+      desired_style: "",
+      suggested_product_id: null,
+      suggested_product_ids: "",
+      waiting_for: "",
+      last_question: ""
+    }
+    : rawState;
+
+  const originalName = contact?.name || state?.customer_name || sender.displayName || "";
+  const customerFactsPayload = await buildAiCustomerFacts({
+    telefone: sender.phoneNormalized || sender.phoneOriginal || "",
+    nome: originalName || "",
+    contact
+  });
+  const customerFacts = customerFactsPayload?.facts || {};
+  const aerointelProfile = await getCustomerCommercialProfileEnriched({
+    phone: sender.phoneNormalized || sender.phoneOriginal || "",
+    document: "",
+    name: originalName || ""
+  });
+  const aerointelSignals = summarizeAeroIntelSignals(aerointelProfile);
+  const aerointelProfileFound = Boolean(aerointelProfile?.customerFound);
+  const cleanFirstName = getCleanFirstName(originalName);
+  const providedNameNow = looksLikeNameAnswer(messageText) ? getCleanFirstName(messageText) : "";
+  const customerName = cleanFirstName || providedNameNow || "";
+  const knownName = Boolean(customerName);
+  const signals = extractAiProductSignals(messageText);
+  const requestedProduct = buildProductRequestLabel({
+    category: signals.category,
+    color: signals.color,
+    size: signals.size
+  });
+  const positivePhotoConfirmation = isPositivePhotoConfirmation(messageText);
+  const alternativeRequest = isAlternativeProductRequest(messageText);
+  const otherColorRequest = isOtherColorRequest(messageText);
+  const normalizedGender = parseGenderChoice(messageText);
+  const requestedStyle = parseStylePreference(messageText);
+  const desiredCategory = signals.category || state?.desired_category || "";
+  const desiredColor = signals.color || (otherColorRequest ? "" : (state?.desired_color || ""));
+  const desiredSize = signals.size || state?.desired_size || "";
+  const desiredGender = normalizedGender || signals.gender || state?.desired_gender || "";
+  const desiredStyle = requestedStyle || state?.desired_style || "";
+  const desiredProductLabel = requestedProduct || state?.desired_product || desiredCategory || "";
+  const categoryNeedsGender = await categoryRequiresGender(desiredCategory);
+
+  const recentHistory = await getRecentConversationHistory(sender.inboundChatId, 6);
+  const storeIdentity = getAiStoreIdentity();
+  const escalation = shouldEscalateToHuman(messageText, recentHistory);
+  const sellerContext = await buildAiSellerContext({
+    sender,
+    contact,
+    messageText,
+    customerFactsPayload,
+    aerointelSignals,
+    conversationHistory: recentHistory
+  });
+  const candidateProducts = await getAiConversationCandidates({
+    messageText,
+    state,
+    desiredCategory,
+    desiredColor,
+    desiredSize,
+    desiredGender,
+    desiredStyle,
+    alternativeRequest,
+    otherColorRequest,
+    customerSignals: aerointelSignals
+  });
+  const localInventory = Array.isArray(sellerContext.local_inventory) ? sellerContext.local_inventory : [];
+  const otherStoresInventory = Array.isArray(sellerContext.other_stores_inventory) ? sellerContext.other_stores_inventory : [];
+
+  const candidatePayload = candidateProducts.slice(0, 3).map((product) => ({
+    id: product.id,
+    nome: product.display_name,
+    sku: product.sku || product.codigo || "",
+    marca: product.brand || product.marca || "",
+    categoria: product.category || "",
+    genero: product.gender || "",
+    cor: product.color || "",
+    tamanhos: product.sizes || [],
+    preco: product.price ?? null,
+    precoPromocional: product.promotional_price ?? null,
+    estoque: product.stock ?? product.estoque ?? product.estoque_total ?? null,
+    availability: product.availability || "check_stock",
+    tags: product.tags || [],
+    argumento: product.ai_sales_argument || product.ai_short_description || product.sales_argument_display || product.short_description_display || "",
+    temFotos: Boolean((product.media_items || []).length || product.main_media_id),
+    imagemPrincipal: product.preview_url || product.media_url || product.media_items?.[0]?.preview_url || "",
+    outrasImagens: (product.media_items || []).map((item) => item.preview_url || item.media_url).filter(Boolean).slice(1, 3),
+    status: product.status || "",
+    permitirVenda: product.permitirVenda || product.permitir_venda || "",
+    motivoSelecao: product.commercial_reason || "",
+    pontuacao: Number(product.commercial_score || 0),
+    perfilMarca: product.brand_profile || "",
+    jaSugerido: parseStoredIdList(state?.suggested_product_ids || "").some((id) => sameConversationProductId(id, product.id))
+  }));
+
+  const currentSuggestedProduct = state?.suggested_product_id
+    ? findConversationProductById(candidateProducts, state.suggested_product_id)
+      || null
+    : null;
+  const aiContext = {
+    seller_identity: {
+      store_id: storeIdentity.storeId,
+      store_name: storeIdentity.storeName,
+      store_address: storeIdentity.storeAddress,
+      store_phone: storeIdentity.storePhone,
+      team_name: storeIdentity.teamName
+    },
+    cliente: {
+      nomeOriginal: originalName,
+      primeiroNome: customerName || "",
+      nomeInformadoAgora: providedNameNow || "",
+      nomeConhecido: Boolean(customerName),
+      mensagemAtual: messageText,
+      mensagemNormalizada: signals.normalized || "",
+      telefone: sender.phoneNormalized || sender.phoneOriginal || "",
+      chatId: sender.inboundChatId || "",
+      contatoConhecido: Boolean(contact?.id),
+      lojaHabitual: customerFacts.favoriteStore || contact?.store || contact?.preferred_store || "",
+      topSize: customerFacts.topSize || "",
+      bottomSize: customerFacts.bottomSize || "",
+      shoeSize: customerFacts.shoeSize || "",
+      cashbackAvailable: customerFacts.cashbackAvailable ?? null,
+      commercialHint: customerFacts.commercialHint || ""
+    },
+    loja: sellerContext.store,
+    estoque_local: localInventory,
+    estoque_outras_lojas: otherStoresInventory,
+    conversa: {
+      saudacaoAtual: greeting,
+      contextoExpirado: Boolean(contextExpired),
+      saudacaoIsolada: greetingOnly,
+      ultimaInteracao: state?.updated_at || "",
+      historicoRecente: recentHistory,
+      horarioLocal: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
+      numeroConectado: getCurrentConnectedNumber() || "",
+      waitingFor: state?.waiting_for || "",
+      stageAtual: state?.stage || "",
+      ultimaRespostaIA: state?.last_ai_response || "",
+      ultimaMensagemCliente: state?.last_customer_message || "",
+      produtosJaSugeridos: parseStoredIdList(state?.suggested_product_ids || ""),
+      fotosJaEnviadas: Number(state?.photos_sent_count || 0)
+    },
+    escalacao_humana: escalation,
+    intencaoDetectada: classification.intencao,
+    sinais: {
+      categoria: desiredCategory || "",
+      genero: desiredGender || "",
+      cor: desiredColor || "",
+      tamanho: desiredSize || "",
+      estilo: desiredStyle || "",
+      pedidoAlternativa: alternativeRequest,
+      pedidoOutraCor: otherColorRequest,
+      confirmouFotos: positivePhotoConfirmation,
+      categoriaExigeGenero: Boolean(categoryNeedsGender)
+    },
+    produtoAtual: currentSuggestedProduct ? {
+      id: currentSuggestedProduct.id,
+      nome: currentSuggestedProduct.display_name,
+      cor: currentSuggestedProduct.color || "",
+      genero: currentSuggestedProduct.gender || ""
+    } : null,
+    candidatos: candidatePayload,
+    regras: {
+      semEstoqueReal: true,
+      semPrecoInventado: true,
+      semDescontoInventado: true,
+      semReserva: true,
+      semEntregaPrometida: true,
+      soEnviaFotoComAutorizacao: true
+    },
+    politicasComerciais: {
+      pagamento: {
+        pixOuDinheiro: "10% de desconto",
+        debito: "5% de desconto",
+        cartao: "ate 10x sem desconto extra",
+        parcelamentoMinimo: "compras a partir de R$ 200,00"
+      },
+      entrega: {
+        ribeiraoPreto: "frete gratis por motoboy",
+        mesmoDiaAte16h: true,
+        depoisDas16h: "precisa consultar a equipe",
+        foraDaCidade: "consultar CEP"
+      },
+      cashback: {
+        limiteUso: "ate 50% da nova compra",
+        exigeFluxoSeguro: true
+      },
+      reserva: {
+        exigeConfirmacaoHumana: true
+      }
+    },
+    sensoCriticoAerostore: {
+      usarCatalogoComoFonteDaVerdade: true,
+      nuncaOferecerSemEstoque: true,
+      nuncaOferecerEstoqueNegativo: true,
+      podeSugerirAlternativasReais: true,
+      podeUsarPercepcaoDeMarcaEOcasiao: true
+    },
+    transferencia: {
+      politica: TRANSFER_POLICY.rules,
+      lojas_consideradas: Array.from(new Set(otherStoresInventory.map((item) => item.store_name).filter(Boolean))).slice(0, 4)
+    },
+    seller_context: sellerContext,
+    aerointel: {
+      consultado: true,
+      perfilEncontrado: aerointelProfileFound,
+      marcasPreferidas: aerointelSignals.favoriteBrands || [],
+      categoriasPreferidas: aerointelSignals.favoriteCategories || [],
+      perfilPreco: aerointelSignals.priceProfile || "",
+      perfilComercial: aerointelSignals.commercialProfile || [],
+      estiloSugerido: aerointelSignals.styleHint || "",
+      produtosHistoricosRelacionados: aerointelSignals.historicalProducts || [],
+      produtosAtuaisRelacionados: aerointelSignals.availableNowProducts || [],
+      insights: aerointelSignals.insights || []
+    }
+  };
+
+  let decision = await gerarDecisaoConversacionalAerostore(aiContext);
+  let decisionSource = "structured";
+  if (!decision || decision.reasoningSummary === "fallback_safe_reply" || decision.motivo === "fallback_safe_reply" || !String(decision.resposta || "").trim()) {
+    decision = buildConversationalDecisionFallback({
+      greeting,
+      classification,
+      knownName,
+      customerName,
+      desiredCategory,
+      desiredColor,
+      desiredSize,
+      desiredGender,
+      desiredStyle,
+      desiredProductLabel,
+      greetingOnly,
+      positivePhotoConfirmation,
+      alternativeRequest,
+      otherColorRequest,
+      categoryNeedsGender,
+      candidateProducts,
+      currentSuggestedProduct,
+      currentStoreName: storeIdentity.storeName,
+      localInventory,
+      otherStoresInventory,
+      escalation,
+      cashbackAvailable: customerFacts.cashbackAvailable ?? null
+    });
+    decisionSource = "contextual_fallback";
+  }
+
+  decision = validateConversationalDecision({
+    decision,
+    state,
+    candidateProducts,
+    positivePhotoConfirmation,
+    customerName,
+    desiredCategory,
+    desiredGender,
+    desiredColor,
+    desiredSize,
+    desiredStyle,
+    alternativeRequest,
+    otherColorRequest,
+    currentSuggestedProduct
+  });
+
+  if (escalation.escalate && decision.acao !== "chamar_humano") {
+    decision = {
+      ...decision,
+      resposta: customerName
+        ? `${buildDecisionPrefix(customerName, "Claro")} Vou te passar para um vendedor da ${storeIdentity.storeName} te ajudar melhor com isso 😊`
+        : `Claro. Vou te passar para um vendedor da ${storeIdentity.storeName} te ajudar melhor com isso 😊`,
+      intencao: "humano",
+      acao: "chamar_humano",
+      precisaHumano: true,
+      sendPhoto: false,
+      reasoningSummary: escalation.reason || "human_escalation_rule"
+    };
+  }
+
+  const selectedProduct = decision.suggestedProductId
+    ? findConversationProductById(candidateProducts, decision.suggestedProductId)
+    || null
+    : null;
+  const nextSuggestedIds = selectedProduct
+    ? Array.from(new Set([...parseStoredIdList(state?.suggested_product_ids || ""), normalizeConversationProductId(selectedProduct.id)]))
+    : parseStoredIdList(state?.suggested_product_ids || "");
+  const nextStage = decision.sendPhoto
+    ? "product_sent"
+    : decision.acao === "perguntar_nome"
+      ? "ask_name"
+      : decision.acao === "perguntar_genero"
+        ? "ask_gender"
+        : decision.acao === "perguntar_preferencia"
+          ? "ready_to_suggest"
+          : decision.acao === "perguntar_foto" || decision.acao === "sugerir_produto"
+            ? "waiting_photo_confirmation"
+            : decision.precisaHumano
+              ? "human_needed"
+              : "greeting";
+  const nextWaitingFor = decision.waitingFor
+    || (decision.acao === "perguntar_nome" ? "name"
+      : decision.acao === "perguntar_genero" ? "gender"
+      : decision.acao === "perguntar_preferencia" ? "preferencia_estilo"
+      : decision.acao === "perguntar_foto" ? "photo_confirmation"
+      : "");
+
+  const conversationMetrics = {
+    conversation_id: sender.inboundChatId || "",
+    customer_id: contact?.id || null,
+    store_id: storeIdentity.storeId,
+    started_at: state?.created_at || state?.updated_at || new Date().toISOString(),
+    messages_exchanged: Array.isArray(recentHistory) ? recentHistory.length + 1 : 1,
+    products_shown: candidatePayload.length,
+    products_from_other_stores: otherStoresInventory.length,
+    transfer_offered: Boolean(decision.reasoningSummary === "fallback_cross_store_transfer" || /transfer/i.test(String(decision.resposta || ""))),
+    transfer_accepted: false,
+    escalated_to_human: Boolean(decision.precisaHumano),
+    escalation_reason: decision.precisaHumano ? (escalation.reason || decision.reasoningSummary || "") : null,
+    outcome: decision.precisaHumano
+      ? "escalated_human"
+      : decision.acao === "perguntar_foto"
+        ? "info_provided"
+        : decision.acao === "responder"
+          ? "info_provided"
+          : "no_response",
+    outcome_at: new Date().toISOString()
+  };
+
+  await upsertAiConversationState(sender.inboundChatId, {
+    phone: sender.phoneNormalized || "",
+    contactId: contact?.id || null,
+    customerName: customerName || cleanFirstName || state?.customer_name || "",
+    stage: nextStage,
+    waitingFor: nextWaitingFor,
+    lastIntent: decision.intencao || classification.intencao || "outro",
+    desiredProduct: desiredProductLabel,
+    desiredCategory: decision.desiredCategory || desiredCategory,
+    desiredColor: decision.desiredColor || desiredColor,
+    desiredSize: decision.desiredSize || desiredSize,
+    desiredGender: decision.desiredGender || desiredGender,
+    desiredStyle: decision.desiredStyle || desiredStyle,
+    suggestedProductId: selectedProduct?.id || state?.suggested_product_id || null,
+    suggestedProductIds: nextSuggestedIds,
+    photosSentCount: Number(state?.photos_sent_count || 0),
+    lastQuestion: decision.acao || "responder",
+    lastCustomerMessage: messageText,
+    lastAiResponse: decision.resposta || ""
+  });
+
+  return {
+    resposta: decision.resposta,
+    intencao: decision.intencao,
+    acao: decision.acao,
+    precisaHumano: decision.precisaHumano,
+    produtosSugeridos: selectedProduct ? [selectedProduct] : candidateProducts.slice(0, 2),
+    products: (selectedProduct ? [selectedProduct] : candidateProducts.slice(0, 2)).map(serializeCommercialProductForAi),
+    stage: nextStage,
+    waitingFor: nextWaitingFor,
+    desiredCategory: decision.desiredCategory || desiredCategory,
+    desiredGender: decision.desiredGender || desiredGender,
+    desiredColor: decision.desiredColor || desiredColor,
+    desiredSize: decision.desiredSize || desiredSize,
+    desiredStyle: decision.desiredStyle || desiredStyle,
+    suggestedProductId: selectedProduct?.id || null,
+    sendPhoto: decision.sendPhoto,
+    photoConfirmationDetected: positivePhotoConfirmation,
+    reasoningSummary: decision.reasoningSummary || "",
+    motivoDecisao: decision.reasoningSummary || "",
+    decisionSource,
+    escalation,
+    conversationMetrics,
+    contextExpired,
+    alternativeRequest,
+    otherColorRequest,
+    commercialReasoning: {
+      customerIntent: [
+        desiredCategory,
+        desiredGender,
+        desiredColor,
+        desiredSize,
+        desiredStyle,
+        classification.intencao === "produto" ? "busca de produto" : classification.intencao
+      ].filter(Boolean).join(" ").trim() || normalizeCommercialPtBrText(messageText),
+      rankingCriteria: ["estoque positivo", "marca compatível", "categoria compatível", "cor/tamanho pedidos", "imagem e preço válidos", "preferências históricas quando disponíveis"]
+    },
+    aerointelUsed: true,
+    aerointelProfileFound,
+    aerointelSignals,
+    storeId: storeIdentity.storeId,
+    storeName: storeIdentity.storeName,
+    customerFacts: {
+      nome: customerFacts.nome || customerName || "",
+      topSize: customerFacts.topSize || "",
+      bottomSize: customerFacts.bottomSize || "",
+      shoeSize: customerFacts.shoeSize || "",
+      cashbackAvailable: customerFacts.cashbackAvailable ?? null,
+      commercialHint: customerFacts.commercialHint || ""
+    }
+  };
+}
+
+async function handleInboundAiWhatsAppMessage(message) {
+  const connectedNumber = getCurrentConnectedNumber();
+  const rawFrom = String(message?.from || "");
+  const body = String(message?.body || "").trim();
+  const settings = await getAiSettings();
+  const classification = classifyAiIntent(body);
+  const allowedNumbers = normalizeAllowedPhoneList(settings.autoReplyAllowedNumbers).map(normalizeAllowedIdentifier);
+  const sender = await resolveInboundSender(message);
+  const stateBefore = await getAiConversationState(sender.inboundChatId);
+  const allowedMatch = resolveInboundAllowedMatch({
+    allowedIdentifiers: allowedNumbers,
+    sender
+  });
+  const allowed = !settings.autoReplyTestMode || allowedMatch.allowed;
+  const cooldownKey = sender.phoneNormalized || sender.inboundChatId;
+  const expectedStageReply = isExpectedConversationReply(stateBefore, body);
+  const cooldownAnalysis = analyzeAiAutoReplyCooldown({
+    cooldownKey,
+    cooldownSeconds: settings.replyCooldownSeconds,
+    messageText: body,
+    classification,
+    conversationState: stateBefore,
+    expectedStageReply
+  });
+  const cooldownBlocked = cooldownAnalysis.blocked;
+  const contact = sender.phoneNormalized ? await findContactByPhone(sender.phoneNormalized) : null;
+  const inboundStatus = !body
+    ? "ignored_empty"
+    : !settings.autoReplyEnabled
+    ? "skipped_disabled"
+    : !allowed
+    ? "ignored_not_allowed"
+    : cooldownBlocked
+    ? "skipped_cooldown"
+    : "ok";
+
+  console.log("[IA WHATSAPP INBOUND]", {
+    connectedNumber,
+    from: rawFrom,
+    inboundChatId: sender.inboundChatId,
+    contactNumber: sender.contactNumber,
+    senderUserId: sender.senderUserId,
+    phoneNormalized: sender.phoneNormalized,
+    body,
+    autoReplyEnabled: settings.autoReplyEnabled,
+    testMode: settings.autoReplyTestMode,
+    allowedNumbers,
+    allowed,
+    allowedReason: allowedMatch.reason,
+    allowedMatchedValue: allowedMatch.matchedValue,
+    cooldownBlocked,
+    cooldownReason: cooldownAnalysis.reason,
+    stageBefore: stateBefore?.stage || "",
+    waitingForBefore: stateBefore?.waiting_for || ""
+  });
+
+  const inboundDebugContext = {
+    autoReplyEnabled: Boolean(settings.autoReplyEnabled),
+    autoReplyTestMode: Boolean(settings.autoReplyTestMode),
+    autoSendProductPhotoEnabled: Boolean(settings.autoSendProductPhotoEnabled),
+    replyCooldownSeconds: Number(settings.replyCooldownSeconds || 30),
+    allowedNumbers,
+    authorized: allowed,
+    authorizationReason: allowedMatch.reason,
+    authorizationMatchedValue: allowedMatch.matchedValue,
+    cooldownBlocked: Boolean(cooldownBlocked),
+    cooldownReason: cooldownAnalysis.reason,
+    inboundChatId: sender.inboundChatId || "",
+    phoneOriginal: sender.phoneOriginal || "",
+    phoneNormalized: sender.phoneNormalized || "",
+    contactNumber: sender.contactNumber || "",
+    senderUserId: sender.senderUserId || "",
+    connectedNumber: connectedNumber || "",
+    stageBefore: stateBefore?.stage || "",
+    waitingForBefore: stateBefore?.waiting_for || "",
+    desiredGenderBefore: stateBefore?.desired_gender || "",
+    suggestedProductIdBefore: stateBefore?.suggested_product_id || null,
+    originalName: contact?.name || sender.displayName || "",
+    cleanName: getCleanFirstName(contact?.name || stateBefore?.customer_name || sender.displayName || "")
+  };
+  await createAiMessageLog({
+    contactId: contact?.id || null,
+    phone: sender.phoneNormalized || "",
+    phoneOriginal: sender.phoneOriginal || "",
+    inboundChatId: sender.inboundChatId || "",
+    senderUserId: sender.senderUserId || "",
+    customerName: contact?.name || sender.displayName || "",
+    customerMessage: body,
+    direction: "received",
+    source: "whatsapp_inbound",
+    connectedNumber,
+    messageText: "",
+    intent: classification.intencao || "outro",
+    needsHuman: false,
+    autoSent: false,
+    status: inboundStatus,
+    errorMessage: inboundStatus === "ignored_not_allowed"
+      ? `Não autorizado pelo modo teste. Autorize um destes identificadores: ${[
+        sender.phoneNormalized,
+        sender.contactNumber,
+        sender.senderUserId,
+        sender.inboundChatId,
+        String(sender.inboundChatId || "").replace(/@lid$/i, "")
+      ].filter(Boolean).join(" | ")}`
+      : inboundStatus === "skipped_cooldown"
+        ? `Bloqueado por cooldown inteligente (${cooldownAnalysis.reason}). Aguarde ${Number(settings.replyCooldownSeconds || 30)} segundos.`
+        : inboundStatus === "skipped_disabled"
+          ? "Auto reply desligado."
+          : "",
+    debugContext: inboundDebugContext
+  });
+
+  if (!settings.autoReplyEnabled || !allowed || cooldownBlocked || !body) {
+    return;
+  }
+
+  let payload = await buildInboundAiConversationReply({
+    messageText: body,
+    sender,
+    contact,
+    classification
+  });
+
+  if (!payload) {
+    payload = await buildAiReplyPayload({
+      mensagem: body,
+      telefone: sender.phoneNormalized || "",
+      nome: contact?.name || sender.displayName || "",
+      contexto: `Canal conectado atual: ${connectedNumber || "desconhecido"}`
+    });
+    payload = {
+      ...payload,
+      acao: "responder",
+      stage: stateBefore?.stage || "idle",
+      waitingFor: "",
+      sendPhoto: false,
+      motivoDecisao: "generic_fallback",
+      decisionSource: "fallback"
+    };
+  }
+
+  if (payload.sendPhoto && !settings.autoSendProductPhotoEnabled) {
+    payload = {
+      ...payload,
+      sendPhoto: false,
+      resposta: `${payload.resposta} A foto automática está desligada no momento, mas a equipe pode te encaminhar em seguida.`
+    };
+  }
+
+  let textSent = false;
+  let photoSent = false;
+  let photoCount = 0;
+
+  try {
+    const textResult = await sendWhatsAppTextToChatId(sender.inboundChatId, payload.resposta, {
+      debugLabel: "IA_WHATSAPP_AUTO_REPLY_INBOUND_CHAT"
+    });
+    textSent = true;
+    registerAiAutoReply(cooldownKey, {
+      messageText: body,
+      intent: payload.intencao || classification.intencao || "outro"
+    });
+
+    const stateAfterReply = await upsertAiConversationState(sender.inboundChatId, {
+      phone: sender.phoneNormalized || "",
+      contactId: payload.contact?.id || contact?.id || null,
+      customerName: getCleanFirstName(payload.contact?.name || contact?.name || sender.displayName || stateBefore?.customer_name || ""),
+      lastIntent: payload.intencao || classification.intencao || "outro",
+      lastCustomerMessage: body,
+      lastAiResponse: payload.resposta || "",
+      suggestedProductId: payload.produtosSugeridos?.[0]?.id || stateBefore?.suggested_product_id || null
+    });
+
+    await createAiMessageLog({
+      contactId: payload.contact?.id || contact?.id || null,
+      phone: sender.phoneNormalized || "",
+      phoneOriginal: sender.phoneOriginal || "",
+      inboundChatId: sender.inboundChatId || "",
+      senderUserId: sender.senderUserId || "",
+      customerName: payload.contact?.name || contact?.name || sender.displayName || "",
+      customerMessage: body,
+      direction: "sent",
+      source: "ai_auto_reply",
+      connectedNumber,
+      messageText: payload.resposta,
+      intent: payload.intencao || "outro",
+      needsHuman: Boolean(payload.precisaHumano),
+      autoSent: true,
+      productId: payload.produtosSugeridos?.[0]?.id || null,
+      mediaId: payload.produtosSugeridos?.[0]?.media_id || null,
+      status: "ok",
+      whatsappMessageId: textResult.messageId || "",
+      debugContext: {
+        ...inboundDebugContext,
+        intencao: payload.intencao || "outro",
+        productsCount: payload.produtosSugeridos?.length || 0,
+        action: payload.acao || "responder",
+        waitingForAction: payload.waitingFor || "",
+        decisionReason: payload.motivoDecisao || "",
+        decisionSource: payload.decisionSource || "fallback",
+        desiredGender: stateAfterReply?.desired_gender || "",
+        desiredCategory: stateAfterReply?.desired_category || payload.desiredCategory || "",
+        desiredColor: stateAfterReply?.desired_color || payload.desiredColor || "",
+        desiredSize: stateAfterReply?.desired_size || payload.desiredSize || "",
+        suggestedProductId: stateAfterReply?.suggested_product_id || null,
+        candidateProductIds: (payload.produtosSugeridos || []).map((item) => item.id),
+        storeId: payload.storeId || "",
+        storeName: payload.storeName || "",
+        transferOffered: Boolean(payload.conversationMetrics?.transfer_offered),
+        escalatedToHuman: Boolean(payload.conversationMetrics?.escalated_to_human),
+        escalationReason: payload.conversationMetrics?.escalation_reason || "",
+        conversationMetrics: payload.conversationMetrics || null,
+        stageAfter: stateAfterReply?.stage || payload.stage || "",
+        waitingForAfter: stateAfterReply?.waiting_for || "",
+        textSent: true,
+        photoSent: false,
+        sendPhotoRequested: Boolean(payload.sendPhoto),
+        photoConfirmationDetected: Boolean(payload.photoConfirmationDetected),
+        alternativeRequest: Boolean(payload.alternativeRequest),
+        otherColorRequest: Boolean(payload.otherColorRequest),
+        contextExpired: Boolean(payload.contextExpired)
+      }
+    });
+
+    if (settings.autoSendProductPhotoEnabled && payload.sendPhoto && payload.intencao === "produto" && payload.produtosSugeridos?.[0]?.id) {
+      const photoResult = await sendAiProductSuggestionToChatId({
+        chatId: sender.inboundChatId,
+        contactId: payload.contact?.id || contact?.id || null,
+        phone: sender.phoneNormalized || sender.phoneOriginal || "",
+        customerName: payload.contact?.name || contact?.name || sender.displayName || "",
+        connectedNumber,
+        productId: payload.produtosSugeridos[0].id,
+        customMessage: "",
+        source: "ai_auto_reply",
+        autoSent: true,
+        customerMessage: body
+      });
+      photoSent = true;
+      photoCount = Number(photoResult.photosSentCount || 0);
+      await upsertAiConversationState(sender.inboundChatId, {
+        photosSentCount: Number(stateAfterReply?.photos_sent_count || 0) + photoCount,
+        stage: "product_sent",
+        waitingFor: "",
+        lastAiResponse: payload.resposta || ""
+      });
+    }
+
+    console.log("[IA WHATSAPP INBOUND]", {
+      connectedNumber,
+      from: rawFrom,
+      inboundChatId: sender.inboundChatId,
+      contactNumber: sender.contactNumber,
+      senderUserId: sender.senderUserId,
+      phoneNormalized: sender.phoneNormalized,
+      body,
+      autoReplyEnabled: settings.autoReplyEnabled,
+      testMode: settings.autoReplyTestMode,
+      allowedNumbers,
+      allowed,
+      allowedReason: allowedMatch.reason,
+      allowedMatchedValue: allowedMatch.matchedValue,
+      cooldownBlocked,
+      cooldownReason: cooldownAnalysis.reason,
+      intencao: payload.intencao,
+      productsCount: payload.produtosSugeridos?.length || 0,
+      textSent,
+      photoSent,
+      photoCount,
+      error: null
+    });
+  } catch (error) {
+    console.log("[IA WHATSAPP INBOUND]", {
+      connectedNumber,
+      from: rawFrom,
+      inboundChatId: sender.inboundChatId,
+      contactNumber: sender.contactNumber,
+      senderUserId: sender.senderUserId,
+      phoneNormalized: sender.phoneNormalized,
+      body,
+      autoReplyEnabled: settings.autoReplyEnabled,
+      testMode: settings.autoReplyTestMode,
+      allowedNumbers,
+      allowed,
+      allowedReason: allowedMatch.reason,
+      allowedMatchedValue: allowedMatch.matchedValue,
+      cooldownBlocked,
+      cooldownReason: cooldownAnalysis.reason,
+      intencao: payload.intencao,
+      productsCount: payload.produtosSugeridos?.length || 0,
+      textSent,
+      photoSent,
+      photoCount,
+      error: String(error.userMessage || error.message || error)
+    });
+    await createAiMessageLog({
+      contactId: payload.contact?.id || contact?.id || null,
+      phone: sender.phoneNormalized || "",
+      phoneOriginal: sender.phoneOriginal || "",
+      inboundChatId: sender.inboundChatId || "",
+      senderUserId: sender.senderUserId || "",
+      customerName: payload.contact?.name || contact?.name || sender.displayName || "",
+      customerMessage: body,
+      direction: "sent",
+      source: "ai_auto_reply",
+      connectedNumber,
+      messageText: payload.resposta || "",
+      intent: payload.intencao || "outro",
+      needsHuman: Boolean(payload.precisaHumano),
+      autoSent: true,
+      productId: payload.produtosSugeridos?.[0]?.id || null,
+      mediaId: payload.produtosSugeridos?.[0]?.media_id || null,
+      status: "erro",
+      errorMessage: String(error.userMessage || error.message || error),
+      debugContext: {
+        ...inboundDebugContext,
+        intencao: payload.intencao || "outro",
+        productsCount: payload.produtosSugeridos?.length || 0,
+        action: payload.acao || "responder",
+        waitingForAction: payload.waitingFor || "",
+        decisionReason: payload.motivoDecisao || "",
+        decisionSource: payload.decisionSource || "fallback",
+        candidateProductIds: (payload.produtosSugeridos || []).map((item) => item.id),
+        alternativeRequest: Boolean(payload.alternativeRequest),
+        otherColorRequest: Boolean(payload.otherColorRequest),
+        contextExpired: Boolean(payload.contextExpired),
+        textSent,
+        photoSent,
+        photoCount,
+        technicalError: String(error.originalError || error.message || error)
+      }
+    });
+  }
+}
+
+async function findContactsByPhonesBatch(phones = []) {
+  const normalizedPhones = Array.from(new Set((phones || []).map(normalizePhone).filter(Boolean)));
+  if (!normalizedPhones.length) {
+    return new Map();
+  }
+
+  const phoneExpr = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, '+', ''), '(', ''), ')', ''), '-', ''), ' ', '')";
+  const variants = new Set();
+  normalizedPhones.forEach((phone) => {
+    variants.add(phone);
+    if (phone.startsWith("55") && phone.length > 2) {
+      variants.add(phone.slice(2));
+    }
+  });
+
+  const variantList = Array.from(variants).filter(Boolean);
+  const resultMap = new Map();
+  const chunkSize = 400;
+
+  for (let index = 0; index < variantList.length; index += chunkSize) {
+    const chunk = variantList.slice(index, index + chunkSize);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = await all(
+      `SELECT * FROM contacts
+      WHERE ${phoneExpr} IN (${placeholders})
+      ORDER BY id DESC`,
+      chunk
+    );
+
+    rows.forEach((row) => {
+      const rowPhone = normalizePhone(row.phone || "");
+      if (rowPhone && !resultMap.has(rowPhone)) {
+        resultMap.set(rowPhone, row);
+      }
+      const rawDigits = sanitizePhone(row.phone || "");
+      if (rawDigits && rawDigits.length >= 10) {
+        const normalizedDigits = normalizePhone(rawDigits);
+        if (normalizedDigits && !resultMap.has(normalizedDigits)) {
+          resultMap.set(normalizedDigits, row);
+        }
+      }
+    });
+  }
+
+  return resultMap;
+}
+
+function normalizeHeaderName(header) {
+  return String(header || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-zA-Z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+}
+
+function getImportCellValue(row, aliases) {
+  const normalizedAliases = aliases.map(normalizeHeaderName);
+  for (const [key, value] of Object.entries(row || {})) {
+    if (normalizedAliases.includes(normalizeHeaderName(key))) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function parseImportMoney(value) {
+  if (typeof value === "number") {
+    return Number(value.toFixed(2));
+  }
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return 0;
+  }
+  const normalized = raw
+    .replace(/[R$\s]/g, "")
+    .replace(/\./g, "")
+    .replace(",", ".");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : NaN;
+}
+
+function parseImportDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const year = value.getUTCFullYear();
+    const month = String(value.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(value.getUTCDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  if (typeof value === "number") {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (!parsed) {
+      return "";
+    }
+    const year = parsed.y;
+    const month = String(parsed.m).padStart(2, "0");
+    const day = String(parsed.d).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return raw;
+  }
+  const slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slashMatch) {
+    const [, day, month, year] = slashMatch;
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function cleanupContactImportPreviews() {
+  const now = Date.now();
+  for (const [previewId, preview] of contactImportPreviews.entries()) {
+    if (now - preview.createdAt > 1000 * 60 * 30) {
+      contactImportPreviews.delete(previewId);
+    }
+  }
+}
+
+function sanitizeFilename(filename) {
+  return String(filename || "").trim() || "importacao.xlsx";
+}
+
+function safeJsonParse(value, fallback = {}) {
+  try {
+    return JSON.parse(value || "");
+  } catch (error) {
+    return fallback;
+  }
+}
+
+const CRM_CONTACT_HEADER_ALIASES = {
+  external_id: ["id", "id externo"],
+  external_code: ["codigo", "código", "codigo externo", "código externo"],
+  name: ["nome", "cliente", "razao social", "razão social"],
+  fantasy_name: ["fantasia", "nome fantasia"],
+  address: ["endereco", "endereço", "logradouro"],
+  number: ["numero", "número"],
+  complement: ["complemento"],
+  neighborhood: ["bairro"],
+  zipcode: ["cep"],
+  city: ["cidade"],
+  state: ["estado", "uf"],
+  contact_notes: ["observacoes do contato", "observações do contato", "observacoes", "observações", "obs"],
+  phone: ["fone", "telefone", "telefone fixo"],
+  fax: ["fax"],
+  mobile: ["celular", "whatsapp", "telefone celular"],
+  email: ["e-mail", "email"],
+  website: ["web site", "website", "site"],
+  person_type: ["tipo pessoa", "tipo de pessoa"],
+  document: ["cnpj cpf", "cnpj / cpf", "cpf", "cnpj", "documento"],
+  rg_ie: ["ie rg", "ie / rg", "rg", "inscricao estadual", "inscrição estadual"],
+  ie_exempt: ["ie isento"],
+  status: ["situacao", "situação", "status"],
+  marital_status: ["estado civil"],
+  profession: ["profissao", "profissão"],
+  gender: ["sexo", "genero", "gênero"],
+  birth_date: ["data nascimento", "data de nascimento", "nascimento"],
+  naturality: ["naturalidade"],
+  father_name: ["nome pai"],
+  father_document: ["cpf pai"],
+  mother_name: ["nome mae", "nome mãe"],
+  mother_document: ["cpf mae", "cpf mãe"],
+  price_list: ["lista de preco", "lista de preço"],
+  seller_name: ["vendedor"],
+  invoice_email: ["e-mail para envio de notas fiscais", "email para envio de notas fiscais"],
+  contact_type: ["tipos de contatos", "tipos de contato", "tipo de contato", "tipo contato"],
+  taxpayer: ["contribuinte"],
+  tax_regime_code: ["codigo de regime tributario", "código de regime tributário"],
+  credit_limit: ["limite de credito", "limite de crédito"]
+};
+
+function getCrmContactHeaderAliasMap() {
+  return Object.entries(CRM_CONTACT_HEADER_ALIASES).reduce((map, [field, aliases]) => {
+    aliases.forEach((alias) => map.set(normalizeHeaderName(alias), field));
+    return map;
+  }, new Map());
+}
+
+function normalizeDocumentValue(value = "") {
+  return String(value || "").replace(/\D/g, "").trim();
+}
+
+function normalizeEmailValue(value = "") {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeWhitespace(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeZipcodeValue(value = "") {
+  return String(value || "").replace(/\D/g, "").trim();
+}
+
+function normalizeStateValue(value = "") {
+  return normalizeWhitespace(value).toUpperCase().slice(0, 2);
+}
+
+function normalizeCityValue(value = "") {
+  return normalizeWhitespace(value);
+}
+
+function normalizeCrmStatus(value = "") {
+  const normalized = normalizeSearchText(value);
+  if (!normalized) return "";
+  if (["ativo", "ativa", "active"].includes(normalized)) return "ativo";
+  if (["inativo", "inativa", "inactive", "bloqueado", "bloqueada"].includes(normalized)) return "inativo";
+  return normalizeWhitespace(value);
+}
+
+function normalizeCrmPersonType(value = "") {
+  const normalized = normalizeSearchText(value);
+  if (!normalized) return "";
+  if (["f", "pf", "fisica", "física"].includes(normalized)) return "PF";
+  if (["j", "pj", "juridica", "jurídica"].includes(normalized)) return "PJ";
+  return normalizeWhitespace(value).toUpperCase();
+}
+
+function normalizeCrmGender(value = "") {
+  const normalized = normalizeSearchText(value);
+  if (!normalized) return "";
+  if (["m", "masculino", "homem"].includes(normalized)) return "Masculino";
+  if (["f", "feminino", "mulher"].includes(normalized)) return "Feminino";
+  if (["infantil", "crianca", "criança"].includes(normalized)) return "Infantil";
+  return normalizeWhitespace(value);
+}
+
+function parseCrmContactMoney(value) {
+  const parsed = parseLocalizedNumberToFloat(value);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : 0;
+}
+
+function buildCrmContactImportHash(contact = {}) {
+  return crypto
+    .createHash("sha1")
+    .update(
+      [
+        contact.external_id,
+        contact.external_code,
+        contact.name,
+        contact.document,
+        contact.mobile,
+        contact.email,
+        contact.source_file,
+        contact.source_row
+      ].join("|")
+    )
+    .digest("hex");
+}
+
+function buildCrmContactNameMobileKey(name = "", mobile = "") {
+  const normalizedName = normalizeSearchText(name).replace(/\s+/g, " ").trim();
+  const normalizedMobile = normalizePhone(mobile);
+  return normalizedName && normalizedMobile ? `${normalizedName}|${normalizedMobile}` : "";
+}
+
+function buildCrmContactMatchCandidates(contact = {}) {
+  return {
+    document: normalizeDocumentValue(contact.document),
+    mobile: normalizePhone(contact.mobile || contact.phone),
+    email: normalizeEmailValue(contact.email),
+    external_code: normalizeWhitespace(contact.external_code),
+    name_mobile: buildCrmContactNameMobileKey(contact.name, contact.mobile || contact.phone)
+  };
+}
+
+function choosePreferredValue(currentValue, incomingValue) {
+  const current = currentValue === null || currentValue === undefined ? "" : String(currentValue);
+  const incoming = incomingValue === null || incomingValue === undefined ? "" : String(incomingValue);
+  const currentTrimmed = current.trim();
+  const incomingTrimmed = incoming.trim();
+  if (!currentTrimmed) return incomingTrimmed;
+  if (!incomingTrimmed) return currentTrimmed;
+  return incomingTrimmed.length > currentTrimmed.length ? incomingTrimmed : currentTrimmed;
+}
+
+function mergeCrmContactRecords(base = {}, incoming = {}) {
+  const merged = {
+    ...base,
+    ...incoming,
+    external_id: choosePreferredValue(base.external_id, incoming.external_id),
+    external_code: choosePreferredValue(base.external_code, incoming.external_code),
+    name: choosePreferredValue(base.name, incoming.name),
+    fantasy_name: choosePreferredValue(base.fantasy_name, incoming.fantasy_name),
+    document: choosePreferredValue(base.document, incoming.document),
+    person_type: choosePreferredValue(base.person_type, incoming.person_type),
+    phone: choosePreferredValue(base.phone, incoming.phone),
+    mobile: choosePreferredValue(base.mobile, incoming.mobile),
+    email: choosePreferredValue(base.email, incoming.email),
+    address: choosePreferredValue(base.address, incoming.address),
+    number: choosePreferredValue(base.number, incoming.number),
+    complement: choosePreferredValue(base.complement, incoming.complement),
+    neighborhood: choosePreferredValue(base.neighborhood, incoming.neighborhood),
+    zipcode: choosePreferredValue(base.zipcode, incoming.zipcode),
+    city: choosePreferredValue(base.city, incoming.city),
+    state: choosePreferredValue(base.state, incoming.state),
+    contact_notes: choosePreferredValue(base.contact_notes, incoming.contact_notes),
+    status: choosePreferredValue(base.status, incoming.status),
+    gender: choosePreferredValue(base.gender, incoming.gender),
+    birth_date: choosePreferredValue(base.birth_date, incoming.birth_date),
+    seller_name: choosePreferredValue(base.seller_name, incoming.seller_name),
+    contact_type: choosePreferredValue(base.contact_type, incoming.contact_type),
+    credit_limit: Number(incoming.credit_limit || 0) > Number(base.credit_limit || 0)
+      ? Number(incoming.credit_limit || 0)
+      : Number(base.credit_limit || 0)
+  };
+  const sourceFiles = new Set([...(base.source_files || []), ...(incoming.source_files || []), base.source_file, incoming.source_file].filter(Boolean));
+  merged.source_files = Array.from(sourceFiles);
+  merged.source_file = incoming.source_file || base.source_file || "";
+  merged.source_row = Number(incoming.source_row || base.source_row || 0);
+  merged.import_hash = incoming.import_hash || base.import_hash || "";
+  return merged;
+}
+
+function serializeCrmContact(row = {}) {
+  const sourceFiles = safeJsonParse(row.source_files_json || "[]", []);
+  return {
+    id: Number(row.id || 0),
+    external_id: row.external_id || "",
+    external_code: row.external_code || "",
+    name: row.name || "",
+    fantasy_name: row.fantasy_name || "",
+    document: row.document || "",
+    person_type: row.person_type || "",
+    phone: row.phone || "",
+    mobile: row.mobile || "",
+    email: row.email || "",
+    address: row.address || "",
+    number: row.number || "",
+    complement: row.complement || "",
+    neighborhood: row.neighborhood || "",
+    zipcode: row.zipcode || "",
+    city: row.city || "",
+    state: row.state || "",
+    contact_notes: row.contact_notes || "",
+    status: row.status || "",
+    gender: row.gender || "",
+    birth_date: row.birth_date || "",
+    seller_name: row.seller_name || "",
+    contact_type: row.contact_type || "",
+    credit_limit: Number(row.credit_limit || 0),
+    source_file: row.source_file || "",
+    source_row: Number(row.source_row || 0),
+    import_hash: row.import_hash || "",
+    source_files: Array.isArray(sourceFiles) ? sourceFiles : [],
+    created_at: row.created_at || "",
+    updated_at: row.updated_at || ""
+  };
+}
+
+function findCrmContactHeaderRow(matrixRows = []) {
+  const aliasMap = getCrmContactHeaderAliasMap();
+  for (let index = 0; index < Math.min(matrixRows.length, 15); index += 1) {
+    const normalizedHeaders = (matrixRows[index] || []).map((cell) => normalizeHeaderName(cell));
+    const mappedFields = new Set(normalizedHeaders.map((header) => aliasMap.get(header)).filter(Boolean));
+    const hasRequired = mappedFields.has("name") && (mappedFields.has("mobile") || mappedFields.has("phone") || mappedFields.has("document"));
+    if (hasRequired) {
+      return {
+        headerIndex: index,
+        originalHeaders: (matrixRows[index] || []).map((cell) => String(cell || "").trim()),
+        normalizedHeaders
+      };
+    }
+  }
+  return { headerIndex: -1, originalHeaders: [], normalizedHeaders: [] };
+}
+
+function parseCrmContactFileMatrix(filePath = "") {
+  const extension = path.extname(String(filePath || "")).toLowerCase();
+  if (extension === ".csv") {
+    const text = fs.readFileSync(filePath, "latin1").replace(/^\uFEFF/, "");
+    const delimiter = detectCsvDelimiter(text) || ";";
+    return { delimiter, matrixRows: parseCsvMatrix(text, delimiter) };
+  }
+  const workbook = XLSX.readFile(filePath, { cellFormula: false, cellHTML: false, cellNF: false, cellText: true });
+  const firstSheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[firstSheetName];
+  return {
+    delimiter: "sheet",
+    matrixRows: XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false })
+  };
+}
+
+function buildCrmContactCandidate(row = {}, sourceFile = "", sourceRow = 0) {
+  const candidate = {
+    external_id: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.external_id)),
+    external_code: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.external_code)),
+    name: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.name)),
+    fantasy_name: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.fantasy_name)),
+    document: normalizeDocumentValue(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.document)),
+    person_type: normalizeCrmPersonType(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.person_type)),
+    phone: normalizePhone(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.phone)),
+    mobile: normalizePhone(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.mobile)),
+    email: normalizeEmailValue(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.email)),
+    address: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.address)),
+    number: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.number)),
+    complement: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.complement)),
+    neighborhood: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.neighborhood)),
+    zipcode: normalizeZipcodeValue(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.zipcode)),
+    city: normalizeCityValue(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.city)),
+    state: normalizeStateValue(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.state)),
+    contact_notes: normalizeWhitespace([
+      getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.contact_notes),
+      getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.invoice_email)
+    ].filter(Boolean).join(" | ")),
+    status: normalizeCrmStatus(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.status)),
+    gender: normalizeCrmGender(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.gender)),
+    birth_date: parseImportDate(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.birth_date)),
+    seller_name: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.seller_name)),
+    contact_type: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.contact_type)),
+    credit_limit: parseCrmContactMoney(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.credit_limit)),
+    source_file: sourceFile,
+    source_row: Number(sourceRow || 0),
+    source_files: sourceFile ? [sourceFile] : []
+  };
+  candidate.import_hash = buildCrmContactImportHash(candidate);
+  return candidate;
+}
+
+async function listCrmContactsRaw(filters = {}) {
+  const conditions = [];
+  const params = [];
+  const normalizedQuery = normalizeSearchText(filters.q || "");
+  if (normalizedQuery) {
+    const like = `%${normalizedQuery}%`;
+    const digits = sanitizePhone(filters.q || "");
+    const identityClauses = [
+      "lower(name) LIKE ?",
+      "lower(fantasy_name) LIKE ?",
+      "lower(email) LIKE ?",
+      "lower(city) LIKE ?",
+      "lower(state) LIKE ?",
+      "lower(seller_name) LIKE ?",
+      "lower(contact_type) LIKE ?",
+      "lower(external_code) LIKE ?"
+    ];
+    params.push(like, like, like, like, like, like, like, like);
+    if (digits) {
+      identityClauses.push("document LIKE ?", "mobile LIKE ?", "phone LIKE ?");
+      params.push(`%${digits}%`, `%${digits}%`, `%${digits}%`);
+    }
+    conditions.push(`(
+      ${identityClauses.join(" OR ")}
+    )`);
+  }
+  if (filters.city) {
+    conditions.push("lower(city) = ?");
+    params.push(String(filters.city).trim().toLowerCase());
+  }
+  if (filters.state) {
+    conditions.push("lower(state) = ?");
+    params.push(String(filters.state).trim().toLowerCase());
+  }
+  if (filters.sellerName) {
+    conditions.push("lower(seller_name) = ?");
+    params.push(String(filters.sellerName).trim().toLowerCase());
+  }
+  if (filters.contactType) {
+    conditions.push("lower(contact_type) = ?");
+    params.push(String(filters.contactType).trim().toLowerCase());
+  }
+  if (filters.status) {
+    conditions.push("lower(status) = ?");
+    params.push(String(filters.status).trim().toLowerCase());
+  }
+  const limit = Math.max(1, Math.min(Number(filters.limit || 100), 1000));
+  return all(
+    `SELECT *
+     FROM crm_contacts
+     ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
+     ORDER BY name COLLATE NOCASE ASC
+     LIMIT ?`,
+    [...params, limit]
+  );
+}
+
+function buildCrmContactIndexes(contacts = []) {
+  const indexes = {
+    document: new Map(),
+    mobile: new Map(),
+    email: new Map(),
+    external_code: new Map(),
+    name_mobile: new Map()
+  };
+  contacts.forEach((contact) => {
+    const candidates = buildCrmContactMatchCandidates(contact);
+    if (candidates.document) indexes.document.set(candidates.document, contact);
+    if (candidates.mobile) indexes.mobile.set(candidates.mobile, contact);
+    if (candidates.email) indexes.email.set(candidates.email, contact);
+    if (candidates.external_code) indexes.external_code.set(candidates.external_code, contact);
+    if (candidates.name_mobile) indexes.name_mobile.set(candidates.name_mobile, contact);
+  });
+  return indexes;
+}
+
+function matchCrmContact(contact = {}, indexes = {}) {
+  const candidates = buildCrmContactMatchCandidates(contact);
+  if (candidates.document && indexes.document?.has(candidates.document)) {
+    return { matched: indexes.document.get(candidates.document), reason: "document" };
+  }
+  if (candidates.mobile && indexes.mobile?.has(candidates.mobile)) {
+    return { matched: indexes.mobile.get(candidates.mobile), reason: "mobile" };
+  }
+  if (candidates.email && indexes.email?.has(candidates.email)) {
+    return { matched: indexes.email.get(candidates.email), reason: "email" };
+  }
+  if (candidates.external_code && indexes.external_code?.has(candidates.external_code)) {
+    return { matched: indexes.external_code.get(candidates.external_code), reason: "external_code" };
+  }
+  if (candidates.name_mobile && indexes.name_mobile?.has(candidates.name_mobile)) {
+    return { matched: indexes.name_mobile.get(candidates.name_mobile), reason: "name_mobile" };
+  }
+  return { matched: null, reason: "" };
+}
+
+function buildCrmContactRawRows(filePath = "", originalFilename = "") {
+  const { matrixRows, delimiter } = parseCrmContactFileMatrix(filePath);
+  const { headerIndex, originalHeaders, normalizedHeaders } = findCrmContactHeaderRow(matrixRows);
+  if (headerIndex === -1) {
+    throw new Error(`Não foi possível localizar o cabeçalho de contatos em ${originalFilename || path.basename(filePath)}.`);
+  }
+  const rows = [];
+  for (let rowIndex = headerIndex + 1; rowIndex < matrixRows.length; rowIndex += 1) {
+    const source = matrixRows[rowIndex] || [];
+    const rowObject = { __line: rowIndex + 1 };
+    let hasAnyValue = false;
+    originalHeaders.forEach((header, columnIndex) => {
+      const key = String(header || "").trim();
+      const value = source[columnIndex] ?? "";
+      if (String(value || "").trim()) {
+        hasAnyValue = true;
+      }
+      rowObject[key] = value;
+    });
+    if (hasAnyValue) {
+      rows.push(rowObject);
+    }
+  }
+  return {
+    delimiter,
+    headerIndex,
+    originalHeaders,
+    normalizedHeaders,
+    physicalRows: matrixRows.length,
+    rows
+  };
+}
+
+function hasCrmContactEnoughIdentity(contact = {}) {
+  return Boolean(
+    normalizeWhitespace(contact.name) &&
+    (
+      normalizeDocumentValue(contact.document) ||
+      normalizePhone(contact.mobile || contact.phone) ||
+      normalizeEmailValue(contact.email) ||
+      normalizeWhitespace(contact.external_code)
+    )
+  );
+}
+
+function collectDistinctNonEmpty(values = []) {
+  return Array.from(new Set(values.map((value) => String(value || "").trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, "pt-BR"));
+}
+
+function countFieldDifference(existing = {}, merged = {}) {
+  const fields = [
+    "external_id", "external_code", "name", "fantasy_name", "document", "person_type", "phone", "mobile", "email",
+    "address", "number", "complement", "neighborhood", "zipcode", "city", "state", "contact_notes", "status",
+    "gender", "birth_date", "seller_name", "contact_type"
+  ];
+  let changes = 0;
+  fields.forEach((field) => {
+    if (String(existing[field] || "").trim() !== String(merged[field] || "").trim()) {
+      changes += 1;
+    }
+  });
+  if (Number(existing.credit_limit || 0) !== Number(merged.credit_limit || 0)) {
+    changes += 1;
+  }
+  return changes;
+}
+
+async function parseCrmContactImportFiles(files = []) {
+  const rawExistingContacts = (await listCrmContactsRaw({ limit: 100000 })).map(serializeCrmContact);
+  const existingIndexes = buildCrmContactIndexes(rawExistingContacts);
+  const previewContacts = [];
+  const previewIndexes = buildCrmContactIndexes([]);
+  const invalidRows = [];
+  const fileDiagnostics = [];
+  let totalRows = 0;
+  let duplicatesDetected = 0;
+
+  for (const file of files) {
+    const parsedFile = buildCrmContactRawRows(file.path, sanitizeFilename(file.originalname));
+    totalRows += Number(parsedFile.rows.length || 0);
+    fileDiagnostics.push({
+      filename: sanitizeFilename(file.originalname),
+      storedFilename: file.filename || path.basename(file.path || ""),
+      physicalRows: Number(parsedFile.physicalRows || 0),
+      delimiter: parsedFile.delimiter,
+      headersOriginais: parsedFile.originalHeaders,
+      headersNormalizados: parsedFile.normalizedHeaders
+    });
+
+    for (const row of parsedFile.rows) {
+      const candidate = buildCrmContactCandidate(row, sanitizeFilename(file.originalname), Number(row.__line || 0));
+      if (!hasCrmContactEnoughIdentity(candidate)) {
+        invalidRows.push({
+          source_file: candidate.source_file,
+          source_row: candidate.source_row,
+          name: candidate.name || "",
+          mobile: candidate.mobile || candidate.phone || "",
+          email: candidate.email || "",
+          document: candidate.document || "",
+          reason: "Contato sem identificação mínima."
+        });
+        continue;
+      }
+
+      const previewMatch = matchCrmContact(candidate, previewIndexes);
+      if (previewMatch.matched) {
+        const merged = mergeCrmContactRecords(previewMatch.matched, candidate);
+        Object.assign(previewMatch.matched, merged);
+        duplicatesDetected += 1;
+        continue;
+      }
+
+      const record = { ...candidate, action: "create", matched_contact_id: 0, match_reason: "", source_files: candidate.source_files || [] };
+      previewContacts.push(record);
+      const refreshedIndexes = buildCrmContactIndexes(previewContacts);
+      Object.assign(previewIndexes.document, refreshedIndexes.document);
+      Object.assign(previewIndexes.mobile, refreshedIndexes.mobile);
+      Object.assign(previewIndexes.email, refreshedIndexes.email);
+      Object.assign(previewIndexes.external_code, refreshedIndexes.external_code);
+      Object.assign(previewIndexes.name_mobile, refreshedIndexes.name_mobile);
+      previewIndexes.document = refreshedIndexes.document;
+      previewIndexes.mobile = refreshedIndexes.mobile;
+      previewIndexes.email = refreshedIndexes.email;
+      previewIndexes.external_code = refreshedIndexes.external_code;
+      previewIndexes.name_mobile = refreshedIndexes.name_mobile;
+    }
+  }
+
+  const previewRows = previewContacts.map((contact) => {
+    const existingMatch = matchCrmContact(contact, existingIndexes);
+    if (!existingMatch.matched) {
+      return {
+        ...contact,
+        action: "create",
+        matched_contact_id: 0,
+        match_reason: ""
+      };
+    }
+    const merged = mergeCrmContactRecords(existingMatch.matched, contact);
+    const changes = countFieldDifference(existingMatch.matched, merged);
+    return {
+      ...contact,
+      action: changes > 0 ? "update" : "skip_duplicate",
+      matched_contact_id: Number(existingMatch.matched.id || 0),
+      match_reason: existingMatch.reason,
+      merged_contact: merged
+    };
+  });
+
+  const contactsWithDocument = previewRows.filter((row) => row.document).length;
+  const contactsWithMobile = previewRows.filter((row) => row.mobile || row.phone).length;
+  const contactsWithEmail = previewRows.filter((row) => row.email).length;
+  const newContacts = previewRows.filter((row) => row.action === "create").length;
+  const contactsToUpdate = previewRows.filter((row) => row.action === "update").length;
+  const skippedDuplicates = previewRows.filter((row) => row.action === "skip_duplicate").length;
+
+  return {
+    filesProcessed: files.length,
+    totalRows,
+    validContacts: previewRows.length,
+    invalidContacts: invalidRows.length,
+    contactsWithDocument,
+    contactsWithMobile,
+    contactsWithEmail,
+    duplicatesDetected,
+    newContacts,
+    contactsToUpdate,
+    skippedDuplicates,
+    citiesDetected: collectDistinctNonEmpty(previewRows.map((row) => row.city)).slice(0, 100),
+    statesDetected: collectDistinctNonEmpty(previewRows.map((row) => row.state)).slice(0, 27),
+    contactTypesDetected: collectDistinctNonEmpty(previewRows.map((row) => row.contact_type)).slice(0, 100),
+    sellersDetected: collectDistinctNonEmpty(previewRows.map((row) => row.seller_name)).slice(0, 100),
+    fileDiagnostics,
+    previewRows,
+    invalidRows
+  };
+}
+
+function buildCrmContactImportPreview(parsed = {}) {
+  return {
+    summary: {
+      filesProcessed: Number(parsed.filesProcessed || 0),
+      totalRows: Number(parsed.totalRows || 0),
+      validContacts: Number(parsed.validContacts || 0),
+      invalidContacts: Number(parsed.invalidContacts || 0),
+      contactsWithDocument: Number(parsed.contactsWithDocument || 0),
+      contactsWithMobile: Number(parsed.contactsWithMobile || 0),
+      contactsWithEmail: Number(parsed.contactsWithEmail || 0),
+      duplicatesDetected: Number(parsed.duplicatesDetected || 0),
+      newContacts: Number(parsed.newContacts || 0),
+      contactsToUpdate: Number(parsed.contactsToUpdate || 0),
+      skippedDuplicates: Number(parsed.skippedDuplicates || 0),
+      citiesDetected: parsed.citiesDetected || [],
+      statesDetected: parsed.statesDetected || [],
+      contactTypesDetected: parsed.contactTypesDetected || [],
+      sellersDetected: parsed.sellersDetected || []
+    },
+    previewRows: (parsed.previewRows || []).slice(0, 500),
+    invalidRows: (parsed.invalidRows || []).slice(0, 200),
+    diagnostics: parsed.fileDiagnostics || []
+  };
+}
+
+async function createCrmContactImportBatch({ filenames = [], status = "preview", summary = {}, createdBy = "" } = {}) {
+  const result = await run(
+    `INSERT INTO crm_contact_import_batches
+     (filenames_json, status, total_files, total_rows, valid_contacts, invalid_contacts, duplicates_detected, new_contacts, contacts_to_update, created_count, updated_count, skipped_duplicates_count, error_count, summary_json, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [
+      JSON.stringify(filenames || []),
+      status,
+      Number(summary.filesProcessed || 0),
+      Number(summary.totalRows || 0),
+      Number(summary.validContacts || 0),
+      Number(summary.invalidContacts || 0),
+      Number(summary.duplicatesDetected || 0),
+      Number(summary.newContacts || 0),
+      Number(summary.contactsToUpdate || 0),
+      Number(summary.created || 0),
+      Number(summary.updated || 0),
+      Number(summary.skippedDuplicates || 0),
+      Number(summary.errors || 0),
+      JSON.stringify(summary || {}),
+      createdBy || ""
+    ]
+  );
+  return Number(result.lastID || 0);
+}
+
+async function finalizeCrmContactImportBatch(batchId, { status = "concluido", summary = {} } = {}) {
+  await run(
+    `UPDATE crm_contact_import_batches
+     SET status = ?,
+         total_files = ?,
+         total_rows = ?,
+         valid_contacts = ?,
+         invalid_contacts = ?,
+         duplicates_detected = ?,
+         new_contacts = ?,
+         contacts_to_update = ?,
+         created_count = ?,
+         updated_count = ?,
+         skipped_duplicates_count = ?,
+         error_count = ?,
+         summary_json = ?
+     WHERE id = ?`,
+    [
+      status,
+      Number(summary.filesProcessed || 0),
+      Number(summary.totalRows || 0),
+      Number(summary.validContacts || 0),
+      Number(summary.invalidContacts || 0),
+      Number(summary.duplicatesDetected || 0),
+      Number(summary.newContacts || 0),
+      Number(summary.contactsToUpdate || 0),
+      Number(summary.created || 0),
+      Number(summary.updated || 0),
+      Number(summary.skippedDuplicates || 0),
+      Number(summary.errors || 0),
+      JSON.stringify(summary || {}),
+      batchId
+    ]
+  );
+}
+
+function cleanupCrmContactImportPreviews() {
+  const now = Date.now();
+  for (const [previewId, preview] of crmContactImportPreviews.entries()) {
+    if (now - Number(preview.createdAt || 0) > 1000 * 60 * 30) {
+      crmContactImportPreviews.delete(previewId);
+    }
+  }
+}
+
+function appendCrmContactImportLog(entry = {}) {
+  const current = safeJsonParse(fs.readFileSync(crmContactImportLogPath, "utf8"), []);
+  current.unshift({
+    ...entry,
+    loggedAt: new Date().toISOString()
+  });
+  fs.writeFileSync(crmContactImportLogPath, JSON.stringify(current.slice(0, 100), null, 2), "utf8");
+}
+
+function moveCrmContactImportFile(filePath = "", targetDir = crmContactImportProcessedDir) {
+  if (!filePath || !fs.existsSync(filePath)) return "";
+  const targetPath = path.join(targetDir, path.basename(filePath));
+  fs.renameSync(filePath, targetPath);
+  return targetPath;
+}
+
+async function listCrmContacts(filters = {}) {
+  const rows = await listCrmContactsRaw(filters);
+  return rows.map(serializeCrmContact);
+}
+
+async function getCrmContactsSummary() {
+  const row = await get(
+    `SELECT
+       COUNT(*) AS total_contacts,
+       SUM(CASE WHEN mobile <> '' OR phone <> '' THEN 1 ELSE 0 END) AS with_phone,
+       SUM(CASE WHEN document <> '' THEN 1 ELSE 0 END) AS with_document,
+       SUM(CASE WHEN email <> '' THEN 1 ELSE 0 END) AS with_email,
+       SUM(CASE WHEN mobile = '' AND phone = '' THEN 1 ELSE 0 END) AS without_phone,
+       SUM(CASE WHEN document = '' THEN 1 ELSE 0 END) AS without_document,
+       SUM(CASE WHEN lower(status) = 'ativo' THEN 1 ELSE 0 END) AS active_contacts,
+       SUM(CASE WHEN lower(status) = 'inativo' THEN 1 ELSE 0 END) AS inactive_contacts
+     FROM crm_contacts`
+  );
+  const duplicateRows = await all(
+    `SELECT dedupe_key, COUNT(*) AS total
+     FROM crm_contacts
+     WHERE dedupe_key <> ''
+     GROUP BY dedupe_key
+     HAVING COUNT(*) > 1
+     ORDER BY total DESC
+     LIMIT 50`
+  );
+  return {
+    totalContacts: Number(row?.total_contacts || 0),
+    withPhone: Number(row?.with_phone || 0),
+    withDocument: Number(row?.with_document || 0),
+    withEmail: Number(row?.with_email || 0),
+    withoutPhone: Number(row?.without_phone || 0),
+    withoutDocument: Number(row?.without_document || 0),
+    activeContacts: Number(row?.active_contacts || 0),
+    inactiveContacts: Number(row?.inactive_contacts || 0),
+    duplicatesSuspected: duplicateRows.reduce((sum, item) => sum + Number(item.total || 0), 0),
+    duplicateGroups: duplicateRows.map((item) => ({ dedupeKey: item.dedupe_key, total: Number(item.total || 0) }))
+  };
+}
+
+async function getCrmContactByPhone(phone = "") {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) return null;
+  const row = await get(
+    `SELECT * FROM crm_contacts
+     WHERE mobile = ? OR phone = ?
+     ORDER BY updated_at DESC, id DESC
+     LIMIT 1`,
+    [normalizedPhone, normalizedPhone]
+  );
+  return row ? serializeCrmContact(row) : null;
+}
+
+async function getCrmContactByDocument(document = "") {
+  const normalizedDocument = normalizeDocumentValue(document);
+  if (!normalizedDocument) return null;
+  const row = await get(
+    `SELECT * FROM crm_contacts
+     WHERE document = ?
+     ORDER BY updated_at DESC, id DESC
+     LIMIT 1`,
+    [normalizedDocument]
+  );
+  return row ? serializeCrmContact(row) : null;
+}
+
+async function getCrmContactByName(name = "") {
+  const normalizedName = normalizeSearchText(name);
+  if (!normalizedName) return null;
+  const row = await get(
+    `SELECT * FROM crm_contacts
+     WHERE lower(name) = ?
+     ORDER BY updated_at DESC, id DESC
+     LIMIT 1`,
+    [normalizedName]
+  );
+  return row ? serializeCrmContact(row) : null;
+}
+
+const GENERATED_BONUS_HEADER_GROUPS = [
+  ["cliente"],
+  ["celular", "telefone", "whatsapp", "numero", "número"],
+  ["venda"],
+  ["bonus gerado", "bônus gerado", "b?nus gerado"]
+];
+
+const LOST_BONUS_HEADER_GROUPS = [
+  ["cliente"],
+  ["celular", "telefone", "whatsapp", "numero", "número"],
+  ["bonus perdido", "bônus perdido", "b?nus perdido"]
+];
+
+function findWorksheetHeader(matrixRows = []) {
+  for (let index = 0; index < matrixRows.length; index += 1) {
+    const normalizedCells = matrixRows[index].map((cell) => normalizeHeaderName(cell));
+    const isGeneratedBonus = GENERATED_BONUS_HEADER_GROUPS.every((aliases) => aliases.some((header) => normalizedCells.includes(normalizeHeaderName(header))));
+    if (isGeneratedBonus) {
+      return { headerIndex: index, importType: "bonus_gerado" };
+    }
+    const isLostBonus = LOST_BONUS_HEADER_GROUPS.every((aliases) => aliases.some((header) => normalizedCells.includes(normalizeHeaderName(header))));
+    if (isLostBonus) {
+      return { headerIndex: index, importType: "bonus_perdido" };
+    }
+  }
+  return { headerIndex: -1, importType: "" };
+}
+
+function buildObjectsFromWorksheetMatrix(matrixRows = []) {
+  const { headerIndex, importType } = findWorksheetHeader(matrixRows);
+  if (headerIndex === -1) {
+    return { rows: [], importType: "" };
+  }
+
+  const headerRow = matrixRows[headerIndex].map((cell) => String(cell || "").trim());
+  const objects = [];
+  for (let rowIndex = headerIndex + 1; rowIndex < matrixRows.length; rowIndex += 1) {
+    const sourceRow = matrixRows[rowIndex] || [];
+    const rowObject = { __line: rowIndex + 1 };
+    let hasAnyValue = false;
+
+    headerRow.forEach((header, columnIndex) => {
+      const key = String(header || "").trim();
+      const value = sourceRow[columnIndex] ?? "";
+      rowObject[key] = value;
+      if (String(value || "").trim() !== "") {
+        hasAnyValue = true;
+      }
+    });
+
+    if (hasAnyValue) {
+      objects.push(rowObject);
+    }
+  }
+
+  return { rows: objects, importType };
+}
+
+function cleanupTinyVitrineImportPreviews() {
+  const now = Date.now();
+  for (const [previewId, preview] of tinyVitrineImportPreviews.entries()) {
+    if (now - preview.createdAt > 1000 * 60 * 60) {
+      tinyVitrineImportPreviews.delete(previewId);
+    }
+  }
+}
+
+function cleanupTop100CuratedImportPreviews() {
+  const now = Date.now();
+  for (const [previewId, preview] of top100CuratedImportPreviews.entries()) {
+    if (now - preview.createdAt > 1000 * 60 * 60) {
+      top100CuratedImportPreviews.delete(previewId);
+    }
+  }
+}
+
+function cleanupPdvTinyProductImportPreviews() {
+  const now = Date.now();
+  for (const [previewId, preview] of pdvTinyProductImportPreviews.entries()) {
+    if (now - preview.createdAt > 1000 * 60 * 60) {
+      pdvTinyProductImportPreviews.delete(previewId);
+    }
+  }
+}
+
+function appendTinyVitrineImportLog(entry = {}) {
+  try {
+    const current = safeJsonParse(fs.readFileSync(tinyVitrineImportLogPath, "utf8"), []);
+    const next = Array.isArray(current) ? current : [];
+    next.unshift({
+      ...entry,
+      createdAt: new Date().toISOString()
+    });
+    fs.writeFileSync(tinyVitrineImportLogPath, JSON.stringify(next.slice(0, 100), null, 2), "utf8");
+  } catch (error) {
+    console.warn("Falha ao registrar log do importador Tiny:", error.message);
+  }
+}
+
+function cleanupAeroIntelImportPreviews() {
+  const now = Date.now();
+  for (const [previewId, preview] of aeroIntelImportPreviews.entries()) {
+    if (now - preview.createdAt > 1000 * 60 * 60) {
+      aeroIntelImportPreviews.delete(previewId);
+    }
+  }
+}
+
+function cleanupAeroIntelAbcImportPreviews() {
+  const now = Date.now();
+  for (const [previewId, preview] of aeroIntelAbcImportPreviews.entries()) {
+    if (now - preview.createdAt > 1000 * 60 * 60) {
+      aeroIntelAbcImportPreviews.delete(previewId);
+    }
+  }
+}
+
+function appendAeroIntelImportLog(entry = {}) {
+  try {
+    const current = safeJsonParse(fs.readFileSync(aeroIntelImportLogPath, "utf8"), []);
+    const next = Array.isArray(current) ? current : [];
+    next.unshift({
+      ...entry,
+      createdAt: new Date().toISOString()
+    });
+    fs.writeFileSync(aeroIntelImportLogPath, JSON.stringify(next.slice(0, 100), null, 2), "utf8");
+  } catch (error) {
+    console.warn("Falha ao registrar log do AEROINTEL:", error.message);
+  }
+}
+
+function appendAeroIntelAbcImportLog(entry = {}) {
+  try {
+    const current = safeJsonParse(fs.readFileSync(aeroIntelAbcImportLogPath, "utf8"), []);
+    const next = Array.isArray(current) ? current : [];
+    next.unshift({
+      ...entry,
+      createdAt: new Date().toISOString()
+    });
+    fs.writeFileSync(aeroIntelAbcImportLogPath, JSON.stringify(next.slice(0, 100), null, 2), "utf8");
+  } catch (error) {
+    console.warn("Falha ao registrar log da Curva ABC do AEROINTEL:", error.message);
+  }
+}
+
+const AEROINTEL_HEADER_ALIASES = {
+  customer: ["cliente"],
+  productName: ["produto", "descricao", "descrição", "nome do produto"],
+  sku: ["codigo sku", "código sku", "c?digo sku", "codigo (sku)", "código (sku)", "c?digo (sku)", "sku", "codigo", "código", "c?digo"],
+  quantity: ["quantidade", "qtd"],
+  value: ["valor", "valor unitario", "valor unitário", "preco", "preço"],
+  freight: ["frete"],
+  total: ["total"]
+};
+
+const AEROINTEL_ABC_HEADER_ALIASES = {
+  customer: ["cliente"],
+  value: ["valor"],
+  individualPercent: ["% individual", "individual", "percentual individual", "perc individual"],
+  accumulatedPercent: ["% acumulado", "acumulado", "percentual acumulado", "perc acumulado"],
+  abcClass: ["classificacao", "classificação", "curva", "classe", "abc", "class"]
+};
+
+const AEROINTEL_KNOWN_BRANDS = [
+  "AEROSTORE",
+  "OSKLEN",
+  "CALVIN KLEIN",
+  "CALVIN KLEIN JEANS",
+  "RESERVA",
+  "RESERVA MINI",
+  "FARM",
+  "ZARA",
+  "ARAMIS",
+  "LACOSTE",
+  "RALPH LAUREN",
+  "JOHN JOHN",
+  "AVIATOR",
+  "HERING",
+  "ZINZANE"
+];
+
+function getAeroIntelHeaderAliasMap() {
+  return Object.entries(AEROINTEL_HEADER_ALIASES).reduce((map, [field, aliases]) => {
+    aliases.forEach((alias) => map.set(normalizeHeaderName(alias), field));
+    return map;
+  }, new Map());
+}
+
+function getAeroIntelAbcHeaderAliasMap() {
+  return Object.entries(AEROINTEL_ABC_HEADER_ALIASES).reduce((map, [field, aliases]) => {
+    aliases.forEach((alias) => map.set(normalizeHeaderName(alias), field));
+    return map;
+  }, new Map());
+}
+
+function findAeroIntelHeaderRow(matrixRows = []) {
+  const aliasMap = getAeroIntelHeaderAliasMap();
+  for (let index = 0; index < matrixRows.length; index += 1) {
+    const normalizedHeaders = (matrixRows[index] || []).map((cell) => normalizeHeaderName(cell));
+    const mappedFields = new Set(normalizedHeaders.map((header) => aliasMap.get(header)).filter(Boolean));
+    const hasRequired = ["customer", "productName", "quantity", "total"].every((field) => mappedFields.has(field));
+    if (hasRequired) {
+      return {
+        headerIndex: index,
+        originalHeaders: (matrixRows[index] || []).map((cell) => String(cell || "").trim()),
+        normalizedHeaders
+      };
+    }
+  }
+  return { headerIndex: -1, originalHeaders: [], normalizedHeaders: [] };
+}
+
+function findAeroIntelAbcHeaderRow(matrixRows = []) {
+  const aliasMap = getAeroIntelAbcHeaderAliasMap();
+  for (let index = 0; index < matrixRows.length; index += 1) {
+    const normalizedHeaders = (matrixRows[index] || []).map((cell) => normalizeHeaderName(cell));
+    const mappedFields = new Set(normalizedHeaders.map((header) => aliasMap.get(header)).filter(Boolean));
+    const hasRequired = ["customer", "value", "individualPercent", "accumulatedPercent", "abcClass"].every((field) => mappedFields.has(field));
+    if (hasRequired) {
+      return {
+        headerIndex: index,
+        originalHeaders: (matrixRows[index] || []).map((cell) => String(cell || "").trim()),
+        normalizedHeaders
+      };
+    }
+  }
+  return { headerIndex: -1, originalHeaders: [], normalizedHeaders: [] };
+}
+
+function mapAeroIntelHeaders(headerRow = []) {
+  const aliasMap = getAeroIntelHeaderAliasMap();
+  return headerRow.reduce((map, header, index) => {
+    const normalized = normalizeHeaderName(header);
+    let field = aliasMap.get(normalized) || "";
+    if (!field && normalized.includes("sku") && /(codigo|cod|c_digo)/.test(normalized)) {
+      field = "sku";
+    }
+    if (normalized) {
+      map[normalized] = index;
+    }
+    map[field || normalized || `column_${index + 1}`] = index;
+    return map;
+  }, {});
+}
+
+function mapAeroIntelAbcHeaders(headerRow = []) {
+  const aliasMap = getAeroIntelAbcHeaderAliasMap();
+  return headerRow.reduce((map, header, index) => {
+    const normalized = normalizeHeaderName(header);
+    const field = aliasMap.get(normalized) || normalized || `column_${index + 1}`;
+    if (normalized) {
+      map[normalized] = index;
+    }
+    map[field] = index;
+    return map;
+  }, {});
+}
+
+function matchAeroIntelHeaderField(header = "", field = "") {
+  const normalized = normalizeHeaderName(header);
+  const compact = String(normalized || "").replace(/_/g, "");
+  const raw = String(header || "").trim().toLowerCase();
+
+  if (field === "customer") {
+    return compact === "cliente";
+  }
+  if (field === "productName") {
+    return compact === "produto" || compact === "descricao" || compact === "descricao" || compact === "nomedoproduto";
+  }
+  if (field === "quantity") {
+    return compact === "quantidade" || compact === "qtd";
+  }
+  if (field === "value") {
+    return compact === "valor" || compact === "precovenda" || compact === "preco" || compact === "valorunitario";
+  }
+  if (field === "freight") {
+    return compact === "frete";
+  }
+  if (field === "total") {
+    return compact === "total";
+  }
+  if (field === "sku") {
+    return (
+      compact === "sku" ||
+      compact === "codigosku" ||
+      compact === "codsku" ||
+      compact === "codigo" ||
+      compact === "cod" ||
+      (compact.includes("sku") && (compact.includes("codigo") || compact.includes("cod") || compact.includes("cdigo"))) ||
+      /\(sku\)/i.test(raw) ||
+      /sku/i.test(raw)
+    );
+  }
+  return false;
+}
+
+function matchAeroIntelAbcHeaderField(header = "", field = "") {
+  const normalized = normalizeHeaderName(header);
+  const compact = String(normalized || "").replace(/_/g, "");
+  if (field === "customer") return compact === "cliente";
+  if (field === "value") return compact === "valor";
+  if (field === "individualPercent") return compact === "individual" || compact === "percentualindividual";
+  if (field === "accumulatedPercent") return compact === "acumulado" || compact === "percentualacumulado";
+  if (field === "abcClass") return compact === "classificacao" || compact === "classificacao" || compact === "classe" || compact === "abc" || compact === "class";
+  return false;
+}
+
+function detectAeroIntelColumnIndexes(headerRow = [], normalizedHeaders = []) {
+  const resolveIndex = (field) => {
+    const directAliasIndex = normalizedHeaders.findIndex((header) => {
+      const alias = getAeroIntelHeaderAliasMap().get(header);
+      if (alias === field) {
+        return true;
+      }
+      return false;
+    });
+    if (directAliasIndex >= 0) {
+      return directAliasIndex;
+    }
+    return headerRow.findIndex((header) => matchAeroIntelHeaderField(header, field));
+  };
+
+  return {
+    customer: resolveIndex("customer"),
+    productName: resolveIndex("productName"),
+    sku: resolveIndex("sku"),
+    quantity: resolveIndex("quantity"),
+    value: resolveIndex("value"),
+    freight: resolveIndex("freight"),
+    total: resolveIndex("total")
+  };
+}
+
+function detectAeroIntelAbcColumnIndexes(headerRow = [], normalizedHeaders = []) {
+  const aliasMap = getAeroIntelAbcHeaderAliasMap();
+  const resolveIndex = (field) => {
+    const directAliasIndex = normalizedHeaders.findIndex((header) => aliasMap.get(header) === field);
+    if (directAliasIndex >= 0) {
+      return directAliasIndex;
+    }
+    return headerRow.findIndex((header) => matchAeroIntelAbcHeaderField(header, field));
+  };
+
+  return {
+    customer: resolveIndex("customer"),
+    value: resolveIndex("value"),
+    individualPercent: resolveIndex("individualPercent"),
+    accumulatedPercent: resolveIndex("accumulatedPercent"),
+    abcClass: resolveIndex("abcClass")
+  };
+}
+
+function parseAeroIntelMoney(value) {
+  return Number(parseLocalizedNumberToFloat(value) || 0);
+}
+
+function parseAeroIntelQuantity(value) {
+  const parsed = parseLocalizedNumberToFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function splitCustomerNameAndDocument(rawValue = "") {
+  const clean = String(rawValue || "").replace(/\s+/g, " ").trim();
+  if (!clean) {
+    return { customer_name: "", customer_document: null };
+  }
+  const parts = clean.split(/\s+-\s+/);
+  if (parts.length >= 2) {
+    const name = parts.slice(0, -1).join(" - ").trim();
+    const document = parts[parts.length - 1].trim();
+    if (document && /\d{3}.*\d{2}/.test(document)) {
+      return {
+        customer_name: name || clean,
+        customer_document: document
+      };
+    }
+    if (!document || document === "-") {
+      return {
+        customer_name: name || clean.replace(/\s+-\s*$/, "").trim(),
+        customer_document: null
+      };
+    }
+  }
+  return {
+    customer_name: clean.replace(/\s+-\s*$/, "").trim(),
+    customer_document: null
+  };
+}
+
+function normalizeCustomerDocument(value = "") {
+  const clean = String(value || "").trim();
+  if (!clean) {
+    return "";
+  }
+  const digits = clean.replace(/\D/g, "");
+  return digits || clean;
+}
+
+function buildAeroIntelCustomerKey({ customer_document = "", customer_name = "" } = {}) {
+  const document = normalizeCustomerDocument(customer_document);
+  if (document) {
+    return `doc:${document}`;
+  }
+  const normalizedName = normalizeSearchText(customer_name || "").replace(/\s+/g, " ").trim();
+  return normalizedName ? `name:${normalizedName}` : "";
+}
+
+async function buildAeroIntelCatalogLookupMaps() {
+  const rows = await all(
+    `SELECT sku, codigo, commercial_name, name, marca, category
+     FROM ai_products
+     WHERE COALESCE(deleted_at, '') = ''`
+  );
+  const bySku = new Map();
+  for (const row of rows) {
+    const keys = [row.sku, row.codigo].map((value) => String(value || "").trim()).filter(Boolean);
+    keys.forEach((key) => {
+      if (!bySku.has(key)) {
+        bySku.set(key, row);
+      }
+    });
+  }
+  return { bySku };
+}
+
+function inferAeroIntelBrandAndCategory({ productName = "", sku = "", catalogMaps = null } = {}) {
+  const normalizedName = normalizeSearchText(productName);
+  const fromCatalog = catalogMaps?.bySku?.get(String(sku || "").trim());
+  if (fromCatalog) {
+    return {
+      inferredBrand: fromCatalog.marca || "",
+      inferredCategory: fromCatalog.category || ""
+    };
+  }
+
+  const inferredBrand = AEROINTEL_KNOWN_BRANDS.find((brand) => normalizedName.includes(normalizeSearchText(brand))) || "";
+  let inferredCategory = "";
+  if (/\bbermuda\b/.test(normalizedName)) inferredCategory = "Bermuda";
+  else if (/\bcamiseta\b/.test(normalizedName)) inferredCategory = "Camiseta";
+  else if (/\bcamisa\b/.test(normalizedName)) inferredCategory = "Camisa";
+  else if (/\bcalca\b|\bcalça\b/.test(normalizedName)) inferredCategory = "Calça";
+  else if (/\bvestido\b/.test(normalizedName)) inferredCategory = "Vestido";
+  else if (/\btenis\b|\btênis\b/.test(normalizedName)) inferredCategory = "Calçado";
+  else if (/\binfantil\b|\bmini\b|\b10a\b|\b12a\b|\b14a\b|\b16a\b|\b2a\b|\b4a\b|\b6a\b|\b8a\b/.test(normalizedName)) inferredCategory = "Infantil";
+  return { inferredBrand, inferredCategory };
+}
+
+function buildAeroIntelImportHash(item = {}) {
+  return crypto
+    .createHash("sha1")
+    .update(
+      [
+        item.customer_key,
+        item.product_name,
+        item.sku,
+        item.quantity,
+        item.unit_price,
+        item.total_amount,
+        item.source_row
+      ].join("|")
+    )
+    .digest("hex");
+}
+
+function pushTopCounter(map, key, weight = 1) {
+  const cleanKey = String(key || "").trim();
+  if (!cleanKey) {
+    return;
+  }
+  map.set(cleanKey, Number(map.get(cleanKey) || 0) + Number(weight || 0));
+}
+
+function topEntriesFromMap(map, limit = 10, labelKey = "label", valueKey = "value") {
+  return Array.from(map.entries())
+    .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || String(a[0]).localeCompare(String(b[0]), "pt-BR"))
+    .slice(0, limit)
+    .map(([label, value]) => ({ [labelKey]: label, [valueKey]: Number(value || 0) }));
+}
+
+async function parseAeroIntelSalesHistoryFile(filePath = "", { originalFilename = "" } = {}) {
+  const extension = path.extname(String(filePath || "")).toLowerCase();
+  let matrixRows = [];
+  let delimiter = ";";
+
+  if (extension === ".csv") {
+    let text = "";
+    try {
+      text = fs.readFileSync(filePath, "latin1").replace(/^\uFEFF/, "");
+    } catch (error) {
+      throw new Error("Não foi possível ler o CSV do AEROINTEL. Verifique se o arquivo foi exportado corretamente.");
+    }
+    delimiter = detectCsvDelimiter(text) || ";";
+    matrixRows = parseCsvMatrix(text, delimiter);
+  } else {
+    const workbook = XLSX.readFile(filePath, { cellFormula: false, cellHTML: false, cellNF: false, cellText: true });
+    const firstSheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[firstSheetName];
+    matrixRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+  }
+
+  const headerInfo = findAeroIntelHeaderRow(matrixRows);
+  if (headerInfo.headerIndex === -1) {
+    const error = new Error("Não foi possível localizar o cabeçalho do histórico de vendas AEROINTEL.");
+    error.details = {
+      delimiter,
+      originalHeaders: [],
+      normalizedHeaders: [],
+      firstRows: matrixRows.slice(0, 5)
+    };
+    throw error;
+  }
+
+  const headerRow = headerInfo.originalHeaders;
+  const columnMap = mapAeroIntelHeaders(headerRow);
+  const columnIndexes = detectAeroIntelColumnIndexes(headerRow, headerInfo.normalizedHeaders || []);
+  const catalogMaps = await buildAeroIntelCatalogLookupMaps();
+  const items = [];
+  const invalidRows = [];
+  const topCustomersMap = new Map();
+  const topProductsMap = new Map();
+  const topSkusMap = new Map();
+  let currentCustomer = null;
+  let customerBlocks = 0;
+  let totalQuantity = 0;
+  let totalRevenue = 0;
+  let salesItemsWithSku = 0;
+  let salesItemsWithoutSku = 0;
+  const skuDebugSamples = [];
+
+  for (let rowIndex = headerInfo.headerIndex + 1; rowIndex < matrixRows.length; rowIndex += 1) {
+    const sourceRow = matrixRows[rowIndex] || [];
+    const valueAt = (field) => {
+      const columnIndex = columnIndexes[field] >= 0 ? columnIndexes[field] : columnMap[field];
+      return columnIndex === undefined ? "" : String(sourceRow[columnIndex] ?? "").trim();
+    };
+    const cliente = valueAt("customer");
+    const produto = valueAt("productName");
+    const rawSkuCell = columnIndexes.sku >= 0 ? String(sourceRow[columnIndexes.sku] ?? "") : "";
+    const sku = valueAt("sku") || valueAt("codigo_sku") || valueAt("c_digo_sku") || rawSkuCell.trim();
+    const quantityRaw = valueAt("quantity");
+    const valueRaw = valueAt("value");
+    const freightRaw = valueAt("freight");
+    const totalRaw = valueAt("total");
+    const hasAnyData = [cliente, produto, sku, quantityRaw, valueRaw, freightRaw, totalRaw].some(Boolean);
+
+    if (!hasAnyData) {
+      continue;
+    }
+
+    const isCustomerHeader = cliente && !produto && !sku;
+    if (isCustomerHeader) {
+      const customerParts = splitCustomerNameAndDocument(cliente);
+      const customer_key = buildAeroIntelCustomerKey(customerParts);
+      currentCustomer = customer_key
+        ? {
+            customer_key,
+            customer_name: customerParts.customer_name || "",
+            customer_document: customerParts.customer_document || null
+          }
+        : null;
+      if (currentCustomer) {
+        customerBlocks += 1;
+      }
+      continue;
+    }
+
+    if (!produto) {
+      invalidRows.push({
+        source_row: rowIndex + 1,
+        customer_name: currentCustomer?.customer_name || "",
+        product_name: "",
+        error: "Linha sem produto reconhecido no bloco atual."
+      });
+      continue;
+    }
+
+    if (!currentCustomer?.customer_key) {
+      invalidRows.push({
+        source_row: rowIndex + 1,
+        customer_name: "",
+        product_name: produto,
+        error: "Produto encontrado antes de um bloco válido de cliente."
+      });
+      continue;
+    }
+
+    const quantity = parseAeroIntelQuantity(quantityRaw) || 0;
+    const unitPrice = parseAeroIntelMoney(valueRaw);
+    const freightAmount = parseAeroIntelMoney(freightRaw);
+    const totalAmount = parseAeroIntelMoney(totalRaw);
+    const inferred = inferAeroIntelBrandAndCategory({
+      productName: produto,
+      sku,
+      catalogMaps
+    });
+
+    const item = {
+      customer_key: currentCustomer.customer_key,
+      customer_name: currentCustomer.customer_name,
+      customer_document: currentCustomer.customer_document,
+      product_name: produto,
+      sku: sku || "",
+      quantity,
+      unit_price: unitPrice,
+      freight_amount: freightAmount,
+      total_amount: totalAmount,
+      inferred_brand: inferred.inferredBrand || "",
+      inferred_category: inferred.inferredCategory || "",
+      source_file: originalFilename || path.basename(filePath),
+      source_row: rowIndex + 1
+    };
+    item.import_hash = buildAeroIntelImportHash(item);
+    if (skuDebugSamples.length < 20) {
+      skuDebugSamples.push({
+        source_row: rowIndex + 1,
+        product_name: produto,
+        rawSkuCell,
+        resolvedSku: item.sku || ""
+      });
+    }
+    if (item.sku) {
+      salesItemsWithSku += 1;
+    } else {
+      salesItemsWithoutSku += 1;
+    }
+    items.push(item);
+    totalQuantity += Number(quantity || 0);
+    totalRevenue += Number(totalAmount || 0);
+    pushTopCounter(topCustomersMap, currentCustomer.customer_name, totalAmount);
+    pushTopCounter(topProductsMap, produto, quantity || 1);
+    pushTopCounter(topSkusMap, item.sku || "(sem SKU)", quantity || 1);
+  }
+
+  return {
+    fileName: path.basename(filePath),
+    delimiter,
+    physicalRows: matrixRows.length,
+    headerRow: headerRow,
+    normalizedHeaders: headerInfo.normalizedHeaders,
+    columnIndexes,
+    customersDetected: customerBlocks,
+    salesItemsDetected: items.length,
+    salesItemsWithSku,
+    salesItemsWithoutSku,
+    invalidRows,
+    totalRevenue,
+    totalQuantity,
+    topCustomers: topEntriesFromMap(topCustomersMap, 10, "customer_name", "total_spent"),
+    topProducts: topEntriesFromMap(topProductsMap, 10, "product_name", "quantity"),
+    topSkus: topEntriesFromMap(topSkusMap, 10, "sku", "quantity"),
+    skuDebugSamples,
+    preview: items.slice(0, 200),
+    items
+  };
+}
+
+function normalizeAeroIntelAbcClass(value = "") {
+  const clean = String(value || "").trim().toUpperCase();
+  if (!clean) return "";
+  if (["A", "B", "C"].includes(clean)) return clean;
+  if (clean.startsWith("A")) return "A";
+  if (clean.startsWith("B")) return "B";
+  if (clean.startsWith("C")) return "C";
+  return clean;
+}
+
+function buildAeroIntelAbcImportHash(item = {}) {
+  return crypto
+    .createHash("sha1")
+    .update(
+      [
+        item.customer_key,
+        item.abc_value,
+        item.abc_individual_percent,
+        item.abc_accumulated_percent,
+        item.abc_class
+      ].join("|")
+    )
+    .digest("hex");
+}
+
+async function parseAeroIntelAbcFile(filePath = "", { originalFilename = "" } = {}) {
+  const extension = path.extname(String(filePath || "")).toLowerCase();
+  let matrixRows = [];
+  let delimiter = ";";
+
+  if (extension === ".csv") {
+    let text = "";
+    try {
+      text = fs.readFileSync(filePath, "latin1").replace(/^\uFEFF/, "");
+    } catch (error) {
+      throw new Error("Não foi possível ler o CSV da Curva ABC. Verifique se o arquivo foi exportado corretamente.");
+    }
+    delimiter = detectCsvDelimiter(text) || ";";
+    matrixRows = parseCsvMatrix(text, delimiter);
+  } else {
+    const workbook = XLSX.readFile(filePath, { cellFormula: false, cellHTML: false, cellNF: false, cellText: true });
+    const firstSheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[firstSheetName];
+    matrixRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+  }
+
+  const headerInfo = findAeroIntelAbcHeaderRow(matrixRows);
+  if (headerInfo.headerIndex === -1) {
+    const error = new Error("Não foi possível localizar o cabeçalho da Curva ABC de clientes.");
+    error.details = {
+      delimiter,
+      headersOriginais: [],
+      headersNormalizados: [],
+      firstRows: matrixRows.slice(0, 5)
+    };
+    throw error;
+  }
+
+  const headerRow = headerInfo.originalHeaders;
+  const columnMap = mapAeroIntelAbcHeaders(headerRow);
+  const columnIndexes = detectAeroIntelAbcColumnIndexes(headerRow, headerInfo.normalizedHeaders || []);
+  const items = [];
+  const invalidRows = [];
+  const topCustomersMap = new Map();
+  let totalAbcValue = 0;
+  const classCounts = { A: 0, B: 0, C: 0 };
+
+  for (let rowIndex = headerInfo.headerIndex + 1; rowIndex < matrixRows.length; rowIndex += 1) {
+    const sourceRow = matrixRows[rowIndex] || [];
+    const valueAt = (field) => {
+      const columnIndex = columnIndexes[field] >= 0 ? columnIndexes[field] : columnMap[field];
+      return columnIndex === undefined ? "" : String(sourceRow[columnIndex] ?? "").trim();
+    };
+    const customerRaw = valueAt("customer");
+    const abcValue = Number(parseLocalizedNumberToFloat(valueAt("value")) || 0);
+    const abcIndividualPercent = Number(parseLocalizedNumberToFloat(valueAt("individualPercent")) || 0);
+    const abcAccumulatedPercent = Number(parseLocalizedNumberToFloat(valueAt("accumulatedPercent")) || 0);
+    const abcClass = normalizeAeroIntelAbcClass(valueAt("abcClass"));
+    const hasAnyData = [customerRaw, abcValue, abcIndividualPercent, abcAccumulatedPercent, abcClass].some((value) =>
+      String(value ?? "").trim() !== ""
+    );
+
+    if (!hasAnyData) {
+      continue;
+    }
+
+    const customerParts = splitCustomerNameAndDocument(customerRaw);
+    const customer_key = buildAeroIntelCustomerKey(customerParts);
+    if (!customer_key || !customerParts.customer_name) {
+      invalidRows.push({
+        source_row: rowIndex + 1,
+        customer_name: customerRaw || "",
+        error: "Linha sem cliente válido para a Curva ABC."
+      });
+      continue;
+    }
+
+    const item = {
+      customer_key,
+      customer_name: customerParts.customer_name || "",
+      customer_document: customerParts.customer_document || null,
+      customer_name_raw: customerRaw || "",
+      abc_value: abcValue,
+      abc_individual_percent: abcIndividualPercent,
+      abc_accumulated_percent: abcAccumulatedPercent,
+      abc_class: abcClass,
+      source_file: originalFilename || path.basename(filePath),
+      source_row: rowIndex + 1
+    };
+    item.import_hash = buildAeroIntelAbcImportHash(item);
+
+    if (!item.abc_class || !["A", "B", "C"].includes(item.abc_class)) {
+      invalidRows.push({
+        source_row: rowIndex + 1,
+        customer_name: item.customer_name,
+        error: "Classificação ABC inválida ou ausente."
+      });
+      continue;
+    }
+
+    items.push(item);
+    totalAbcValue += Number(item.abc_value || 0);
+    classCounts[item.abc_class] = Number(classCounts[item.abc_class] || 0) + 1;
+    pushTopCounter(topCustomersMap, item.customer_name, item.abc_value);
+  }
+
+  return {
+    fileName: path.basename(filePath),
+    delimiter,
+    physicalRows: matrixRows.length,
+    headerRow,
+    normalizedHeaders: headerInfo.normalizedHeaders,
+    columnIndexes,
+    customersDetected: items.length,
+    invalidRows,
+    totalAbcValue,
+    classCounts,
+    topCustomers: topEntriesFromMap(topCustomersMap, 20, "customer_name", "abc_value"),
+    preview: items.slice(0, 300),
+    items
+  };
+}
+
+async function createAeroIntelImportBatch({
+  filename = "",
+  originalFilename = "",
+  status = "processando",
+  summary = {},
+  createdBy = ""
+} = {}) {
+  const result = await run(
+    `INSERT INTO commercial_import_batches
+     (filename, original_filename, status, physical_rows, customers_detected, sales_items_detected, created_count, skipped_duplicates_count, error_count, total_revenue, total_quantity, summary_json, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [
+      filename,
+      originalFilename,
+      status,
+      Number(summary.physicalRows || 0),
+      Number(summary.customersDetected || 0),
+      Number(summary.salesItemsDetected || 0),
+      Number(summary.created || 0),
+      Number(summary.skippedDuplicates || 0),
+      Number(summary.errors || 0),
+      Number(summary.totalRevenue || 0),
+      Number(summary.totalQuantity || 0),
+      JSON.stringify(summary || {}),
+      createdBy
+    ]
+  );
+  return Number(result.lastID || 0);
+}
+
+async function finalizeAeroIntelImportBatch(importId, { status = "concluido", summary = {} } = {}) {
+  await run(
+    `UPDATE commercial_import_batches
+     SET status = ?, physical_rows = ?, customers_detected = ?, sales_items_detected = ?, created_count = ?, skipped_duplicates_count = ?, error_count = ?, total_revenue = ?, total_quantity = ?, summary_json = ?
+     WHERE id = ?`,
+    [
+      status,
+      Number(summary.physicalRows || 0),
+      Number(summary.customersDetected || 0),
+      Number(summary.salesItemsDetected || 0),
+      Number(summary.created || 0),
+      Number(summary.skippedDuplicates || 0),
+      Number(summary.errors || 0),
+      Number(summary.totalRevenue || 0),
+      Number(summary.totalQuantity || 0),
+      JSON.stringify(summary || {}),
+      importId
+    ]
+  );
+}
+
+async function createAeroIntelAbcImportBatch({
+  filename = "",
+  originalFilename = "",
+  status = "processando",
+  summary = {},
+  createdBy = ""
+} = {}) {
+  const result = await run(
+    `INSERT INTO commercial_abc_import_batches
+     (filename, original_filename, status, physical_rows, customers_detected, created_count, skipped_duplicates_count, error_count, total_abc_value, class_a_count, class_b_count, class_c_count, summary_json, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [
+      filename,
+      originalFilename,
+      status,
+      Number(summary.physicalRows || 0),
+      Number(summary.customersDetected || 0),
+      Number(summary.created || 0),
+      Number(summary.skippedDuplicates || 0),
+      Number(summary.errors || 0),
+      Number(summary.totalAbcValue || 0),
+      Number(summary.classACount || 0),
+      Number(summary.classBCount || 0),
+      Number(summary.classCCount || 0),
+      JSON.stringify(summary || {}),
+      createdBy
+    ]
+  );
+  return Number(result.lastID || 0);
+}
+
+async function finalizeAeroIntelAbcImportBatch(importId, { status = "concluido", summary = {} } = {}) {
+  await run(
+    `UPDATE commercial_abc_import_batches
+     SET status = ?, physical_rows = ?, customers_detected = ?, created_count = ?, skipped_duplicates_count = ?, error_count = ?, total_abc_value = ?, class_a_count = ?, class_b_count = ?, class_c_count = ?, summary_json = ?
+     WHERE id = ?`,
+    [
+      status,
+      Number(summary.physicalRows || 0),
+      Number(summary.customersDetected || 0),
+      Number(summary.created || 0),
+      Number(summary.skippedDuplicates || 0),
+      Number(summary.errors || 0),
+      Number(summary.totalAbcValue || 0),
+      Number(summary.classACount || 0),
+      Number(summary.classBCount || 0),
+      Number(summary.classCCount || 0),
+      JSON.stringify(summary || {}),
+      importId
+    ]
+  );
+}
+
+async function syncCustomerAbcIntoProfile(item = {}) {
+  const existing = await get(`SELECT * FROM commercial_customer_profile WHERE customer_key = ?`, [item.customer_key || ""]);
+  if (!existing) {
+    await run(
+      `INSERT INTO commercial_customer_profile
+       (customer_key, customer_name, customer_document, purchase_items_count, purchase_quantity_total, total_spent, average_ticket, max_item_total, first_seen_at, last_seen_at, favorite_products, favorite_skus, favorite_brands_suggested, favorite_categories_suggested, price_profile, commercial_profile, abc_class, abc_value, abc_individual_percent, abc_accumulated_percent, last_updated_at)
+       VALUES (?, ?, ?, 0, 0, 0, 0, 0, '', '', '[]', '[]', '[]', '[]', '', '[]', ?, ?, ?, ?, datetime('now'))`,
+      [
+        item.customer_key || "",
+        item.customer_name || "",
+        item.customer_document || "",
+        item.abc_class || "",
+        Number(item.abc_value || 0),
+        Number(item.abc_individual_percent || 0),
+        Number(item.abc_accumulated_percent || 0)
+      ]
+    );
+    return;
+  }
+
+  await run(
+    `UPDATE commercial_customer_profile
+     SET customer_name = CASE WHEN COALESCE(TRIM(customer_name), '') = '' THEN ? ELSE customer_name END,
+         customer_document = CASE WHEN COALESCE(TRIM(customer_document), '') = '' THEN ? ELSE customer_document END,
+         abc_class = ?,
+         abc_value = ?,
+         abc_individual_percent = ?,
+         abc_accumulated_percent = ?,
+         last_updated_at = datetime('now')
+     WHERE customer_key = ?`,
+    [
+      item.customer_name || "",
+      item.customer_document || "",
+      item.abc_class || "",
+      Number(item.abc_value || 0),
+      Number(item.abc_individual_percent || 0),
+      Number(item.abc_accumulated_percent || 0),
+      item.customer_key || ""
+    ]
+  );
+}
+
+function moveAeroIntelImportFile(sourcePath = "", targetDir = aeroIntelImportProcessedDir) {
+  if (!sourcePath || !fs.existsSync(sourcePath)) {
+    return "";
+  }
+  const destination = path.join(targetDir, `${Date.now()}-${path.basename(sourcePath)}`);
+  fs.renameSync(sourcePath, destination);
+  return destination;
+}
+
+function getTopLabelsFromRows(rows = [], key, weightKey, limit = 5) {
+  const counter = new Map();
+  for (const row of rows) {
+    pushTopCounter(counter, row[key], row[weightKey]);
+  }
+  return topEntriesFromMap(counter, limit, "label", "value").map((item) => item.label);
+}
+
+function getAeroIntelPriceProfile({ averageTicket = 0, totalSpent = 0 } = {}) {
+  if (averageTicket >= 350 || totalSpent >= 3500) return "Premium";
+  if (averageTicket >= 200 || totalSpent >= 1800) return "Médio/Alto";
+  if (averageTicket >= 100 || totalSpent >= 800) return "Intermediário";
+  return "Sensível a Preço";
+}
+
+function inferCommercialSegments(rows = [], aggregate = {}) {
+  const profileSet = new Set();
+  const names = rows.map((row) => normalizeSearchText(`${row.product_name} ${row.inferred_brand} ${row.inferred_category}`));
+  const joined = names.join(" ");
+  const distinctBrands = new Set(rows.map((row) => normalizeSearchText(row.inferred_brand)).filter(Boolean));
+
+  if (aggregate.totalSpent >= 2500 || aggregate.averageTicket >= 350) profileSet.add("Premium");
+  if (aggregate.purchaseItemsCount >= 5 || aggregate.purchaseQuantityTotal >= 8) profileSet.add("Recorrente");
+  if (aggregate.totalSpent >= 1200 || aggregate.purchaseQuantityTotal >= 6) profileSet.add("Alto Potencial");
+  if (aggregate.averageTicket < 120) profileSet.add("Sensível a Preço");
+  if (distinctBrands.size >= 3) profileSet.add("Multimarcas");
+  if (/\binfantil\b|\bmini\b|\b10a\b|\b12a\b|\b14a\b|\b16a\b/.test(joined)) profileSet.add("Infantil");
+  if (/\bvestido\b|\bfarm\b|\bzinzane\b|\bfeminino\b/.test(joined)) profileSet.add("Feminino");
+  if (/\bbermuda\b|\bcamisa\b|\baviator\b|\baramis\b|\blacoste\b|\bmasculino\b/.test(joined)) profileSet.add("Masculino");
+
+  return Array.from(profileSet);
+}
+
+async function rebuildCommercialProfilesForKeys({ customerKeys = [], skus = [] } = {}) {
+  const normalizedCustomerKeys = Array.from(new Set((customerKeys || []).map((item) => String(item || "").trim()).filter(Boolean)));
+  for (const customerKey of normalizedCustomerKeys) {
+    const rows = await all(
+      `SELECT * FROM commercial_sales_history WHERE customer_key = ? ORDER BY imported_at ASC, id ASC`,
+      [customerKey]
+    );
+    if (!rows.length) {
+      await run(`DELETE FROM commercial_customer_profile WHERE customer_key = ?`, [customerKey]);
+      continue;
+    }
+    const purchaseItemsCount = rows.length;
+    const purchaseQuantityTotal = rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+    const totalSpent = rows.reduce((sum, row) => sum + Number(row.total_amount || 0), 0);
+    const averageTicket = purchaseItemsCount ? totalSpent / purchaseItemsCount : 0;
+    const maxItemTotal = rows.reduce((max, row) => Math.max(max, Number(row.total_amount || 0)), 0);
+    const favoriteProducts = getTopLabelsFromRows(rows, "product_name", "quantity", 5);
+    const favoriteSkus = getTopLabelsFromRows(rows, "sku", "quantity", 5);
+    const favoriteBrands = getTopLabelsFromRows(rows, "inferred_brand", "quantity", 5);
+    const favoriteCategories = getTopLabelsFromRows(rows, "inferred_category", "quantity", 5);
+    const aggregate = {
+      purchaseItemsCount,
+      purchaseQuantityTotal,
+      totalSpent,
+      averageTicket
+    };
+    const commercialProfile = inferCommercialSegments(rows, aggregate);
+    await run(
+      `INSERT INTO commercial_customer_profile
+       (customer_key, customer_name, customer_document, purchase_items_count, purchase_quantity_total, total_spent, average_ticket, max_item_total, first_seen_at, last_seen_at, favorite_products, favorite_skus, favorite_brands_suggested, favorite_categories_suggested, price_profile, commercial_profile, last_updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(customer_key) DO UPDATE SET
+         customer_name = excluded.customer_name,
+         customer_document = excluded.customer_document,
+         purchase_items_count = excluded.purchase_items_count,
+         purchase_quantity_total = excluded.purchase_quantity_total,
+         total_spent = excluded.total_spent,
+         average_ticket = excluded.average_ticket,
+         max_item_total = excluded.max_item_total,
+         first_seen_at = excluded.first_seen_at,
+         last_seen_at = excluded.last_seen_at,
+         favorite_products = excluded.favorite_products,
+         favorite_skus = excluded.favorite_skus,
+         favorite_brands_suggested = excluded.favorite_brands_suggested,
+         favorite_categories_suggested = excluded.favorite_categories_suggested,
+         price_profile = excluded.price_profile,
+         commercial_profile = excluded.commercial_profile,
+         last_updated_at = datetime('now')`,
+      [
+        customerKey,
+        rows[rows.length - 1].customer_name || rows[0].customer_name || "",
+        rows[rows.length - 1].customer_document || rows[0].customer_document || "",
+        purchaseItemsCount,
+        purchaseQuantityTotal,
+        totalSpent,
+        averageTicket,
+        maxItemTotal,
+        rows[0].imported_at || "",
+        rows[rows.length - 1].imported_at || "",
+        JSON.stringify(favoriteProducts),
+        JSON.stringify(favoriteSkus),
+        JSON.stringify(favoriteBrands),
+        JSON.stringify(favoriteCategories),
+        getAeroIntelPriceProfile({ averageTicket, totalSpent }),
+        JSON.stringify(commercialProfile)
+      ]
+    );
+  }
+
+  const normalizedSkus = Array.from(new Set((skus || []).map((item) => String(item || "").trim()).filter(Boolean)));
+  for (const sku of normalizedSkus) {
+    const rows = await all(
+      `SELECT * FROM commercial_sales_history WHERE sku = ? ORDER BY imported_at ASC, id ASC`,
+      [sku]
+    );
+    if (!rows.length) {
+      await run(`DELETE FROM commercial_product_profile WHERE sku = ?`, [sku]);
+      continue;
+    }
+    const totalQuantitySold = rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+    const totalRevenue = rows.reduce((sum, row) => sum + Number(row.total_amount || 0), 0);
+    const customersCount = new Set(rows.map((row) => row.customer_key)).size;
+    const averageUnitPrice = rows.length
+      ? rows.reduce((sum, row) => sum + Number(row.unit_price || 0), 0) / rows.length
+      : 0;
+    await run(
+      `INSERT INTO commercial_product_profile
+       (sku, product_name, inferred_brand, inferred_category, total_quantity_sold, total_revenue, customers_count, average_unit_price, last_updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(sku) DO UPDATE SET
+         product_name = excluded.product_name,
+         inferred_brand = excluded.inferred_brand,
+         inferred_category = excluded.inferred_category,
+         total_quantity_sold = excluded.total_quantity_sold,
+         total_revenue = excluded.total_revenue,
+         customers_count = excluded.customers_count,
+         average_unit_price = excluded.average_unit_price,
+         last_updated_at = datetime('now')`,
+      [
+        sku,
+        rows[rows.length - 1].product_name || rows[0].product_name || "",
+        rows.find((row) => row.inferred_brand)?.inferred_brand || "",
+        rows.find((row) => row.inferred_category)?.inferred_category || "",
+        totalQuantitySold,
+        totalRevenue,
+        customersCount,
+        averageUnitPrice
+      ]
+    );
+  }
+}
+
+function serializeCommercialCustomerProfile(row = {}) {
+  const abc = {
+    class: row.abc_class || "",
+    value: Number(row.abc_value || 0),
+    individualPercent: Number(row.abc_individual_percent || 0),
+    accumulatedPercent: Number(row.abc_accumulated_percent || 0)
+  };
+  return {
+    customer_key: row.customer_key || "",
+    customer_name: row.customer_name || "",
+    customer_document: row.customer_document || null,
+    purchase_items_count: Number(row.purchase_items_count || 0),
+    purchase_quantity_total: Number(row.purchase_quantity_total || 0),
+    total_spent: Number(row.total_spent || 0),
+    average_ticket: Number(row.average_ticket || 0),
+    max_item_total: Number(row.max_item_total || 0),
+    first_seen_at: row.first_seen_at || "",
+    last_seen_at: row.last_seen_at || "",
+    favorite_products: safeJsonParse(row.favorite_products, []),
+    favorite_skus: safeJsonParse(row.favorite_skus, []),
+    favorite_brands_suggested: safeJsonParse(row.favorite_brands_suggested, []),
+    favorite_categories_suggested: safeJsonParse(row.favorite_categories_suggested, []),
+    price_profile: row.price_profile || "",
+    commercial_profile: safeJsonParse(row.commercial_profile, []),
+    abc_class: abc.class,
+    abc_value: abc.value,
+    abc_individual_percent: abc.individualPercent,
+    abc_accumulated_percent: abc.accumulatedPercent,
+    abc,
+    last_updated_at: row.last_updated_at || ""
+  };
+}
+
+function serializeCommercialProductProfile(row = {}) {
+  return {
+    sku: row.sku || "",
+    product_name: row.product_name || "",
+    inferred_brand: row.inferred_brand || "",
+    inferred_category: row.inferred_category || "",
+    total_quantity_sold: Number(row.total_quantity_sold || 0),
+    total_revenue: Number(row.total_revenue || 0),
+    customers_count: Number(row.customers_count || 0),
+    average_unit_price: Number(row.average_unit_price || 0),
+    last_updated_at: row.last_updated_at || ""
+  };
+}
+
+function serializeCommercialCatalogLink(row = {}) {
+  const currentStock = row.current_stock === null || row.current_stock === undefined || row.current_stock === "" ? null : Number(row.current_stock);
+  return {
+    sku: row.sku || "",
+    commercial_product_name: row.commercial_product_name || "",
+    catalog_product_id: row.catalog_product_id ? Number(row.catalog_product_id) : null,
+    catalog_product_name: row.catalog_product_name || "",
+    brand: row.brand || "",
+    category: row.category || "",
+    current_price: row.current_price === null || row.current_price === undefined || row.current_price === "" ? null : Number(row.current_price),
+    promotional_price: row.promotional_price === null || row.promotional_price === undefined || row.promotional_price === "" ? null : Number(row.promotional_price),
+    current_stock: currentStock,
+    availability: row.availability || "",
+    color: row.color || "",
+    size: row.size || "",
+    image: row.image || "",
+    status: row.status || "",
+    allow_sale: row.allow_sale || "",
+    match_status: row.match_status || "not_found",
+    last_synced_at: row.last_synced_at || ""
+  };
+}
+
+const LIVE_PROFILE_INTENT_GROUPS = {
+  top_size: ["pp", "gg", "xgg", "exg", "oversized", "slim"],
+  bottom_size: ["calca", "bermuda", "short", "jeans", "saia"],
+  shoe_size: ["calco", "numero", "tenis", "sapato", "chinelo", "sandalia"],
+  brands: ["osklen", "reserva", "farm", "santa costa", "lacoste", "nike", "adidas", "calvin klein", "tommy"],
+  categories: ["camiseta", "camisa", "polo", "calca", "jeans", "bermuda", "short", "tenis", "sapato", "sandalia", "vestido", "saia", "blusa", "jaqueta", "casaco", "moletom", "regata", "bolsa", "carteira", "bone"],
+  styles: ["basico", "social", "casual", "praia", "fitness", "streetwear", "oversized", "slim", "premium", "minimalista"],
+  purchase_intent: ["quero comprar", "tem disponivel", "separa pra mim", "quero ver", "manda foto", "gostei", "chegou novidade", "tem no meu tamanho"],
+  price_inquiry: ["quanto", "preco", "valor", "custa", "desconto", "promocao", "promo"],
+  cashback: ["cashback", "bonus", "desconto", "saldo", "validade", "vence", "expira"],
+  third_party: ["meu filho", "minha filha", "minha esposa", "meu marido", "minha mae", "meu pai", "para ele", "para ela", "pra minha", "pra meu"],
+  gift_context: ["presente", "para ele", "para ela"],
+  self_context: ["para mim", "pra mim"]
+};
+
+const LIVE_PROFILE_INTENT_FILTER_KEYS = new Set([
+  "size_mentioned",
+  "brand_mentioned",
+  "category_mentioned",
+  "purchase_intent",
+  "gift_context",
+  "price_inquiry",
+  "cashback",
+  "third_party_context"
+]);
+
+function normalizeConversationPhone(value = "") {
+  const digits = sanitizePhone(value);
+  if (!digits) return "";
+  if (digits.startsWith("55")) return digits;
+  if (digits.length >= 10) return `55${digits}`;
+  return digits;
+}
+
+function escapeRegex(value = "") {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function findKeywordMatches(text = "", keywords = []) {
+  const sourceText = String(text || "");
+  const normalizedText = normalizeLookup(sourceText);
+  const found = [];
+  uniqueStrings(keywords).forEach((keyword) => {
+    const normalizedKeyword = normalizeLookup(keyword);
+    if (!normalizedKeyword) return;
+    const matcher = normalizedKeyword.includes(" ")
+      ? new RegExp(`(^|\\s)${escapeRegex(normalizedKeyword)}(?=\\s|$)`, "i")
+      : new RegExp(`(^|\\s)${escapeRegex(normalizedKeyword)}(?=\\s|$)`, "i");
+    if (matcher.test(normalizedText)) {
+      found.push(keyword);
+    }
+  });
+  return uniqueStrings(found);
+}
+
+function findRegexMatches(text = "", matchers = []) {
+  const sourceText = String(text || "");
+  const normalizedText = normalizeLookup(sourceText);
+  const found = [];
+  matchers.forEach((matcher) => {
+    if (!(matcher instanceof RegExp)) {
+      return;
+    }
+    const regex = new RegExp(matcher.source, matcher.flags.includes("g") ? matcher.flags : `${matcher.flags}g`);
+    let current;
+    while ((current = regex.exec(normalizedText)) !== null) {
+      const matchValue = normalizeText(current[1] || current[2] || current[0] || "").toLowerCase();
+      if (matchValue) {
+        found.push(matchValue);
+      }
+      if (!current[0]) {
+        break;
+      }
+    }
+  });
+  return uniqueStrings(found);
+}
+
+function extractConversationSizeSignals(text = "") {
+  const topDirectHits = findKeywordMatches(text, LIVE_PROFILE_INTENT_GROUPS.top_size);
+  const topContextHits = findRegexMatches(text, [
+    /\b(?:tam(?:anho)?|uso|visto|veste|camiseta|camisa|blusa|polo|jaqueta|regata|vestido)\s*(pp|p|m|g|gg|xgg|exg)\b/gi,
+    /\b(pp|p|m|g|gg|xgg|exg)\s*(?:de|da)?\s*(?:camiseta|camisa|blusa|polo|jaqueta|regata|vestido)\b/gi
+  ]);
+  const bottomNumericHits = findRegexMatches(text, [
+    /\b(?:calca|bermuda|short|jeans|saia|vestido|tam(?:anho)?|uso|veste)\s*(34|36|38|40|42|44|46|48|50)\b/gi,
+    /\b(34|36|38|40|42|44|46|48|50)\s*(?:de|da)?\s*(?:calca|bermuda|short|jeans|saia|vestido)\b/gi
+  ]);
+  const shoeNumericHits = findRegexMatches(text, [
+    /\b(?:calco|numero|tenis|sapato|chinelo|sandalia|tam(?:anho)?)\s*(34|35|36|37|38|39|40|41|42|43|44|45)\b/gi,
+    /\b(34|35|36|37|38|39|40|41|42|43|44|45)\s*(?:de|do)?\s*(?:tenis|sapato|chinelo|sandalia)\b/gi
+  ]);
+  return {
+    topSizeHits: uniqueStrings([...topDirectHits, ...topContextHits]),
+    bottomSizeHits: uniqueStrings(bottomNumericHits),
+    shoeSizeHits: uniqueStrings(shoeNumericHits)
+  };
+}
+
+async function getLiveProfileBrandKeywords() {
+  try {
+    const rows = await all(
+      `SELECT DISTINCT brand
+       FROM ai_product_brand_meta
+       WHERE TRIM(COALESCE(brand, '')) <> ''
+       ORDER BY brand COLLATE NOCASE ASC
+       LIMIT 200`
+    );
+    return uniqueStrings([
+      ...LIVE_PROFILE_INTENT_GROUPS.brands,
+      ...rows.map((row) => row.brand || "")
+    ]);
+  } catch (error) {
+    return uniqueStrings(LIVE_PROFILE_INTENT_GROUPS.brands);
+  }
+}
+
+async function getLiveProfileCategoryKeywords() {
+  try {
+    const rows = await all(
+      `SELECT DISTINCT name
+       FROM ai_product_categories
+       WHERE TRIM(COALESCE(name, '')) <> ''
+       ORDER BY name COLLATE NOCASE ASC
+       LIMIT 200`
+    );
+    return uniqueStrings([
+      ...LIVE_PROFILE_INTENT_GROUPS.categories,
+      ...rows.map((row) => row.name || "")
+    ]);
+  } catch (error) {
+    return uniqueStrings(LIVE_PROFILE_INTENT_GROUPS.categories);
+  }
+}
+
+async function detectSignalsInMessage(text = "") {
+  const brands = await getLiveProfileBrandKeywords();
+  const categories = await getLiveProfileCategoryKeywords();
+  const { topSizeHits, bottomSizeHits, shoeSizeHits } = extractConversationSizeSignals(text);
+  const brandHits = findKeywordMatches(text, brands);
+  const categoryHits = findKeywordMatches(text, categories);
+  const styleHits = findKeywordMatches(text, LIVE_PROFILE_INTENT_GROUPS.styles);
+  const purchaseHits = findKeywordMatches(text, LIVE_PROFILE_INTENT_GROUPS.purchase_intent);
+  const priceHits = findKeywordMatches(text, LIVE_PROFILE_INTENT_GROUPS.price_inquiry);
+  const cashbackHits = findKeywordMatches(text, LIVE_PROFILE_INTENT_GROUPS.cashback);
+  const thirdPartyHits = findKeywordMatches(text, LIVE_PROFILE_INTENT_GROUPS.third_party);
+  const giftHits = findKeywordMatches(text, LIVE_PROFILE_INTENT_GROUPS.gift_context);
+  const selfHits = findKeywordMatches(text, LIVE_PROFILE_INTENT_GROUPS.self_context);
+  const sizeHits = uniqueStrings([...topSizeHits, ...bottomSizeHits, ...shoeSizeHits]);
+  const matchedIntents = [];
+  if (sizeHits.length) matchedIntents.push("size_mentioned");
+  if (brandHits.length) matchedIntents.push("brand_mentioned");
+  if (categoryHits.length) matchedIntents.push("category_mentioned");
+  if (purchaseHits.length) matchedIntents.push("purchase_intent");
+  if (giftHits.length) matchedIntents.push("gift_context");
+  if (priceHits.length) matchedIntents.push("price_inquiry");
+  if (cashbackHits.length) matchedIntents.push("cashback");
+  if (thirdPartyHits.length && !selfHits.length) matchedIntents.push("third_party_context");
+  return {
+    sizes: sizeHits,
+    top_sizes: topSizeHits,
+    bottom_sizes: bottomSizeHits,
+    shoe_sizes: shoeSizeHits,
+    brands: brandHits,
+    categories: categoryHits,
+    styles: styleHits,
+    purchase_intent_terms: purchaseHits,
+    price_terms: priceHits,
+    cashback_terms: cashbackHits,
+    third_party_terms: thirdPartyHits,
+    gift_terms: giftHits,
+    self_terms: selfHits,
+    matched_intents: matchedIntents,
+    intent: matchedIntents[0] || "",
+    third_party_context: matchedIntents.includes("third_party_context"),
+    gift_context: matchedIntents.includes("gift_context")
+  };
+}
+
+function getConversationPeriodBounds(query = {}) {
+  const rawPeriod = String(query.period || "90d").trim().toLowerCase();
+  const today = new Date();
+  const toDate = new Date(today);
+  toDate.setHours(23, 59, 59, 999);
+  if (rawPeriod === "custom") {
+    const from = normalizeText(query.dateFrom || "");
+    const to = normalizeText(query.dateTo || "");
+    return {
+      period: "custom",
+      from: from || new Date(today.getTime() - (90 * 24 * 60 * 60 * 1000)).toISOString().slice(0, 10),
+      to: to || today.toISOString().slice(0, 10)
+    };
+  }
+  const daysMap = { "7d": 7, "30d": 30, "90d": 90 };
+  const days = daysMap[rawPeriod] || 90;
+  const fromDate = new Date(today.getTime() - ((days - 1) * 24 * 60 * 60 * 1000));
+  return {
+    period: rawPeriod,
+    from: fromDate.toISOString().slice(0, 10),
+    to: toDate.toISOString().slice(0, 10)
+  };
+}
+
+function userCanViewAerointelConversationRead(user = {}) {
+  const role = normalizeSystemRole(user?.role || "");
+  return role === "admin" || role === "manager";
+}
+
+async function buildLiveProfileCandidateMetrics(candidate = {}) {
+  const behavior = await buildCustomerBehaviorSnapshot({
+    name: candidate.name || "",
+    phone: candidate.phone || "",
+    document: candidate.document || "",
+    top_size: candidate.top_size || "",
+    bottom_size: candidate.bottom_size || "",
+    shoe_size: candidate.shoe_size || ""
+  });
+  const normalizedPhone = normalizeConversationPhone(candidate.phone || "");
+  const messageCountRow = normalizedPhone
+    ? await get(
+      `SELECT COUNT(*) AS total
+       FROM ai_message_logs
+       WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone, ''), '+', ''), '(', ''), ')', ''), '-', ''), ' ', '') IN (?, ?)` ,
+      [normalizedPhone, normalizedPhone.replace(/^55/, "")]
+    )
+    : { total: 0 };
+  return {
+    total_comprado: Number(behavior?.total_comprado || 0),
+    ultima_compra: behavior?.ultima_compra || "",
+    loja_favorita: normalizeStoreKey(behavior?.loja_favorita || candidate.store || candidate.store_id || ""),
+    vendedor_favorito: behavior?.vendedor_favorito || candidate.seller_name || "",
+    message_count: Number(messageCountRow?.total || 0)
+  };
+}
+
+function createConversationCandidateKey(candidate = {}) {
+  const contactId = Number(candidate.contact_id || candidate.id || 0);
+  if (contactId > 0) return `contact:${contactId}`;
+  const masterId = normalizeText(candidate.master_customer_id || "");
+  if (masterId) return `master:${masterId}`;
+  const phone = normalizeConversationPhone(candidate.phone || "");
+  if (phone) return `phone:${phone}`;
+  return `name:${normalizeLookup(candidate.name || "")}`;
+}
+
+async function resolveAerointelConversationCandidates(identifier = "", user = {}) {
+  const raw = normalizeText(identifier || "");
+  const normalizedPhone = normalizeConversationPhone(raw);
+  const rawDigits = sanitizePhone(raw);
+  const candidatesMap = new Map();
+  const addCandidate = (item = {}) => {
+    const candidate = {
+      contact_id: Number(item.contact_id || item.legacy_contact_id || item.id || 0) || null,
+      crm_contact_id: Number(item.crm_contact_id || 0) || null,
+      master_customer_id: normalizeText(item.master_customer_id || ""),
+      name: normalizeText(item.name || item.customer_name || ""),
+      phone: normalizeText(item.phone || item.mobile || ""),
+      normalized_phone: normalizeConversationPhone(item.phone || item.mobile || ""),
+      document: normalizeDigits(item.document || ""),
+      store_id: normalizeStoreKey(item.store_id || item.store || item.loja_favorita || ""),
+      store_label: normalizeText(item.store || item.store_label || item.loja_favorita || ""),
+      seller_id: item.seller_id ? Number(item.seller_id) : null,
+      seller_name: normalizeText(item.seller_name || item.vendedor_favorito || ""),
+      source_label: normalizeText(item.origin_label || item.origin || "contacts")
+    };
+    if (!candidate.name && !candidate.normalized_phone && !candidate.contact_id && !candidate.master_customer_id) {
+      return;
+    }
+    if (candidate.store_id && !userCanAccessStore(user, candidate.store_id)) {
+      return;
+    }
+    const key = createConversationCandidateKey(candidate);
+    if (!candidatesMap.has(key)) {
+      candidatesMap.set(key, candidate);
+    }
+  };
+
+  if (/^\d+$/.test(raw) && Number(raw) > 0) {
+    const exactContact = await get(`SELECT * FROM contacts WHERE id = ? LIMIT 1`, [Number(raw)]);
+    if (exactContact) addCandidate(exactContact);
+  }
+  if (normalizedPhone) {
+    const phoneRows = await all(
+      `SELECT *
+       FROM contacts
+       WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone, ''), '+', ''), '(', ''), ')', ''), '-', ''), ' ', '') IN (?, ?)`,
+      [normalizedPhone, normalizedPhone.replace(/^55/, "")]
+    );
+    phoneRows.forEach(addCandidate);
+  }
+  if (raw) {
+    const search = await searchOperationalCustomersDetailed(raw, { limit: 25 });
+    (Array.isArray(search?.unified) ? search.unified : []).forEach(addCandidate);
+  }
+
+  const candidates = [];
+  for (const candidate of candidatesMap.values()) {
+    const metrics = await buildLiveProfileCandidateMetrics(candidate);
+    candidates.push({
+      ...candidate,
+      ...metrics
+    });
+  }
+  const scopedCandidates = candidates.filter((candidate) => !candidate.store_id || userCanAccessStore(user, candidate.store_id));
+  const duplicateCandidates = normalizedPhone
+    ? scopedCandidates.filter((candidate) => candidate.normalized_phone === normalizedPhone)
+    : scopedCandidates;
+  const exactContactId = /^\d+$/.test(raw) ? Number(raw) : 0;
+  let selected = null;
+  if (exactContactId > 0) {
+    selected = scopedCandidates.find((candidate) => Number(candidate.contact_id || 0) === exactContactId) || null;
+  }
+  if (!selected && scopedCandidates.length === 1) {
+    selected = scopedCandidates[0];
+  }
+  const matchStatus = selected
+    ? (duplicateCandidates.length > 1 ? "ambiguous" : "matched")
+    : (scopedCandidates.length > 1 ? "ambiguous" : "unmatched");
+  return {
+    raw,
+    normalizedPhone,
+    candidates: scopedCandidates,
+    duplicateCandidates,
+    selected,
+    matchStatus
+  };
+}
+
+function deriveConversationStoreSeller(log = {}, customer = {}) {
+  const debug = safeJsonParse(log.debug_context, {});
+  const nestedCustomer = debug?.customer || {};
+  const sale = debug?.sale || {};
+  const storeId = normalizeStoreKey(
+    sale.loja
+    || sale.loja_venda
+    || nestedCustomer.loja_favorita
+    || customer.store_id
+    || customer.store
+    || ""
+  );
+  const sellerId = sale.sellerId || sale.seller_id || log.sender_user_id || customer.seller_id || null;
+  return {
+    store_id: storeId || null,
+    seller_id: sellerId ? String(sellerId) : null
+  };
+}
+
+async function buildAerointelConversationPayload({
+  identifier = "",
+  query = {},
+  user = {}
+} = {}) {
+  // Stage 1 Perfil Vivo — read-only. Nao salvar insights nesta etapa.
+  const resolution = await resolveAerointelConversationCandidates(identifier, user);
+  const { from, to } = getConversationPeriodBounds(query);
+  const normalizedDirection = String(query.direction || "both").trim().toLowerCase();
+  const normalizedIntentFilter = String(query.intent || "").trim().toLowerCase();
+  const normalizedKeywordGroup = String(query.keyword_group || "").trim().toLowerCase();
+  const normalizedStoreFilter = normalizeStoreKey(query.store_id || "");
+  const normalizedSellerFilter = normalizeText(query.seller_id || "");
+  const textQuery = normalizeLookup(query.q || "");
+  const safeLimit = Math.max(1, Math.min(200, Number(query.limit || 80)));
+  const safeOffset = Math.max(0, Number(query.offset || 0));
+  if (!userHasPermission(user, "can_view_all_stores") && !resolution.selected && !resolution.duplicateCandidates.length) {
+    throw Object.assign(new Error("Nao foi possivel validar um cliente da sua loja para essa leitura."), { statusCode: 403 });
+  }
+  const baseRows = await all(
+    `SELECT *
+     FROM ai_message_logs
+     WHERE datetime(created_at) BETWEEN datetime(?) AND datetime(?)
+     ORDER BY datetime(created_at) ASC, id ASC`,
+    [`${from} 00:00:00`, `${to} 23:59:59`]
+  );
+  const candidateContactIds = new Set(resolution.candidates.map((candidate) => Number(candidate.contact_id || 0)).filter(Boolean));
+  const targetPhone = resolution.selected?.normalized_phone || resolution.normalizedPhone || "";
+  const duplicatesWarning = resolution.duplicateCandidates.length > 1;
+  let filteredRows = baseRows.filter((row) => {
+    const rowPhone = normalizeConversationPhone(row.phone || row.phone_original || "");
+    const rowContactId = Number(row.contact_id || 0);
+    if (resolution.selected?.contact_id && !duplicatesWarning) {
+      return rowContactId === Number(resolution.selected.contact_id) || (targetPhone && rowPhone === targetPhone);
+    }
+    if (targetPhone) {
+      return rowPhone === targetPhone || (candidateContactIds.size ? candidateContactIds.has(rowContactId) : false);
+    }
+    if (resolution.selected?.contact_id) {
+      return rowContactId === Number(resolution.selected.contact_id);
+    }
+    return false;
+  });
+  const warnings = [];
+  if (duplicatesWarning) {
+    warnings.push(`Este telefone aparece em ${resolution.duplicateCandidates.length} contatos diferentes. Revise antes de agir.`);
+  }
+  if (!resolution.selected && resolution.matchStatus === "ambiguous") {
+    warnings.push("O identificador informado corresponde a mais de um cliente. Nenhum dado sera aplicado ao cadastro nesta stage.");
+  }
+  if (!resolution.selected && resolution.matchStatus === "unmatched") {
+    warnings.push("Nao foi possivel vincular o identificador a um cliente unico. A leitura abaixo usa apenas o telefone ou o identificador informado.");
+  }
+
+  const processed = [];
+  const keywordCounter = new Map();
+  const summaryByIntent = {
+    size_mentioned: 0,
+    brand_mentioned: 0,
+    category_mentioned: 0,
+    purchase_intent: 0,
+    gift_context: 0,
+    price_inquiry: 0,
+    cashback: 0,
+    third_party_context: 0
+  };
+
+  for (const row of filteredRows) {
+    const rawText = row.direction === "received"
+      ? String(row.customer_message || row.message_text || "").trim()
+      : String(row.message_text || row.customer_message || "").trim();
+    const signals = await detectSignalsInMessage(rawText);
+    const derived = deriveConversationStoreSeller(row, resolution.selected || {});
+    if (normalizedDirection === "inbound" && row.direction !== "received") continue;
+    if (normalizedDirection === "outbound" && row.direction !== "sent") continue;
+    if (normalizedStoreFilter && normalizeStoreKey(derived.store_id || "") !== normalizedStoreFilter) continue;
+    if (normalizedSellerFilter && normalizeText(derived.seller_id || "") !== normalizedSellerFilter) continue;
+    if (textQuery) {
+      const haystack = normalizeLookup([
+        row.customer_name,
+        row.message_text,
+        row.customer_message,
+        row.intent,
+        row.source
+      ].join(" "));
+      if (!haystack.includes(textQuery)) continue;
+    }
+    if (normalizedIntentFilter && LIVE_PROFILE_INTENT_FILTER_KEYS.has(normalizedIntentFilter) && !signals.matched_intents.includes(normalizedIntentFilter)) {
+      continue;
+    }
+    if (normalizedKeywordGroup) {
+      const hasKeywordGroup =
+        (normalizedKeywordGroup === "size" && signals.sizes.length)
+        || (normalizedKeywordGroup === "brand" && signals.brands.length)
+        || (normalizedKeywordGroup === "category" && signals.categories.length)
+        || (normalizedKeywordGroup === "style" && signals.styles.length)
+        || (normalizedKeywordGroup === "intent" && signals.purchase_intent_terms.length)
+        || (normalizedKeywordGroup === "cashback" && signals.cashback_terms.length)
+        || (normalizedKeywordGroup === "third_party" && (signals.third_party_terms.length || signals.gift_terms.length));
+      if (!hasKeywordGroup) continue;
+    }
+    signals.matched_intents.forEach((intentKey) => {
+      if (Object.prototype.hasOwnProperty.call(summaryByIntent, intentKey)) {
+        summaryByIntent[intentKey] += 1;
+      }
+    });
+    [
+      ["size", signals.sizes],
+      ["brand", signals.brands],
+      ["category", signals.categories],
+      ["style", signals.styles],
+      ["intent", signals.purchase_intent_terms],
+      ["cashback", signals.cashback_terms],
+      ["third_party", uniqueStrings([...signals.third_party_terms, ...signals.gift_terms])]
+    ].forEach(([group, values]) => {
+      values.forEach((keyword) => {
+        const key = `${group}:${normalizeLookup(keyword)}`;
+        const current = keywordCounter.get(key) || { group, keyword, count: 0 };
+        current.count += 1;
+        keywordCounter.set(key, current);
+      });
+    });
+    processed.push({
+      id: Number(row.id || 0),
+      timestamp: row.created_at || "",
+      direction: row.direction === "received" ? "inbound" : (row.direction === "sent" ? "outbound" : row.direction || ""),
+      message_text: rawText,
+      store_id: derived.store_id || null,
+      seller_id: derived.seller_id || null,
+      campaign_id: null,
+      sale_id: normalizeText(safeJsonParse(row.debug_context, {})?.sale?.id || ""),
+      detected_signals: {
+        sizes: signals.sizes,
+        brands: signals.brands,
+        categories: signals.categories,
+        styles: signals.styles,
+        intent: signals.intent || "",
+        intents: signals.matched_intents,
+        price_terms: signals.price_terms,
+        cashback_terms: signals.cashback_terms,
+        third_party_context: signals.third_party_context,
+        gift_context: signals.gift_context,
+        matched_terms: uniqueStrings([
+          ...signals.sizes,
+          ...signals.brands,
+          ...signals.categories,
+          ...signals.styles,
+          ...signals.purchase_intent_terms,
+          ...signals.price_terms,
+          ...signals.cashback_terms,
+          ...signals.third_party_terms,
+          ...signals.gift_terms
+        ])
+      }
+    });
+  }
+
+  const periodRows = processed.slice(safeOffset, safeOffset + safeLimit);
+  const customerStores = uniqueStrings(
+    resolution.candidates.map((candidate) => candidate.store_id || candidate.store_label || "")
+  );
+  const customer = {
+    customer_id: resolution.selected?.crm_contact_id || resolution.selected?.contact_id || resolution.selected?.master_customer_id || "",
+    contact_id: resolution.selected?.contact_id || "",
+    master_customer_id: resolution.selected?.master_customer_id || "",
+    name: resolution.selected?.name || resolution.duplicateCandidates[0]?.name || "",
+    normalized_phone: resolution.selected?.normalized_phone || targetPhone || "",
+    duplicates_warning: duplicatesWarning,
+    duplicate_candidates: resolution.duplicateCandidates.map((candidate) => ({
+      name: candidate.name || "",
+      contact_id: candidate.contact_id || "",
+      master_customer_id: candidate.master_customer_id || "",
+      total_comprado: Number(candidate.total_comprado || 0),
+      last_purchase: candidate.ultima_compra || "",
+      store_id: candidate.store_id || "",
+      seller_name: candidate.seller_name || "",
+      message_count: Number(candidate.message_count || 0)
+    })),
+    stores: customerStores,
+    last_purchase: resolution.selected?.ultima_compra || "",
+    matchStatus: resolution.matchStatus
+  };
+
+  return {
+    customer,
+    period: {
+      from,
+      to,
+      total_messages: processed.length,
+      inbound: processed.filter((item) => item.direction === "inbound").length,
+      outbound: processed.filter((item) => item.direction === "outbound").length
+    },
+    summary_by_intent: summaryByIntent,
+    keywordHits: Array.from(keywordCounter.values()).sort((left, right) => right.count - left.count || left.keyword.localeCompare(right.keyword, "pt-BR")).slice(0, 50),
+    messages: periodRows,
+    warnings
+  };
+}
+
+function buildCommercialProductEnriched(productRow = {}, catalogLinkRow = null) {
+  const product = serializeCommercialProductProfile(productRow);
+  const catalog = catalogLinkRow ? serializeCommercialCatalogLink(catalogLinkRow) : null;
+  const isAvailable = catalog?.availability === "in_stock" && normalizeAiProductVisibilityStatus(catalog.status || "") === "ativo";
+  return {
+    ...product,
+    catalog,
+    catalog_match_status: catalog?.match_status || (product.sku ? "not_synced" : "sku_empty"),
+    catalog_product_name: catalog?.catalog_product_name || "",
+    current_brand: catalog?.brand || "",
+    current_category: catalog?.category || "",
+    current_price: catalog?.current_price ?? null,
+    promotional_price: catalog?.promotional_price ?? null,
+    current_stock: catalog?.current_stock ?? null,
+    availability: catalog?.availability || "",
+    image: catalog?.image || "",
+    status: catalog?.status || "",
+    allow_sale: catalog?.allow_sale || "",
+    is_currently_sellable: Boolean(isAvailable && String(catalog?.allow_sale || "").toLowerCase() !== "nao")
+  };
+}
+
+function buildAeroIntelCatalogSkuIndex(products = []) {
+  const index = new Map();
+  (products || []).forEach((product) => {
+    const keys = [
+      normalizeSearchText(product.sku || ""),
+      normalizeSearchText(product.codigo || "")
+    ].filter(Boolean);
+    const uniqueKeys = Array.from(new Set(keys));
+    uniqueKeys.forEach((key) => {
+      if (!index.has(key)) {
+        index.set(key, []);
+      }
+      const current = index.get(key);
+      if (!current.some((item) => Number(item.id || 0) === Number(product.id || 0))) {
+        current.push(product);
+      }
+    });
+  });
+  return index;
+}
+
+async function upsertCommercialCatalogLink(payload = {}) {
+  await run(
+    `INSERT INTO commercial_product_catalog_link
+     (sku, commercial_product_name, catalog_product_id, catalog_product_name, brand, category, current_price, promotional_price, current_stock, availability, color, size, image, status, allow_sale, match_status, last_synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(sku) DO UPDATE SET
+       commercial_product_name = excluded.commercial_product_name,
+       catalog_product_id = excluded.catalog_product_id,
+       catalog_product_name = excluded.catalog_product_name,
+       brand = excluded.brand,
+       category = excluded.category,
+       current_price = excluded.current_price,
+       promotional_price = excluded.promotional_price,
+       current_stock = excluded.current_stock,
+       availability = excluded.availability,
+       color = excluded.color,
+       size = excluded.size,
+       image = excluded.image,
+       status = excluded.status,
+       allow_sale = excluded.allow_sale,
+       match_status = excluded.match_status,
+       last_synced_at = datetime('now')`,
+    [
+      payload.sku || "",
+      payload.commercial_product_name || "",
+      payload.catalog_product_id || null,
+      payload.catalog_product_name || "",
+      payload.brand || "",
+      payload.category || "",
+      payload.current_price === undefined ? null : payload.current_price,
+      payload.promotional_price === undefined ? null : payload.promotional_price,
+      payload.current_stock === undefined ? null : payload.current_stock,
+      payload.availability || "",
+      payload.color || "",
+      payload.size || "",
+      payload.image || "",
+      payload.status || "",
+      payload.allow_sale || "",
+      payload.match_status || "not_found"
+    ]
+  );
+}
+
+async function syncCommercialCatalogLinks({ skus = [] } = {}) {
+  const normalizedRequestedSkus = Array.from(new Set((skus || []).map((item) => String(item || "").trim()).filter(Boolean)));
+  const productRows = normalizedRequestedSkus.length
+    ? await all(
+      `SELECT * FROM commercial_product_profile
+       WHERE sku IN (${normalizedRequestedSkus.map(() => "?").join(", ")})
+       ORDER BY sku COLLATE NOCASE ASC`,
+      normalizedRequestedSkus
+    )
+    : await all(
+      `SELECT * FROM commercial_product_profile
+       ORDER BY total_quantity_sold DESC, total_revenue DESC, sku COLLATE NOCASE ASC`
+    );
+
+  const catalogProducts = await listAiProducts({ includeInactive: true });
+  const catalogIndex = buildAeroIntelCatalogSkuIndex(catalogProducts);
+  const summary = {
+    processed: 0,
+    matched: 0,
+    notFound: 0,
+    multipleMatches: 0,
+    skuEmpty: 0
+  };
+
+  for (const row of productRows) {
+    const sku = String(row.sku || "").trim();
+    if (!sku) {
+      summary.skuEmpty += 1;
+      continue;
+    }
+
+    summary.processed += 1;
+    const matches = catalogIndex.get(normalizeSearchText(sku)) || [];
+    let payload = {
+      sku,
+      commercial_product_name: row.product_name || "",
+      catalog_product_id: null,
+      catalog_product_name: "",
+      brand: "",
+      category: "",
+      current_price: null,
+      promotional_price: null,
+      current_stock: null,
+      availability: "",
+      color: "",
+      size: "",
+      image: "",
+      status: "",
+      allow_sale: "",
+      match_status: "not_found"
+    };
+
+    if (matches.length === 1) {
+      const match = matches[0];
+      payload = {
+        ...payload,
+        catalog_product_id: match.id || null,
+        catalog_product_name: match.display_name || match.name || "",
+        brand: match.brand || match.marca || "",
+        category: match.category || "",
+        current_price: match.price ?? null,
+        promotional_price: match.promotional_price ?? null,
+        current_stock: match.estoque ?? null,
+        availability: match.availability || "",
+        color: match.color || "",
+        size: match.sizesText || "",
+        image: match.preview_url || match.media_url || "",
+        status: match.status || "",
+        allow_sale: match.permitirVenda || match.permitir_venda || "",
+        match_status: "matched_by_sku"
+      };
+      summary.matched += 1;
+    } else if (matches.length > 1) {
+      payload.match_status = "multiple_matches";
+      summary.multipleMatches += 1;
+    } else {
+      summary.notFound += 1;
+    }
+
+    await upsertCommercialCatalogLink(payload);
+  }
+
+  return summary;
+}
+
+async function getCommercialCatalogLinkBySku(sku = "") {
+  const normalizedSku = String(sku || "").trim();
+  if (!normalizedSku) {
+    return null;
+  }
+  return get(`SELECT * FROM commercial_product_catalog_link WHERE sku = ?`, [normalizedSku]);
+}
+
+async function getEnrichedCommercialProductBySku(sku = "") {
+  const normalizedSku = String(sku || "").trim();
+  if (!normalizedSku) {
+    return {
+      productFound: false,
+      product: null,
+      history: [],
+      catalog: null
+    };
+  }
+  const row = await get(`SELECT * FROM commercial_product_profile WHERE sku = ?`, [normalizedSku]);
+  if (!row) {
+    return {
+      productFound: false,
+      product: null,
+      history: [],
+      catalog: null
+    };
+  }
+  const history = await all(
+    `SELECT customer_name, customer_key, quantity, unit_price, total_amount, imported_at
+     FROM commercial_sales_history
+     WHERE sku = ?
+     ORDER BY id DESC
+     LIMIT 50`,
+    [normalizedSku]
+  );
+  const catalogLink = await getCommercialCatalogLinkBySku(normalizedSku);
+  return {
+    productFound: true,
+    product: buildCommercialProductEnriched(row, catalogLink),
+    catalog: catalogLink ? serializeCommercialCatalogLink(catalogLink) : null,
+    history: history.map((item) => ({
+      customer_name: item.customer_name || "",
+      customer_key: item.customer_key || "",
+      quantity: Number(item.quantity || 0),
+      unit_price: Number(item.unit_price || 0),
+      total_amount: Number(item.total_amount || 0),
+      imported_at: item.imported_at || ""
+    }))
+  };
+}
+
+async function getAeroIntelSummaryPayload() {
+  const salesSummary = await get(
+    `SELECT COUNT(*) AS total_items,
+            COUNT(DISTINCT customer_key) AS total_customers,
+            COUNT(DISTINCT NULLIF(TRIM(sku), '')) AS total_skus,
+            COALESCE(SUM(quantity), 0) AS total_quantity,
+            COALESCE(SUM(total_amount), 0) AS total_revenue
+     FROM commercial_sales_history`
+  );
+  const topCustomers = await all(
+    `SELECT customer_name, total_spent
+     FROM commercial_customer_profile
+     ORDER BY total_spent DESC, customer_name COLLATE NOCASE ASC
+     LIMIT 10`
+  );
+  const topProducts = await all(
+    `SELECT product_name, total_quantity_sold
+     FROM commercial_product_profile
+     ORDER BY total_quantity_sold DESC, product_name COLLATE NOCASE ASC
+     LIMIT 10`
+  );
+  const topSkus = await all(
+    `SELECT sku, total_quantity_sold
+     FROM commercial_product_profile
+     WHERE COALESCE(TRIM(sku), '') <> ''
+     ORDER BY total_quantity_sold DESC, sku COLLATE NOCASE ASC
+     LIMIT 10`
+  );
+  const opportunitiesRows = await all(`SELECT commercial_profile FROM commercial_customer_profile`);
+  const opportunitiesCounter = new Map();
+  opportunitiesRows.forEach((row) => {
+    safeJsonParse(row.commercial_profile, []).forEach((profile) => pushTopCounter(opportunitiesCounter, profile, 1));
+  });
+  return {
+    summary: {
+      totalCustomers: Number(salesSummary?.total_customers || 0),
+      totalItems: Number(salesSummary?.total_items || 0),
+      totalSkus: Number(salesSummary?.total_skus || 0),
+      totalQuantity: Number(salesSummary?.total_quantity || 0),
+      totalRevenue: Number(salesSummary?.total_revenue || 0)
+    },
+    topCustomers: (topCustomers || []).map((row) => ({
+      customer_name: row.customer_name || "",
+      total_spent: Number(row.total_spent || 0)
+    })),
+    topProducts: (topProducts || []).map((row) => ({
+      product_name: row.product_name || "",
+      total_quantity_sold: Number(row.total_quantity_sold || 0)
+    })),
+    topSkus: (topSkus || []).map((row) => ({
+      sku: row.sku || "",
+      total_quantity_sold: Number(row.total_quantity_sold || 0)
+    })),
+    opportunities: topEntriesFromMap(opportunitiesCounter, 10, "profile", "customers")
+  };
+}
+
+async function getAeroIntelAbcSummaryPayload() {
+  const summaryRow = await get(
+    `SELECT COUNT(*) AS total_customers,
+            COALESCE(SUM(abc_value), 0) AS total_abc_value,
+            SUM(CASE WHEN abc_class = 'A' THEN 1 ELSE 0 END) AS class_a_count,
+            SUM(CASE WHEN abc_class = 'B' THEN 1 ELSE 0 END) AS class_b_count,
+            SUM(CASE WHEN abc_class = 'C' THEN 1 ELSE 0 END) AS class_c_count
+     FROM commercial_customer_profile
+     WHERE COALESCE(TRIM(abc_class), '') <> ''`
+  );
+  const topCustomers = await all(
+    `SELECT customer_name, customer_document, customer_key, abc_value, abc_individual_percent, abc_accumulated_percent, abc_class
+     FROM commercial_customer_profile
+     WHERE COALESCE(TRIM(abc_class), '') <> ''
+     ORDER BY abc_value DESC, customer_name COLLATE NOCASE ASC
+     LIMIT 20`
+  );
+  const importRows = await all(`SELECT * FROM commercial_abc_import_batches ORDER BY id DESC LIMIT 10`);
+  return {
+    summary: {
+      totalCustomers: Number(summaryRow?.total_customers || 0),
+      totalAbcValue: Number(summaryRow?.total_abc_value || 0),
+      classACount: Number(summaryRow?.class_a_count || 0),
+      classBCount: Number(summaryRow?.class_b_count || 0),
+      classCCount: Number(summaryRow?.class_c_count || 0)
+    },
+    topCustomers: (topCustomers || []).map((row) => ({
+      customer_key: row.customer_key || "",
+      customer_name: row.customer_name || "",
+      customer_document: row.customer_document || "",
+      abc_value: Number(row.abc_value || 0),
+      abc_individual_percent: Number(row.abc_individual_percent || 0),
+      abc_accumulated_percent: Number(row.abc_accumulated_percent || 0),
+      abc_class: row.abc_class || ""
+    })),
+    imports: (importRows || []).map((row) => ({
+      id: Number(row.id || 0),
+      filename: row.filename || "",
+      original_filename: row.original_filename || "",
+      status: row.status || "",
+      physical_rows: Number(row.physical_rows || 0),
+      customers_detected: Number(row.customers_detected || 0),
+      created_count: Number(row.created_count || 0),
+      skipped_duplicates_count: Number(row.skipped_duplicates_count || 0),
+      error_count: Number(row.error_count || 0),
+      total_abc_value: Number(row.total_abc_value || 0),
+      class_a_count: Number(row.class_a_count || 0),
+      class_b_count: Number(row.class_b_count || 0),
+      class_c_count: Number(row.class_c_count || 0),
+      summary: safeJsonParse(row.summary_json, {}),
+      created_by: row.created_by || "",
+      created_at: row.created_at || ""
+    }))
+  };
+}
+
+async function getCustomerCommercialProfile({ phone = "", document = "", name = "" } = {}) {
+  const documentKey = buildAeroIntelCustomerKey({ customer_document: document, customer_name: "" });
+  const nameKey = buildAeroIntelCustomerKey({ customer_document: "", customer_name: name });
+  const normalizedName = normalizeSearchText(name || "").replace(/\s+/g, " ").trim();
+  let row = null;
+  if (documentKey) {
+    row = await get(`SELECT * FROM commercial_customer_profile WHERE customer_key = ?`, [documentKey]);
+  }
+  if (!row && nameKey) {
+    row = await get(`SELECT * FROM commercial_customer_profile WHERE customer_key = ?`, [nameKey]);
+  }
+  if (!row && normalizedName) {
+    const candidates = await all(
+      `SELECT * FROM commercial_customer_profile
+       WHERE LOWER(TRIM(customer_name)) LIKE LOWER(TRIM(?))
+       ORDER BY total_spent DESC, purchase_items_count DESC
+       LIMIT 50`,
+      [`%${String(name || "").trim()}%`]
+    );
+    row = candidates.find((item) =>
+      normalizeSearchText(item.customer_name || "").replace(/\s+/g, " ").trim() === normalizedName
+    ) || candidates[0] || null;
+  }
+  return {
+    customerFound: Boolean(row),
+    phone: phone || "",
+    profile: row ? serializeCommercialCustomerProfile(row) : null
+  };
+}
+
+async function getCustomerCommercialProfileEnriched({ phone = "", document = "", name = "" } = {}) {
+  const base = await getCustomerCommercialProfile({ phone, document, name });
+  if (!base.customerFound || !base.profile?.customer_key) {
+    return {
+      ...base,
+      purchasedProducts: [],
+      matchedProducts: [],
+      availableNowProducts: []
+    };
+  }
+
+  const purchasedRows = await all(
+    `SELECT sku, product_name, inferred_brand, inferred_category,
+            SUM(quantity) AS total_quantity,
+            SUM(total_amount) AS total_revenue
+     FROM commercial_sales_history
+     WHERE customer_key = ?
+     GROUP BY sku, product_name, inferred_brand, inferred_category
+     ORDER BY total_quantity DESC, total_revenue DESC, product_name COLLATE NOCASE ASC
+     LIMIT 20`,
+    [base.profile.customer_key]
+  );
+
+  const purchasedProducts = [];
+  const matchedProducts = [];
+  const availableNowProducts = [];
+
+  for (const row of purchasedRows) {
+    const enriched = row.sku ? await getEnrichedCommercialProductBySku(row.sku) : null;
+    const current = enriched?.product || null;
+    const item = {
+      sku: row.sku || "",
+      product_name: row.product_name || "",
+      inferred_brand: row.inferred_brand || "",
+      inferred_category: row.inferred_category || "",
+      total_quantity: Number(row.total_quantity || 0),
+      total_revenue: Number(row.total_revenue || 0),
+      current_product: current
+    };
+    purchasedProducts.push(item);
+    if (current?.catalog_match_status === "matched_by_sku") {
+      matchedProducts.push(item);
+      if (current.is_currently_sellable) {
+        availableNowProducts.push(item);
+      }
+    }
+  }
+
+  return {
+    ...base,
+    purchasedProducts,
+    matchedProducts,
+    availableNowProducts
+  };
+}
+
+function summarizeAeroIntelSignals(profilePayload = null) {
+  const favoriteBrands = (profilePayload?.profile?.favorite_brands_suggested || []).filter(Boolean).slice(0, 5);
+  const favoriteCategories = (profilePayload?.profile?.favorite_categories_suggested || []).filter(Boolean).slice(0, 5);
+  const commercialProfiles = (profilePayload?.profile?.commercial_profile || []).filter(Boolean);
+  const matchedProducts = (profilePayload?.matchedProducts || []).slice(0, 5).map((item) => ({
+    sku: item.sku || "",
+    product_name: item.product_name || "",
+    current_product_name: item.current_product?.catalog_product_name || "",
+    brand: item.current_product?.current_brand || item.inferred_brand || "",
+    category: item.current_product?.current_category || item.inferred_category || "",
+    availability: item.current_product?.availability || "",
+    stock: item.current_product?.current_stock ?? null
+  }));
+  const availableNowProducts = (profilePayload?.availableNowProducts || []).slice(0, 5).map((item) => ({
+    sku: item.sku || "",
+    product_name: item.current_product?.catalog_product_name || item.product_name || "",
+    brand: item.current_product?.current_brand || item.inferred_brand || "",
+    category: item.current_product?.current_category || item.inferred_category || "",
+    availability: item.current_product?.availability || "",
+    stock: item.current_product?.current_stock ?? null
+  }));
+
+  const styleHints = [];
+  if (commercialProfiles.includes("Premium")) styleHints.push("premium");
+  if (commercialProfiles.includes("Masculino")) styleHints.push("masculino");
+  if (commercialProfiles.includes("Feminino")) styleHints.push("feminino");
+  if (commercialProfiles.includes("Infantil")) styleHints.push("infantil");
+  if (commercialProfiles.includes("Sensível a Preço")) styleHints.push("custo-beneficio");
+  if (commercialProfiles.includes("Multimarcas")) styleHints.push("multimarcas");
+
+  const insights = [];
+  if (favoriteBrands.length) insights.push(`costuma responder bem a marcas como ${favoriteBrands.slice(0, 3).join(", ")}`);
+  if (favoriteCategories.length) insights.push(`tem preferência recorrente por categorias como ${favoriteCategories.slice(0, 3).join(", ")}`);
+  if (commercialProfiles.includes("Premium")) insights.push("vale priorizar opções de curadoria mais premium");
+  if (commercialProfiles.includes("Sensível a Preço")) insights.push("vale destacar custo-benefício e promoções reais");
+  if (commercialProfiles.includes("Infantil")) insights.push("há sinal de compras infantis, então faz sentido confirmar idade ou tamanho quando o pedido estiver amplo");
+  const abcClass = profilePayload?.profile?.abc?.class || "";
+  const customerPriority = abcClass === "A" ? "strategic" : abcClass === "B" ? "growth" : abcClass === "C" ? "reactivation" : "";
+  const serviceTone = abcClass === "A" ? "consultive" : abcClass === "B" ? "attentive" : abcClass === "C" ? "objective" : "";
+  if (abcClass === "A") insights.push("vale manter uma abordagem mais consultiva e cuidadosa");
+  if (abcClass === "B") insights.push("há espaço para trabalhar recorrência e aumento de ticket");
+  if (abcClass === "C") insights.push("vale ser objetivo e buscar opções de reativação ou custo-benefício");
+
+  return {
+    favoriteBrands,
+    favoriteCategories,
+    priceProfile: profilePayload?.profile?.price_profile || "",
+    commercialProfile: commercialProfiles.slice(0, 5),
+    abcClass,
+    customerPriority,
+    serviceTone,
+    styleHint: styleHints.join(" ").trim(),
+    historicalProducts: matchedProducts,
+    availableNowProducts,
+    insights: insights.slice(0, 3)
+  };
+}
+
+async function getExistingCommercialImportHashes(items = []) {
+  const hashes = Array.from(new Set((items || []).map((item) => String(item.import_hash || "").trim()).filter(Boolean)));
+  const existing = new Set();
+  for (let index = 0; index < hashes.length; index += 400) {
+    const chunk = hashes.slice(index, index + 400);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = await all(
+      `SELECT import_hash FROM commercial_sales_history WHERE import_hash IN (${placeholders})`,
+      chunk
+    );
+    rows.forEach((row) => existing.add(String(row.import_hash || "").trim()));
+  }
+  return existing;
+}
+
+async function getExistingCommercialAbcImportHashes(items = []) {
+  const hashes = Array.from(new Set((items || []).map((item) => String(item.import_hash || "").trim()).filter(Boolean)));
+  const existing = new Set();
+  for (let index = 0; index < hashes.length; index += 400) {
+    const chunk = hashes.slice(index, index + 400);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = await all(
+      `SELECT import_hash FROM commercial_customer_abc_profile WHERE import_hash IN (${placeholders})`,
+      chunk
+    );
+    rows.forEach((row) => existing.add(String(row.import_hash || "").trim()));
+  }
+  return existing;
+}
+
+function buildAeroIntelPreviewRows(items = [], existingHashes = new Set()) {
+  const seenInFile = new Set();
+  let duplicateInFileCount = 0;
+  let existingDuplicateCount = 0;
+  const previewRows = items.map((item) => {
+    const duplicateInFile = seenInFile.has(item.import_hash);
+    seenInFile.add(item.import_hash);
+    const alreadyImported = existingHashes.has(item.import_hash);
+    if (duplicateInFile) {
+      duplicateInFileCount += 1;
+    }
+    if (alreadyImported) {
+      existingDuplicateCount += 1;
+    }
+    const warnings = [];
+    if (!item.inferred_brand) warnings.push("sem marca");
+    if (!item.inferred_category) warnings.push("sem categoria inferida");
+    return {
+      ...item,
+      action: duplicateInFile ? "duplicado_no_arquivo" : alreadyImported ? "duplicado" : "criar",
+      statusLabel: duplicateInFile ? "Duplicado no arquivo" : alreadyImported ? "Já importado" : "Pronto para importar",
+      warnings
+    };
+  });
+  return {
+    previewRows,
+    duplicateInFileCount,
+    existingDuplicateCount
+  };
+}
+
+function buildAeroIntelAbcPreviewRows(items = [], existingHashes = new Set()) {
+  const seenInFile = new Set();
+  let duplicateInFileCount = 0;
+  let existingDuplicateCount = 0;
+  const previewRows = items.map((item) => {
+    const duplicateInFile = seenInFile.has(item.import_hash);
+    seenInFile.add(item.import_hash);
+    const alreadyImported = existingHashes.has(item.import_hash);
+    if (duplicateInFile) duplicateInFileCount += 1;
+    if (alreadyImported) existingDuplicateCount += 1;
+    const warnings = [];
+    if (!item.customer_document) warnings.push("sem documento");
+    return {
+      ...item,
+      action: duplicateInFile ? "duplicado_no_arquivo" : alreadyImported ? "duplicado" : "criar",
+      statusLabel: duplicateInFile ? "Duplicado no arquivo" : alreadyImported ? "Já importado" : "Pronto para importar",
+      warnings
+    };
+  });
+  return {
+    previewRows,
+    duplicateInFileCount,
+    existingDuplicateCount
+  };
+}
+
+const TINY_VITRINE_FIELD_ALIASES = {
+  sku: ["sku", "Sku", "sku_base", "codigo sku", "código sku", "codigo (sku)", "código (sku)", "cod sku", "cód sku", "sku pai", "sku base", "referencia", "referência", "ref", "código", "codigo"],
+  tiny_id: ["id", "tiny_id", "tiny id", "id tiny", "tiny_id_base"],
+  codigo: ["codigo", "código", "codigo produto", "codigo do produto", "codigo (sku)", "código (sku)", "cod", "code"],
+  codigo_etiqueta: ["codigo etiqueta", "código etiqueta", "codigo da etiqueta", "código da etiqueta", "etiqueta", "codigo etiqueta pdv", "referencia etiqueta", "referência etiqueta"],
+  codigo_pai: ["codigo_pai", "código pai", "codigo pai", "id produto pai", "produto pai", "sku_base", "codigo do pai", "código do pai"],
+  codigo_interno: ["codigo interno", "código interno", "id interno", "internal code", "codigo sistema", "código sistema"],
+  nome_interno: ["nome_interno", "nome interno", "nome", "descricao", "descrição", "produto", "nome do produto"],
+  nome_comercial: ["nome_comercial", "nome comercial", "nome vitrine", "titulo", "título", "title"],
+  categoria: ["categoria", "categoria_tiny_original", "categoria tiny", "grupo", "departamento"],
+  genero: ["genero", "gênero", "sexo", "publico", "público", "gender"],
+  cor: ["cor", "cores", "color", "colors"],
+  tamanhos: ["tamanhos", "tamanho", "grade", "tamanho_grade"],
+  preco: ["preco", "preço", "preco de venda", "preço de venda", "preco venda", "preço venda", "valor", "valor venda", "price"],
+  preco_promocional: ["preco promocional", "preço promocional", "valor promocional", "preco promo", "price promo", "promotional price", "preco_promocional"],
+  preco_custo: ["preco de custo", "preço de custo", "custo", "cost", "preco_custo"],
+  marca: ["marca", "marcas", "brand", "fabricante", "nome da marca", "marca do produto", "grife", "label"],
+  ean: ["ean", "gtin", "gtin/ean", "codigo de barras", "código de barras", "cod barras", "cód barras", "barcode"],
+  estoque_total: ["estoque_total", "estoque total", "estoque", "saldo", "saldo estoque", "quantidade", "qtd"],
+  fornecedor: ["fornecedor", "supplier", "fabricante fornecedor"],
+  localizacao: ["localizacao", "localização", "location", "endereco estoque", "endereço estoque"],
+  loja: ["loja", "unidade", "deposito", "depósito", "store"],
+  prioridade: ["prioridade", "priority"],
+  status: ["status", "situacao", "situação", "ativo"],
+  descricao_curta: ["descricao_curta", "descrição curta", "descricao curta", "descricao_curta_base", "descricao", "descrição", "resumo", "detalhes", "short_description"],
+  argumento_venda: ["argumento_venda", "argumento venda", "argumento_venda_base", "argumento de venda", "argumento", "observacoes", "observações", "venda", "sales_argument"],
+  variacoes: ["variacoes", "variações", "variacao", "variação", "raw variations", "raw_variations"],
+  foto_1: ["foto_1", "foto 1", "foto_1_url", "imagem_1", "imagem 1", "foto principal", "url imagem 1", "imagem principal"],
+  foto_2: ["foto_2", "foto 2", "foto_2_url", "imagem_2", "imagem 2", "url imagem 2", "foto detalhe"],
+  foto_3: ["foto_3", "foto 3", "foto_3_url", "imagem_3", "imagem 3", "url imagem 3", "foto detalhe extra"],
+  foto_4: ["foto_4", "foto 4", "foto_4_url", "imagem_4", "imagem 4", "url imagem 4"],
+  foto_5: ["foto_5", "foto 5", "foto_5_url", "imagem_5", "imagem 5", "url imagem 5"],
+  foto_6: ["foto_6", "foto 6", "foto_6_url", "imagem_6", "imagem 6", "url imagem 6"],
+  fotos_extras: ["fotos_extras", "fotos extras", "fotos_extras_url", "imagens extras", "imagens", "galeria", "fotos", "urls imagens"],
+  markup: ["markup"],
+  permitir_venda: ["permitir_venda", "permitir venda", "permitir inclusão nas vendas", "permitir inclusao nas vendas", "vendavel", "vendável", "venda permitida"],
+  tags: ["tags", "etiquetas", "palavras-chave"]
+};
+
+for (let index = 1; index <= 10; index += 1) {
+  TINY_VITRINE_FIELD_ALIASES[`foto_externa_${index}`] = [
+    `url imagem externa ${index}`,
+    `url_imagem_externa_${index}`,
+    `imagem externa ${index}`,
+    `foto externa ${index}`,
+    `url externa ${index}`
+  ];
+}
+
+function getTinyImportField(row = {}, fieldName = "") {
+  return getImportCellValue(row, TINY_VITRINE_FIELD_ALIASES[fieldName] || [fieldName]);
+}
+
+function getTinyVitrineHeaderAnalysis(headerRow = []) {
+  const normalizedHeaders = (headerRow || [])
+    .map((cell) => String(cell || "").trim())
+    .filter((value) => value !== "");
+  const normalizedCanonicalHeaders = normalizedHeaders.map((cell) => normalizeHeaderName(cell));
+  const matchedFields = {};
+
+  Object.entries(TINY_VITRINE_FIELD_ALIASES).forEach(([fieldName, aliases]) => {
+    const normalizedAliases = aliases.map((alias) => normalizeHeaderName(alias));
+    const matchedIndex = normalizedCanonicalHeaders.findIndex((header) => normalizedAliases.includes(header));
+    if (matchedIndex >= 0) {
+      matchedFields[fieldName] = {
+        original: normalizedHeaders[matchedIndex],
+        normalized: normalizedCanonicalHeaders[matchedIndex]
+      };
+    }
+  });
+
+  const hasName = Boolean(matchedFields.nome_interno || matchedFields.nome_comercial);
+  const hasIdentity = Boolean(matchedFields.categoria || matchedFields.sku || matchedFields.codigo || matchedFields.codigo_pai);
+  const hasExtra = Boolean(matchedFields.preco || matchedFields.estoque_total || matchedFields.status || matchedFields.cor || matchedFields.tamanhos);
+  const isValid = hasName && hasIdentity && hasExtra;
+  const missingMinimum = [
+    hasName ? "" : "nome_interno ou nome_comercial",
+    hasIdentity ? "" : "categoria ou sku",
+    hasExtra ? "" : "preco ou estoque_total ou status ou cores ou tamanhos"
+  ].filter(Boolean);
+
+  return {
+    originalHeaders: normalizedHeaders,
+    normalizedHeaders: normalizedCanonicalHeaders,
+    matchedFields,
+    isValid,
+    missingMinimum
+  };
+}
+
+function findTinyVitrineHeader(matrixRows = []) {
+  let fallbackAnalysis = null;
+  const maxRows = Math.min(matrixRows.length, 30);
+  for (let index = 0; index < maxRows; index += 1) {
+    const analysis = getTinyVitrineHeaderAnalysis(matrixRows[index] || []);
+    if (!fallbackAnalysis && analysis.originalHeaders.length) {
+      fallbackAnalysis = { index, ...analysis };
+    }
+    if (analysis.isValid) {
+      return { headerIndex: index, ...analysis };
+    }
+  }
+  return fallbackAnalysis ? { headerIndex: -1, ...fallbackAnalysis } : {
+    headerIndex: -1,
+    originalHeaders: [],
+    normalizedHeaders: [],
+    matchedFields: {},
+    isValid: false,
+    missingMinimum: ["nome_interno ou nome_comercial", "categoria ou sku", "preco ou estoque_total ou status ou cores ou tamanhos"]
+  };
+}
+
+function buildTinyVitrineObjectsFromWorksheetMatrix(matrixRows = []) {
+  const headerAnalysis = findTinyVitrineHeader(matrixRows);
+  if (headerAnalysis.headerIndex === -1) {
+    return {
+      rows: [],
+      headerAnalysis
+    };
+  }
+  const headerRow = (matrixRows[headerAnalysis.headerIndex] || []).map((cell) => String(cell || "").trim());
+  const objects = [];
+  for (let rowIndex = headerAnalysis.headerIndex + 1; rowIndex < matrixRows.length; rowIndex += 1) {
+    const sourceRow = matrixRows[rowIndex] || [];
+    const rowObject = { __line: rowIndex + 1 };
+    let hasAnyValue = false;
+    headerRow.forEach((header, columnIndex) => {
+      const key = String(header || "").trim();
+      const value = sourceRow[columnIndex] ?? "";
+      rowObject[key] = value;
+      if (String(value || "").trim()) {
+        hasAnyValue = true;
+      }
+    });
+    if (hasAnyValue) {
+      objects.push(rowObject);
+    }
+  }
+  return {
+    rows: objects,
+    headerAnalysis
+  };
+}
+
+const PDV_TINY_IMPORT_FIELD_DEFINITIONS = [
+  { key: "nome_interno", label: "Nome do produto", required: true },
+  { key: "codigo", label: "Código Tiny", critical: true },
+  { key: "tiny_id", label: "ID Tiny" },
+  { key: "sku", label: "SKU", critical: true },
+  { key: "codigo_etiqueta", label: "Código da etiqueta", critical: true },
+  { key: "ean", label: "Código de barras / EAN", critical: true },
+  { key: "codigo_interno", label: "Código interno", critical: true },
+  { key: "preco", label: "Preço de venda", required: true },
+  { key: "preco_custo", label: "Custo" },
+  { key: "estoque_total", label: "Estoque inicial" },
+  { key: "categoria", label: "Categoria" },
+  { key: "marca", label: "Marca" },
+  { key: "cor", label: "Cor" },
+  { key: "tamanhos", label: "Tamanho / grade" },
+  { key: "status", label: "Status" },
+  { key: "foto_1", label: "Foto principal" },
+  { key: "loja", label: "Loja / origem do estoque" }
+];
+
+function buildTinyPdvImportSuggestedMapping(headerAnalysis = {}) {
+  const matched = headerAnalysis?.matchedFields || {};
+  return {
+    nome_interno: matched.nome_interno?.original || matched.nome_comercial?.original || "",
+    codigo: matched.codigo?.original || matched.tiny_id?.original || "",
+    tiny_id: matched.tiny_id?.original || "",
+    sku: matched.sku?.original || "",
+    codigo_etiqueta: matched.codigo_etiqueta?.original || "",
+    ean: matched.ean?.original || "",
+    codigo_interno: matched.codigo_interno?.original || "",
+    preco: matched.preco?.original || "",
+    preco_custo: matched.preco_custo?.original || "",
+    estoque_total: matched.estoque_total?.original || "",
+    categoria: matched.categoria?.original || "",
+    marca: matched.marca?.original || "",
+    cor: matched.cor?.original || "",
+    tamanhos: matched.tamanhos?.original || "",
+    status: matched.status?.original || "",
+    foto_1: matched.foto_1?.original || "",
+    loja: matched.loja?.original || ""
+  };
+}
+
+function parseTinyPdvImportMapping(rawMapping = "", headerAnalysis = {}) {
+  const availableHeaders = new Set((headerAnalysis?.originalHeaders || []).map((header) => String(header || "").trim()).filter(Boolean));
+  const suggested = buildTinyPdvImportSuggestedMapping(headerAnalysis);
+  let parsed = {};
+  if (rawMapping) {
+    try {
+      parsed = JSON.parse(String(rawMapping || "{}"));
+    } catch (error) {
+      parsed = {};
+    }
+  }
+  return PDV_TINY_IMPORT_FIELD_DEFINITIONS.reduce((accumulator, field) => {
+    const selected = String(parsed?.[field.key] || suggested[field.key] || "").trim();
+    accumulator[field.key] = availableHeaders.has(selected) ? selected : "";
+    return accumulator;
+  }, {});
+}
+
+function applyTinyPdvImportMapping(rows = [], mapping = {}) {
+  return (rows || []).map((row) => {
+    const mappedRow = { ...row };
+    Object.entries(mapping || {}).forEach(([fieldName, sourceHeader]) => {
+      const header = String(sourceHeader || "").trim();
+      if (!header) {
+        return;
+      }
+      mappedRow[fieldName] = row?.[header] ?? "";
+    });
+    return mappedRow;
+  });
+}
+
+function selectTinyVitrineWorksheet(workbook) {
+  const exactName = workbook.SheetNames.find((name) => String(name || "").trim() === "Vitrine_Import");
+  if (exactName) {
+    return { name: exactName, sheet: workbook.Sheets[exactName] };
+  }
+  const preferredNames = ["vitrine_import", "vitrine", "vitrine_importacao"];
+  const normalizedMatch = workbook.SheetNames.find((name) => preferredNames.includes(normalizeHeaderName(name)));
+  if (normalizedMatch) {
+    return { name: normalizedMatch, sheet: workbook.Sheets[normalizedMatch] };
+  }
+  for (const name of workbook.SheetNames) {
+    const sheet = workbook.Sheets[name];
+    const matrixRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+    if (findTinyVitrineHeader(matrixRows).headerIndex >= 0) {
+      return { name, sheet };
+    }
+  }
+  const firstName = workbook.SheetNames[0];
+  return firstName ? { name: firstName, sheet: workbook.Sheets[firstName] } : { name: "", sheet: null };
+}
+
+function normalizeTinyGenderValue(value = "") {
+  const normalized = normalizeSearchText(value);
+  if (!normalized) return "";
+  if (["masculino", "masculina", "homem", "masc"].some((term) => normalized.includes(term))) return "Masculino";
+  if (["feminino", "feminina", "mulher", "fem"].some((term) => normalized.includes(term))) return "Feminino";
+  if (["infantil", "crianca", "criança", "kids", "menino", "menina"].some((term) => normalized.includes(term))) return "Infantil";
+  if (["unissex", "unisex", "nao se aplica", "não se aplica"].some((term) => normalized.includes(term))) return "Unissex";
+  return toPresentationTitle(String(value || "").trim());
+}
+
+function inferTinyGenderFromContext({
+  explicitValue = "",
+  name = "",
+  commercialName = "",
+  sizes = [],
+  rawVariations = ""
+} = {}) {
+  const explicit = String(explicitValue || "").trim();
+  if (explicit) {
+    const normalizedExplicit = normalizeTinyGenderValue(explicit);
+    if (["Masculino", "Feminino", "Infantil", "Unissex"].includes(normalizedExplicit)) {
+      return normalizedExplicit;
+    }
+  }
+  if ((sizes || []).some((size) => /\d+A$/i.test(String(size || "").trim()))) {
+    return "Infantil";
+  }
+  const source = normalizeSearchText([name, commercialName, rawVariations].filter(Boolean).join(" "));
+  if (!source) {
+    return "";
+  }
+  if (["infantil", "kids", "crianca", "criança", "menino", "menina", "baby"].some((term) => source.includes(term))) {
+    return "Infantil";
+  }
+  if (["masculino", "masculina", "homem"].some((term) => source.includes(term))) {
+    return "Masculino";
+  }
+  if (["feminino", "feminina", "mulher"].some((term) => source.includes(term))) {
+    return "Feminino";
+  }
+  return "";
+}
+
+function parseTinySizeTokens(value = "") {
+  const raw = String(value || "").toUpperCase();
+  const matches = raw.match(/\b(?:PP|P|M|G|GG|XG|XGG|EG|36|37|38|39|40|41|42|43|44)\b/g) || [];
+  if (matches.length) {
+    return Array.from(new Set(matches));
+  }
+  return Array.from(new Set(
+    raw
+      .split(/[,;/|\n]+/)
+      .map((item) => item.trim())
+      .map((item) => {
+        if (item.includes(":")) {
+          return item.split(":").slice(1).join(":").trim();
+        }
+        return item;
+      })
+      .map((item) => item.replace(/^TAMANHO\s*/i, "").trim())
+      .filter((item) => /^[A-Z0-9]{1,6}$/.test(item))
+      .filter(Boolean)
+  ));
+}
+
+function parseTinyStockValue(value) {
+  if (value === null || value === undefined || value === "") {
+    return 0;
+  }
+  if (typeof value === "number") {
+    return Number(value);
+  }
+  const normalized = String(value || "").replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, "").trim();
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseTinyCsvMoneyValue(value) {
+  return parsePriceInput(value);
+}
+
+function splitTinyDelimitedValues(value = "") {
+  return Array.from(new Set(
+    String(value || "")
+      .split(/[\n,;/|]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  ));
+}
+
+function parseTinyVariationAttributes(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return { raw: "", color: "", size: "" };
+  }
+  const attributes = {};
+  raw
+    .split("||")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .forEach((token) => {
+      const separatorIndex = token.indexOf(":");
+      if (separatorIndex === -1) {
+        return;
+      }
+      const key = normalizeSearchText(token.slice(0, separatorIndex));
+      const content = String(token.slice(separatorIndex + 1) || "").trim();
+      if (key && content) {
+        attributes[key] = content;
+      }
+    });
+
+  const color = attributes.cor || attributes.color || "";
+  const size = attributes.tamanho || attributes.size || "";
+  return {
+    raw,
+    color: color ? String(color).trim() : "",
+    size: size ? String(size).trim() : ""
+  };
+}
+
+function normalizeTinyPhotoSources(row = {}) {
+  const direct = [
+    getTinyImportField(row, "foto_1"),
+    getTinyImportField(row, "foto_2"),
+    getTinyImportField(row, "foto_3"),
+    getTinyImportField(row, "foto_4"),
+    getTinyImportField(row, "foto_5"),
+    getTinyImportField(row, "foto_6")
+  ];
+  const external = Array.from({ length: 10 }, (_, index) => getTinyImportField(row, `foto_externa_${index + 1}`));
+  const extras = String(getTinyImportField(row, "fotos_extras") || "")
+    .split(/[\n;,|]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return Array.from(new Set([...direct, ...external, ...extras].map((item) => String(item || "").trim()).filter(Boolean))).slice(0, 10);
+}
+
+function normalizeTinyCommercialName(value = "", fallback = "") {
+  const base = String(value || "").trim() || String(fallback || "").trim();
+  return base ? toPresentationTitle(base) : "";
+}
+
+function normalizeTinyImportStatus(value = "", fallback = "ativo") {
+  const normalized = normalizeSearchText(value || fallback);
+  if (["inativo", "inactive"].includes(normalized)) return "inativo";
+  if (["oculto", "hidden"].includes(normalized)) return "hidden";
+  return "ativo";
+}
+
+function normalizeTinyGroupedProduct(row = {}) {
+  const variationData = parseTinyVariationAttributes(getTinyImportField(row, "variacoes"));
+  const name = String(getTinyImportField(row, "nome_interno") || "").trim();
+  const commercial = String(getTinyImportField(row, "nome_comercial") || "").trim();
+  const category = toPresentationTitle(getTinyImportField(row, "categoria") || "");
+  const explicitColors = splitTinyDelimitedValues(getTinyImportField(row, "cor") || "");
+  const color = toPresentationTitle(explicitColors[0] || variationData.color || "");
+  const explicitSizes = parseTinySizeTokens(getTinyImportField(row, "tamanhos"));
+  const variationSizes = parseTinySizeTokens(variationData.size || "");
+  const sizes = Array.from(new Set([...explicitSizes, ...variationSizes]));
+  const gender = inferTinyGenderFromContext({
+    explicitValue: getTinyImportField(row, "genero"),
+    name,
+    commercialName: commercial,
+    sizes,
+    rawVariations: variationData.raw
+  });
+  const price = parseTinyCsvMoneyValue(getTinyImportField(row, "preco"));
+  const promotionalPrice = parseTinyCsvMoneyValue(getTinyImportField(row, "preco_promocional"));
+  const cost = parseTinyCsvMoneyValue(getTinyImportField(row, "preco_custo"));
+  const stock = parseTinyStockValue(getTinyImportField(row, "estoque_total"));
+  const photos = normalizeTinyPhotoSources(row);
+  const marca = normalizeAiBrandValue(getTinyImportField(row, "marca") || "");
+  const description = String(getTinyImportField(row, "descricao_curta") || "").trim();
+  const argument = String(getTinyImportField(row, "argumento_venda") || "").trim();
+  const tags = [
+    category,
+    gender,
+    color,
+    marca,
+    ...sizes,
+    ...parseDelimitedValues(getTinyImportField(row, "tags"))
+  ].filter(Boolean);
+
+  return {
+    line: Number(row.__line || 0),
+    tiny_id: String(getTinyImportField(row, "tiny_id") || "").trim(),
+    sku: String(getTinyImportField(row, "sku") || "").trim(),
+    codigo: String(getTinyImportField(row, "codigo") || "").trim(),
+    codigo_etiqueta: String(getTinyImportField(row, "codigo_etiqueta") || "").trim(),
+    codigo_pai: String(getTinyImportField(row, "codigo_pai") || "").trim(),
+    codigo_interno: String(getTinyImportField(row, "codigo_interno") || "").trim(),
+    ean: String(getTinyImportField(row, "ean") || "").replace(/\D/g, ""),
+    name,
+    commercial_name: normalizeTinyCommercialName(commercial, name),
+    category,
+    gender,
+    color,
+    sizes,
+    price,
+    promotional_price: promotionalPrice,
+    cost,
+    marca,
+    estoque_total: stock,
+    fornecedor: String(getTinyImportField(row, "fornecedor") || "").trim(),
+    localizacao: String(getTinyImportField(row, "localizacao") || "").trim(),
+    store: String(getTinyImportField(row, "loja") || "").trim(),
+    priority: normalizeAiProductPriority(getTinyImportField(row, "prioridade") || "media"),
+    status: normalizeTinyImportStatus(getTinyImportField(row, "status") || "ativo"),
+    status_original: String(getTinyImportField(row, "status") || "").trim(),
+    permitir_venda: String(getTinyImportField(row, "permitir_venda") || "").trim(),
+    markup: String(getTinyImportField(row, "markup") || "").trim(),
+    short_description: description,
+    sales_argument: argument,
+    raw_variations: variationData.raw,
+    photos,
+    fotos_extras: photos.slice(3).join(", "),
+    tags: Array.from(new Set(tags)).join(", ")
+  };
+}
+
+function buildTinyGroupingKey(item = {}, options = {}) {
+  const sourceType = String(options.sourceType || "").trim().toLowerCase();
+  const useParentGrouping = typeof options.groupByParent === "boolean"
+    ? options.groupByParent
+    : (sourceType && sourceType !== "csv");
+  const parent = normalizeSearchText(item.codigo_pai || "");
+  if (useParentGrouping && parent) {
+    return `pai:${parent}`;
+  }
+  const sku = normalizeSearchText(item.sku || item.codigo || "");
+  const color = normalizeSearchText(item.color || "");
+  if (sku) {
+    return `sku:${sku}:${color}`;
+  }
+  const brand = normalizeSearchText(item.marca || "");
+  const sizes = normalizeSearchText((item.sizes || []).join(" "));
+  const tinyId = normalizeSearchText(item.tiny_id || "");
+  if (tinyId) {
+    return `tiny:${tinyId}`;
+  }
+  return `nome:${normalizeSearchText(item.name || item.commercial_name || "")}:${brand}:${color}:${sizes}`;
+}
+
+function groupTinyVitrineImportRows(rows = [], options = {}) {
+  const grouped = new Map();
+  for (const sourceRow of rows) {
+    const item = normalizeTinyGroupedProduct(sourceRow);
+    if (!item.name && !item.commercial_name) {
+      continue;
+    }
+    const key = buildTinyGroupingKey(item, options);
+    const current = grouped.get(key) || {
+      key,
+      lineNumbers: [],
+      tiny_id: item.tiny_id,
+      sku: item.sku,
+      codigo: item.codigo,
+      codigo_etiqueta: item.codigo_etiqueta,
+      codigo_pai: item.codigo_pai,
+      codigo_interno: item.codigo_interno,
+      ean: item.ean,
+      name: item.name,
+      commercial_name: item.commercial_name,
+      category: item.category,
+      gender: item.gender,
+      color: item.color,
+      sizes: new Set(),
+      price: item.price,
+      promotional_price: item.promotional_price,
+      cost: item.cost,
+      marca: item.marca,
+      estoque_total: 0,
+      fornecedor: item.fornecedor,
+      localizacao: item.localizacao,
+      store: item.store,
+      priority: item.priority,
+      status: item.status,
+      status_original: item.status_original,
+      permitir_venda: item.permitir_venda,
+      markup: item.markup,
+      short_description: item.short_description,
+      sales_argument: item.sales_argument,
+      raw_variations: item.raw_variations,
+      photos: [],
+      tags: new Set()
+    };
+
+    current.lineNumbers.push(item.line);
+    item.sizes.forEach((size) => current.sizes.add(size));
+    parseDelimitedValues(item.tags).forEach((tag) => current.tags.add(tag));
+    current.estoque_total += Number(item.estoque_total || 0);
+    if (item.price !== null && item.price !== undefined && item.price !== "") {
+      current.price = item.price;
+    }
+    if (item.promotional_price !== null && item.promotional_price !== undefined && item.promotional_price !== "") {
+      current.promotional_price = item.promotional_price;
+    }
+    if (item.cost !== null && item.cost !== undefined && item.cost !== "") {
+      current.cost = item.cost;
+    }
+    if (!current.commercial_name && item.commercial_name) current.commercial_name = item.commercial_name;
+    if (!current.tiny_id && item.tiny_id) current.tiny_id = item.tiny_id;
+    if (!current.codigo_etiqueta && item.codigo_etiqueta) current.codigo_etiqueta = item.codigo_etiqueta;
+    if (!current.category && item.category) current.category = item.category;
+    if (!current.codigo_interno && item.codigo_interno) current.codigo_interno = item.codigo_interno;
+    if (!current.ean && item.ean) current.ean = item.ean;
+    if (!current.gender && item.gender) current.gender = item.gender;
+    if (!current.color && item.color) current.color = item.color;
+    if (!current.fornecedor && item.fornecedor) current.fornecedor = item.fornecedor;
+    if (!current.localizacao && item.localizacao) current.localizacao = item.localizacao;
+    if (!current.store && item.store) current.store = item.store;
+    if (!current.status_original && item.status_original) current.status_original = item.status_original;
+    if (!current.permitir_venda && item.permitir_venda) current.permitir_venda = item.permitir_venda;
+    if (!current.markup && item.markup) current.markup = item.markup;
+    if (!current.short_description && item.short_description) current.short_description = item.short_description;
+    if (!current.sales_argument && item.sales_argument) current.sales_argument = item.sales_argument;
+    if (!current.raw_variations && item.raw_variations) current.raw_variations = item.raw_variations;
+    current.photos = Array.from(new Set([...current.photos, ...item.photos])).slice(0, 10);
+    grouped.set(key, current);
+  }
+
+  return Array.from(grouped.values()).map((item) => ({
+    ...item,
+    sizes: Array.from(item.sizes),
+    tags: Array.from(item.tags).join(", "),
+    fotos_extras: item.photos.slice(3).join(", ")
+  }));
+}
+
+async function loadExistingAiProductsForImport() {
+  const rows = await all(`SELECT * FROM ai_products WHERE COALESCE(deleted_at, '') = '' ORDER BY id DESC`);
+  const maps = {
+    bySku: new Map(),
+    byCodigo: new Map(),
+    byCodigoPai: new Map(),
+    byName: new Map()
+  };
+  rows.forEach((row) => {
+    if (row.sku) maps.bySku.set(normalizeSearchText(row.sku), row);
+    if (row.codigo) maps.byCodigo.set(normalizeSearchText(row.codigo), row);
+    if (row.codigo_pai) maps.byCodigoPai.set(normalizeSearchText(row.codigo_pai), row);
+    maps.byName.set(normalizeSearchText(row.name || row.commercial_name || ""), row);
+  });
+  return maps;
+}
+
+function findExistingAiProductForImport(item = {}, existingMaps = {}) {
+  return existingMaps.bySku?.get(normalizeSearchText(item.sku || ""))
+    || existingMaps.byCodigo?.get(normalizeSearchText(item.codigo || ""))
+    || existingMaps.byCodigoPai?.get(normalizeSearchText(item.codigo_pai || ""))
+    || existingMaps.byName?.get(normalizeSearchText(item.name || item.commercial_name || ""))
+    || null;
+}
+
+async function ensureTinyCatalogOption(tableName, payload = {}, cache = {}, allowCreate = false) {
+  const label = String(payload.name || "").trim();
+  if (!label) {
+    return null;
+  }
+  const cacheKey = `${tableName}:${normalizeSearchText(label)}`;
+  if (cache[cacheKey]) {
+    return cache[cacheKey];
+  }
+  const currentList = cache.__bundle?.[tableName] || [];
+  let existing = currentList.find((item) => normalizeSearchText(item.name) === normalizeSearchText(label) && item.status !== "deleted");
+  if (!existing && allowCreate) {
+    try {
+      const row = await saveAiCatalogItem(tableName, payload);
+      existing = buildAiCatalogOption(row);
+      cache.__bundle = cache.__bundle || {};
+      cache.__bundle[tableName] = [...currentList, existing];
+    } catch (error) {
+      if (!String(error?.message || "").includes("Já existe")) {
+        throw error;
+      }
+      const duplicateRow = await get(
+        `SELECT *
+         FROM ${tableName}
+         WHERE LOWER(TRIM(slug)) = LOWER(TRIM(?))
+           AND COALESCE(status, 'ativo') <> 'deleted'
+         LIMIT 1`,
+        [createSlug(label)]
+      );
+      if (!duplicateRow) {
+        throw error;
+      }
+      existing = buildAiCatalogOption(duplicateRow);
+      cache.__bundle = cache.__bundle || {};
+      cache.__bundle[tableName] = [...currentList, existing];
+    }
+  }
+  cache[cacheKey] = existing || null;
+  return cache[cacheKey];
+}
+
+function inferMimeTypeFromFileName(filename = "") {
+  const extension = path.extname(String(filename || "")).toLowerCase();
+  if (extension === ".png") return "image/png";
+  if (extension === ".webp") return "image/webp";
+  return "image/jpeg";
+}
+
+async function importTinyPhotoToMedia(source = "", userId = null) {
+  const trimmed = String(source || "").trim();
+  if (!trimmed) {
+    return { mediaId: null, warning: "Foto não informada." };
+  }
+
+  try {
+    let buffer = null;
+    let originalName = path.basename(trimmed) || "imagem.jpg";
+
+    if (/^https?:\/\//i.test(trimmed)) {
+      const response = await fetch(trimmed);
+      if (!response.ok) {
+        return { mediaId: null, warning: `Não foi possível baixar a imagem: ${trimmed}` };
+      }
+      buffer = Buffer.from(await response.arrayBuffer());
+    } else {
+      const candidatePath = path.isAbsolute(trimmed) ? trimmed : path.join(tinyVitrineImportIncomingDir, trimmed);
+      if (!fs.existsSync(candidatePath)) {
+        return { mediaId: null, warning: `Arquivo de imagem não encontrado: ${trimmed}` };
+      }
+      buffer = fs.readFileSync(candidatePath);
+      originalName = path.basename(candidatePath);
+    }
+
+    const extension = resolveMediaExtension(originalName, inferMimeTypeFromFileName(originalName)) || ".jpg";
+    const savedName = `${crypto.randomBytes(16).toString("hex")}${extension}`;
+    const savedPath = path.join(campaignMediaDir, savedName);
+    fs.writeFileSync(savedPath, buffer);
+    const mimeType = inferMimeTypeFromFileName(originalName);
+    const result = await run(
+      `INSERT INTO campaign_media (original_name, file_name, mime_type, file_size, file_path, media_type, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, 'image', ?, datetime('now'))`,
+      [originalName, savedName, mimeType, buffer.length, savedPath, userId || null]
+    );
+    return { mediaId: result.lastID, warning: "" };
+  } catch (error) {
+    return { mediaId: null, warning: `Falha ao importar foto: ${trimmed}` };
+  }
+}
+
+async function upsertTinyImportedProduct(item = {}, options = {}) {
+  const {
+    existingProduct = null,
+    updateExisting = false,
+    importOnlyWithStock = false,
+    createCatalogs = false,
+    defaultPriority = "media",
+    defaultStatus = "ativo",
+    createdBy = null,
+    catalogCache = {}
+  } = options;
+
+  if (importOnlyWithStock && Number(item.estoque_total || 0) <= 0) {
+    return { action: "skipped", reason: "without_stock", product: existingProduct };
+  }
+
+  if (existingProduct && !updateExisting) {
+    return { action: "skipped", reason: "duplicate_existing", product: existingProduct };
+  }
+
+  if (existingProduct && ["hidden", "deleted"].includes(normalizeAiProductVisibilityStatus(existingProduct.status || ""))) {
+    return { action: "skipped", reason: "existing_hidden_or_deleted", product: existingProduct };
+  }
+
+  const category = await ensureTinyCatalogOption("ai_product_categories", {
+    name: item.category || "Geral",
+    use_gender_filter: item.gender ? 1 : 0
+  }, catalogCache, createCatalogs);
+  if (!category) {
+    throw new Error(`Categoria não encontrada: ${item.category || "Geral"}`);
+  }
+
+  const categoryNeedsGender = Boolean(category.use_gender_filter);
+  const normalizedGender = item.gender || (categoryNeedsGender ? "Unissex" : "");
+  const gender = normalizedGender
+    ? await ensureTinyCatalogOption("ai_product_genders", { name: normalizedGender }, catalogCache, createCatalogs)
+    : null;
+  if (categoryNeedsGender && !gender) {
+    throw new Error("Produto sem gênero para categoria que exige gênero.");
+  }
+
+  const color = item.color
+    ? await ensureTinyCatalogOption("ai_product_colors", { name: item.color }, catalogCache, createCatalogs)
+    : null;
+  if (item.color && !color) {
+    throw new Error(`Cor não encontrada: ${item.color}`);
+  }
+
+  const sizeIds = [];
+  for (const sizeName of item.sizes || []) {
+    const size = await ensureTinyCatalogOption("ai_product_sizes", {
+      name: sizeName,
+      group_name: /^\d{2}$/.test(sizeName) ? "calçados" : "roupas"
+    }, catalogCache, createCatalogs);
+    if (!size) {
+      throw new Error(`Tamanho não encontrado: ${sizeName}`);
+    }
+    sizeIds.push(Number(size.id));
+  }
+
+  const mediaWarnings = [];
+  let mediaIds = [];
+  const importSources = (item.photos || []).slice(0, 3);
+  if (importSources.length) {
+    const importedMedia = [];
+    for (const source of importSources) {
+      const imported = await importTinyPhotoToMedia(source, createdBy);
+      if (imported.mediaId) {
+        importedMedia.push(imported.mediaId);
+      } else if (imported.warning) {
+        mediaWarnings.push(imported.warning);
+      }
+    }
+    mediaIds = importedMedia.slice(0, 3);
+  } else if (existingProduct?.media_ids?.length) {
+    mediaIds = existingProduct.media_ids.slice(0, 3);
+  }
+
+  const payload = {
+    name: item.name || item.commercial_name,
+    commercial_name: item.commercial_name || "",
+    category_id: category?.id || null,
+    gender_id: gender?.id || null,
+    color_id: color?.id || null,
+    size_ids: sizeIds.join(", "),
+    category: category?.name || item.category || "",
+    gender: gender?.name || normalizedGender || "",
+    color: color?.name || item.color || "",
+    sizes: (item.sizes || []).join(", "),
+    price: item.price,
+    marca: item.marca || "",
+    estoque_total: Number(item.estoque_total || 0),
+    store: item.store || "",
+    short_description: item.short_description || "",
+    sales_argument: item.sales_argument || "",
+    tags: item.tags || "",
+    priority: normalizeAiProductPriority(item.priority || defaultPriority),
+    status: normalizeTinyImportStatus(item.status || defaultStatus, defaultStatus),
+    main_media_id: mediaIds[0] || null,
+    media_ids: mediaIds,
+    sku: item.sku || "",
+    codigo: item.codigo || "",
+    codigo_pai: item.codigo_pai || "",
+    fotos_extras: item.fotos_extras || ""
+  };
+
+  const enhanced = enhanceProductSalesText({
+    ...payload,
+    display_name: buildAiProductDisplayName(payload)
+  });
+
+  if (!existingProduct) {
+    const result = await run(
+      `INSERT INTO ai_products
+      (sku, codigo, codigo_pai, name, commercial_name, category_id, gender_id, color_id, size_ids, category, gender, color, sizes, price, marca, estoque_total, store, short_description, sales_argument, tags, priority, status, main_media_id, ai_title, ai_short_description, ai_sales_argument, fotos_extras, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      [
+        payload.sku,
+        payload.codigo,
+        payload.codigo_pai,
+        payload.name,
+        payload.commercial_name,
+        payload.category_id,
+        payload.gender_id,
+        payload.color_id,
+        payload.size_ids,
+        payload.category,
+        payload.gender,
+        payload.color,
+        payload.sizes,
+        payload.price,
+        payload.marca,
+        payload.estoque_total,
+        payload.store,
+        payload.short_description,
+        payload.sales_argument,
+        payload.tags,
+        payload.priority,
+        payload.status,
+        payload.main_media_id,
+        enhanced.aiTitle,
+        enhanced.aiShortDescription,
+        enhanced.aiSalesArgument,
+        payload.fotos_extras
+      ]
+    );
+    await upsertAiProductBrandMeta(result.lastID, payload.marca || "");
+    await syncAiProductMedia(result.lastID, mediaIds);
+    return { action: "created", product: await getAiProductById(result.lastID), warnings: mediaWarnings };
+  }
+
+  await run(
+    `UPDATE ai_products
+     SET sku = ?, codigo = ?, codigo_pai = ?, name = ?, commercial_name = ?, category_id = ?, gender_id = ?, color_id = ?, size_ids = ?, category = ?, gender = ?, color = ?, sizes = ?, price = ?, marca = ?, estoque_total = ?, store = ?, short_description = ?, sales_argument = ?, tags = ?, priority = ?, status = ?, main_media_id = ?, ai_title = ?, ai_short_description = ?, ai_sales_argument = ?, fotos_extras = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+    [
+      payload.sku || existingProduct.sku || "",
+      payload.codigo || existingProduct.codigo || "",
+      payload.codigo_pai || existingProduct.codigo_pai || "",
+      payload.name || existingProduct.name,
+      payload.commercial_name || existingProduct.commercial_name || "",
+      payload.category_id,
+      payload.gender_id,
+      payload.color_id,
+      payload.size_ids,
+      payload.category,
+      payload.gender,
+      payload.color,
+      payload.sizes,
+      payload.price,
+      payload.marca,
+      payload.estoque_total,
+      payload.store,
+      payload.short_description,
+      payload.sales_argument,
+      payload.tags,
+      payload.priority,
+      payload.status,
+      mediaIds[0] || existingProduct.main_media_id || null,
+      enhanced.aiTitle,
+      enhanced.aiShortDescription,
+      enhanced.aiSalesArgument,
+      payload.fotos_extras,
+      existingProduct.id
+    ]
+  );
+  await upsertAiProductBrandMeta(existingProduct.id, payload.marca || "");
+  await syncAiProductMedia(existingProduct.id, mediaIds.length ? mediaIds : (existingProduct.media_ids || []));
+  return { action: "updated", product: await getAiProductById(existingProduct.id), warnings: mediaWarnings };
+}
+
+async function buildTinyVitrinePreview(groupedItems = [], options = {}) {
+  const existingMaps = await loadExistingAiProductsForImport();
+  const catalogs = await getAiCatalogBundle({ includeInactive: true });
+  normalizeTinyImportBrands(groupedItems, catalogs.brands || []);
+  const summary = {
+    totalRows: groupedItems.length,
+    validRows: 0,
+    invalidRows: 0,
+    createCount: 0,
+    updateCount: 0,
+    skipCount: 0,
+    skippedRows: 0,
+    duplicatedRows: 0,
+    errorCount: 0,
+    categoriesDetected: [],
+    colorsDetected: [],
+    sizesDetected: [],
+    gendersDetected: [],
+    brandsDetected: [],
+    newCategories: [],
+    newColors: [],
+    newSizes: [],
+    newGenders: [],
+    productsWithoutPhoto: 0,
+    productsWithoutPrice: 0,
+    productsWithoutGender: 0,
+    productsWithStockPositive: 0,
+    productsWithStockZero: 0,
+    productsWithStockNegative: 0,
+    productsWithBrand: 0,
+    productsWithoutBrand: 0,
+    productsWithCategory: 0,
+    productsWithoutCategory: 0,
+    productsWithImage: 0,
+    productsWithoutImage: 0
+  };
+
+  const preview = groupedItems.map((item) => {
+    const category = item.category || "Geral";
+    const categoryOption = (catalogs.categories || []).find((entry) => normalizeSearchText(entry.name) === normalizeSearchText(category));
+    const requiresGender = categoryOption ? Boolean(categoryOption.use_gender_filter) : false;
+    const existingProduct = findExistingAiProductForImport(item, existingMaps);
+    const warnings = [];
+    let action = "criar";
+    let error = "";
+    let statusLabel = "pronto para importar";
+
+    if (!item.name && !item.commercial_name) {
+      action = "erro";
+      error = "Produto sem nome.";
+      statusLabel = "incompleto";
+    } else if (!item.category) {
+      statusLabel = "sem categoria";
+    } else if (options.importOnlyWithStock && Number(item.estoque_total || 0) <= 0) {
+      action = "ignorar";
+      warnings.push("Produto sem estoque para a regra selecionada.");
+      statusLabel = "sem estoque";
+    } else if (existingProduct && !options.updateExisting) {
+      action = "ignorar";
+      warnings.push("Produto já existe e atualização está desmarcada.");
+      statusLabel = "duplicado";
+      summary.duplicatedRows += 1;
+    } else if (existingProduct) {
+      action = "atualizar";
+    }
+
+    if (requiresGender && !item.gender) {
+      warnings.push("Categoria exige gênero. Sem essa informação no Tiny, a importação vai usar Unissex.");
+      if (statusLabel === "pronto para importar") {
+        statusLabel = "incompleto";
+      }
+    }
+    if (!item.photos.length) {
+      warnings.push("Produto importado sem foto.");
+      summary.productsWithoutPhoto += 1;
+      summary.productsWithoutImage += 1;
+      if (statusLabel === "pronto para importar") {
+        statusLabel = "sem imagem";
+      }
+    } else {
+      summary.productsWithImage += 1;
+    }
+    if (item.price === null || item.price === undefined) {
+      warnings.push("Produto sem preço.");
+      summary.productsWithoutPrice += 1;
+      if (statusLabel === "pronto para importar") {
+        statusLabel = "sem preço";
+      }
+    }
+    if (requiresGender && !item.gender) {
+      summary.productsWithoutGender += 1;
+    }
+    if (!item.marca && statusLabel === "pronto para importar") {
+      statusLabel = "sem marca";
+    }
+    if (Number(item.estoque_total || 0) < 0) {
+      summary.productsWithStockNegative += 1;
+      if (statusLabel === "pronto para importar") {
+        statusLabel = "estoque negativo";
+      }
+    } else if (Number(item.estoque_total || 0) === 0) {
+      summary.productsWithStockZero += 1;
+    } else {
+      summary.productsWithStockPositive += 1;
+    }
+    if (Number(item.estoque_total || 0) <= 0 && statusLabel === "pronto para importar") {
+      statusLabel = "sem estoque";
+    }
+    if (item.marca) summary.productsWithBrand += 1;
+    else summary.productsWithoutBrand += 1;
+    if (category) summary.productsWithCategory += 1;
+    else summary.productsWithoutCategory += 1;
+
+    summary.categoriesDetected.push(category);
+    if (item.color) summary.colorsDetected.push(item.color);
+    if (item.gender) summary.gendersDetected.push(item.gender);
+    if (item.marca) summary.brandsDetected.push(item.marca);
+    (item.sizes || []).forEach((size) => summary.sizesDetected.push(size));
+
+    if (!categoryOption && options.createCatalogs) summary.newCategories.push(category);
+    if (item.color && !(catalogs.colors || []).some((entry) => normalizeSearchText(entry.name) === normalizeSearchText(item.color)) && options.createCatalogs) summary.newColors.push(item.color);
+    if (item.gender && !(catalogs.genders || []).some((entry) => normalizeSearchText(entry.name) === normalizeSearchText(item.gender)) && options.createCatalogs) summary.newGenders.push(item.gender);
+    (item.sizes || []).forEach((size) => {
+      if (!(catalogs.sizes || []).some((entry) => normalizeSearchText(entry.name) === normalizeSearchText(size)) && options.createCatalogs) {
+        summary.newSizes.push(size);
+      }
+    });
+
+    if (action === "erro") summary.invalidRows += 1;
+    else summary.validRows += 1;
+    if (action === "criar") summary.createCount += 1;
+    if (action === "atualizar") summary.updateCount += 1;
+    if (action === "ignorar") {
+      summary.skipCount += 1;
+      summary.skippedRows += 1;
+    }
+    if (action === "erro") summary.errorCount += 1;
+
+    return {
+      rowNumber: item.lineNumbers[0] || 0,
+      sku: item.sku || "",
+      codigo: item.codigo || "",
+      tiny_id: item.tiny_id || "",
+      codigo_pai: item.codigo_pai || "",
+      nomeInterno: item.name || "",
+      nomeComercial: item.commercial_name || "",
+      marca: item.marca || "",
+      brand: item.marca || "",
+      categoria: category,
+      genero: item.gender || "",
+      cor: item.color || "",
+      tamanhos: item.sizes || [],
+      preco: item.price,
+      precoPromocional: item.promotional_price,
+      custo: item.cost,
+      estoque_total: Number(item.estoque_total || 0),
+      fornecedor: item.fornecedor || "",
+      localizacao: item.localizacao || "",
+      rawVariations: item.raw_variations || "",
+      statusOriginal: item.status_original || "",
+      permitirVenda: item.permitir_venda || "",
+      codigoPai: item.codigo_pai || "",
+      imagemPrincipal: item.photos[0] || "",
+      fotosDetectadas: item.photos.length,
+      action,
+      statusLabel,
+      warnings,
+      error,
+      existingProductId: existingProduct?.id || null
+    };
+  });
+
+  ["categoriesDetected", "colorsDetected", "sizesDetected", "gendersDetected", "brandsDetected", "newCategories", "newColors", "newSizes", "newGenders"].forEach((key) => {
+    summary[key] = Array.from(new Set(summary[key].filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), "pt-BR"));
+  });
+
+  return { preview, summary };
+}
+
+function createTinyCommitSummary(baseSummary = {}) {
+  const numeric = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  return {
+    totalReceived: numeric(baseSummary.totalRows),
+    totalRows: numeric(baseSummary.totalRows),
+    validRows: numeric(baseSummary.validRows),
+    invalidRows: numeric(baseSummary.invalidRows),
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    errors: 0,
+    skipReasons: {
+      already_exists: 0,
+      duplicate_in_file: 0,
+      stock_zero_blocked: 0,
+      missing_name: 0,
+      missing_sku: 0,
+      inactive: 0,
+      invalid_price: 0,
+      unknown: 0
+    },
+    productsWithStockPositive: numeric(baseSummary.productsWithStockPositive),
+    productsWithStockZero: numeric(baseSummary.productsWithStockZero),
+    productsWithStockNegative: numeric(baseSummary.productsWithStockNegative),
+    productsWithBrand: numeric(baseSummary.productsWithBrand),
+    productsWithoutBrand: numeric(baseSummary.productsWithoutBrand),
+    productsWithCategory: numeric(baseSummary.productsWithCategory),
+    productsWithoutCategory: numeric(baseSummary.productsWithoutCategory),
+    productsWithImage: numeric(baseSummary.productsWithImage),
+    productsWithoutImage: numeric(baseSummary.productsWithoutImage)
+  };
+}
+
+function mapTinySkipReason(reason = "", item = {}) {
+  const normalized = String(reason || "").trim().toLowerCase();
+  if (normalized === "duplicate_existing") return "already_exists";
+  if (normalized === "without_stock") return "stock_zero_blocked";
+  if (normalized === "existing_hidden_or_deleted") return "inactive";
+  if (normalized === "missing_name") return "missing_name";
+  if (normalized === "missing_sku") return "missing_sku";
+  if (normalized === "invalid_price") return "invalid_price";
+  if (normalized === "duplicate_in_file") return "duplicate_in_file";
+  if ((item?.lineNumbers || []).length > 1) {
+    return "duplicate_in_file";
+  }
+  return "unknown";
+}
+
+function buildTinyCommitLineDetail(item = {}, extra = {}) {
+  return {
+    row_number: item.lineNumbers?.[0] || item.line || 0,
+    sku: item.sku || item.codigo || "",
+    product_name: item.commercial_name || item.name || "",
+    brand: item.marca || "",
+    category: item.category || "",
+    stock: Number(item.estoque_total || 0),
+    status: item.status || "",
+    codigo_pai: item.codigo_pai || "",
+    ...extra
+  };
+}
+
+function parseSemicolonDelimitedLine(line = "") {
+  const result = [];
+  let current = "";
+  let inQuotes = false;
+  for (let index = 0; index < String(line || "").length; index += 1) {
+    const char = line[index];
+    if (char === '"') {
+      if (inQuotes && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (char === ";" && !inQuotes) {
+      result.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  result.push(current);
+  return result.map((value) => String(value || "").trim());
+}
+
+function normalizeCuratedTop100Header(value = "") {
+  return normalizeSearchText(value || "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function readCuratedTop100RowsFromFile(filePath = curatedTop100ImportFilePath) {
+  if (!fs.existsSync(filePath)) {
+    throw new Error("Arquivo vitrine_ia_top_100.csv nao encontrado no staging esperado.");
+  }
+  const content = fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
+  const lines = content.split(/\r?\n/).filter((line) => String(line || "").trim());
+  if (lines.length < 2) {
+    throw new Error("O arquivo vitrine_ia_top_100.csv esta vazio ou sem linhas suficientes.");
+  }
+  const headers = parseSemicolonDelimitedLine(lines[0]);
+  const normalizedHeaders = headers.map(normalizeCuratedTop100Header);
+  const rows = lines.slice(1).map((line, index) => {
+    const values = parseSemicolonDelimitedLine(line);
+    const row = {
+      __line: index + 2,
+      __source_file: filePath
+    };
+    normalizedHeaders.forEach((header, headerIndex) => {
+      row[header] = String(values[headerIndex] || "").trim();
+    });
+    return row;
+  }).filter((row) => Object.values(row).some((value, index) => index < 2 ? true : String(value || "").trim()));
+  return {
+    filePath,
+    headers,
+    normalizedHeaders,
+    rows
+  };
+}
+
+function parsePipeSeparatedFlags(value = "") {
+  return String(value || "")
+    .split("|")
+    .map((item) => normalizeText(item || ""))
+    .filter(Boolean);
+}
+
+function mapCuratedStatus(value = "") {
+  const normalized = normalizeLookup(value || "");
+  if (["ativo", "active"].includes(normalized)) return "ativo";
+  if (["inativo", "inactive"].includes(normalized)) return "inativo";
+  if (["hidden", "oculto"].includes(normalized)) return "hidden";
+  return "ativo";
+}
+
+function mapCuratedGender(value = "") {
+  const normalized = normalizeLookup(value || "");
+  if (!normalized || normalized === "indefinido") return "Unissex";
+  if (normalized.includes("femin")) return "Feminino";
+  if (normalized.includes("mascul")) return "Masculino";
+  if (normalized.includes("infantil")) return "Infantil";
+  if (normalized.includes("unissex")) return "Unissex";
+  return normalizeText(value || "");
+}
+
+function inferCategoryLabelFromCuratedRow(row = {}) {
+  const explicit = normalizeText(row.categoria || row.category || "");
+  if (explicit) {
+    return explicit;
+  }
+  const original = normalizeText(row.nome_produto || row.nome_comercial_sugerido || "");
+  if (/blazer/i.test(original)) return "Blazer";
+  if (/camiseta/i.test(original)) return "Camiseta";
+  if (/camisa/i.test(original)) return "Camisa";
+  if (/polo/i.test(original)) return "Polo";
+  if (/calca|calça/i.test(original)) return "Calça";
+  if (/bermuda/i.test(original)) return "Bermuda";
+  if (/vestido/i.test(original)) return "Vestido";
+  if (/tenis|tênis/i.test(original)) return "Tênis";
+  if (/sapato/i.test(original)) return "Sapato";
+  if (/bolsa/i.test(original)) return "Bolsa";
+  return "Sem categoria";
+}
+
+function normalizeCuratedSizes(value = "") {
+  return uniqueStrings(String(value || "").split(/[,\s/]+/).map((item) => normalizeText(item || "").toUpperCase()).filter(Boolean));
+}
+
+function parseCuratedTop100Money(value = "") {
+  return parsePriceInput(String(value || "").trim());
+}
+
+function normalizeCuratedTop100Row(row = {}) {
+  const sku = normalizeText(row.sku || row.codigo_sku || row.codigo || "").toUpperCase();
+  const originalName = normalizeText(row.nome_produto || row.nome_original || row.nome || "");
+  const suggestedName = normalizeText(row.nome_comercial_sugerido || row.nome_comercial || originalName || "");
+  const category = inferCategoryLabelFromCuratedRow(row);
+  const gender = mapCuratedGender(row.genero_inferido || row.genero || "");
+  const color = normalizeText(row.cor_detectada || row.cor || "");
+  const sizes = normalizeCuratedSizes(row.tamanho_detectado || row.tamanhos || row.tamanho || "");
+  const stock = Number(parseLocalizedNumberToFloat(row.estoque || row.stock || 0) || 0);
+  const price = parseCuratedTop100Money(row.preco_venda || row.preco || "");
+  const abcClass = normalizeText(row.abc_classificacao || row.classificacao_abc || "").toUpperCase();
+  const score = Number(parseLocalizedNumberToFloat(row.score_total || 0) || 0);
+  const tags = parseDelimitedValues(String(row.tags_sugeridas || row.tags || "").replace(/;/g, ","));
+  return {
+    row_number: Number(row.__line || 0),
+    source_file: row.__source_file || curatedTop100ImportFilePath,
+    sku,
+    codigo: sku,
+    tiny_id: normalizeText(row.tiny_id || row.codigo_tiny || ""),
+    codigo_pai: "",
+    name: originalName || suggestedName || sku,
+    commercial_name: suggestedName || originalName || sku,
+    category,
+    gender,
+    color,
+    sizes,
+    price,
+    promotional_price: null,
+    cost: null,
+    estoque_total: stock,
+    marca: normalizeText(row.marca || row.brand || ""),
+    store: "",
+    short_description: normalizeText(row.descricao_curta_sugerida || row.descricao_curta || ""),
+    sales_argument: normalizeText(row.argumento_venda_sugerido || row.argumento_venda || ""),
+    tags: tags.join(", "),
+    priority: normalizeAiProductPriority(row.prioridade_sugerida || "media"),
+    status: mapCuratedStatus(row.status_sugerido || "ativo"),
+    use_in_ai: true,
+    use_in_pos: false,
+    source: "top100_curado",
+    score_total: score,
+    abc_classificacao: abcClass,
+    abc_valor: Number(parseLocalizedNumberToFloat(row.abc_valor || 0) || 0),
+    abc_quantidade: Number(parseLocalizedNumberToFloat(row.abc_quantidade || 0) || 0),
+    total_vendido_quantidade: Number(parseLocalizedNumberToFloat(row.total_vendido_quantidade || 0) || 0),
+    total_vendido_valor: Number(parseLocalizedNumberToFloat(row.total_vendido_valor || 0) || 0),
+    score_reasons_positive: normalizeText(row.score_reasons_positive || ""),
+    score_reasons_negative: normalizeText(row.score_reasons_negative || ""),
+    classificacao_vitrine: normalizeText(row.classificacao_vitrine || ""),
+    status_sugerido: mapCuratedStatus(row.status_sugerido || "ativo"),
+    prioridade_sugerida: normalizeAiProductPriority(row.prioridade_sugerida || "media"),
+    motivo_recomendacao: normalizeText(row.motivo_recomendacao || ""),
+    quality_flags: parsePipeSeparatedFlags(row.quality_flags || ""),
+    photos: []
+  };
+}
+
+async function buildCuratedTop100Preview({ updateExisting = false, createCatalogs = true } = {}) {
+  const parsed = readCuratedTop100RowsFromFile(curatedTop100ImportFilePath);
+  const existingMaps = await loadExistingAiProductsForImport();
+  const catalogs = await getAiCatalogBundle({ includeInactive: true });
+  const items = parsed.rows.map(normalizeCuratedTop100Row);
+  let recommendedSelections = 0;
+  const summary = {
+    totalRows: items.length,
+    validRows: 0,
+    existingCount: 0,
+    createCount: 0,
+    updateCount: 0,
+    skipCount: 0,
+    productsWithoutPhoto: 0,
+    productsWithoutGender: 0,
+    productsWithoutCategory: 0,
+    selectedRecommended: Math.min(20, items.length)
+  };
+  const preview = items.map((item, index) => {
+    const existingProduct = findExistingAiProductForImport(item, existingMaps);
+    const warnings = [];
+    let action = "criar";
+    if (existingProduct) {
+      summary.existingCount += 1;
+      action = updateExisting ? "atualizar" : "ignorar";
+      if (!updateExisting) {
+        warnings.push("Produto ja existe por SKU/codigo/nome e atualizar existentes esta desmarcado.");
+      }
+    }
+    if (!item.category || item.category === "Sem categoria") {
+      summary.productsWithoutCategory += 1;
+      warnings.push(createCatalogs ? "Categoria sera criada automaticamente ou caira em Sem categoria." : "Categoria precisa revisao antes do commit.");
+    }
+    if (!item.gender || normalizeLookup(item.gender) === "unissex") {
+      summary.productsWithoutGender += 1;
+    }
+    summary.productsWithoutPhoto += 1;
+    if (!item.sku) {
+      action = "ignorar";
+      warnings.push("Produto sem SKU valido.");
+    }
+    if (!(Number(item.price || 0) > 0)) {
+      action = "ignorar";
+      warnings.push("Produto sem preco valido.");
+    }
+    if (action === "criar") summary.createCount += 1;
+    if (action === "atualizar") summary.updateCount += 1;
+    if (action === "ignorar") summary.skipCount += 1;
+    summary.validRows += 1;
+    const shouldSelect = action !== "ignorar" && recommendedSelections < 20;
+    if (shouldSelect) {
+      recommendedSelections += 1;
+    }
+    return {
+      id: `${item.sku || "item"}-${index + 1}`,
+      rowNumber: item.row_number,
+      selected: shouldSelect,
+      existingProductId: existingProduct?.id || null,
+      existingProductName: existingProduct?.display_name || existingProduct?.name || "",
+      action,
+      warnings,
+      source_file: item.source_file,
+      sku: item.sku,
+      nome_produto: item.name,
+      nome_comercial_sugerido: item.commercial_name,
+      categoria: item.category,
+      genero_inferido: item.gender,
+      cor_detectada: item.color,
+      tamanho_detectado: item.sizes.join(", "),
+      marca: item.marca,
+      estoque: item.estoque_total,
+      preco_venda: item.price,
+      total_vendido_quantidade: item.total_vendido_quantidade,
+      total_vendido_valor: item.total_vendido_valor,
+      abc_classificacao: item.abc_classificacao,
+      abc_valor: item.abc_valor,
+      abc_quantidade: item.abc_quantidade,
+      score_total: item.score_total,
+      score_reasons_positive: item.score_reasons_positive,
+      score_reasons_negative: item.score_reasons_negative,
+      classificacao_vitrine: item.classificacao_vitrine,
+      prioridade_sugerida: item.prioridade_sugerida,
+      status_sugerido: item.status_sugerido,
+      tags_sugeridas: item.tags,
+      descricao_curta_sugerida: item.short_description,
+      argumento_venda_sugerido: item.sales_argument,
+      motivo_recomendacao: item.motivo_recomendacao,
+      quality_flags: item.quality_flags,
+      use_in_ai: true,
+      use_in_pos: false
+    };
+  });
+  return {
+    filePath: parsed.filePath,
+    headers: parsed.headers,
+    normalizedHeaders: parsed.normalizedHeaders,
+    preview,
+    summary
+  };
+}
+
+async function upsertCuratedTop100Product(item = {}, options = {}) {
+  const {
+    updateExisting = false,
+    createCatalogs = true,
+    createdBy = null,
+    existingProduct = null,
+    catalogCache = {}
+  } = options;
+  if (!item.sku) {
+    return { action: "skipped", reason: "missing_sku" };
+  }
+  if (!(Number(item.price || 0) > 0)) {
+    return { action: "skipped", reason: "missing_price" };
+  }
+  const resolvedExisting = existingProduct || null;
+  if (resolvedExisting && !updateExisting) {
+    return { action: "skipped", reason: "duplicate_existing", product: resolvedExisting };
+  }
+  const category = await ensureTinyCatalogOption("ai_product_categories", {
+    name: item.category || "Sem categoria",
+    use_gender_filter: item.gender && normalizeLookup(item.gender) !== "unissex" ? 1 : 0
+  }, catalogCache, createCatalogs);
+  const gender = item.gender
+    ? await ensureTinyCatalogOption("ai_product_genders", { name: item.gender }, catalogCache, createCatalogs)
+    : null;
+  const color = item.color
+    ? await ensureTinyCatalogOption("ai_product_colors", { name: item.color }, catalogCache, createCatalogs)
+    : null;
+  const sizeIds = [];
+  for (const sizeName of item.sizes || []) {
+    const size = await ensureTinyCatalogOption("ai_product_sizes", {
+      name: sizeName,
+      group_name: /^\d{2}$/.test(sizeName) ? "numerico" : "roupas"
+    }, catalogCache, createCatalogs);
+    if (size?.id) {
+      sizeIds.push(Number(size.id));
+    }
+  }
+  const payload = {
+    sku: item.sku,
+    codigo: item.codigo || item.sku,
+    tiny_id: item.tiny_id || "",
+    name: item.name || item.commercial_name || item.sku,
+    commercial_name: item.commercial_name || item.name || item.sku,
+    category_id: category?.id || null,
+    gender_id: gender?.id || null,
+    color_id: color?.id || null,
+    size_ids: sizeIds.join(", "),
+    category: category?.name || item.category || "Sem categoria",
+    gender: gender?.name || item.gender || "Unissex",
+    color: color?.name || item.color || "",
+    sizes: (item.sizes || []).join(", "),
+    price: item.price,
+    promotional_price: item.promotional_price,
+    cost_price: item.cost_price || null,
+    stock: Number(item.estoque_total || 0),
+    marca: item.marca || "",
+    estoque_total: Number(item.estoque_total || 0),
+    store: item.store || "",
+    short_description: item.short_description || "",
+    sales_argument: item.sales_argument || "",
+    tags: item.tags || "",
+    priority: normalizeAiProductPriority(item.priority || "media"),
+    status: normalizeTinyImportStatus(item.status || "ativo", "ativo"),
+    main_media_id: null,
+    media_ids: [],
+    gtin_ean: "",
+    ncm: "",
+    location: "",
+    source: "top100_curado",
+    notes: normalizeText(item.motivo_recomendacao || ""),
+    use_in_ai: normalizeBooleanFlag(item.use_in_ai, true) ? 1 : 0,
+    use_in_pos: normalizeBooleanFlag(item.use_in_pos, false) ? 1 : 0
+  };
+  const enhanced = enhanceProductSalesText({
+    ...payload,
+    display_name: buildAiProductDisplayName(payload)
+  });
+  const warnings = ["Produto importado sem foto."];
+  if (!resolvedExisting) {
+    const result = await run(
+      `INSERT INTO ai_products
+      (sku, codigo, tiny_id, name, commercial_name, category_id, gender_id, color_id, size_ids, category, gender, color, sizes, price, promotional_price, cost_price, stock, estoque_total, marca, store, short_description, sales_argument, tags, priority, status, main_media_id, ai_title, ai_short_description, ai_sales_argument, gtin_ean, ncm, location, use_in_ai, use_in_pos, source, notes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      [
+        payload.sku,
+        payload.codigo,
+        payload.tiny_id,
+        payload.name,
+        payload.commercial_name,
+        payload.category_id,
+        payload.gender_id,
+        payload.color_id,
+        payload.size_ids,
+        payload.category,
+        payload.gender,
+        payload.color,
+        payload.sizes,
+        payload.price,
+        payload.promotional_price,
+        payload.cost_price,
+        payload.stock,
+        payload.estoque_total,
+        payload.marca,
+        payload.store,
+        payload.short_description,
+        payload.sales_argument,
+        payload.tags,
+        payload.priority,
+        payload.status,
+        payload.main_media_id,
+        enhanced.aiTitle,
+        enhanced.aiShortDescription,
+        enhanced.aiSalesArgument,
+        payload.gtin_ean,
+        payload.ncm,
+        payload.location,
+        payload.use_in_ai,
+        payload.use_in_pos,
+        payload.source,
+        payload.notes
+      ]
+    );
+    await upsertAiProductBrandMeta(result.lastID, payload.marca);
+    return { action: "created", product: await getAiProductById(result.lastID), warnings };
+  }
+  await run(
+    `UPDATE ai_products
+     SET sku = ?, codigo = ?, tiny_id = ?, name = ?, commercial_name = ?, category_id = ?, gender_id = ?, color_id = ?, size_ids = ?, category = ?, gender = ?, color = ?, sizes = ?, price = ?, promotional_price = ?, cost_price = ?, stock = ?, estoque_total = ?, marca = ?, store = ?, short_description = ?, sales_argument = ?, tags = ?, priority = ?, status = ?, ai_title = ?, ai_short_description = ?, ai_sales_argument = ?, use_in_ai = ?, use_in_pos = ?, source = ?, notes = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+    [
+      payload.sku,
+      payload.codigo,
+      payload.tiny_id,
+      payload.name,
+      payload.commercial_name,
+      payload.category_id,
+      payload.gender_id,
+      payload.color_id,
+      payload.size_ids,
+      payload.category,
+      payload.gender,
+      payload.color,
+      payload.sizes,
+      payload.price,
+      payload.promotional_price,
+      payload.cost_price,
+      payload.stock,
+      payload.estoque_total,
+      payload.marca,
+      payload.store,
+      payload.short_description,
+      payload.sales_argument,
+      payload.tags,
+      payload.priority,
+      payload.status,
+      enhanced.aiTitle,
+      enhanced.aiShortDescription,
+      enhanced.aiSalesArgument,
+      payload.use_in_ai,
+      payload.use_in_pos,
+      payload.source,
+      payload.notes,
+      resolvedExisting.id
+    ]
+  );
+  await upsertAiProductBrandMeta(resolvedExisting.id, payload.marca);
+  return { action: "updated", product: await getAiProductById(resolvedExisting.id), warnings };
+}
+
+function parseTinyImportOptions(body = {}) {
+  const truthy = (value) => ["1", "true", "on", "sim"].includes(String(value || "").trim().toLowerCase());
+  return {
+    updateExisting: truthy(body.updateExisting),
+    importOnlyWithStock: truthy(body.importOnlyWithStock),
+    createCatalogs: truthy(body.createCatalogs),
+    defaultPriority: normalizeAiProductPriority(body.defaultPriority || "media"),
+    defaultStatus: normalizeTinyImportStatus(body.defaultStatus || "ativo", "ativo")
+  };
+}
+
+function normalizeCuratedTop100CommitItem(item = {}) {
+  const sizes = parseDelimitedValues(item.tamanho_detectado ?? item.sizes ?? item.size ?? "");
+  return {
+    row_number: Number(item.rowNumber || item.row_number || 0),
+    sku: normalizeText(item.sku || ""),
+    codigo: normalizeText(item.codigo || item.sku || ""),
+    tiny_id: normalizeText(item.tiny_id || ""),
+    name: normalizeText(item.nome_produto || item.name || item.nome || ""),
+    commercial_name: normalizeText(item.nome_comercial_sugerido || item.commercial_name || item.display_name || item.name || ""),
+    category: normalizeText(item.categoria || item.category || ""),
+    gender: mapCuratedGender(item.genero_inferido || item.gender || ""),
+    color: normalizeText(item.cor_detectada || item.color || ""),
+    sizes,
+    price: parsePriceInput(item.preco_venda ?? item.price ?? ""),
+    promotional_price: parsePriceInput(item.preco_promocional ?? item.promotional_price ?? ""),
+    cost_price: parsePriceInput(item.preco_custo ?? item.cost_price ?? ""),
+    estoque_total: Number(parseLocalizedNumberToFloat(item.estoque ?? item.stock ?? 0) || 0),
+    marca: normalizeText(item.marca || item.brand || ""),
+    store: normalizeText(item.store || ""),
+    short_description: normalizeText(item.descricao_curta_sugerida || item.short_description || ""),
+    sales_argument: normalizeText(item.argumento_venda_sugerido || item.sales_argument || ""),
+    tags: stringifyDelimitedValues(item.tags_sugeridas || item.tags || ""),
+    priority: normalizeAiProductPriority(item.prioridade_sugerida || item.priority || "media"),
+    status: mapCuratedStatus(item.status_sugerido || item.status || "ativo"),
+    motivo_recomendacao: normalizeText(item.motivo_recomendacao || ""),
+    quality_flags: parsePipeSeparatedFlags(item.quality_flags || ""),
+    use_in_ai: normalizeBooleanFlag(item.use_in_ai, true),
+    use_in_pos: normalizeBooleanFlag(item.use_in_pos, false),
+    source_file: normalizeText(item.source_file || "")
+  };
+}
+
+function moveTinyImportFile(sourcePath = "", targetDir = tinyVitrineImportProcessedDir) {
+  if (!sourcePath || !fs.existsSync(sourcePath)) {
+    return "";
+  }
+  const destination = path.join(targetDir, `${Date.now()}-${path.basename(sourcePath)}`);
+  fs.renameSync(sourcePath, destination);
+  return destination;
+}
+
+function detectCsvDelimiter(text = "") {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => String(line || "").trim())
+    .filter(Boolean)
+    .slice(0, 5);
+  let bestDelimiter = ",";
+  let bestScore = -1;
+  [",", ";"].forEach((delimiter) => {
+    const score = lines.reduce((accumulator, line) => accumulator + countCsvDelimiterOutsideQuotes(line, delimiter), 0);
+    if (score > bestScore) {
+      bestScore = score;
+      bestDelimiter = delimiter;
+    }
+  });
+  return bestDelimiter;
+}
+
+function countCsvDelimiterOutsideQuotes(line = "", delimiter = ",") {
+  let inQuotes = false;
+  let count = 0;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === "\"") {
+      if (inQuotes && line[index + 1] === "\"") {
+        index += 1;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (!inQuotes && character === delimiter) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function parseCsvMatrix(text = "", delimiter = ",") {
+  const rows = [];
+  let row = [];
+  let value = "";
+  let inQuotes = false;
+  const source = String(text || "").replace(/^\uFEFF/, "");
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const nextCharacter = source[index + 1];
+
+    if (character === "\"") {
+      if (inQuotes && nextCharacter === "\"") {
+        value += "\"";
+        index += 1;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (!inQuotes && character === delimiter) {
+      row.push(value);
+      value = "";
+      continue;
+    }
+
+    if (!inQuotes && (character === "\n" || character === "\r")) {
+      if (character === "\r" && nextCharacter === "\n") {
+        index += 1;
+      }
+      row.push(value);
+      value = "";
+      if (row.some((cell) => String(cell || "").trim() !== "")) {
+        rows.push(row);
+      }
+      row = [];
+      continue;
+    }
+
+    value += character;
+  }
+
+  row.push(value);
+  if (row.some((cell) => String(cell || "").trim() !== "")) {
+    rows.push(row);
+  }
+
+  return rows.map((items) => items.map((item) => String(item || "").trim()));
+}
+
+function readTinyVitrineCsvFromFile(filePath = "") {
+  let text = "";
+  try {
+    text = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    const csvError = new Error("Não foi possível ler o CSV do Tiny. Verifique se o arquivo foi exportado corretamente e se possui cabeçalho na primeira linha.");
+    csvError.details = {
+      sourceType: "csv",
+      selectedSheet: "CSV",
+      firstRows: [],
+      originalHeaders: [],
+      normalizedHeaders: [],
+      missingMinimum: []
+    };
+    throw csvError;
+  }
+
+  const delimiter = detectCsvDelimiter(text);
+  const matrixRows = parseCsvMatrix(text, delimiter);
+  const parsedWorksheet = buildTinyVitrineObjectsFromWorksheetMatrix(matrixRows);
+  const rows = parsedWorksheet.rows || [];
+  if (!rows.length) {
+    const error = new Error("Não foi possível localizar o cabeçalho do CSV Tiny/Vitrine.");
+    error.details = {
+      sourceType: "csv",
+      delimiter,
+      selectedSheet: "CSV",
+      firstRows: matrixRows.slice(0, 5),
+      originalHeaders: parsedWorksheet.headerAnalysis?.originalHeaders || [],
+      normalizedHeaders: parsedWorksheet.headerAnalysis?.normalizedHeaders || [],
+      missingMinimum: parsedWorksheet.headerAnalysis?.missingMinimum || []
+    };
+    throw error;
+  }
+  return {
+    workbook: null,
+    worksheetName: "CSV",
+    sourceType: "csv",
+    delimiter,
+    rows,
+    groupedItems: groupTinyVitrineImportRows(rows, { sourceType: "csv" }),
+    headerAnalysis: parsedWorksheet.headerAnalysis
+  };
+}
+
+function readTinyVitrineWorkbookFromFile(filePath = "") {
+  const extension = path.extname(String(filePath || "")).toLowerCase();
+  if (extension === ".csv") {
+    return readTinyVitrineCsvFromFile(filePath);
+  }
+  const workbook = XLSX.readFile(filePath, { cellFormula: false, cellHTML: false, cellNF: false, cellText: true });
+  const worksheetSelection = selectTinyVitrineWorksheet(workbook);
+  if (!worksheetSelection.sheet) {
+    throw new Error("Não foi possível localizar uma aba válida para importação.");
+  }
+  const matrixRows = XLSX.utils.sheet_to_json(worksheetSelection.sheet, { header: 1, defval: "", raw: false });
+  const parsedWorksheet = buildTinyVitrineObjectsFromWorksheetMatrix(matrixRows);
+  const rows = parsedWorksheet.rows || [];
+  if (!rows.length) {
+    const error = new Error("Não foi possível localizar o cabeçalho da importação Tiny/Vitrine.");
+    error.details = {
+      sheets: workbook.SheetNames,
+      selectedSheet: worksheetSelection.name,
+      firstRows: matrixRows.slice(0, 5).map((row) => (row || []).map((cell) => String(cell || "").trim())),
+      originalHeaders: parsedWorksheet.headerAnalysis?.originalHeaders || [],
+      normalizedHeaders: parsedWorksheet.headerAnalysis?.normalizedHeaders || [],
+      missingMinimum: parsedWorksheet.headerAnalysis?.missingMinimum || []
+    };
+    throw error;
+  }
+  return {
+    workbook,
+    worksheetName: worksheetSelection.name,
+    sourceType: "spreadsheet",
+    rows,
+    groupedItems: groupTinyVitrineImportRows(rows, { sourceType: "spreadsheet" }),
+    headerAnalysis: parsedWorksheet.headerAnalysis
+  };
+}
+
+async function createTinyVitrineImportBatch({
+  filename = "",
+  originalFilename = "",
+  importType = "tiny",
+  selectedCount = 0,
+  status = "processando",
+  summary = {},
+  createdBy = ""
+} = {}) {
+  const result = await run(
+    `INSERT INTO ai_vitrine_imports
+    (filename, original_filename, import_type, selected_count, status, total_rows, valid_rows, created_count, updated_count, skipped_count, error_count, summary_json, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [
+      filename,
+      originalFilename,
+      importType,
+      Number(selectedCount || 0),
+      status,
+      Number(summary.totalRows || 0),
+      Number(summary.validRows || 0),
+      Number(summary.created || summary.createCount || 0),
+      Number(summary.updated || summary.updateCount || 0),
+      Number(summary.skipped || summary.skipCount || 0),
+      Number(summary.errors || summary.errorCount || 0),
+      JSON.stringify(summary || {}),
+      createdBy
+    ]
+  );
+  return Number(result.lastID || 0);
+}
+
+async function finalizeTinyVitrineImportBatch(importId, {
+  status = "concluido",
+  summary = {}
+} = {}) {
+  await run(
+    `UPDATE ai_vitrine_imports
+     SET status = ?, selected_count = ?, total_rows = ?, valid_rows = ?, created_count = ?, updated_count = ?, skipped_count = ?, error_count = ?, summary_json = ?
+     WHERE id = ?`,
+    [
+      status,
+      Number(summary.selectedCount || 0),
+      Number(summary.totalRows || 0),
+      Number(summary.validRows || 0),
+      Number(summary.created || 0),
+      Number(summary.updated || 0),
+      Number(summary.skipped || 0),
+      Number(summary.errors || 0),
+      JSON.stringify(summary || {}),
+      importId
+    ]
+  );
+}
+
+async function findExistingMigrationCashback(contactId, amount, expiresAt, status) {
+  return get(
+    `SELECT id FROM cashbacks
+    WHERE contact_id = ?
+      AND origin = ?
+      AND ROUND(generated_value, 2) = ROUND(?, 2)
+      AND COALESCE(expires_at, '') = COALESCE(?, '')
+      AND status = ?
+    LIMIT 1`,
+    [contactId, "migração CRM Bônus", Number(amount || 0), expiresAt || "", status]
+  );
+}
+
+async function buildContactImportPreview(rows, importType = "bonus_gerado") {
+  const previewRows = [];
+  const seenPhones = new Set();
+  const candidatePhones = rows
+    .map((row) => normalizePhone(getImportCellValue(row, ["Celular", "celular", "Telefone", "telefone", "WhatsApp", "whatsapp", "Numero", "numero", "Número", "número"])))
+    .filter(Boolean);
+  const existingContactsMap = await findContactsByPhonesBatch(candidatePhones);
+  const summary = {
+    total: rows.length,
+    ready: 0,
+    updates: 0,
+    duplicates: 0,
+    ignored: 0
+  };
+
+  for (const [index, row] of rows.entries()) {
+    const line = Number(row.__line || index + 2);
+    const rawName = String(getImportCellValue(row, ["Cliente", "cliente", "Nome", "nome"]) || "").trim();
+    const rawPhone = getImportCellValue(row, ["Celular", "celular", "Telefone", "telefone", "WhatsApp", "whatsapp", "Numero", "numero", "Número", "número"]);
+    const rawDigits = sanitizePhone(rawPhone);
+    const phone = normalizePhone(rawPhone);
+    const purchaseValue = importType === "bonus_perdido"
+      ? 0
+      : parseImportMoney(getImportCellValue(row, ["Venda", "venda"]));
+    const cashbackValue = importType === "bonus_perdido"
+      ? parseImportMoney(getImportCellValue(row, ["Bônus perdido", "B?nus perdido", "Bonus perdido", "bônus perdido", "b?nus perdido", "bonus perdido"]))
+      : parseImportMoney(getImportCellValue(row, ["Bônus gerado", "B?nus gerado", "Bonus gerado", "bônus gerado", "b?nus gerado", "bonus gerado"]));
+    const importDate = parseImportDate(getImportCellValue(row, ["Data", "data"]));
+    const sellerName = String(getImportCellValue(row, ["Vendedor", "vendedor"]) || "").trim();
+    const ticket = String(getImportCellValue(row, ["Ticket", "ticket"]) || "").trim();
+    const nf = String(getImportCellValue(row, ["NF", "nf", "Nf"]) || "").trim();
+    const name = rawName || (phone ? "Cliente sem nome" : "");
+
+    let action = "criar contato";
+    let note = "Pronto para importar.";
+    let invalid = false;
+    let duplicate = false;
+
+    if (!name && !rawDigits && !purchaseValue && !cashbackValue && !importDate && !sellerName) {
+      invalid = true;
+      note = "Linha vazia.";
+    } else if (!phone || rawDigits.length < 10) {
+      invalid = true;
+      note = "Telefone vazio ou inválido.";
+    } else if (seenPhones.has(phone)) {
+      duplicate = true;
+      note = importType === "bonus_perdido"
+        ? "Telefone repetido na planilha; a perda será importada como novo evento histórico."
+        : "Telefone repetido na planilha; a compra será importada como novo evento para o mesmo cliente.";
+    }
+
+    let existingContact = null;
+    if (!invalid) {
+      existingContact = existingContactsMap.get(phone) || null;
+      if (existingContact) {
+        action = "atualizar contato";
+        note = duplicate
+          ? (importType === "bonus_perdido"
+            ? "Contato existente será atualizado e a perda repetida será mantida no histórico."
+            : "Contato existente será atualizado e a compra repetida será importada no histórico.")
+          : (importType === "bonus_perdido"
+            ? "Contato existente será atualizado e o bônus perdido será registrado no histórico."
+            : "Contato existente será atualizado e receberá cashback inicial.");
+      } else {
+        note = duplicate
+          ? (importType === "bonus_perdido"
+            ? "Novo contato será criado e as perdas repetidas serão mantidas no histórico."
+            : "Novo contato será criado e as ocorrências repetidas serão mantidas no histórico.")
+          : (importType === "bonus_perdido"
+            ? "Novo contato será criado e o bônus perdido será importado para o histórico."
+            : "Novo contato será criado com cashback inicial.");
+      }
+    }
+
+    if (!invalid) {
+      seenPhones.add(phone);
+    }
+
+    if (invalid) {
+      summary.ignored += 1;
+    } else if (duplicate) {
+      summary.duplicates += 1;
+      summary.ready += 1;
+      if (action === "atualizar contato") {
+        summary.updates += 1;
+      }
+    } else if (action === "atualizar contato") {
+      summary.updates += 1;
+      summary.ready += 1;
+    } else {
+      summary.ready += 1;
+    }
+
+    previewRows.push({
+      line,
+      name,
+      phone,
+      rawPhone: String(rawPhone || "").trim(),
+      purchaseValue: Number.isFinite(purchaseValue) ? purchaseValue : 0,
+      cashbackValue: Number.isFinite(cashbackValue) ? cashbackValue : 0,
+      importDate,
+      sellerName,
+      ticket,
+      nf,
+      action,
+      note,
+      invalid,
+      duplicate,
+      existingContactId: existingContact?.id || null,
+      importType
+    });
+  }
+
+  return { previewRows, summary };
+}
+
+async function createCampaignFromContacts({
+  name,
+  template,
+  store = "",
+  seller = "Todos os vendedores",
+  sellerId = null,
+  sellerName = "Todos os vendedores",
+  selectedContactIds = [],
+  filters = {}
+}) {
+  const normalizedContactIds = Array.from(new Set((selectedContactIds || []).map(Number).filter(Boolean)));
+  const campaignStatus = normalizedContactIds.length ? "pronta" : "rascunho";
+  const result = await run(
+    `INSERT INTO campaigns
+    (name, seller, seller_id, seller_name, store, template, seller_ids_json, filters_json, active, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now'), datetime('now'))`,
+    [
+      String(name || "Campanha de importação").trim(),
+      seller,
+      sellerId,
+      sellerName,
+      store,
+      template,
+      JSON.stringify(sellerId ? [sellerId] : ["__all__"]),
+      JSON.stringify(filters || {}),
+      campaignStatus
+    ]
+  );
+
+  for (const contactId of normalizedContactIds) {
+    await run(
+      `INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, created_at)
+      VALUES (?, ?, datetime('now'))`,
+      [result.lastID, contactId]
+    );
+  }
+  await syncCampaignExecution(result.lastID, normalizedContactIds);
+  return (await listCampaigns()).find((campaign) => campaign.id === result.lastID);
+}
+
+function getToday(date = new Date()) {
+  return new Date(date).toISOString().slice(0, 10);
+}
+
+function addDays(dateString, days) {
+  const date = new Date(dateString);
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return getToday(date);
+}
+
+function addMinutes(date = new Date(), minutes = 0) {
+  return new Date(date.getTime() + Number(minutes || 0) * 60000).toISOString();
+}
+
+function formatCurrencyNumber(value) {
+  return Number(value || 0).toFixed(2).replace(".", ",");
+}
+
+function formatDateBR(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  const normalized = raw.replace(" ", "T");
+  const parsed = new Date(normalized);
+  if (!Number.isNaN(parsed.getTime()) && (raw.includes("-") || raw.includes("T"))) {
+    const day = String(parsed.getDate()).padStart(2, "0");
+    const month = String(parsed.getMonth() + 1).padStart(2, "0");
+    const year = String(parsed.getFullYear());
+    const hasTime = /\d{2}:\d{2}/.test(raw) || raw.includes("T");
+    if (hasTime) {
+      const hours = String(parsed.getHours()).padStart(2, "0");
+      const minutes = String(parsed.getMinutes()).padStart(2, "0");
+      return `${day}/${month}/${year} ${hours}:${minutes}`;
+    }
+    return `${day}/${month}/${year}`;
+  }
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) {
+    return `${match[3]}/${match[2]}/${match[1]}`;
+  }
+  return raw;
+}
+
+function hashPassword(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function createSessionToken() {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+const AUTH_COOKIE_NAME = "aerostore_sid";
+const AUTH_SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+const COOKIE_SESSION_MARKER = "cookie-session";
+
+function normalizeSystemRole(role = "") {
+  const normalized = String(role || "").trim().toLowerCase();
+  if (["admin", "master"].includes(normalized)) {
+    return "admin";
+  }
+  if (["manager", "gerente"].includes(normalized)) {
+    return "manager";
+  }
+  return "seller";
+}
+
+function buildDefaultPermissions(role = "seller") {
+  const normalized = normalizeSystemRole(role);
+  const base = {
+    can_sell: false,
+    can_view_products: false,
+    can_manage_products: false,
+    can_view_customers: false,
+    can_create_customers: false,
+    can_edit_customers: false,
+    can_open_close_register: false,
+    can_view_cash_register: false,
+    can_register_cash_movement: false,
+    can_close_register: false,
+    can_apply_discount: false,
+    can_request_discount_authorization: true,
+    can_approve_discount_authorization: false,
+    can_view_cashback: false,
+    can_manage_cashback: false,
+    can_use_whatsapp: false,
+    can_view_whatsapp_status: false,
+    can_reconnect_whatsapp: false,
+    can_disconnect_whatsapp: false,
+    can_reset_whatsapp_session: false,
+    can_view_whatsapp_logs: false,
+    can_send_whatsapp_test: false,
+    can_view_reports: false,
+    can_view_store_reports: false,
+    can_view_global_reports: false,
+    can_view_consolidation: false,
+    can_view_audit: false,
+    can_manage_users: false,
+    can_manage_store_settings: false,
+    can_manage_global_settings: false,
+    can_view_all_stores: false,
+    can_view_aerointel: false,
+    can_view_campaigns: false,
+    can_manage_campaigns: false,
+    can_view_store_settings: false
+  };
+
+  if (normalized === "admin") {
+    return Object.keys(base).reduce((acc, key) => {
+      acc[key] = true;
+      return acc;
+    }, {});
+  }
+
+  if (normalized === "manager") {
+    return {
+      ...base,
+      can_sell: true,
+      can_view_products: true,
+      can_manage_products: true,
+      can_view_customers: true,
+      can_create_customers: true,
+      can_edit_customers: true,
+      can_open_close_register: true,
+      can_view_cash_register: true,
+      can_register_cash_movement: true,
+      can_close_register: true,
+      can_apply_discount: true,
+      can_approve_discount_authorization: true,
+      can_view_cashback: true,
+      can_manage_cashback: true,
+      can_use_whatsapp: true,
+      can_view_whatsapp_status: true,
+      can_reconnect_whatsapp: true,
+      can_disconnect_whatsapp: true,
+      can_view_whatsapp_logs: true,
+      can_send_whatsapp_test: true,
+      can_view_reports: true,
+      can_view_store_reports: true,
+      can_view_consolidation: true,
+      can_view_campaigns: true,
+      can_manage_campaigns: true,
+      can_manage_store_settings: true,
+      can_view_store_settings: true
+    };
+  }
+
+  return {
+    ...base,
+    can_sell: true,
+    can_view_products: true,
+    can_view_customers: true,
+    can_create_customers: true,
+    can_use_whatsapp: true,
+    can_view_whatsapp_status: true,
+    can_request_discount_authorization: true
+  };
+}
+
+function safeJsonParse(value, fallback) {
+  try {
+    const parsed = JSON.parse(String(value || ""));
+    return parsed ?? fallback;
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function normalizeAllowedStores(value, fallbackStoreId = "") {
+  const parsed = Array.isArray(value) ? value : safeJsonParse(value, []);
+  const normalized = parsed
+    .map((item) => normalizeStoreKey(item || ""))
+    .filter(Boolean);
+  if (normalized.length) {
+    return Array.from(new Set(normalized));
+  }
+  const fallback = normalizeStoreKey(fallbackStoreId || "");
+  return fallback ? [fallback] : [];
+}
+
+function normalizePermissionSet(value, role = "seller") {
+  const parsed = value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : safeJsonParse(value, {});
+  const merged = {
+    ...buildDefaultPermissions(role),
+    ...(parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {})
+  };
+  return Object.entries(merged).reduce((acc, [key, rawValue]) => {
+    if (typeof rawValue === "string") {
+      const normalized = rawValue.trim().toLowerCase();
+      acc[key] = normalized === "true" || normalized === "1" || normalized === "yes";
+      return acc;
+    }
+    if (typeof rawValue === "number") {
+      acc[key] = rawValue > 0;
+      return acc;
+    }
+    acc[key] = Boolean(rawValue);
+    return acc;
+  }, {});
+}
+
+function getStoreLabelFromUser(user = {}) {
+  const explicitLabel = String(user.store_label || "").trim();
+  if (explicitLabel) {
+    return explicitLabel;
+  }
+  const normalizedStoreId = normalizeStoreKey(user.store_id || user.storeId || user.store || "");
+  const fallbackLabel = {
+    vila_masc: "Vila Masc.",
+    vila_fem: "Vila Fem.",
+    vila_fem_infant: "Vila Fem.",
+    botanico: "Botânico",
+    sul: "Sul"
+  }[normalizedStoreId];
+  return explicitLabel || fallbackLabel || String(user.store || "").trim();
+}
+
+function getStoreIdFromUser(user = {}) {
+  return normalizeStoreKey(user.store_id || user.storeId || user.store || "");
+}
+
+function enrichUserRecord(user = {}) {
+  if (!user) {
+    return null;
+  }
+  const roleKey = normalizeSystemRole(user.role || user.role_key || "");
+  const storeId = getStoreIdFromUser(user);
+  const allowedStores = normalizeAllowedStores(user.allowed_stores_json || user.allowed_stores || [], storeId);
+  const permissions = normalizePermissionSet(user.permissions_json || user.permissions || {}, roleKey);
+  return {
+    ...user,
+    role_key: roleKey,
+    store_id: storeId,
+    store_label: getStoreLabelFromUser(user),
+    allowed_stores: allowedStores,
+    permissions
+  };
+}
+
+function serializeAuthUser(user = {}) {
+  const enriched = enrichUserRecord(user);
+  if (!enriched) {
+    return null;
+  }
+  const allowedStores = (enriched.allowed_stores || []).length
+    ? enriched.allowed_stores
+    : (enriched.permissions?.can_view_all_stores
+      ? ["vila_masc", "vila_fem", "botanico", "sul"]
+      : []);
+  return {
+    id: enriched.id,
+    name: enriched.name || enriched.username || enriched.email || "Usuário AEROSTORE",
+    email: enriched.email || "",
+    username: enriched.username || "",
+    role: enriched.role_key,
+    legacyRole: enriched.role || "",
+    store_id: enriched.store_id || null,
+    store_label: enriched.store_label || "",
+    allowed_stores: allowedStores,
+    permissions: enriched.permissions || {},
+    sellerId: enriched.seller_id || null
+  };
+}
+
+function parseCookieHeader(cookieHeader = "") {
+  return String(cookieHeader || "")
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .reduce((acc, chunk) => {
+      const separatorIndex = chunk.indexOf("=");
+      if (separatorIndex <= 0) {
+        return acc;
+      }
+      const key = chunk.slice(0, separatorIndex).trim();
+      const value = chunk.slice(separatorIndex + 1).trim();
+      acc[key] = decodeURIComponent(value);
+      return acc;
+    }, {});
+}
+
+function getSessionTokenFromRequest(req) {
+  const cookies = parseCookieHeader(req.headers.cookie || "");
+  const cookieToken = String(cookies[AUTH_COOKIE_NAME] || "").trim();
+  if (cookieToken) {
+    return cookieToken;
+  }
+  const authHeader = String(req.headers.authorization || "");
+  if (authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+  return "";
+}
+
+function getAuthCookieOptions() {
+  const isProduction = String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
+  return {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: "Lax",
+    path: "/",
+    maxAge: AUTH_SESSION_MAX_AGE_MS
+  };
+}
+
+function serializeCookie(name, value, options = {}) {
+  const parts = [`${name}=${encodeURIComponent(String(value || ""))}`];
+  if (options.maxAge !== undefined) {
+    parts.push(`Max-Age=${Math.max(0, Math.floor(Number(options.maxAge || 0) / 1000))}`);
+  }
+  if (options.httpOnly) {
+    parts.push("HttpOnly");
+  }
+  if (options.secure) {
+    parts.push("Secure");
+  }
+  if (options.sameSite) {
+    parts.push(`SameSite=${options.sameSite}`);
+  }
+  parts.push(`Path=${options.path || "/"}`);
+  return parts.join("; ");
+}
+
+function setAuthSessionCookie(res, token) {
+  res.setHeader("Set-Cookie", serializeCookie(AUTH_COOKIE_NAME, token, getAuthCookieOptions()));
+}
+
+function clearAuthSessionCookie(res) {
+  res.setHeader("Set-Cookie", serializeCookie(AUTH_COOKIE_NAME, "", {
+    ...getAuthCookieOptions(),
+    maxAge: 0
+  }));
+}
+
+async function getUserByToken(token) {
+  if (!token) {
+    return null;
+  }
+
+  const row = await get(
+    `SELECT u.*
+     FROM users u
+     INNER JOIN user_sessions s ON s.user_id = u.id
+     WHERE s.token = ?
+       AND s.expires_at > datetime('now')
+       AND u.status = 'ativo'
+     LIMIT 1`,
+    [token]
+  );
+  return enrichUserRecord(row);
+}
+
+async function getUserByCredentials({ email = "", username = "", password = "" } = {}) {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const normalizedUsername = String(username || "").trim().toLowerCase();
+  if ((!normalizedEmail && !normalizedUsername) || !password) {
+    return null;
+  }
+  const clauses = [];
+  const params = [];
+  if (normalizedEmail) {
+    clauses.push("lower(email) = ?");
+    params.push(normalizedEmail);
+  }
+  if (normalizedUsername) {
+    clauses.push("lower(username) = ?");
+    params.push(normalizedUsername);
+  }
+  if (!clauses.length) {
+    return null;
+  }
+  const user = await get(
+    `SELECT *
+     FROM users
+     WHERE status = 'ativo'
+       AND (${clauses.join(" OR ")})
+     ORDER BY id ASC
+     LIMIT 1`,
+    params
+  );
+  if (!user || user.password_hash !== hashPassword(password)) {
+    return null;
+  }
+  return enrichUserRecord(user);
+}
+
+function userHasPermission(user = {}, permission = "") {
+  const key = String(permission || "").trim();
+  if (!key) {
+    return true;
+  }
+  const enriched = enrichUserRecord(user);
+  return Boolean(enriched?.permissions?.[key]);
+}
+
+function userCanAccessStore(user = {}, storeId = "") {
+  const normalizedStore = normalizeStoreKey(storeId || "");
+  const enriched = enrichUserRecord(user);
+  if (!enriched) {
+    return false;
+  }
+  if (!normalizedStore) {
+    return true;
+  }
+  if (userHasPermission(enriched, "can_view_all_stores")) {
+    return true;
+  }
+  return (enriched.allowed_stores || []).includes(normalizedStore);
+}
+
+function requirePermission(permission, message = "") {
+  return (req, res, next) => {
+    if (!userHasPermission(req.user, permission)) {
+      return res.status(403).json({
+        error: message || "Acesso restrito para o seu perfil.",
+        permission
+      });
+    }
+    next();
+  };
+}
+
+function getCurrentStoreScope(req = {}) {
+  const candidates = [
+    req.query?.store,
+    req.query?.storeId,
+    req.body?.store,
+    req.body?.storeId,
+    req.body?.store_id,
+    req.body?.loja,
+    req.params?.storeId,
+    req.params?.store_id
+  ];
+  const normalized = candidates
+    .map((item) => normalizeStoreKey(item || ""))
+    .find(Boolean);
+  return normalized || getStoreIdFromUser(req.user || {});
+}
+
+function requireStoreAccess(options = {}) {
+  const {
+    resolver = (req) => getCurrentStoreScope(req),
+    message = "Acesso restrito à sua loja."
+  } = options || {};
+  return (req, res, next) => {
+    const scopeStore = normalizeStoreKey(typeof resolver === "function" ? resolver(req) : "");
+    if (!scopeStore) {
+      return next();
+    }
+    if (!userCanAccessStore(req.user, scopeStore)) {
+      return res.status(403).json({ error: message, store_id: scopeStore });
+    }
+    next();
+  };
+}
+
+function listAccessibleStoreSettings(user = {}) {
+  const rows = listStoreSettings();
+  if (isAdmin(user) || userHasPermission(user, "can_view_all_stores")) {
+    return rows;
+  }
+  return rows.filter((row) => userCanAccessStore(user, row.store_id || ""));
+}
+
+function getStoreSettingsSummary(row = {}) {
+  return {
+    store_id: row.store_id || "",
+    display_name: row.display_name || formatStoreLabel(row.store_id || ""),
+    internal_name: row.internal_name || "",
+    status: row.status || "active",
+    type: row.type || "",
+    contact: {
+      phone: row.contact?.phone || "",
+      whatsapp: row.contact?.whatsapp || "",
+      email: row.contact?.email || "",
+      manager_name: row.contact?.manager_name || "",
+      opening_hours: row.contact?.opening_hours || ""
+    },
+    metadata: {
+      updated_at: row.metadata?.updated_at || "",
+      updated_by: row.metadata?.updated_by || ""
+    }
+  };
+}
+
+function sanitizeStoreSettingsText(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function sanitizeStoreSettingsEmail(value = "") {
+  return sanitizeStoreSettingsText(value).toLowerCase();
+}
+
+function sanitizeStoreSettingsCnpj(value = "") {
+  return String(value || "").replace(/\D+/g, "").slice(0, 14);
+}
+
+function isValidStoreSettingsCnpj(value = "") {
+  const digits = sanitizeStoreSettingsCnpj(value);
+  return !digits || digits.length === 14;
+}
+
+function sanitizeStoreSettingsZip(value = "") {
+  return String(value || "").replace(/\D+/g, "").slice(0, 8);
+}
+
+function sanitizeStoreSettingsState(value = "") {
+  return sanitizeStoreSettingsText(value).toUpperCase().slice(0, 2);
+}
+
+function isValidStoreSettingsEmail(value = "") {
+  const normalized = sanitizeStoreSettingsEmail(value);
+  return !normalized || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized);
+}
+
+function isValidStoreSettingsPhone(value = "") {
+  const digits = String(value || "").replace(/\D+/g, "");
+  return !digits || digits.length >= 10;
+}
+
+function validateStoreSettingsPayload(record = {}) {
+  if (!sanitizeStoreSettingsText(record.store_id || "")) {
+    return "store_id é obrigatório.";
+  }
+  if (!sanitizeStoreSettingsText(record.display_name || "")) {
+    return "display_name é obrigatório.";
+  }
+  if (!STORE_STATUSES.includes(String(record.status || "").trim().toLowerCase())) {
+    return "status da loja inválido.";
+  }
+  if (!STORE_TYPES.includes(String(record.type || "").trim().toLowerCase())) {
+    return "type da loja inválido.";
+  }
+  if (!isValidStoreSettingsCnpj(record.company?.cnpj || "")) {
+    return "CNPJ inválido.";
+  }
+  if (record.address?.state && sanitizeStoreSettingsState(record.address.state).length !== 2) {
+    return "UF deve ter 2 letras.";
+  }
+  if (!isValidStoreSettingsEmail(record.contact?.email || "")) {
+    return "E-mail da loja inválido.";
+  }
+  if (!isValidStoreSettingsPhone(record.contact?.phone || "") || !isValidStoreSettingsPhone(record.contact?.whatsapp || "")) {
+    return "Telefone ou WhatsApp da loja inválido.";
+  }
+  return "";
+}
+
+function buildNormalizedStoreSettingsPayload(payload = {}, current = {}) {
+  const storeId = normalizeStoreKey(payload.store_id || current.store_id || "");
+  const displayName = sanitizeStoreSettingsText(payload.display_name || current.display_name || formatStoreLabel(storeId));
+  return {
+    store_id: storeId,
+    legacy_aliases: normalizeStoreSettingsStringArray(payload.legacy_aliases ?? current.legacy_aliases ?? []),
+    display_name: displayName,
+    internal_name: sanitizeStoreSettingsText(payload.internal_name || current.internal_name || `AEROSTORE ${displayName}`),
+    status: STORE_STATUSES.includes(String(payload.status || current.status || "").trim().toLowerCase())
+      ? String(payload.status || current.status).trim().toLowerCase()
+      : "active",
+    type: STORE_TYPES.includes(String(payload.type || current.type || "").trim().toLowerCase())
+      ? String(payload.type || current.type).trim().toLowerCase()
+      : "physical_store",
+    company: {
+      legal_name: sanitizeStoreSettingsText(payload.company?.legal_name ?? current.company?.legal_name ?? ""),
+      trade_name: sanitizeStoreSettingsText(payload.company?.trade_name ?? current.company?.trade_name ?? displayName),
+      cnpj: sanitizeStoreSettingsCnpj(payload.company?.cnpj ?? current.company?.cnpj ?? ""),
+      state_registration: sanitizeStoreSettingsText(payload.company?.state_registration ?? current.company?.state_registration ?? ""),
+      municipal_registration: sanitizeStoreSettingsText(payload.company?.municipal_registration ?? current.company?.municipal_registration ?? ""),
+      tax_regime_label: sanitizeStoreSettingsText(payload.company?.tax_regime_label ?? current.company?.tax_regime_label ?? "")
+    },
+    address: {
+      zip: sanitizeStoreSettingsZip(payload.address?.zip ?? current.address?.zip ?? ""),
+      street: sanitizeStoreSettingsText(payload.address?.street ?? current.address?.street ?? ""),
+      number: sanitizeStoreSettingsText(payload.address?.number ?? current.address?.number ?? ""),
+      complement: sanitizeStoreSettingsText(payload.address?.complement ?? current.address?.complement ?? ""),
+      district: sanitizeStoreSettingsText(payload.address?.district ?? current.address?.district ?? ""),
+      city: sanitizeStoreSettingsText(payload.address?.city ?? current.address?.city ?? ""),
+      state: sanitizeStoreSettingsState(payload.address?.state ?? current.address?.state ?? ""),
+      country: sanitizeStoreSettingsText(payload.address?.country ?? current.address?.country ?? "Brasil")
+    },
+    contact: {
+      phone: sanitizeStoreSettingsText(payload.contact?.phone ?? current.contact?.phone ?? ""),
+      whatsapp: sanitizeStoreSettingsText(payload.contact?.whatsapp ?? current.contact?.whatsapp ?? ""),
+      email: sanitizeStoreSettingsEmail(payload.contact?.email ?? current.contact?.email ?? ""),
+      manager_name: sanitizeStoreSettingsText(payload.contact?.manager_name ?? current.contact?.manager_name ?? ""),
+      opening_hours: sanitizeStoreSettingsText(payload.contact?.opening_hours ?? current.contact?.opening_hours ?? "")
+    },
+    terminal: {
+      default_register_id: sanitizeStoreSettingsText(payload.terminal?.default_register_id ?? current.terminal?.default_register_id ?? ""),
+      default_terminal_label: sanitizeStoreSettingsText(payload.terminal?.default_terminal_label ?? current.terminal?.default_terminal_label ?? ""),
+      default_printer_label: sanitizeStoreSettingsText(payload.terminal?.default_printer_label ?? current.terminal?.default_printer_label ?? ""),
+      receipt_footer: sanitizeStoreSettingsText(payload.terminal?.receipt_footer ?? current.terminal?.receipt_footer ?? ""),
+      sale_prefix: sanitizeStoreSettingsText(payload.terminal?.sale_prefix ?? current.terminal?.sale_prefix ?? "")
+    },
+    inventory: {
+      primary_deposit_id: sanitizeStoreSettingsText(payload.inventory?.primary_deposit_id ?? current.inventory?.primary_deposit_id ?? ""),
+      linked_deposit_ids: normalizeStoreSettingsStringArray(payload.inventory?.linked_deposit_ids ?? current.inventory?.linked_deposit_ids ?? []),
+      allows_shared_stock: normalizeStoreSettingsBoolean(payload.inventory?.allows_shared_stock, current.inventory?.allows_shared_stock ?? true),
+      allows_transfer_request: normalizeStoreSettingsBoolean(payload.inventory?.allows_transfer_request, current.inventory?.allows_transfer_request ?? true),
+      requires_cross_state_transfer_review: normalizeStoreSettingsBoolean(payload.inventory?.requires_cross_state_transfer_review, current.inventory?.requires_cross_state_transfer_review ?? false)
+    },
+    policies: {
+      cashback_generate_enabled: normalizeStoreSettingsBoolean(payload.policies?.cashback_generate_enabled, current.policies?.cashback_generate_enabled ?? true),
+      cashback_redeem_enabled: normalizeStoreSettingsBoolean(payload.policies?.cashback_redeem_enabled, current.policies?.cashback_redeem_enabled ?? true),
+      payment_link_enabled: normalizeStoreSettingsBoolean(payload.policies?.payment_link_enabled, current.policies?.payment_link_enabled ?? true),
+      gift_card_enabled: normalizeStoreSettingsBoolean(payload.policies?.gift_card_enabled, current.policies?.gift_card_enabled ?? true),
+      exchange_enabled: normalizeStoreSettingsBoolean(payload.policies?.exchange_enabled, current.policies?.exchange_enabled ?? true),
+      auto_discount_enabled: normalizeStoreSettingsBoolean(payload.policies?.auto_discount_enabled, current.policies?.auto_discount_enabled ?? true),
+      local_discount_limit_percent: payload.policies?.local_discount_limit_percent === null || payload.policies?.local_discount_limit_percent === ""
+        ? null
+        : Number(payload.policies?.local_discount_limit_percent ?? current.policies?.local_discount_limit_percent ?? 0),
+      pickup_enabled: normalizeStoreSettingsBoolean(payload.policies?.pickup_enabled, current.policies?.pickup_enabled ?? true),
+      delivery_enabled: normalizeStoreSettingsBoolean(payload.policies?.delivery_enabled, current.policies?.delivery_enabled ?? false),
+      delivery_policy_label: sanitizeStoreSettingsText(payload.policies?.delivery_policy_label ?? current.policies?.delivery_policy_label ?? ""),
+      operational_notes: sanitizeStoreSettingsText(payload.policies?.operational_notes ?? current.policies?.operational_notes ?? "")
+    },
+    integrations: {
+      whatsapp_instance_id: sanitizeStoreSettingsText(payload.integrations?.whatsapp_instance_id ?? current.integrations?.whatsapp_instance_id ?? ""),
+      pagbank_account_label: sanitizeStoreSettingsText(payload.integrations?.pagbank_account_label ?? current.integrations?.pagbank_account_label ?? ""),
+      tiny_store_id: sanitizeStoreSettingsText(payload.integrations?.tiny_store_id ?? current.integrations?.tiny_store_id ?? ""),
+      tiny_deposit_id: sanitizeStoreSettingsText(payload.integrations?.tiny_deposit_id ?? current.integrations?.tiny_deposit_id ?? "")
+    }
+  };
+}
+
+function buildManagerEditableStoreSettingsPayload(payload = {}, current = {}) {
+  const next = buildNormalizedStoreSettingsPayload(current, current);
+  return {
+    ...next,
+    contact: {
+      ...next.contact,
+      phone: sanitizeStoreSettingsText(payload.contact?.phone ?? current.contact?.phone ?? ""),
+      whatsapp: sanitizeStoreSettingsText(payload.contact?.whatsapp ?? current.contact?.whatsapp ?? ""),
+      email: sanitizeStoreSettingsEmail(payload.contact?.email ?? current.contact?.email ?? ""),
+      manager_name: sanitizeStoreSettingsText(payload.contact?.manager_name ?? current.contact?.manager_name ?? ""),
+      opening_hours: sanitizeStoreSettingsText(payload.contact?.opening_hours ?? current.contact?.opening_hours ?? "")
+    },
+    policies: {
+      ...next.policies,
+      operational_notes: sanitizeStoreSettingsText(payload.policies?.operational_notes ?? current.policies?.operational_notes ?? "")
+    }
+  };
+}
+
+function finalizeStoreSettingsRecord(nextRecord = {}, current = {}, actor = "") {
+  return {
+    ...nextRecord,
+    metadata: {
+      ...(current.metadata || {}),
+      created_at: current.metadata?.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      updated_by: actor || getUserDisplayName({})
+    }
+  };
+}
+
+function escapeCsvValue(value) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+
+function calculateCashbackValue(purchaseValue, percentage) {
+  return Number((Number(purchaseValue || 0) * (Number(percentage || 0) / 100)).toFixed(2));
+}
+
+function getCashbackUsageLimit(purchaseValue, availableBalance) {
+  return Number(Math.min(Number(availableBalance || 0), Number(purchaseValue || 0) * 0.5).toFixed(2));
+}
+
+function getConfiguredCashbackPercentage(settings) {
+  const configured = Array.isArray(settings?.percentages)
+    ? settings.percentages.map(Number).filter((value) => value > 0)
+    : [];
+  return configured[0] || 12;
+}
+
+function randomPin() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+function hashCashbackPin(pin) {
+  return crypto
+    .createHash("sha256")
+    .update(`${PIN_HASH_PEPPER}:${String(pin || "").trim()}`)
+    .digest("hex");
+}
+
+function compareCashbackPin(pin, expectedHash) {
+  if (!pin || !expectedHash) {
+    return false;
+  }
+  return hashCashbackPin(pin) === String(expectedHash || "");
+}
+
+function normalizePinTokenStatus(status) {
+  const value = String(status || "").trim().toLowerCase();
+  const map = {
+    pendente: "pending",
+    pending: "pending",
+    enviado: "sent",
+    sent: "sent",
+    validado: "validated",
+    validated: "validated",
+    expirado: "expired",
+    expired: "expired",
+    cancelado: "cancelled",
+    cancelled: "cancelled",
+    failed: "failed",
+    bloqueado: "failed"
+  };
+  return map[value] || "pending";
+}
+
+function parsePercentages(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed)
+      ? parsed.map((item) => Number(item)).filter((item) => item > 0)
+      : [5, 10, 15, 20];
+  } catch (error) {
+    return [5, 10, 15, 20];
+  }
+}
+
+function mapCashbackStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  const map = {
+    ativo: "disponivel",
+    disponivel: "disponivel",
+    a_receber: "a_receber",
+    "a receber": "a_receber",
+    usado: "usado",
+    expirado: "vencido",
+    vencido: "vencido",
+    cancelado: "cancelado"
+  };
+  return map[normalized] || "disponivel";
+}
+
+function buildContactPayload(payload) {
+  return {
+    name: String(payload.name || "").trim(),
+    phone: normalizePhone(payload.phone),
+    document: normalizeDocumentValue(payload.document || payload.cpf || ""),
+    email: normalizeEmailValue(payload.email || ""),
+    birthDate: String(payload.birthDate || payload.birth_date || "").trim().slice(0, 10),
+    zipcode: normalizeZipcodeValue(payload.zipcode || payload.cep || ""),
+    city: normalizeCityValue(payload.city || payload.cidade || ""),
+    state: normalizeStateValue(payload.state || payload.uf || ""),
+    neighborhood: normalizeWhitespace(payload.neighborhood || payload.bairro || ""),
+    topSize: normalizeWhitespace(payload.topSize || payload.top_size || "").toUpperCase(),
+    bottomSize: normalizeWhitespace(payload.bottomSize || payload.bottom_size || ""),
+    shoeSize: normalizeWhitespace(payload.shoeSize || payload.shoe_size || ""),
+    gender: String(payload.gender || "").trim(),
+    store: String(payload.store || "").trim(),
+    sellerId: payload.sellerId ? Number(payload.sellerId) : null,
+    sellerName: String(payload.sellerName || "").trim(),
+    tags: "",
+    cashback: 0,
+    status: String(payload.status || "ativo").trim(),
+    notes: String(payload.notes || payload.commercialNotes || "").trim()
+  };
+}
+
+function getUserDisplayName(user) {
+  return user?.name || user?.username || user?.email || "Sistema";
+}
+
+function isAdmin(user) {
+  return normalizeSystemRole(user?.role_key || user?.role || "") === "admin";
+}
+
+function isManager(user) {
+  return ["admin", "manager"].includes(normalizeSystemRole(user?.role_key || user?.role || ""));
+}
+
+function buildCashbackPreviewPayload({ contact, phone, name, gender, store, sellerName, purchaseValue, settings, availableCashback = 0 }) {
+  const validFrom = getToday();
+  const expiresAt = addDays(validFrom, settings.defaultValidityDays);
+  const percentage = getConfiguredCashbackPercentage(settings);
+  const cashbackUsed = getCashbackUsageLimit(purchaseValue, availableCashback);
+  const amountPaid = Number((Number(purchaseValue || 0) - cashbackUsed).toFixed(2));
+  const generatedValue = calculateCashbackValue(purchaseValue, percentage);
+  return {
+    contactId: contact?.id || null,
+    customerName: contact?.name || String(name || "").trim(),
+    customerPhone: normalizePhone(contact?.phone || phone || ""),
+    customerGender: contact?.gender || String(gender || "").trim(),
+    store: String(store || contact?.store || "").trim(),
+    sellerName: String(sellerName || contact?.seller_name || "").trim(),
+    percentage,
+    purchaseValue: Number(purchaseValue || 0),
+    availableCashback: Number(availableCashback || 0),
+    cashbackUsed,
+    amountPaid,
+    generatedValue,
+    validFrom,
+    expiresAt,
+    usageLimitText: "Use até 50% do valor da compra.",
+    termsLink: TERMS_LINK
+  };
+}
+
+function validateContact(contact) {
+  if (!contact.name) {
+    return "O nome do contato e obrigatorio.";
+  }
+  if (!contact.phone && !contact.document) {
+    return "Telefone ou CPF do contato e obrigatorio.";
+  }
+  if (contact.document && contact.document.length !== 11) {
+    return "CPF do contato invalido.";
+  }
+  return null;
+}
+
+function normalizeBooleanFlag(value, fallback = false) {
+  if (value === undefined || value === null || value === "") {
+    return Boolean(fallback);
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value > 0;
+  }
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["1", "true", "sim", "yes", "on", "ativo"].includes(normalized);
+}
+
+function normalizeCustomerStatus(status = "") {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (["ativo", "inativo", "oculto", "deleted", "excluido"].includes(normalized)) {
+    return normalized === "excluido" ? "deleted" : normalized;
+  }
+  return "ativo";
+}
+
+function normalizeCustomerConfidence(value = "") {
+  const normalized = normalizeLookup(value || "");
+  if (["alta", "media", "baixa"].includes(normalized)) {
+    return normalized;
+  }
+  return "media";
+}
+
+function normalizeCustomerSource(value = "") {
+  const normalized = normalizeLookup(value || "");
+  const allowed = ["manual", "tiny", "importacao", "importação", "whatsapp", "campanha", "aerointel", "outro"];
+  if (!allowed.includes(normalized)) {
+    return "manual";
+  }
+  return normalized === "importação" ? "importacao" : normalized;
+}
+
+function normalizeBrazilMobile(value = "") {
+  const digits = sanitizePhone(value);
+  if (!digits) {
+    return "";
+  }
+  let normalized = digits;
+  if (normalized.startsWith("0")) {
+    normalized = normalized.replace(/^0+/, "");
+  }
+  if (normalized.startsWith("55") && normalized.length >= 12) {
+    normalized = normalized.slice(0, 13);
+  } else if ((normalized.length === 10 || normalized.length === 11) && !normalized.startsWith("55")) {
+    normalized = `55${normalized}`;
+  }
+  return /^55\d{10,11}$/.test(normalized) ? normalized : "";
+}
+
+function buildCustomerQualityFlags(payload = {}, { allowMissingName = true } = {}) {
+  const flags = new Set();
+  if (!payload.name && allowMissingName) {
+    flags.add("needs_name_review");
+  }
+  if (!payload.mobile && !payload.document) {
+    flags.add("missing_identity");
+  }
+  if (!payload.mobile) {
+    flags.add("missing_mobile");
+  }
+  if (payload.mobile && !payload.mobile_normalized) {
+    flags.add("invalid_mobile");
+  }
+  if (!payload.document) {
+    flags.add("missing_document");
+  }
+  return Array.from(flags);
+}
+
+function parseStoredJsonArray(value) {
+  const parsed = safeJsonParse(value, []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function parseStoredJsonObject(value) {
+  const parsed = safeJsonParse(value, {});
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+}
+
+function buildCustomerSizeProfile(payload = {}, current = null) {
+  const currentProfile = parseStoredJsonObject(current?.size_profile_json || {});
+  const nextProfile = {
+    tshirt: {
+      size_value: normalizeText(payload.tshirtSize ?? payload.tshirt_size ?? currentProfile?.tshirt?.size_value ?? payload.topSize ?? payload.top_size ?? current?.top_size ?? "").toUpperCase(),
+      source: normalizeCustomerSource(payload.tshirtSource ?? payload.tshirt_source ?? currentProfile?.tshirt?.source ?? payload.sizeProfileSource ?? payload.size_profile_source ?? current?.size_profile_source ?? "manual"),
+      confidence_score: normalizeCustomerConfidence(payload.tshirtConfidence ?? payload.tshirt_confidence ?? currentProfile?.tshirt?.confidence_score ?? payload.sizeProfileConfidence ?? payload.size_profile_confidence ?? current?.size_profile_confidence ?? "alta"),
+      last_confirmed_at: String(payload.tshirtUpdatedAt ?? payload.tshirt_updated_at ?? currentProfile?.tshirt?.last_confirmed_at ?? payload.sizeProfileUpdatedAt ?? payload.size_profile_updated_at ?? current?.size_profile_updated_at ?? "").trim(),
+      notes: normalizeText(payload.tshirtNotes ?? payload.tshirt_notes ?? currentProfile?.tshirt?.notes ?? "")
+    },
+    blouse: {
+      size_value: normalizeText(payload.blouseSize ?? payload.blouse_size ?? currentProfile?.blouse?.size_value ?? "").toUpperCase(),
+      source: normalizeCustomerSource(payload.blouseSource ?? payload.blouse_source ?? currentProfile?.blouse?.source ?? payload.sizeProfileSource ?? current?.size_profile_source ?? "manual"),
+      confidence_score: normalizeCustomerConfidence(payload.blouseConfidence ?? payload.blouse_confidence ?? currentProfile?.blouse?.confidence_score ?? payload.sizeProfileConfidence ?? current?.size_profile_confidence ?? "media"),
+      last_confirmed_at: String(payload.blouseUpdatedAt ?? payload.blouse_updated_at ?? currentProfile?.blouse?.last_confirmed_at ?? payload.sizeProfileUpdatedAt ?? current?.size_profile_updated_at ?? "").trim(),
+      notes: normalizeText(payload.blouseNotes ?? payload.blouse_notes ?? currentProfile?.blouse?.notes ?? "")
+    },
+    pants: {
+      size_value: normalizeText(payload.pantsSize ?? payload.pants_size ?? currentProfile?.pants?.size_value ?? payload.bottomSize ?? payload.bottom_size ?? current?.bottom_size ?? ""),
+      source: normalizeCustomerSource(payload.pantsSource ?? payload.pants_source ?? currentProfile?.pants?.source ?? payload.sizeProfileSource ?? current?.size_profile_source ?? "manual"),
+      confidence_score: normalizeCustomerConfidence(payload.pantsConfidence ?? payload.pants_confidence ?? currentProfile?.pants?.confidence_score ?? payload.sizeProfileConfidence ?? current?.size_profile_confidence ?? "alta"),
+      last_confirmed_at: String(payload.pantsUpdatedAt ?? payload.pants_updated_at ?? currentProfile?.pants?.last_confirmed_at ?? payload.sizeProfileUpdatedAt ?? current?.size_profile_updated_at ?? "").trim(),
+      notes: normalizeText(payload.pantsNotes ?? payload.pants_notes ?? currentProfile?.pants?.notes ?? "")
+    },
+    shorts: {
+      size_value: normalizeText(payload.shortsSize ?? payload.shorts_size ?? currentProfile?.shorts?.size_value ?? ""),
+      source: normalizeCustomerSource(payload.shortsSource ?? payload.shorts_source ?? currentProfile?.shorts?.source ?? payload.sizeProfileSource ?? current?.size_profile_source ?? "manual"),
+      confidence_score: normalizeCustomerConfidence(payload.shortsConfidence ?? payload.shorts_confidence ?? currentProfile?.shorts?.confidence_score ?? payload.sizeProfileConfidence ?? current?.size_profile_confidence ?? "media"),
+      last_confirmed_at: String(payload.shortsUpdatedAt ?? payload.shorts_updated_at ?? currentProfile?.shorts?.last_confirmed_at ?? payload.sizeProfileUpdatedAt ?? current?.size_profile_updated_at ?? "").trim(),
+      notes: normalizeText(payload.shortsNotes ?? payload.shorts_notes ?? currentProfile?.shorts?.notes ?? "")
+    },
+    dress: {
+      size_value: normalizeText(payload.dressSize ?? payload.dress_size ?? currentProfile?.dress?.size_value ?? "").toUpperCase(),
+      source: normalizeCustomerSource(payload.dressSource ?? payload.dress_source ?? currentProfile?.dress?.source ?? payload.sizeProfileSource ?? current?.size_profile_source ?? "manual"),
+      confidence_score: normalizeCustomerConfidence(payload.dressConfidence ?? payload.dress_confidence ?? currentProfile?.dress?.confidence_score ?? payload.sizeProfileConfidence ?? current?.size_profile_confidence ?? "media"),
+      last_confirmed_at: String(payload.dressUpdatedAt ?? payload.dress_updated_at ?? currentProfile?.dress?.last_confirmed_at ?? payload.sizeProfileUpdatedAt ?? current?.size_profile_updated_at ?? "").trim(),
+      notes: normalizeText(payload.dressNotes ?? payload.dress_notes ?? currentProfile?.dress?.notes ?? "")
+    },
+    shoes: {
+      size_value: normalizeText(payload.shoeSize ?? payload.shoe_size ?? currentProfile?.shoes?.size_value ?? current?.shoe_size ?? ""),
+      source: normalizeCustomerSource(payload.shoeSource ?? payload.shoe_source ?? currentProfile?.shoes?.source ?? payload.sizeProfileSource ?? current?.size_profile_source ?? "manual"),
+      confidence_score: normalizeCustomerConfidence(payload.shoeConfidence ?? payload.shoe_confidence ?? currentProfile?.shoes?.confidence_score ?? payload.sizeProfileConfidence ?? current?.size_profile_confidence ?? "alta"),
+      last_confirmed_at: String(payload.shoeUpdatedAt ?? payload.shoe_updated_at ?? currentProfile?.shoes?.last_confirmed_at ?? payload.sizeProfileUpdatedAt ?? current?.size_profile_updated_at ?? "").trim(),
+      notes: normalizeText(payload.shoeNotes ?? payload.shoe_notes ?? currentProfile?.shoes?.notes ?? "")
+    },
+    infant: {
+      size_value: normalizeText(payload.infantSize ?? payload.infant_size ?? currentProfile?.infant?.size_value ?? ""),
+      source: normalizeCustomerSource(payload.infantSource ?? payload.infant_source ?? currentProfile?.infant?.source ?? payload.sizeProfileSource ?? current?.size_profile_source ?? "manual"),
+      confidence_score: normalizeCustomerConfidence(payload.infantConfidence ?? payload.infant_confidence ?? currentProfile?.infant?.confidence_score ?? payload.sizeProfileConfidence ?? current?.size_profile_confidence ?? "media"),
+      last_confirmed_at: String(payload.infantUpdatedAt ?? payload.infant_updated_at ?? currentProfile?.infant?.last_confirmed_at ?? payload.sizeProfileUpdatedAt ?? current?.size_profile_updated_at ?? "").trim(),
+      notes: normalizeText(payload.infantNotes ?? payload.infant_notes ?? currentProfile?.infant?.notes ?? "")
+    },
+    fit_notes: normalizeText(payload.fitNotes ?? payload.fit_notes ?? currentProfile?.fit_notes ?? payload.notes_fit ?? ""),
+    updated_at: String(payload.sizeProfileUpdatedAt ?? payload.size_profile_updated_at ?? current?.size_profile_updated_at ?? getToday()).trim(),
+    source: normalizeCustomerSource(payload.sizeProfileSource ?? payload.size_profile_source ?? current?.size_profile_source ?? "manual"),
+    confidence: normalizeCustomerConfidence(payload.sizeProfileConfidence ?? payload.size_profile_confidence ?? current?.size_profile_confidence ?? "alta")
+  };
+  return nextProfile;
+}
+
+function hasCustomerSizeProfile(sizeProfile = {}) {
+  if (!sizeProfile || typeof sizeProfile !== "object") {
+    return false;
+  }
+  return ["tshirt", "blouse", "pants", "shorts", "dress", "shoes", "infant"]
+    .some((key) => normalizeText(sizeProfile?.[key]?.size_value || ""));
+}
+
+function getCustomerPrimarySizes(sizeProfile = {}) {
+  return {
+    top_size: normalizeText(sizeProfile?.tshirt?.size_value || sizeProfile?.blouse?.size_value || "").toUpperCase(),
+    bottom_size: normalizeText(sizeProfile?.pants?.size_value || sizeProfile?.shorts?.size_value || ""),
+    shoe_size: normalizeText(sizeProfile?.shoes?.size_value || "")
+  };
+}
+
+function buildCustomerPayload(payload = {}, current = null) {
+  const sizeProfile = buildCustomerSizeProfile(payload, current);
+  const primarySizes = getCustomerPrimarySizes(sizeProfile);
+  const preferredStore = normalizeStoreKey(payload.preferredStore || payload.preferred_store || payload.store || current?.preferred_store || current?.store || "");
+  const mobileOriginal = normalizeText(payload.mobile || payload.celular || payload.phone || payload.telefone || current?.mobile || current?.phone || "");
+  const mobileNormalized = normalizeBrazilMobile(mobileOriginal);
+  const name = normalizeText(payload.name || current?.name || "");
+  const qualityFlags = buildCustomerQualityFlags({
+    name,
+    mobile: mobileOriginal,
+    mobile_normalized: mobileNormalized,
+    document: normalizeDocumentValue(payload.document || payload.cpf || current?.document || "")
+  });
+  return {
+    name: name || "Contato sem nome",
+    first_name: getCleanFirstName(name || "Contato"),
+    phone: mobileNormalized || normalizePhone(mobileOriginal),
+    mobile: mobileOriginal,
+    mobile_normalized: mobileNormalized,
+    phone_fixed: normalizeText(payload.phoneFixed || payload.phone_fixed || current?.phone_fixed || ""),
+    document: normalizeDocumentValue(payload.document || payload.cpf || current?.document || ""),
+    email: normalizeEmailValue(payload.email || current?.email || ""),
+    birth_date: String(payload.birthDate || payload.birth_date || current?.birth_date || "").trim().slice(0, 10),
+    gender: normalizeText(payload.gender || current?.gender || ""),
+    city: normalizeCityValue(payload.city || current?.city || ""),
+    state: normalizeStateValue(payload.state || payload.uf || current?.state || ""),
+    address: normalizeText(payload.address || current?.address || ""),
+    neighborhood: normalizeText(payload.neighborhood || payload.bairro || current?.neighborhood || ""),
+    zipcode: normalizeZipcodeValue(payload.zipcode || payload.cep || current?.zipcode || ""),
+    preferred_store: preferredStore,
+    store: preferredStore,
+    preferred_seller: normalizeText(payload.preferredSeller || payload.preferred_seller || payload.seller || current?.preferred_seller || current?.seller_name || ""),
+    seller_name: normalizeText(payload.sellerName || payload.seller_name || current?.seller_name || ""),
+    status: normalizeCustomerStatus(payload.status ?? current?.status),
+    source: normalizeCustomerSource(payload.source || current?.source || "manual"),
+    notes: normalizeText(payload.notes || current?.notes || ""),
+    quality_flags: qualityFlags.join(", "),
+    top_size: primarySizes.top_size,
+    bottom_size: primarySizes.bottom_size,
+    shoe_size: primarySizes.shoe_size,
+    size_profile_json: JSON.stringify(sizeProfile),
+    size_profile_source: sizeProfile.source || "manual",
+    size_profile_confidence: sizeProfile.confidence || "media",
+    size_profile_updated_at: sizeProfile.updated_at || getToday(),
+    preferences_json: JSON.stringify(parseStoredJsonObject(payload.preferences_json ?? current?.preferences_json ?? {})),
+    behavior_signals_json: JSON.stringify(parseStoredJsonObject(payload.behavior_signals_json ?? current?.behavior_signals_json ?? {})),
+    favorite_brands_json: JSON.stringify(uniqueStrings(payload.favorite_brands_json ?? parseStoredJsonArray(current?.favorite_brands_json || []))),
+    favorite_colors_json: JSON.stringify(uniqueStrings(payload.favorite_colors_json ?? parseStoredJsonArray(current?.favorite_colors_json || []))),
+    favorite_categories_json: JSON.stringify(uniqueStrings(payload.favorite_categories_json ?? parseStoredJsonArray(current?.favorite_categories_json || []))),
+    average_ticket: Number(payload.average_ticket ?? current?.average_ticket ?? 0) || 0,
+    last_purchase_at: String(payload.last_purchase_at ?? current?.last_purchase_at ?? "").trim().slice(0, 10),
+    ai_notes: normalizeText(payload.ai_notes || current?.ai_notes || ""),
+    aerointel_last_enriched_at: String(payload.aerointel_last_enriched_at ?? current?.aerointel_last_enriched_at ?? "").trim(),
+    aerointel_confidence_score: Number(payload.aerointel_confidence_score ?? current?.aerointel_confidence_score ?? 0) || 0,
+    deleted_at: String(current?.deleted_at || "")
+  };
+}
+
+function validateCustomerPayload(customer = {}) {
+  if (!customer.mobile && !customer.document) {
+    return "Celular ou CPF/CNPJ e obrigatorio.";
+  }
+  if (customer.mobile && !customer.mobile_normalized) {
+    return "O celular informado nao esta em um formato valido.";
+  }
+  return null;
+}
+
+function serializeCustomer(row = {}) {
+  const sizeProfile = parseStoredJsonObject(row.size_profile_json || {});
+  if (!hasCustomerSizeProfile(sizeProfile) && (row.top_size || row.bottom_size || row.shoe_size)) {
+    sizeProfile.tshirt = sizeProfile.tshirt || { size_value: row.top_size || "", source: row.size_profile_source || "manual", confidence_score: row.size_profile_confidence || "media", last_confirmed_at: row.size_profile_updated_at || "", notes: "" };
+    sizeProfile.pants = sizeProfile.pants || { size_value: row.bottom_size || "", source: row.size_profile_source || "manual", confidence_score: row.size_profile_confidence || "media", last_confirmed_at: row.size_profile_updated_at || "", notes: "" };
+    sizeProfile.shoes = sizeProfile.shoes || { size_value: row.shoe_size || "", source: row.size_profile_source || "manual", confidence_score: row.size_profile_confidence || "media", last_confirmed_at: row.size_profile_updated_at || "", notes: "" };
+  }
+  const qualityFlags = parseDelimitedValues(row.quality_flags || "");
+  return {
+    id: Number(row.id || 0),
+    name: row.name || "",
+    first_name: row.first_name || getCleanFirstName(row.name || ""),
+    phone: row.phone || "",
+    mobile: row.mobile || row.phone || "",
+    mobile_normalized: row.mobile_normalized || normalizeBrazilMobile(row.mobile || row.phone || ""),
+    phone_fixed: row.phone_fixed || "",
+    document: row.document || "",
+    email: row.email || "",
+    birth_date: row.birth_date || "",
+    gender: row.gender || "",
+    city: row.city || "",
+    state: row.state || "",
+    address: row.address || "",
+    neighborhood: row.neighborhood || "",
+    zipcode: row.zipcode || "",
+    preferred_store: row.preferred_store || row.store || "",
+    preferredStore: row.preferred_store || row.store || "",
+    seller_id: row.seller_id ? Number(row.seller_id) : null,
+    seller_name: row.preferred_seller || row.seller_name || "",
+    preferred_seller: row.preferred_seller || row.seller_name || "",
+    status: normalizeCustomerStatus(row.status || ""),
+    source: normalizeCustomerSource(row.source || "manual"),
+    notes: row.notes || "",
+    quality_flags: qualityFlags,
+    top_size: row.top_size || "",
+    bottom_size: row.bottom_size || "",
+    shoe_size: row.shoe_size || "",
+    size_profile: sizeProfile,
+    size_profile_source: row.size_profile_source || "manual",
+    size_profile_confidence: row.size_profile_confidence || "media",
+    size_profile_updated_at: row.size_profile_updated_at || "",
+    has_size_profile: hasCustomerSizeProfile(sizeProfile),
+    preferences_json: parseStoredJsonObject(row.preferences_json || {}),
+    behavior_signals_json: parseStoredJsonObject(row.behavior_signals_json || {}),
+    favorite_brands_json: parseStoredJsonArray(row.favorite_brands_json || []),
+    favorite_colors_json: parseStoredJsonArray(row.favorite_colors_json || []),
+    favorite_categories_json: parseStoredJsonArray(row.favorite_categories_json || []),
+    average_ticket: Number(row.average_ticket || 0),
+    last_purchase_at: row.last_purchase_at || "",
+    ai_notes: row.ai_notes || "",
+    aerointel_last_enriched_at: row.aerointel_last_enriched_at || "",
+    aerointel_confidence_score: Number(row.aerointel_confidence_score || 0),
+    intelligence_ready: Boolean(row.aerointel_last_enriched_at || parseStoredJsonArray(row.favorite_brands_json || []).length || parseStoredJsonArray(row.favorite_categories_json || []).length),
+    deleted_at: row.deleted_at || "",
+    created_at: row.created_at || "",
+    updated_at: row.updated_at || ""
+  };
+}
+
+async function findDuplicateCustomer(customer = {}, exceptId = null) {
+  const clauses = [];
+  const params = [];
+  if (customer.mobile_normalized) {
+    clauses.push("mobile_normalized = ?");
+    params.push(customer.mobile_normalized);
+  }
+  if (customer.document) {
+    clauses.push("document = ?");
+    params.push(customer.document);
+  }
+  if (!clauses.length) {
+    return null;
+  }
+  let sql = `SELECT * FROM contacts WHERE COALESCE(deleted_at, '') = '' AND (${clauses.join(" OR ")})`;
+  if (exceptId) {
+    sql += " AND id <> ?";
+    params.push(Number(exceptId));
+  }
+  sql += " ORDER BY id DESC LIMIT 1";
+  return get(sql, params);
+}
+
+async function listManualCustomers(filters = {}) {
+  const clauses = ["COALESCE(deleted_at, '') = ''"];
+  const params = [];
+  const page = Math.max(1, Number(filters.page || 1));
+  const limit = Math.max(1, Math.min(100, Number(filters.limit || 50)));
+  const offset = Math.max(0, (page - 1) * limit);
+  const searchValue = normalizeText(filters.search || filters.q || filters.id || "");
+  const phoneFilterDigits = sanitizePhone(filters.phone || "");
+  if (searchValue) {
+    const raw = normalizeLookup(searchValue || "");
+    const digits = sanitizePhone(searchValue || "");
+    const hasLetters = /[a-z]/i.test(raw);
+    if (digits && !hasLetters) {
+      const phoneLike = `%${digits}%`;
+      const documentLike = `%${digits}%`;
+      clauses.push(`(
+        CAST(id AS TEXT) = ?
+        OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone, ''), '+', ''), '(', ''), ')', ''), '-', ''), ' ', '') LIKE ?
+        OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(mobile, ''), '+', ''), '(', ''), ')', ''), '-', ''), ' ', '') LIKE ?
+        OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(mobile_normalized, ''), '+', ''), '(', ''), ')', ''), '-', ''), ' ', '') LIKE ?
+        OR REPLACE(REPLACE(REPLACE(COALESCE(document, ''), '.', ''), '-', ''), '/', '') LIKE ?
+      )`);
+      params.push(
+        digits || "-1",
+        phoneLike,
+        phoneLike,
+        phoneLike,
+        documentLike
+      );
+    } else {
+      const searchTokens = raw.split(/\s+/).filter(Boolean).slice(0, 4);
+      const tokenClauses = searchTokens.length ? searchTokens : [raw];
+      tokenClauses.forEach((token) => {
+        clauses.push(`(
+          LOWER(COALESCE(name, '')) LIKE ?
+          OR LOWER(COALESCE(first_name, '')) LIKE ?
+          OR LOWER(COALESCE(email, '')) LIKE ?
+          OR LOWER(COALESCE(city, '')) LIKE ?
+          OR LOWER(COALESCE(source, '')) LIKE ?
+        )`);
+        params.push(
+          `%${token}%`,
+          `%${token}%`,
+          `%${token}%`,
+          `%${token}%`,
+          `%${token}%`
+        );
+      });
+    }
+  }
+  if (phoneFilterDigits) {
+    clauses.push(`(
+      REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone, ''), '+', ''), '(', ''), ')', ''), '-', ''), ' ', '') = ?
+      OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(mobile, ''), '+', ''), '(', ''), ')', ''), '-', ''), ' ', '') = ?
+      OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(mobile_normalized, ''), '+', ''), '(', ''), ')', ''), '-', ''), ' ', '') = ?
+    )`);
+    params.push(phoneFilterDigits, phoneFilterDigits, phoneFilterDigits);
+  }
+  const normalizedStatusFilter = normalizeLookup(filters.status || "");
+  if (normalizedStatusFilter && normalizedStatusFilter !== "all") {
+    clauses.push("status = ?");
+    params.push(normalizeCustomerStatus(filters.status));
+  }
+  const normalizedSourceFilter = normalizeLookup(filters.source || filters.origin || "");
+  if (normalizedSourceFilter && normalizedSourceFilter !== "all") {
+    clauses.push("source = ?");
+    params.push(normalizeCustomerSource(filters.source || filters.origin));
+  }
+  const normalizedStoreFilter = normalizeLookup(filters.store || "");
+  if (normalizedStoreFilter && normalizedStoreFilter !== "all") {
+    clauses.push("(preferred_store = ? OR store = ?)");
+    params.push(normalizeStoreKey(filters.store), normalizeStoreKey(filters.store));
+  }
+  if (String(filters.withSizeProfile || "") === "1") {
+    clauses.push("(COALESCE(top_size, '') <> '' OR COALESCE(bottom_size, '') <> '' OR COALESCE(shoe_size, '') <> '')");
+  }
+  if (String(filters.withoutSizeProfile || "") === "1") {
+    clauses.push("(COALESCE(top_size, '') = '' AND COALESCE(bottom_size, '') = '' AND COALESCE(shoe_size, '') = '')");
+  }
+  if (String(filters.invalidMobile || "") === "1") {
+    clauses.push("(COALESCE(mobile, '') <> '' AND COALESCE(mobile_normalized, '') = '')");
+  }
+  if (String(filters.withoutPhone || "") === "1") {
+    clauses.push("COALESCE(mobile, '') = ''");
+  }
+  if (String(filters.duplicates || "") === "1") {
+    clauses.push("COALESCE(mobile_normalized, '') <> '' AND mobile_normalized IN (SELECT mobile_normalized FROM contacts WHERE COALESCE(deleted_at, '') = '' AND COALESCE(mobile_normalized, '') <> '' GROUP BY mobile_normalized HAVING COUNT(*) > 1)");
+  }
+  const whereClause = clauses.join(" AND ");
+  const totalRow = await get(`SELECT COUNT(*) AS total FROM contacts WHERE ${whereClause}`, params);
+  const rows = await all(`SELECT * FROM contacts WHERE ${whereClause} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
+  const duplicateMap = rows.reduce((acc, row) => {
+    const key = normalizeText(row.mobile_normalized || "");
+    if (!key) return acc;
+    acc.set(key, (acc.get(key) || 0) + 1);
+    return acc;
+  }, new Map());
+  const items = rows.map((row) => {
+    const customer = serializeCustomer(row);
+    if (customer.mobile_normalized && Number(duplicateMap.get(customer.mobile_normalized) || 0) > 1 && !customer.quality_flags.includes("duplicate_mobile")) {
+      customer.quality_flags = [...customer.quality_flags, "duplicate_mobile"];
+    }
+    return customer;
+  });
+  const total = Number(totalRow?.total || 0);
+  return {
+    items,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit))
+    }
+  };
+}
+
+function buildCustomersSummary(rows = [], pagination = null) {
+  return {
+    total: Number(pagination?.total || rows.length || 0),
+    current_page_count: rows.length,
+    active: rows.filter((item) => item.status === "ativo").length,
+    inactive: rows.filter((item) => item.status === "inativo").length,
+    with_phone: rows.filter((item) => item.mobile_normalized).length,
+    with_size_profile: rows.filter((item) => item.has_size_profile).length,
+    invalid_mobile: rows.filter((item) => item.quality_flags.includes("invalid_mobile")).length,
+    duplicates: rows.filter((item) => item.quality_flags.includes("duplicate_mobile")).length
+  };
+}
+
+function getCashbackLedgerStatusLabel(status = "") {
+  const normalized = normalizeLookup(status || "");
+  if (normalized === "available") return "Disponivel";
+  if (normalized === "pending") return "A receber";
+  if (normalized === "used") return "Usado";
+  if (normalized === "expired") return "Vencido";
+  if (normalized === "lost") return "Perdido";
+  if (normalized === "cancelled") return "Cancelado";
+  if (normalized === "reactivated") return "Reativado";
+  return "Historico";
+}
+
+function getCashbackLedgerTypeLabel(type = "") {
+  const normalized = normalizeLookup(type || "");
+  if (normalized === "expired") return "Bonus vencido";
+  if (normalized === "lost") return "Bonus perdido";
+  if (normalized === "used") return "Bonus usado";
+  if (normalized === "available") return "Bonus disponivel";
+  return "Movimento de bonus";
+}
+
+function normalizeCashbackLedgerSummary(row = {}) {
+  const lostAmount = Number(row.total_lost || 0);
+  const expiredAmount = Number(row.total_expired || 0);
+  const reactivationPotential = ["HIGH", "MEDIUM", "LOW"].includes(String(row.reactivation_potential || "").toUpperCase())
+    ? String(row.reactivation_potential || "").toUpperCase()
+    : ((lostAmount + expiredAmount) >= 500 ? "HIGH" : ((lostAmount + expiredAmount) > 0 ? "MEDIUM" : "LOW"));
+  return {
+    available: Number(row.total_available || 0),
+    pending: Number(row.total_pending || 0),
+    used: Number(row.total_used || 0),
+    expired: expiredAmount,
+    lost: lostAmount,
+    cancelled: Number(row.total_cancelled || 0),
+    totalImported: Number(row.total_imported || 0),
+    totalGeneratedHistorical: Number(row.total_generated_historical || 0),
+    lostEventsCount: Number(row.lost_events_count || 0),
+    lastLostEventAt: row.last_lost_event_at || "",
+    highestLostAmount: Number(row.highest_lost_amount || 0),
+    reactivationPotential,
+    sourceSystems: parseDelimitedValues(row.source_systems || "")
+  };
+}
+
+async function getCustomerCashbackSummary(customerId) {
+  const row = await get(
+    `SELECT
+       SUM(CASE WHEN status = 'available' THEN amount ELSE 0 END) AS total_available,
+       SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) AS total_pending,
+       SUM(CASE WHEN status = 'used' THEN amount ELSE 0 END) AS total_used,
+       SUM(CASE WHEN status = 'expired' THEN amount ELSE 0 END) AS total_expired,
+       SUM(CASE WHEN status = 'lost' THEN amount ELSE 0 END) AS total_lost,
+       SUM(CASE WHEN status = 'cancelled' THEN amount ELSE 0 END) AS total_cancelled,
+       SUM(amount) AS total_imported,
+       SUM(CASE WHEN status IN ('expired', 'lost') THEN amount ELSE 0 END) AS total_generated_historical,
+       SUM(CASE WHEN status IN ('expired', 'lost') THEN 1 ELSE 0 END) AS lost_events_count,
+       MAX(CASE WHEN status IN ('expired', 'lost') THEN COALESCE(expired_at, valid_until, purchase_date, created_at, '') ELSE '' END) AS last_lost_event_at,
+       MAX(CASE WHEN status IN ('expired', 'lost') THEN amount ELSE 0 END) AS highest_lost_amount,
+       MAX(CASE WHEN UPPER(COALESCE(reactivation_potential, '')) = 'HIGH' THEN 'HIGH' WHEN UPPER(COALESCE(reactivation_potential, '')) = 'MEDIUM' THEN 'MEDIUM' ELSE 'LOW' END) AS reactivation_potential,
+       GROUP_CONCAT(DISTINCT NULLIF(TRIM(COALESCE(source_system, '')), '')) AS source_systems
+     FROM customer_cashback_ledger
+     WHERE contact_id = ? AND COALESCE(deleted_at, '') = ''`,
+    [Number(customerId)]
+  );
+  return normalizeCashbackLedgerSummary(row || {});
+}
+
+function serializeCustomerCashbackLedgerRow(row = {}) {
+  return {
+    id: Number(row.id || 0),
+    contact_id: Number(row.contact_id || row.customer_id || 0),
+    source_system: row.source_system || "",
+    source_file: row.source_file || "",
+    source_row_number: Number(row.source_row_number || 0),
+    external_event_id: row.external_event_id || "",
+    customer_name_snapshot: row.customer_name_snapshot || "",
+    customer_phone_snapshot: row.customer_phone_snapshot || "",
+    ledger_type: row.ledger_type || "",
+    ledger_type_label: getCashbackLedgerTypeLabel(row.ledger_type || ""),
+    status: row.status || "",
+    status_label: getCashbackLedgerStatusLabel(row.status || ""),
+    origin: row.origin || "",
+    store: row.store || "",
+    seller: row.seller || "",
+    purchase_date: row.purchase_date || "",
+    purchase_amount: Number(row.purchase_amount || 0),
+    amount: Number(row.amount || 0),
+    balance_amount: Number(row.balance_amount || 0),
+    used_amount: Number(row.used_amount || 0),
+    valid_from: row.valid_from || "",
+    valid_until: row.valid_until || "",
+    expired_at: row.expired_at || "",
+    cancelled_at: row.cancelled_at || "",
+    reactivated_at: row.reactivated_at || "",
+    match_method: row.match_method || "",
+    match_confidence: row.match_confidence || "",
+    import_ready: Boolean(Number(row.import_ready || 0)),
+    import_batch_id: row.import_batch_id ? Number(row.import_batch_id) : null,
+    reactivation_potential: row.reactivation_potential || "",
+    campaign_segment: row.campaign_segment || "",
+    notes: row.notes || "",
+    raw_json: parseStoredJsonObject(row.raw_json || {})
+  };
+}
+
+async function listCustomerCashbackLedger(customerId, query = {}) {
+  const limit = Math.max(1, Math.min(100, Number(query.limit || 20)));
+  const page = Math.max(1, Number(query.page || 1));
+  const offset = query.offset !== undefined ? Math.max(0, Number(query.offset || 0)) : (page - 1) * limit;
+  const clauses = ["contact_id = ?", "COALESCE(deleted_at, '') = ''"];
+  const params = [Number(customerId)];
+  const normalizedStatus = normalizeLookup(query.status || "");
+  const normalizedType = normalizeLookup(query.type || "");
+  if (normalizedStatus) {
+    clauses.push("LOWER(COALESCE(status, '')) = ?");
+    params.push(normalizedStatus);
+  }
+  if (normalizedType) {
+    clauses.push("LOWER(COALESCE(ledger_type, '')) = ?");
+    params.push(normalizedType);
+  }
+  const rows = await all(
+    `SELECT *
+     FROM customer_cashback_ledger
+     WHERE ${clauses.join(" AND ")}
+     ORDER BY COALESCE(expired_at, valid_until, purchase_date, created_at, '') DESC, id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
+  const totalRow = await get(
+    `SELECT COUNT(*) AS total
+     FROM customer_cashback_ledger
+     WHERE ${clauses.join(" AND ")}`,
+    params
+  );
+  return {
+    items: rows.map((row) => serializeCustomerCashbackLedgerRow(row)),
+    pagination: {
+      total: Number(totalRow?.total || 0),
+      limit,
+      offset,
+      page,
+      totalPages: Math.max(1, Math.ceil(Number(totalRow?.total || 0) / limit))
+    }
+  };
+}
+
+function getReactivationPotentialValue(value = "") {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (normalized === "HIGH") return "HIGH";
+  if (normalized === "MEDIUM") return "MEDIUM";
+  return "LOW";
+}
+
+function daysBetweenIso(dateString = "", reference = new Date()) {
+  const raw = String(dateString || "").trim();
+  if (!raw) return null;
+  const date = new Date(raw.includes("T") ? raw : `${raw}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.floor((reference.getTime() - date.getTime()) / 86400000);
+}
+
+function buildReactivationSegmentSuggestion(item = {}) {
+  if (Number(item.total_lost_amount || 0) >= 500) return "HIGH_VALUE_LOST";
+  if (Number(item.lost_events_count || 0) >= 3) return "REPEATED_LOST";
+  const daysSinceLastLost = daysBetweenIso(item.last_lost_event_at || "");
+  if (daysSinceLastLost !== null && daysSinceLastLost <= 90) return "RECENT_LOST";
+  if (String(item.source_system || "").trim().toLowerCase() === "crm_bonus") return "CRM_BONUS_IMPORTED";
+  return "NEEDS_REACTIVATION";
+}
+
+function buildReactivationMessageAngle(item = {}) {
+  const segment = buildReactivationSegmentSuggestion(item);
+  if (segment === "HIGH_VALUE_LOST") return "condicao especial para voltar";
+  if (segment === "REPEATED_LOST") return "reativacao de beneficio";
+  if (segment === "RECENT_LOST") return "cliente deixou bonus expirar";
+  return "resgate de relacionamento";
+}
+
+function buildCashbackReactivationPreviewMessage(item = {}, templateType = "default") {
+  const firstName = normalizeText(item.first_name || item.customer_first_name || item.customer_name || "cliente").split(" ")[0] || "cliente";
+  const angle = buildReactivationMessageAngle(item);
+  if (templateType === "consultive") {
+    return `Ola, ${firstName}! Aqui e da AEROSTORE. Vi que voce teve um beneficio antigo que acabou vencendo e posso consultar com a equipe se existe alguma condicao especial para a sua volta. Quer que eu verifique isso para voce?`;
+  }
+  if (angle === "condicao especial para voltar") {
+    return `Ola, ${firstName}! Aqui e da AEROSTORE. Vi que voce teve um beneficio antigo que venceu e posso pedir para nossa equipe avaliar uma condicao especial para o seu retorno a loja. Quer que eu consulte isso para voce?`;
+  }
+  if (angle === "cliente deixou bonus expirar") {
+    return `Ola, ${firstName}! Aqui e da AEROSTORE. Notei que voce teve um beneficio anterior que acabou expirando e posso verificar com a equipe se existe alguma condicao especial para retomarmos esse relacionamento. Quer que eu veja isso?`;
+  }
+  return `Ola, ${firstName}! Aqui e da AEROSTORE. Vi que voce teve um beneficio antigo que acabou vencendo, mas posso consultar com a equipe se existe alguma condicao especial para voce voltar a aproveitar a loja. Quer que eu verifique isso para voce?`;
+}
+
+async function listCashbackReactivationSegments(filters = {}) {
+  const rows = await all(
+    `SELECT
+       l.contact_id AS customer_id,
+       c.name AS customer_name,
+       c.first_name AS customer_first_name,
+       c.mobile AS customer_mobile,
+       c.mobile_normalized AS customer_mobile_normalized,
+       c.document AS customer_document,
+       c.city AS customer_city,
+       c.preferred_store AS customer_store,
+       c.status AS customer_status,
+       l.source_system,
+       SUM(CASE WHEN l.status IN ('lost', 'expired') THEN l.amount ELSE 0 END) AS total_lost_amount,
+       SUM(CASE WHEN l.status IN ('lost', 'expired') THEN 1 ELSE 0 END) AS lost_events_count,
+       MAX(CASE WHEN l.status IN ('lost', 'expired') THEN l.amount ELSE 0 END) AS highest_lost_amount,
+       MAX(CASE WHEN l.status IN ('lost', 'expired') THEN COALESCE(l.expired_at, l.valid_until, l.purchase_date, l.created_at, '') ELSE '' END) AS last_lost_event_at,
+       MAX(CASE WHEN UPPER(COALESCE(l.reactivation_potential, '')) = 'HIGH' THEN 'HIGH' WHEN UPPER(COALESCE(l.reactivation_potential, '')) = 'MEDIUM' THEN 'MEDIUM' ELSE 'LOW' END) AS reactivation_potential
+     FROM customer_cashback_ledger l
+     INNER JOIN contacts c ON c.id = l.contact_id
+     WHERE COALESCE(l.deleted_at, '') = ''
+       AND COALESCE(c.deleted_at, '') = ''
+       AND LOWER(COALESCE(l.source_system, '')) = 'crm_bonus'
+       AND LOWER(COALESCE(l.status, '')) IN ('lost', 'expired')
+     GROUP BY l.contact_id, c.name, c.first_name, c.mobile, c.mobile_normalized, c.document, c.city, c.preferred_store, c.status, l.source_system
+     ORDER BY total_lost_amount DESC, lost_events_count DESC, customer_name ASC`
+  );
+
+  const normalized = rows.map((row) => {
+    const potential = getReactivationPotentialValue(row.reactivation_potential || "");
+    const item = {
+      customer_id: Number(row.customer_id || 0),
+      name: row.customer_name || "Cliente",
+      first_name: row.customer_first_name || getCleanFirstName(row.customer_name || ""),
+      phone: row.customer_mobile || "",
+      phone_normalized: row.customer_mobile_normalized || normalizeBrazilMobile(row.customer_mobile || ""),
+      document: row.customer_document || "",
+      city: row.customer_city || "",
+      store: row.customer_store || "",
+      customer_status: normalizeCustomerStatus(row.customer_status || ""),
+      total_lost_amount: Number(Number(row.total_lost_amount || 0).toFixed(2)),
+      lost_events_count: Number(row.lost_events_count || 0),
+      highest_lost_amount: Number(Number(row.highest_lost_amount || 0).toFixed(2)),
+      last_lost_event_at: row.last_lost_event_at || "",
+      reactivationPotential: potential,
+      source_system: row.source_system || "crm_bonus"
+    };
+    item.suggestedSegment = buildReactivationSegmentSuggestion(item);
+    item.suggestedMessageAngle = buildReactivationMessageAngle(item);
+    return item;
+  });
+
+  const filtered = normalized.filter((item) => {
+    if (filters.potential && getReactivationPotentialValue(filters.potential) !== item.reactivationPotential) return false;
+    if (Number(filters.minLostAmount || 0) > 0 && Number(item.total_lost_amount || 0) < Number(filters.minLostAmount || 0)) return false;
+    if (Number(filters.minEvents || 0) > 0 && Number(item.lost_events_count || 0) < Number(filters.minEvents || 0)) return false;
+    if (normalizeText(filters.source_system || "crm_bonus").toLowerCase() && normalizeText(filters.source_system || "crm_bonus").toLowerCase() !== normalizeText(item.source_system || "").toLowerCase()) return false;
+    if (String(filters.activeOnly || "") === "1" && normalizeCustomerStatus(item.customer_status || "") !== "ativo") return false;
+    if (String(filters.withPhone || "0") === "1" && !normalizeBrazilMobile(item.phone_normalized || item.phone || "")) return false;
+    if (String(filters.withName || "0") === "1" && !normalizeText(item.name || "")) return false;
+    if (normalizeText(filters.city || "") && normalizeLookup(item.city || "") !== normalizeLookup(filters.city || "")) return false;
+    if (normalizeText(filters.store || "") && normalizeLookup(item.store || "") !== normalizeLookup(filters.store || "")) return false;
+    if (filters.dateFrom && String(item.last_lost_event_at || "") && String(item.last_lost_event_at || "") < String(filters.dateFrom)) return false;
+    if (filters.dateTo && String(item.last_lost_event_at || "") && String(item.last_lost_event_at || "") > String(filters.dateTo)) return false;
+    return true;
+  });
+
+  const summary = {
+    totalCustomers: filtered.length,
+    high: filtered.filter((item) => item.reactivationPotential === "HIGH").length,
+    medium: filtered.filter((item) => item.reactivationPotential === "MEDIUM").length,
+    low: filtered.filter((item) => item.reactivationPotential === "LOW").length,
+    totalLostAmount: Number(filtered.reduce((sum, item) => sum + Number(item.total_lost_amount || 0), 0).toFixed(2))
+  };
+
+  return { summary, items: filtered };
+}
+
+function serializeReactivationSegmentExportRow(item = {}) {
+  return {
+    nome: item.name || "Cliente",
+    telefone: item.phone_normalized || "",
+    total_perdido: Number(item.total_lost_amount || 0),
+    quantidade_eventos: Number(item.lost_events_count || 0),
+    ultima_perda: item.last_lost_event_at || "",
+    potencial: item.reactivationPotential || "LOW",
+    segmento_sugerido: item.suggestedSegment || "NEEDS_REACTIVATION",
+    angulo_mensagem: item.suggestedMessageAngle || "resgate de relacionamento"
+  };
+}
+
+function buildCsvFromRows(rows = [], headers = []) {
+  const escape = (value) => {
+    const text = String(value ?? "");
+    if (/[",\n]/.test(text)) {
+      return `"${text.replace(/"/g, "\"\"")}"`;
+    }
+    return text;
+  };
+  return `${headers.join(",")}\n${rows.map((row) => headers.map((header) => escape(row[header])).join(",")).join("\n")}\n`;
+}
+
+function canViewCustomersCrud(user = {}) {
+  return isManager(user) || isAdmin(user) || userHasPermission(user, "can_view_customers") || userHasPermission(user, "can_create_customers");
+}
+
+function canManageCustomersCrud(user = {}) {
+  return isManager(user) || isAdmin(user) || userHasPermission(user, "can_edit_customers");
+}
+
+function canCreateCustomersCrud(user = {}) {
+  return canManageCustomersCrud(user) || userHasPermission(user, "can_create_customers");
+}
+
+function canViewProductsCrud(user = {}) {
+  return isManager(user) || isAdmin(user) || userHasPermission(user, "can_view_products");
+}
+
+function canManageProductsCrud(user = {}) {
+  return isManager(user) || isAdmin(user) || userHasPermission(user, "can_manage_products");
+}
+
+async function buildManualProductPayload(payload = {}, current = null) {
+  const normalizedBase = await normalizeAiProductPayload(payload, current);
+  return {
+    ...normalizedBase,
+    tiny_id: normalizeText(payload.tiny_id || payload.tinyId || current?.tiny_id || ""),
+    sku: normalizeText(payload.sku || current?.sku || ""),
+    codigo: normalizeText(payload.codigo || payload.code || current?.codigo || ""),
+    marca: normalizeAiBrandValue(payload.brand || payload.marca || current?.marca || current?.brand || ""),
+    promotional_price: payload.promotional_price === undefined ? parsePriceInput(current?.promotional_price) : parsePriceInput(payload.promotional_price),
+    cost_price: payload.cost_price === undefined ? parsePriceInput(current?.cost_price) : parsePriceInput(payload.cost_price),
+    stock: payload.stock === undefined ? toNumber(current?.stock ?? current?.estoque_total ?? 0) : toNumber(payload.stock),
+    location: normalizeText(payload.location || current?.location || ""),
+    gtin_ean: normalizeText(payload.gtin_ean || payload.gtin || current?.gtin_ean || ""),
+    ncm: normalizeText(payload.ncm || current?.ncm || ""),
+    use_in_ai: normalizeBooleanFlag(payload.use_in_ai ?? payload.useInAi ?? current?.use_in_ai, false),
+    use_in_pos: normalizeBooleanFlag(payload.use_in_pos ?? payload.useInPos ?? current?.use_in_pos, false),
+    source: normalizeText(payload.source || current?.source || "manual").toLowerCase(),
+    notes: normalizeText(payload.notes || current?.notes || "")
+  };
+}
+
+function validateManualProductPayload(product = {}) {
+  if (!normalizeText(product.name || product.commercial_name || "")) {
+    return "Nome interno ou nome comercial e obrigatorio.";
+  }
+  if (product.use_in_pos && !normalizeText(product.sku || product.codigo || "")) {
+    return "SKU e obrigatorio para produto usado no PDV.";
+  }
+  if (product.use_in_pos && (!Number.isFinite(Number(product.price)) || Number(product.price) <= 0)) {
+    return "Preco de venda e obrigatorio para produto usado no PDV.";
+  }
+  if (product.use_in_ai && !normalizeText(product.category || "")) {
+    return "Categoria e obrigatoria para produto usado na Vitrine IA.";
+  }
+  if (!Number.isFinite(Number(product.price)) && product.price !== null) {
+    return "Preco de venda invalido.";
+  }
+  if (product.promotional_price !== null && product.promotional_price !== undefined && product.promotional_price !== "") {
+    const promotionalPrice = Number(product.promotional_price);
+    const normalPrice = Number(product.price);
+    if (!Number.isFinite(promotionalPrice) || promotionalPrice <= 0) {
+      return "Preco promocional invalido.";
+    }
+    if (Number.isFinite(normalPrice) && normalPrice > 0 && promotionalPrice >= normalPrice) {
+      return "O preco promocional deve ser menor que o preco normal.";
+    }
+  }
+  return null;
+}
+
+async function findDuplicateManualProductBySku(sku = "", exceptId = null) {
+  const normalizedSku = normalizeText(sku || "").toUpperCase();
+  if (!normalizedSku) {
+    return null;
+  }
+  const params = [normalizedSku, normalizedSku];
+  let sql = `SELECT * FROM ai_products WHERE COALESCE(deleted_at, '') = '' AND (UPPER(COALESCE(sku, '')) = ? OR UPPER(COALESCE(codigo, '')) = ?)`;
+  if (exceptId) {
+    sql += " AND id <> ?";
+    params.push(Number(exceptId));
+  }
+  sql += " ORDER BY id DESC LIMIT 1";
+  return get(sql, params);
+}
+
+async function listManualProducts(filters = {}) {
+  const products = await listAiProducts({ includeInactive: true });
+  const query = normalizeLookup(filters.q || "");
+  const filtered = products.filter((item) => {
+    if (query) {
+      const haystack = [
+        item.name,
+        item.commercial_name,
+        item.display_name,
+        item.sku,
+        item.codigo,
+        item.brand,
+        item.category,
+        item.color
+      ].map((value) => normalizeLookup(value || "")).join(" ");
+      if (!haystack.includes(query) && !sanitizePhone(filters.q || "").includes(sanitizePhone(item.sku || ""))) {
+        return false;
+      }
+    }
+    if (filters.status && normalizeAiProductVisibilityStatus(item.status || "") !== normalizeAiProductVisibilityStatus(filters.status || "")) {
+      return false;
+    }
+    if (filters.brand && normalizeLookup(item.brand || "") !== normalizeLookup(filters.brand || "")) {
+      return false;
+    }
+    if (filters.category && normalizeLookup(item.category || "") !== normalizeLookup(filters.category || "")) {
+      return false;
+    }
+    if (filters.color && normalizeLookup(item.color || "") !== normalizeLookup(filters.color || "")) {
+      return false;
+    }
+    if (filters.size && !item.sizes.some((size) => normalizeLookup(size) === normalizeLookup(filters.size || ""))) {
+      return false;
+    }
+    if (String(filters.useInAi || "") === "1" && !item.use_in_ai) {
+      return false;
+    }
+    if (String(filters.useInPos || "") === "1" && !item.use_in_pos) {
+      return false;
+    }
+    if (String(filters.withoutPrice || "") === "1" && Number(item.price || 0) > 0) {
+      return false;
+    }
+    if (String(filters.withoutSku || "") === "1" && normalizeText(item.sku || item.codigo || "")) {
+      return false;
+    }
+    if (String(filters.withoutPhoto || "") === "1" && normalizeText(item.preview_url || item.media_url || "")) {
+      return false;
+    }
+    if (String(filters.zeroStock || "") === "1" && Number(item.stock || 0) > 0) {
+      return false;
+    }
+    return true;
+  });
+  return filtered.slice(Math.max(0, Number(filters.offset || 0)), Math.max(0, Number(filters.offset || 0)) + Math.max(1, Math.min(200, Number(filters.limit || 60))));
+}
+
+function buildProductsSummary(products = []) {
+  return {
+    total: products.length,
+    active: products.filter((item) => item.status === "ativo").length,
+    hidden: products.filter((item) => item.status === "hidden").length,
+    deleted: products.filter((item) => item.status === "deleted").length,
+    use_in_ai: products.filter((item) => item.use_in_ai).length,
+    use_in_pos: products.filter((item) => item.use_in_pos).length,
+    zero_stock: products.filter((item) => Number(item.stock || 0) <= 0).length,
+    without_price: products.filter((item) => Number(item.price || 0) <= 0).length
+  };
+}
+
+function validateCampaign(payload) {
+  if (!payload.name) {
+    return "O nome da campanha e obrigatorio.";
+  }
+  if (!payload.seller) {
+    return "O vendedor da campanha e obrigatorio.";
+  }
+  if (!payload.store) {
+    return "A loja da campanha e obrigatoria.";
+  }
+  if (!payload.template) {
+    return "A mensagem da campanha e obrigatoria.";
+  }
+
+  // Validações para mídia
+  const validSendTypes = ['text', 'image', 'video', 'image_with_caption', 'video_with_caption', 'audio', 'document'];
+  if (!validSendTypes.includes(payload.sendType)) {
+    return "Tipo de envio inválido.";
+  }
+
+  if (payload.sendType !== 'text' && !payload.mediaId) {
+    return "Mídia é obrigatória para este tipo de envio.";
+  }
+
+  if ((payload.sendType === 'image_with_caption' || payload.sendType === 'video_with_caption') && !payload.caption.trim()) {
+    return "Legenda é obrigatória para este tipo de envio.";
+  }
+
+  return null;
+}
+
+async function getCashbackSettingsRow() {
+  let row = await get("SELECT * FROM cashback_settings ORDER BY id ASC LIMIT 1");
+  if (!row) {
+    await run(
+      `INSERT INTO cashback_settings
+      (percentages_json, default_validity_days, default_minimum_purchase, reactivation_limit_per_store, reactivated_validity_days, anticipated_validity_days, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+      [JSON.stringify([5, 10, 15, 20]), 30, 0, 10, 1, 7]
+    );
+    row = await get("SELECT * FROM cashback_settings ORDER BY id ASC LIMIT 1");
+  }
+  return row;
+}
+
+async function getCashbackSettings() {
+  const row = await getCashbackSettingsRow();
+  return {
+    id: row.id,
+    percentages: parsePercentages(row.percentages_json),
+    defaultValidityDays: Number(row.default_validity_days || 30),
+    defaultMinimumPurchase: Number(row.default_minimum_purchase || 0),
+    reactivationLimitPerStore: Number(row.reactivation_limit_per_store || 10),
+    reactivatedValidityDays: Number(row.reactivated_validity_days || 1),
+    anticipatedValidityDays: Number(row.anticipated_validity_days || 7),
+    updatedAt: row.updated_at
+  };
+}
+
+async function getSellerById(sellerId) {
+  if (!sellerId) {
+    return null;
+  }
+  return get("SELECT * FROM sellers WHERE id = ?", [sellerId]);
+}
+
+const PUBLIC_API_PATHS = new Set([
+  "/api/health",
+  "/api/login",
+  "/api/auth/login",
+  "/api/instance/info",
+  "/api/ia/responder"
+]);
+
+function getRequestPathname(requestPath = "") {
+  return String(requestPath || "").split("?")[0].trim();
+}
+
+function isPublicApiPath(requestPath = "") {
+  return PUBLIC_API_PATHS.has(getRequestPathname(requestPath));
+}
+
+async function authMiddleware(req, res, next) {
+  if (isPublicApiPath(req.originalUrl || req.path || "")) {
+    return next();
+  }
+  const token = getSessionTokenFromRequest(req);
+
+  const user = await getUserByToken(token);
+
+  if (!user) {
+    console.warn('[AUTH] Token inválido ou expirado:', { path: req.originalUrl, hasToken: !!token });
+    res.status(401).json({ error: "Sessão expirada ou usuário não autenticado", details: "Faça login novamente" });
+    return;
+  }
+
+  req.user = user;
+  next();
+}
+
+function requireManager(req, res, next) {
+  if (!isManager(req.user) || !userHasPermission(req.user, "can_manage_store_settings")) {
+    res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+    return;
+  }
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  if (!isAdmin(req.user)) {
+    res.status(403).json({ error: "Acesso restrito a admin." });
+    return;
+  }
+  next();
+}
+
+async function findDuplicateContactByPhone(phone, exceptId = null) {
+  const normalized = normalizePhone(phone);
+  if (!normalized) {
+    return null;
+  }
+  const phoneExpr = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, '+', ''), '(', ''), ')', ''), '-', ''), ' ', '')";
+  const params = [normalized, normalized.slice(2)];
+  let sql = `SELECT * FROM contacts WHERE (${phoneExpr} = ? OR ${phoneExpr} = ?)`;
+  if (exceptId) {
+    sql += " AND id <> ?";
+    params.push(Number(exceptId));
+  }
+  sql += " ORDER BY id DESC LIMIT 1";
+  return get(sql, params);
+}
+
+async function findDuplicateContact({ phone = "", document = "", email = "" } = {}, exceptId = null) {
+  const normalizedPhone = normalizePhone(phone);
+  const normalizedDocument = normalizeDocumentValue(document);
+  const normalizedEmail = normalizeEmailValue(email);
+  if (!normalizedPhone && !normalizedDocument && !normalizedEmail) {
+    return null;
+  }
+
+  const clauses = [];
+  const params = [];
+  const phoneExpr = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone, ''), '+', ''), '(', ''), ')', ''), '-', ''), ' ', '')";
+  if (normalizedPhone) {
+    clauses.push(`(${phoneExpr} = ? OR ${phoneExpr} = ?)`);
+    params.push(normalizedPhone, normalizedPhone.slice(2));
+  }
+  if (normalizedDocument) {
+    clauses.push("REPLACE(REPLACE(REPLACE(COALESCE(document, ''), '.', ''), '-', ''), '/', '') = ?");
+    params.push(normalizedDocument);
+  }
+  if (normalizedEmail) {
+    clauses.push("LOWER(COALESCE(email, '')) = ?");
+    params.push(normalizedEmail);
+  }
+
+  let sql = `SELECT * FROM contacts WHERE (${clauses.join(" OR ")})`;
+  if (exceptId) {
+    sql += " AND id <> ?";
+    params.push(Number(exceptId));
+  }
+  sql += " ORDER BY id DESC LIMIT 1";
+  return get(sql, params);
+}
+
+async function resolveSellerPayload(payload = {}, allowInactive = true) {
+  const sellerId = payload.sellerId ? Number(payload.sellerId) : null;
+  const fallbackName = String(payload.sellerName || payload.seller || "").trim();
+
+  if (sellerId) {
+    const seller = await getSellerById(sellerId);
+    if (seller && (allowInactive || seller.status === "ativo")) {
+      return {
+        sellerId: seller.id,
+        sellerName: seller.name,
+        sellerStore: seller.store
+      };
+    }
+  }
+
+  return {
+    sellerId: null,
+    sellerName: fallbackName,
+    sellerStore: ""
+  };
+}
+
+async function incrementMetric(key, amount = 1) {
+  await run("UPDATE metrics SET value = value + ? WHERE key = ?", [amount, key]);
+}
+
+async function ensureContactByPayload(payload) {
+  if (payload.contactId) {
+    const found = await get("SELECT * FROM contacts WHERE id = ?", [payload.contactId]);
+    if (found) {
+      return found;
+    }
+  }
+
+  const phone = normalizePhone(payload.phone);
+  if (phone) {
+    const foundByPhone = await get("SELECT * FROM contacts WHERE phone = ?", [phone]);
+    if (foundByPhone) {
+      return foundByPhone;
+    }
+  }
+
+  const seller = await resolveSellerPayload(payload, true);
+  const contact = buildContactPayload({
+    name: payload.name,
+    phone,
+    gender: payload.gender || "",
+    store: payload.store || "",
+    sellerId: seller.sellerId,
+    sellerName: seller.sellerName,
+    tags: "importado, cashback",
+    cashback: 0,
+    status: "ativo",
+    notes: "Criado automaticamente pelo AEROSTORE Cashback"
+  });
+
+  const result = await run(
+    `INSERT INTO contacts
+    (name, phone, gender, store, seller_id, seller_name, tags, cashback, validity, status, notes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+    [
+      contact.name,
+      contact.phone,
+      contact.gender,
+      contact.store,
+      contact.sellerId,
+      contact.sellerName,
+      contact.tags,
+      contact.cashback,
+      "",
+      contact.status,
+      contact.notes
+    ]
+  );
+
+  return get("SELECT * FROM contacts WHERE id = ?", [result.lastID]);
+}
+
+async function createCashbackEvent({
+  cashbackId,
+  contactId,
+  eventType,
+  value,
+  store,
+  seller,
+  eventDate,
+  campaign,
+  status,
+  lostValue,
+  expiredAt,
+  lostAt,
+  origin,
+  ticket,
+  nf,
+  reason,
+  pin,
+  notes
+}) {
+  await run(
+    `INSERT INTO cashback_events
+    (cashback_id, contact_id, event_type, value, store, seller, event_date, campaign, status, lost_value, expired_at, lost_at, origin, ticket, nf, reason, pin, created_at, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`,
+    [
+      cashbackId || null,
+      contactId,
+      eventType,
+      Number(value || 0),
+      String(store || ""),
+      String(seller || ""),
+      String(eventDate || getToday()),
+      String(campaign || ""),
+      String(status || ""),
+      Number(lostValue || 0),
+      String(expiredAt || ""),
+      String(lostAt || ""),
+      String(origin || ""),
+      String(ticket || ""),
+      String(nf || ""),
+      String(reason || ""),
+      String(pin || ""),
+      String(notes || "")
+    ]
+  );
+}
+
+async function syncContactCashback(contactId) {
+  const totals = await get(
+    `SELECT
+      COALESCE(SUM(available_balance), 0) AS available_balance,
+      MIN(CASE WHEN status = 'disponivel' AND available_balance > 0 AND expires_at <> '' THEN expires_at END) AS next_expiration
+    FROM cashbacks
+    WHERE contact_id = ?`,
+    [contactId]
+  );
+
+  await run(
+    `UPDATE contacts SET
+    cashback = ?,
+    validity = COALESCE(?, ''),
+    updated_at = datetime('now')
+    WHERE id = ?`,
+    [Number(totals?.available_balance || 0), totals?.next_expiration || "", contactId]
+  );
+}
+
+async function expireCashbacks() {
+  const today = getToday();
+  const rows = await all(
+    `SELECT * FROM cashbacks
+    WHERE status = 'disponivel' AND expires_at <> '' AND expires_at < ? AND available_balance > 0`,
+    [today]
+  );
+
+  for (const cashback of rows) {
+    const existingEvent = await get(
+      `SELECT id FROM cashback_events
+      WHERE cashback_id = ? AND event_type = 'cashback_vencido'
+      ORDER BY id DESC LIMIT 1`,
+      [cashback.id]
+    );
+
+    await run(
+      `UPDATE cashbacks SET
+      lost_value = lost_value + available_balance,
+      available_balance = 0,
+      status = 'vencido',
+      updated_at = datetime('now')
+      WHERE id = ?`,
+      [cashback.id]
+    );
+
+    if (!existingEvent) {
+      await createCashbackEvent({
+        cashbackId: cashback.id,
+        contactId: cashback.contact_id,
+        eventType: "cashback_vencido",
+        value: cashback.available_balance,
+        store: cashback.store,
+        seller: cashback.seller,
+        notes: "Bônus vencido automaticamente."
+      });
+    }
+
+    await syncContactCashback(cashback.contact_id);
+  }
+}
+
+async function getCashbackById(id) {
+  await expireCashbacks();
+  return get("SELECT * FROM cashbacks WHERE id = ?", [id]);
+}
+
+async function getActiveCashbacksByContactId(contactId) {
+  return all(
+    `SELECT * FROM cashbacks
+    WHERE contact_id = ? AND status = 'disponivel' AND available_balance > 0
+    ORDER BY CASE WHEN expires_at = '' THEN 1 ELSE 0 END ASC, expires_at ASC, id ASC`,
+    [contactId]
+  );
+}
+
+async function getAvailableCashbackTotal(contactId) {
+  if (!contactId) {
+    return 0;
+  }
+  const row = await get(
+    `SELECT COALESCE(SUM(available_balance), 0) AS total
+    FROM cashbacks
+    WHERE contact_id = ? AND status = 'disponivel' AND available_balance > 0`,
+    [contactId]
+  );
+  return Number(row?.total || 0);
+}
+
+async function consumeCashbackPool(contactId, usedAmount, actorName) {
+  let remaining = Number(usedAmount || 0);
+  if (!contactId || remaining <= 0) {
+    return;
+  }
+
+  const rows = await getActiveCashbacksByContactId(contactId);
+  for (const cashback of rows) {
+    if (remaining <= 0) {
+      break;
+    }
+    const available = Number(cashback.available_balance || 0);
+    const usedHere = Number(Math.min(available, remaining).toFixed(2));
+    const lostHere = Number((available - usedHere).toFixed(2));
+    await run(
+      `UPDATE cashbacks SET
+      used_value = used_value + ?,
+      lost_value = lost_value + ?,
+      available_balance = 0,
+      status = 'usado',
+      used_at = datetime('now'),
+      updated_at = datetime('now')
+      WHERE id = ?`,
+      [usedHere, lostHere, cashback.id]
+    );
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: cashback.contact_id,
+      eventType: "cashback_resgatado",
+      value: usedHere,
+      store: cashback.store,
+      seller: actorName || cashback.seller,
+      notes: "Bônus consumido no wizard de cashback."
+    });
+    remaining = Number((remaining - usedHere).toFixed(2));
+  }
+}
+
+function applyVariables(template, campaign, contact) {
+  const replacements = {
+    "{{nome}}": contact.name || "",
+    "{{telefone}}": contact.phone || "",
+    "{{vendedor}}": contact.seller_name || campaign.seller || "",
+    "{{loja}}": contact.store || campaign.store || "",
+    "{{cashback}}": formatCurrencyNumber(contact.cashback || 0),
+    "{{validade}}": formatDateBR(contact.validity || contact.expires_at || ""),
+    "{{status}}": contact.status || "",
+    "{{dias}}": String(contact.days_until_expiration ?? ""),
+    "{{compra_minima}}": formatCurrencyNumber(contact.minimum_purchase || 0),
+    "{{cashback_perdido}}": formatCurrencyNumber(contact.cashback_lost || 0),
+    "{{event_date}}": formatDateBR(contact.event_date || ""),
+    "{{lost_at}}": formatDateBR(contact.lost_at || ""),
+    "{{expired_at}}": formatDateBR(contact.expired_at || ""),
+    "{{data_perda}}": formatDateBR(contact.lost_at || contact.expired_at || contact.event_date || "")
+  };
+
+  return Object.entries(replacements).reduce(
+    (message, [token, value]) => message.split(token).join(value),
+    template
+  );
+}
+
+function buildCashbackMessage(type, cashback) {
+  const payload = {
+    nome: cashback.customer_name,
+    vendedor: cashback.seller || "AEROSTORE",
+    cashback: formatCurrencyNumber(cashback.available_balance || cashback.generated_value),
+    validade: formatDateBR(cashback.expires_at) || "a data informada",
+    loja: cashback.store || "AEROSTORE",
+    dataInicio: formatDateBR(cashback.valid_from || getToday()),
+    dataFim: formatDateBR(cashback.expires_at) || "a data informada",
+    linkTermos: TERMS_LINK
+  };
+
+  const templates = {
+    gerado:
+      "AEROSTORE:\n\n{{nome}}, você tem R$ {{cashback}} de bônus para sua próxima compra.\n\nVálido de {{dataInicio}} até {{dataFim}}\n\nUse até 50% do valor da compra.\n\nAo utilizar o bônus você concorda com:\n{{linkTermos}}",
+    vencendo:
+      "Oi {{nome}}, seu cashback de R$ {{cashback}} na AEROSTORE vence em breve. Quer aproveitar hoje?",
+    reativado:
+      "Oi {{nome}}, reativei seu cashback de R$ {{cashback}} na AEROSTORE. Ele esta valido até {{validade}}. Quer ver as novidades?",
+    perdido:
+      "Oi {{nome}}, vi que seu cashback venceu. Posso tentar uma condicao especial pra você voltar na AEROSTORE?"
+  };
+
+  const template = templates[type] || templates.gerado;
+  return template
+    .replace(/{{nome}}/g, payload.nome)
+    .replace(/{{vendedor}}/g, payload.vendedor)
+    .replace(/{{cashback}}/g, payload.cashback)
+    .replace(/{{validade}}/g, payload.validade)
+    .replace(/{{loja}}/g, payload.loja)
+    .replace(/{{data_inicio}}/g, payload.dataInicio)
+    .replace(/{{data_fim}}/g, payload.dataFim)
+    .replace(/{{dataInicio}}/g, payload.dataInicio)
+    .replace(/{{dataFim}}/g, payload.dataFim)
+    .replace(/{{link_termos}}/g, payload.linkTermos)
+    .replace(/{{linkTermos}}/g, payload.linkTermos);
+}
+
+function getCashbackRecoverySegmentDefinitions() {
+  return [
+    {
+      key: "expiring_7_days",
+      title: "Cashback vencendo em 7 dias",
+      type: "expiring",
+      exactDays: 7,
+      template:
+        "Oi {{nome}}, aqui e da AEROSTORE.\n\nVoce ainda tem R$ {{cashback}} de bonus disponivel, mas ele vence em {{dias}} dia(s).\n\nPara usar tudo, sua compra precisa ser a partir de R$ {{compra_minima}}.\n\nQuer que eu te mostre novidades que combinam com voce?"
+    },
+    {
+      key: "expiring_3_days",
+      title: "Cashback vencendo em 3 dias",
+      type: "expiring",
+      exactDays: 3,
+      template:
+        "Oi {{nome}}, aqui e da AEROSTORE.\n\nVoce ainda tem R$ {{cashback}} de bonus disponivel, mas ele vence em {{dias}} dia(s).\n\nPara usar tudo, sua compra precisa ser a partir de R$ {{compra_minima}}.\n\nQuer que eu te mostre novidades que combinam com voce?"
+    },
+    {
+      key: "expiring_today",
+      title: "Cashback vencendo hoje",
+      type: "expiring",
+      exactDays: 0,
+      template:
+        "{{nome}}, ultimo dia para usar seu bonus AEROSTORE.\n\nVoce tem R$ {{cashback}} disponivel ate hoje.\n\nPosso separar algumas opcoes pra voce aproveitar antes de vencer?"
+    },
+    {
+      key: "expired_15_days",
+      title: "Cashback vencido ha ate 15 dias",
+      type: "expired_recent",
+      template:
+      "Oi {{nome}}, seu bonus de R$ {{cashback_perdido}} venceu recentemente.\n\nA AEROSTORE pode tentar uma reativação especial por tempo limitado.\n\nQuer que eu veja se consigo liberar novamente pra voce?"
+    },
+    {
+      key: "lost_over_50",
+      title: "Cashback perdido acima de R$ 50",
+      type: "lost_value",
+      minimumLostValue: 50,
+      template:
+      "Oi {{nome}}, seu bonus de R$ {{cashback_perdido}} venceu recentemente.\n\nA AEROSTORE pode tentar uma reativação especial por tempo limitado.\n\nQuer que eu veja se consigo liberar novamente pra voce?"
+    },
+    {
+      key: "lost_over_100",
+      title: "Cashback perdido acima de R$ 100",
+      type: "lost_value",
+      minimumLostValue: 100,
+      template:
+      "Oi {{nome}}, seu bonus de R$ {{cashback_perdido}} venceu recentemente.\n\nA AEROSTORE pode tentar uma reativação especial por tempo limitado.\n\nQuer que eu veja se consigo liberar novamente pra voce?"
+    }
+  ];
+}
+
+function getCashbackRecoverySegmentDefinition(key) {
+  return getCashbackRecoverySegmentDefinitions().find((segment) => segment.key === key) || null;
+}
+
+function diffInDays(dateA, dateB) {
+  const left = new Date(`${dateA}T00:00:00Z`);
+  const right = new Date(`${dateB}T00:00:00Z`);
+  return Math.round((left.getTime() - right.getTime()) / 86400000);
+}
+
+function buildRecoveryContactProjection(entry) {
+  return {
+    id: entry.contact_id,
+    name: entry.customer_name,
+    phone: entry.customer_phone,
+    store: entry.store,
+    seller_name: entry.seller_name,
+    cashback: Number(entry.cashback_value || 0),
+    validity: entry.expires_at || "",
+    status: entry.status || "",
+    days_until_expiration: Number(entry.days_until_expiration || 0),
+    minimum_purchase: Number(entry.minimum_purchase || 0),
+    cashback_lost: Number(entry.cashback_lost || 0)
+  };
+}
+
+function buildRecoverySegmentMessage(segmentKey, entry) {
+  const segment = getCashbackRecoverySegmentDefinition(segmentKey);
+  if (!segment) {
+    return "";
+  }
+  return applyVariables(segment.template, { seller: entry.seller_name || "AEROSTORE", store: entry.store || "" }, buildRecoveryContactProjection(entry));
+}
+
+async function getCashbackRecoveryRowsBase() {
+  await expireCashbacks();
+  return all(
+    `SELECT
+      cb.*,
+      c.name AS contact_name,
+      c.phone AS contact_phone,
+      c.store AS contact_store,
+      c.seller_name AS contact_seller_name
+    FROM cashbacks cb
+    LEFT JOIN contacts c ON c.id = cb.contact_id
+    ORDER BY cb.id DESC`
+  );
+}
+
+function buildRecoveryEntryFromRows(segment, rows) {
+  const first = rows[0];
+  const cashbackValue = Number(
+    rows.reduce((total, row) => total + Number(segment.type === "expiring" ? row.available_balance : row.lost_value || 0), 0).toFixed(2)
+  );
+  const expiresAt = rows
+    .map((row) => String(row.expires_at || ""))
+    .filter(Boolean)
+    .sort()[0] || "";
+  const daysUntilExpiration = expiresAt ? Math.max(0, diffInDays(expiresAt, getToday())) : 0;
+
+  return {
+    segment_key: segment.key,
+    segment_title: segment.title,
+    contact_id: Number(first.contact_id || 0),
+    customer_name: first.customer_name || first.contact_name || "",
+    customer_phone: normalizePhone(first.customer_phone || first.contact_phone || ""),
+    store: first.store || first.contact_store || "",
+    seller_name: first.seller_name || first.seller || first.contact_seller_name || "AEROSTORE",
+    cashback_value: cashbackValue,
+    cashback_lost: Number(
+      rows.reduce((total, row) => total + Number(row.lost_value || 0), 0).toFixed(2)
+    ),
+    minimum_purchase: Number((cashbackValue * 2).toFixed(2)),
+    expires_at: expiresAt,
+    days_until_expiration: daysUntilExpiration,
+    status: segment.type === "expiring" ? "disponivel" : "vencido",
+    cashback_ids: rows.map((row) => Number(row.id)).filter(Boolean)
+  };
+}
+
+async function getCashbackRecoverySegmentEntries(segmentKey) {
+  const segment = getCashbackRecoverySegmentDefinition(segmentKey);
+  if (!segment) {
+    return [];
+  }
+
+  const todayValue = getToday();
+  const rows = await getCashbackRecoveryRowsBase();
+  const filteredRows = rows.filter((row) => {
+    const expiresAt = String(row.expires_at || "");
+    const lostValue = Number(row.lost_value || 0);
+    const availableBalance = Number(row.available_balance || 0);
+    const status = String(row.status || "");
+    if (!row.contact_id) {
+      return false;
+    }
+    if (segment.type === "expiring") {
+      return status === "disponivel"
+        && availableBalance > 0
+        && expiresAt
+        && diffInDays(expiresAt, todayValue) === Number(segment.exactDays || 0);
+    }
+    if (segment.type === "expired_recent") {
+      const daysSinceExpiration = expiresAt ? diffInDays(todayValue, expiresAt) : Number.POSITIVE_INFINITY;
+      return status === "vencido" && lostValue > 0 && daysSinceExpiration >= 1 && daysSinceExpiration <= 15;
+    }
+    if (segment.type === "lost_value") {
+      return status === "vencido" && lostValue > 0;
+    }
+    return false;
+  });
+
+  const grouped = new Map();
+  filteredRows.forEach((row) => {
+    const key = Number(row.contact_id);
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+    }
+    grouped.get(key).push(row);
+  });
+
+  let entries = Array.from(grouped.values()).map((group) => buildRecoveryEntryFromRows(segment, group));
+  if (segment.type === "lost_value") {
+    entries = entries.filter((entry) => Number(entry.cashback_lost || 0) > Number(segment.minimumLostValue || 0));
+  }
+
+  return entries.sort((left, right) => {
+    const valueDiff = Number(right.cashback_value || right.cashback_lost || 0) - Number(left.cashback_value || left.cashback_lost || 0);
+    if (valueDiff !== 0) {
+      return valueDiff;
+    }
+    return String(left.customer_name || "").localeCompare(String(right.customer_name || ""), "pt-BR");
+  });
+}
+
+async function getCashbackRecoverySegmentSummaries() {
+  const segments = getCashbackRecoverySegmentDefinitions();
+  const summaries = [];
+  for (const segment of segments) {
+    const entries = await getCashbackRecoverySegmentEntries(segment.key);
+    summaries.push({
+      key: segment.key,
+      title: segment.title,
+      quantity: entries.length,
+      totalCashback: Number(
+        entries.reduce((total, entry) => total + Number(entry.cashback_value || entry.cashback_lost || 0), 0).toFixed(2)
+      ),
+      messageTemplate: segment.template
+    });
+  }
+  return summaries;
+}
+
+async function createRecoveryCampaign(segmentKey, user) {
+  const segment = getCashbackRecoverySegmentDefinition(segmentKey);
+  if (!segment) {
+    throw new Error("Segmento de cashback nao encontrado.");
+  }
+  const entries = await getCashbackRecoverySegmentEntries(segmentKey);
+  if (!entries.length) {
+    throw new Error("Esse segmento ainda nao possui clientes para campanha.");
+  }
+  const selectedContactIds = entries.map((entry) => Number(entry.contact_id)).filter(Boolean);
+  const campaignName = `Recupera??o Cashback - ${segment.title} - ${getToday()}`;
+
+  const result = await run(
+    `INSERT INTO campaigns
+    (name, seller, seller_id, seller_name, store, template, seller_ids_json, filters_json, active, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))`,
+    [
+      campaignName,
+      "Todos os vendedores",
+      null,
+      "Todos os vendedores",
+      "",
+      segment.template,
+      JSON.stringify(["__all__"]),
+      JSON.stringify({ recoverySegment: segmentKey, createdBy: getUserDisplayName(user) })
+    ]
+  );
+
+  for (const contactId of selectedContactIds) {
+    await run(
+      `INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, created_at)
+      VALUES (?, ?, datetime('now'))`,
+      [result.lastID, contactId]
+    );
+  }
+  await syncCampaignExecution(result.lastID, selectedContactIds);
+  await run("UPDATE campaigns SET status = ? WHERE id = ?", [selectedContactIds.length ? "pronta" : "rascunho", result.lastID]);
+  return (await listCampaigns()).find((item) => item.id === result.lastID);
+}
+
+function buildCashbackPinMessage(preview, pinCode) {
+  return `AEROSTORE: seu PIN de validação é ${pinCode}.\nInforme este código ao vendedor para confirmar seu bônus.\n${buildCashbackTermsText()}`;
+}
+
+function buildCashbackTermsText() {
+  return `Ao gerar ou utilizar o bônus, o cliente concorda com os termos de uso e privacidade: ${TERMS_LINK}`;
+}
+
+function buildCashbackPinPublicPayload(token, preview, cashbackId) {
+  const status = normalizePinTokenStatus(token?.status || "pending");
+  return {
+    cashbackId: Number(cashbackId || token?.cashback_id || 0),
+    tokenId: Number(token?.id || 0),
+    pinStatus: status,
+    pinExpiresAt: token?.pin_expires_at || "",
+    attempts: Number(token?.attempts || 0),
+    attemptsRemaining: Math.max(0, CASHBACK_PIN_MAX_ATTEMPTS - Number(token?.attempts || 0)),
+    preview,
+    termsLink: TERMS_LINK,
+    termsText: buildCashbackTermsText(),
+    sentAt: token?.sent_at || "",
+    validatedAt: token?.validated_at || "",
+    lastError: token?.last_error || "",
+    sentByWhatsapp: Boolean(Number(token?.sent_by_whatsapp || 0))
+  };
+}
+
+async function getLatestCashbackPinToken(cashbackId) {
+  return get(
+    `SELECT * FROM cashback_pin_tokens
+    WHERE cashback_id = ?
+    ORDER BY id DESC
+    LIMIT 1`,
+    [cashbackId]
+  );
+}
+
+async function markCashbackPinExpired(tokenId, cashbackId = null) {
+  await run(
+    `UPDATE cashback_pin_tokens
+    SET status = 'expired', last_error = ?
+    WHERE id = ?`,
+    ["PIN expirado.", tokenId]
+  ).catch(() => {});
+
+  if (cashbackId) {
+    await createCashbackEvent({
+      cashbackId,
+      contactId: null,
+      eventType: "pin_expirado",
+      value: 0,
+      notes: "PIN expirado antes da validação."
+    }).catch(() => {});
+  }
+}
+
+async function buildCashbackPinFlowContext(body, user) {
+  const settings = await getCashbackSettings();
+  const purchaseValue = Number(body.purchaseValue || 0);
+  if (purchaseValue <= 0) {
+    throw new Error("Informe um valor de compra valido.");
+  }
+
+  const phone = normalizePhone(body.phone || "");
+  const existingContact = body.contactId
+    ? await get("SELECT * FROM contacts WHERE id = ?", [body.contactId])
+    : (phone ? await findContactByPhone(phone) : null);
+
+  if (!existingContact && (!phone || !String(body.name || "").trim())) {
+    throw new Error("Informe telefone e nome do cliente para continuar.");
+  }
+
+  const seller = await resolveSellerPayload(body, true);
+  const contact = await ensureContactByPayload({
+    contactId: existingContact?.id || body.contactId || null,
+    name: body.name || existingContact?.name || "Cliente sem nome",
+    phone: phone || existingContact?.phone || "",
+    gender: body.gender || existingContact?.gender || "",
+    store: body.store || existingContact?.store || "",
+    sellerId: seller.sellerId,
+    sellerName: seller.sellerName
+  });
+
+  const availableCashback = contact?.id ? await getAvailableCashbackTotal(contact.id) : 0;
+  const preview = buildCashbackPreviewPayload({
+    contact,
+    phone: contact.phone,
+    name: contact.name,
+    gender: contact.gender,
+    store: body.store,
+    sellerName: seller.sellerName,
+    purchaseValue,
+    settings,
+    availableCashback
+  });
+
+  return { settings, purchaseValue, seller, contact, preview };
+}
+
+async function createPendingCashbackRecord({ preview, seller, contact, user, notes = "" }) {
+  const existingPending = await get(
+    `SELECT * FROM cashbacks
+    WHERE contact_id = ? AND status = 'pending_pin'
+    ORDER BY id DESC
+    LIMIT 1`,
+    [contact.id]
+  );
+  if (existingPending) {
+    await run(
+      `UPDATE cashbacks SET
+      customer_name = ?,
+      customer_phone = ?,
+      customer_gender = ?,
+      store = ?,
+      seller_id = ?,
+      seller_name = ?,
+      seller = ?,
+      purchase_value = ?,
+      percentage = ?,
+      generated_value = ?,
+      available_balance = 0,
+      used_value = 0,
+      lost_value = 0,
+      minimum_purchase = 0,
+      origin = 'compra',
+      valid_from = ?,
+      expires_at = ?,
+      cancel_reason = '',
+      updated_at = datetime('now'),
+      created_by = ?
+      WHERE id = ?`,
+      [
+        preview.customerName,
+        preview.customerPhone,
+        preview.customerGender,
+        preview.store,
+        seller.sellerId,
+        seller.sellerName,
+        seller.sellerName,
+        preview.purchaseValue,
+        preview.percentage,
+        preview.generatedValue,
+        preview.validFrom,
+        preview.expiresAt,
+        getUserDisplayName(user),
+        existingPending.id
+      ]
+    );
+    return getCashbackById(existingPending.id);
+  }
+
+  const result = await run(
+    `INSERT INTO cashbacks
+    (contact_id, customer_name, customer_phone, customer_gender, store, seller_id, seller_name, seller, purchase_value, percentage, generated_value, available_balance, used_value, lost_value, minimum_purchase, status, origin, valid_from, expires_at, created_at, updated_at, used_at, canceled_at, cancel_reason, reactivated_at, anticipated_at, pin_code, pin_expires_at, pin_validated_at, created_by, pin_sent_by, pin_validated_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 'pending_pin', 'compra', ?, ?, datetime('now'), datetime('now'), '', '', ?, '', '', '', '', '', ?, '', '')`,
+    [
+      contact.id,
+      preview.customerName,
+      preview.customerPhone,
+      preview.customerGender,
+      preview.store,
+      seller.sellerId,
+      seller.sellerName,
+      seller.sellerName,
+      preview.purchaseValue,
+      preview.percentage,
+      preview.generatedValue,
+      preview.validFrom,
+      preview.expiresAt,
+      notes,
+      getUserDisplayName(user)
+    ]
+  );
+  return getCashbackById(result.lastID);
+}
+
+async function createAndSendCashbackPin({ cashback, preview, seller, contact, user, invalidatePrevious = true }) {
+  if (invalidatePrevious) {
+    await run(
+      `UPDATE cashback_pin_tokens
+      SET status = 'cancelled', cancelled_at = datetime('now'), last_error = 'PIN substituído por um novo envio.'
+      WHERE cashback_id = ? AND status IN ('pending', 'sent')`,
+      [cashback.id]
+    );
+  }
+
+  const pinCode = randomPin();
+  const pinHash = hashCashbackPin(pinCode);
+  const pinExpiresAt = addMinutes(new Date(), CASHBACK_PIN_EXPIRATION_MINUTES);
+
+  const tokenInsert = await run(
+    `INSERT INTO cashback_pin_tokens
+    (cashback_id, contact_id, customer_name, customer_phone, phone, customer_gender, store, seller_id, seller_name, purchase_value, percentage, generated_value, available_cashback, cashback_used, amount_paid, valid_from, expires_at, pin_code, pin_hash, pin_expires_at, status, attempts, created_by, pin_sent_by, pin_validated_by, validated_at, used_at, sent_at, cancelled_at, sent_by_whatsapp, whatsapp_message_id, last_error, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, 'pending', 0, ?, '', '', '', '', '', '', 0, '', '', datetime('now'))`,
+    [
+      cashback.id,
+      contact.id,
+      preview.customerName,
+      preview.customerPhone,
+      preview.customerPhone,
+      preview.customerGender,
+      preview.store,
+      seller.sellerId,
+      seller.sellerName,
+      preview.purchaseValue,
+      preview.percentage,
+      preview.generatedValue,
+      preview.availableCashback,
+      preview.cashbackUsed,
+      preview.amountPaid,
+      preview.validFrom,
+      preview.expiresAt,
+      pinHash,
+      pinExpiresAt,
+      getUserDisplayName(user)
+    ]
+  );
+
+  const token = await get("SELECT * FROM cashback_pin_tokens WHERE id = ?", [tokenInsert.lastID]);
+
+  await createCashbackEvent({
+    cashbackId: cashback.id,
+    contactId: contact.id,
+    eventType: "pin_gerado",
+    value: preview.generatedValue,
+    store: preview.store,
+    seller: seller.sellerName,
+    notes: "PIN de validação gerado para o cashback."
+  });
+
+  const pinPhone = contact?.phone || cashback?.customer_phone || preview.customerPhone || token.customer_phone || "";
+
+  try {
+    const sendResult = await sendWhatsAppTextMessage(pinPhone, buildCashbackPinMessage(preview, pinCode), {
+      debugLabel: "PIN WHATSAPP"
+    });
+
+    await run(
+      `UPDATE cashback_pin_tokens
+      SET status = 'sent',
+      sent_at = datetime('now'),
+      pin_sent_by = ?,
+      sent_by_whatsapp = 1,
+      whatsapp_message_id = ?,
+      last_error = ''
+      WHERE id = ?`,
+      [getUserDisplayName(user), sendResult.messageId || "", token.id]
+    );
+
+    await run(
+      `UPDATE cashbacks SET pin_sent_by = ?, pin_expires_at = ?, updated_at = datetime('now') WHERE id = ?`,
+      [getUserDisplayName(user), pinExpiresAt, cashback.id]
+    );
+
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: contact.id,
+      eventType: "pin_enviado",
+      value: preview.generatedValue,
+      store: preview.store,
+      seller: seller.sellerName,
+      notes: `PIN de validação enviado por WhatsApp em ${formatDateBR(new Date().toISOString())}.`
+    });
+
+    const freshToken = await get("SELECT * FROM cashback_pin_tokens WHERE id = ?", [token.id]);
+    return {
+      sent: true,
+      cashback: await getCashbackById(cashback.id),
+      token: freshToken,
+      payload: buildCashbackPinPublicPayload(freshToken, preview, cashback.id)
+    };
+  } catch (error) {
+    const errorMessage = String(error.userMessage || error.message || error);
+    await run(
+      `UPDATE cashback_pin_tokens
+      SET status = 'failed',
+      sent_at = '',
+      sent_by_whatsapp = 0,
+      whatsapp_message_id = '',
+      last_error = ?
+      WHERE id = ?`,
+      [errorMessage, token.id]
+    );
+
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: contact.id,
+      eventType: "pin_enviado",
+      value: preview.generatedValue,
+      store: preview.store,
+      seller: seller.sellerName,
+      status: "erro",
+      notes: `Falha ao enviar PIN por WhatsApp: ${errorMessage}`
+    });
+
+    const freshToken = await get("SELECT * FROM cashback_pin_tokens WHERE id = ?", [token.id]);
+    return {
+      sent: false,
+      cashback: await getCashbackById(cashback.id),
+      token: freshToken,
+      payload: buildCashbackPinPublicPayload(freshToken, preview, cashback.id)
+    };
+  }
+}
+
+async function validateCashbackPinForCashbackId({ cashbackId, pin, user }) {
+  const cashback = await get("SELECT * FROM cashbacks WHERE id = ?", [cashbackId]);
+  if (!cashback) {
+    const error = new Error("Cashback não encontrado.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const token = await getLatestCashbackPinToken(cashbackId);
+  if (!token) {
+    const error = new Error("PIN não encontrado.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const normalizedStatus = normalizePinTokenStatus(token.status);
+  if (normalizedStatus === "validated") {
+    const error = new Error("Esse PIN já foi utilizado.");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (normalizedStatus === "cancelled") {
+    const error = new Error("Esse PIN foi cancelado. Gere um novo PIN.");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (normalizedStatus === "failed" || Number(token.attempts || 0) >= CASHBACK_PIN_MAX_ATTEMPTS) {
+    await run(
+      `UPDATE cashback_pin_tokens SET status = 'failed', last_error = ? WHERE id = ?`,
+      ["PIN bloqueado por excesso de tentativas. Gere um novo PIN.", token.id]
+    );
+    const error = new Error("PIN bloqueado por excesso de tentativas. Gere um novo PIN.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (new Date(token.pin_expires_at).getTime() < Date.now()) {
+    await run(
+      `UPDATE cashback_pin_tokens SET status = 'expired', last_error = ? WHERE id = ?`,
+      ["PIN expirado. Reenvie um novo código.", token.id]
+    );
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: token.contact_id,
+      eventType: "pin_expirado",
+      value: token.generated_value,
+      store: token.store,
+      seller: token.seller_name,
+      notes: "PIN expirado antes da validação."
+    });
+    const error = new Error("PIN expirado. Reenvie um novo código.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!compareCashbackPin(pin, token.pin_hash)) {
+    const attempts = Number(token.attempts || 0) + 1;
+    const blocked = attempts >= CASHBACK_PIN_MAX_ATTEMPTS;
+    await run(
+      `UPDATE cashback_pin_tokens
+      SET attempts = ?, status = ?, last_error = ?
+      WHERE id = ?`,
+      [
+        attempts,
+        blocked ? "failed" : normalizedStatus === "sent" ? "sent" : "pending",
+        blocked ? "PIN bloqueado por excesso de tentativas. Gere um novo PIN." : "PIN inválido. Confira o código informado pelo cliente.",
+        token.id
+      ]
+    );
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: token.contact_id,
+      eventType: "pin_invalido",
+      value: 0,
+      store: token.store,
+      seller: token.seller_name,
+      notes: blocked ? "PIN bloqueado por excesso de tentativas." : "Tentativa inválida de PIN."
+    });
+    const error = new Error(blocked ? "PIN bloqueado por excesso de tentativas. Gere um novo PIN." : "PIN inválido. Confira o código informado pelo cliente.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const contact = await ensureContactByPayload({
+    contactId: token.contact_id,
+    name: token.customer_name,
+    phone: token.customer_phone,
+    gender: token.customer_gender,
+    store: token.store,
+    sellerId: token.seller_id,
+    sellerName: token.seller_name
+  });
+
+  if (Number(token.cashback_used || 0) > 0) {
+    await consumeCashbackPool(contact.id, token.cashback_used, token.seller_name || getUserDisplayName(user));
+  }
+
+  await run(
+    `UPDATE cashbacks SET
+    contact_id = ?,
+    customer_name = ?,
+    customer_phone = ?,
+    customer_gender = ?,
+    store = ?,
+    seller_id = ?,
+    seller_name = ?,
+    seller = ?,
+    purchase_value = ?,
+    percentage = ?,
+    generated_value = ?,
+    available_balance = ?,
+    used_value = 0,
+    lost_value = 0,
+    minimum_purchase = 0,
+    status = 'disponivel',
+    origin = 'compra',
+    valid_from = ?,
+    expires_at = ?,
+    updated_at = datetime('now'),
+    pin_code = '',
+    pin_expires_at = ?,
+    pin_validated_at = datetime('now'),
+    pin_validated_by = ?,
+    created_by = COALESCE(NULLIF(created_by, ''), ?)
+    WHERE id = ?`,
+    [
+      contact.id,
+      token.customer_name,
+      token.customer_phone,
+      token.customer_gender,
+      token.store,
+      token.seller_id,
+      token.seller_name,
+      token.seller_name,
+      token.purchase_value || token.amount_paid,
+      token.percentage,
+      token.generated_value,
+      token.generated_value,
+      token.valid_from,
+      token.expires_at,
+      token.pin_expires_at,
+      getUserDisplayName(user),
+      getUserDisplayName(user),
+      cashback.id
+    ]
+  );
+
+  await run(
+    `UPDATE cashback_pin_tokens
+    SET validated_at = datetime('now'),
+    used_at = datetime('now'),
+    status = 'validated',
+    pin_validated_by = ?,
+    last_error = ''
+    WHERE id = ?`,
+    [getUserDisplayName(user), token.id]
+  );
+
+  await createCashbackEvent({
+    cashbackId: cashback.id,
+    contactId: contact.id,
+    eventType: "pin_validado",
+    value: token.generated_value,
+    store: token.store,
+    seller: token.seller_name,
+    notes: `PIN validado e cashback confirmado em ${formatDateBR(new Date().toISOString())}.`
+  });
+
+  await run(
+    `UPDATE contacts SET seller_id = COALESCE(?, seller_id), seller_name = COALESCE(NULLIF(?, ''), seller_name), updated_at = datetime('now') WHERE id = ?`,
+    [token.seller_id, token.seller_name || "", contact.id]
+  );
+
+  await createCashbackEvent({
+    cashbackId: cashback.id,
+    contactId: contact.id,
+    eventType: "cashback_gerado",
+    value: token.generated_value,
+    store: token.store,
+    seller: token.seller_name,
+    notes: "Cashback confirmado por PIN."
+  });
+
+  await syncContactCashback(contact.id);
+  return getCashbackById(cashback.id);
+}
+
+async function registerWhatsappEvent(cashback, seller = "") {
+  await createCashbackEvent({
+    cashbackId: cashback.id,
+    contactId: cashback.contact_id,
+    eventType: "whatsapp_enviado",
+    value: cashback.available_balance || cashback.generated_value,
+    store: cashback.store,
+    seller: seller || cashback.seller,
+    notes: "Mensagem preparada para WhatsApp Web."
+  });
+}
+
+async function listContacts(filters = {}) {
+  const clauses = [];
+  const params = [];
+  const phoneExpr = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c.phone, '+', ''), '(', ''), ')', ''), '-', ''), ' ', '')";
+  const normalizedStoreFilter = normalizeStoreKey(filters.store || "");
+
+  if (filters.tag) {
+    clauses.push("LOWER(c.tags) LIKE ?");
+    params.push(`%${String(filters.tag).toLowerCase()}%`);
+  }
+  if (filters.status) {
+    clauses.push("c.status = ?");
+    params.push(filters.status);
+  }
+  if (filters.gender) {
+    clauses.push("c.gender = ?");
+    params.push(filters.gender);
+  }
+  if (filters.sellerId) {
+    clauses.push("c.seller_id = ?");
+    params.push(Number(filters.sellerId));
+  }
+  if (Object.prototype.hasOwnProperty.call(filters, "hasWhatsapp") && String(filters.hasWhatsapp || "").trim() !== "") {
+    if (String(filters.hasWhatsapp) === "1") {
+      clauses.push(`LENGTH(${phoneExpr}) >= 10`);
+    } else if (String(filters.hasWhatsapp) === "0") {
+      clauses.push(`LENGTH(${phoneExpr}) < 10`);
+    }
+  }
+  if (filters.topSize) {
+    clauses.push("LOWER(COALESCE(c.top_size, '')) = ?");
+    params.push(String(filters.topSize || "").trim().toLowerCase());
+  }
+  if (filters.bottomSize) {
+    clauses.push("LOWER(COALESCE(c.bottom_size, '')) = ?");
+    params.push(String(filters.bottomSize || "").trim().toLowerCase());
+  }
+  if (filters.shoeSize) {
+    clauses.push("LOWER(COALESCE(c.shoe_size, '')) = ?");
+    params.push(String(filters.shoeSize || "").trim().toLowerCase());
+  }
+  if (filters.q) {
+    const rawQuery = String(filters.q || "").trim().toLowerCase();
+    const digits = sanitizePhone(rawQuery);
+    clauses.push(`(
+      LOWER(COALESCE(c.name, '')) LIKE ?
+      OR ${phoneExpr} LIKE ?
+      OR REPLACE(REPLACE(REPLACE(COALESCE(c.document, ''), '.', ''), '-', ''), '/', '') LIKE ?
+      OR LOWER(COALESCE(c.email, '')) LIKE ?
+      OR LOWER(COALESCE(c.city, '')) LIKE ?
+      OR LOWER(COALESCE(c.neighborhood, '')) LIKE ?
+      OR REPLACE(REPLACE(COALESCE(c.zipcode, ''), '.', ''), '-', '') LIKE ?
+    )`);
+    params.push(
+      `%${rawQuery}%`,
+      `%${digits || rawQuery}%`,
+      `%${digits || rawQuery}%`,
+      `%${rawQuery}%`,
+      `%${rawQuery}%`,
+      `%${rawQuery}%`,
+      `%${digits || rawQuery}%`
+    );
+  }
+  if (String(filters.cashbackActive || "").trim() === "1") {
+    clauses.push(`EXISTS (
+      SELECT 1 FROM cashbacks cb
+      WHERE cb.contact_id = c.id AND cb.status = 'disponivel' AND cb.available_balance > 0
+    )`);
+  }
+  if (String(filters.cashbackExpiring || "").trim() === "1") {
+    const expiringDays = Math.max(1, Number(filters.cashbackExpiringDays || 7));
+    clauses.push(`EXISTS (
+      SELECT 1 FROM cashbacks cb
+      WHERE cb.contact_id = c.id
+        AND cb.status = 'disponivel'
+        AND cb.available_balance > 0
+        AND cb.expires_at <> ''
+        AND cb.expires_at BETWEEN ? AND ?
+    )`);
+    params.push(getToday(), addDays(getToday(), expiringDays));
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const limit = Number(filters.limit || 0);
+  const limitClause = limit > 0 && !normalizedStoreFilter ? ` LIMIT ${limit}` : "";
+  let rows = await all(`SELECT c.* FROM contacts c ${where} ORDER BY c.id DESC${limitClause}`, params);
+  if (normalizedStoreFilter) {
+    rows = rows.filter((row) => storesMatch(row.store || row.store_id || "", normalizedStoreFilter));
+  }
+  if (limit > 0 && normalizedStoreFilter) {
+    rows = rows.slice(0, limit);
+  }
+  return rows;
+}
+
+async function getCampaignContactIds(campaignId) {
+  const rows = await all(
+    "SELECT contact_id FROM campaign_contacts WHERE campaign_id = ? ORDER BY id ASC",
+    [campaignId]
+  );
+  return rows.map((row) => row.contact_id);
+}
+
+async function getCampaignContacts(campaignId) {
+  return all(
+    `SELECT c.*
+    FROM campaign_contacts cc
+    JOIN contacts c ON c.id = cc.contact_id
+    WHERE cc.campaign_id = ?
+    ORDER BY cc.id ASC`,
+    [campaignId]
+  );
+}
+
+async function syncCampaignExecution(campaignId, selectedContactIds = []) {
+  const campaign = await get("SELECT seller_id FROM campaigns WHERE id = ?", [campaignId]);
+  await run("DELETE FROM campaign_execution WHERE campaign_id = ?", [campaignId]);
+  for (const contactId of selectedContactIds.map(Number).filter(Boolean)) {
+    const contact = await get("SELECT id, seller_id FROM contacts WHERE id = ?", [contactId]);
+    if (!contact) {
+      continue;
+    }
+    await run(
+      `INSERT OR IGNORE INTO campaign_execution
+      (campaign_id, contact_id, seller_id, status, sent_at, responded_at, created_at)
+      VALUES (?, ?, ?, 'pendente', '', '', datetime('now'))`,
+      [campaignId, contact.id, campaign?.seller_id || contact.seller_id || null]
+    );
+  }
+}
+
+async function updateCampaignExecutionStatus({ campaignId, contactId, sellerId = null, status }) {
+  const validStatuses = ["pendente", "enviado", "respondeu", "ignorado", "erro"];
+  if (!validStatuses.includes(status)) {
+    return;
+  }
+  const sentAt = status === "enviado" ? "datetime('now')" : (status === "erro" ? "''" : "sent_at");
+  const respondedAt = status === "respondeu" ? "datetime('now')" : "responded_at";
+  await run(
+    `UPDATE campaign_execution SET
+      seller_id = COALESCE(?, seller_id),
+      status = ?,
+      sent_at = ${sentAt},
+      responded_at = ${respondedAt}
+    WHERE campaign_id = ? AND contact_id = ?`,
+    [sellerId, status, campaignId, contactId]
+  );
+}
+
+async function getCampaignExecutionRows(campaignId, filters = {}, pendingOnly = true) {
+  const clauses = ["ce.campaign_id = ?"];
+  const params = [campaignId];
+
+  if (pendingOnly) {
+    clauses.push("ce.status = 'pendente'");
+  }
+  if (filters.tag) {
+    clauses.push("LOWER(COALESCE(ct.tags, '')) LIKE ?");
+    params.push(`%${String(filters.tag).trim().toLowerCase()}%`);
+  }
+  if (filters.status) {
+    clauses.push("ct.status = ?");
+    params.push(filters.status);
+  }
+  if (filters.gender) {
+    clauses.push("ct.gender = ?");
+    params.push(filters.gender);
+  }
+  if (filters.store) {
+    clauses.push("ct.store = ?");
+    params.push(filters.store);
+  }
+  if (filters.sellerId) {
+    clauses.push("(ct.seller_id = ? OR ce.seller_id = ?)");
+    params.push(Number(filters.sellerId), Number(filters.sellerId));
+  }
+  if (String(filters.cashbackActive || "") === "1") {
+    clauses.push("COALESCE(ct.cashback, 0) > 0");
+  }
+
+  return all(
+    `SELECT
+      ce.*,
+      ct.*
+    FROM campaign_execution ce
+    JOIN contacts ct ON ct.id = ce.contact_id
+    WHERE ${clauses.join(" AND ")}
+    ORDER BY ce.id ASC`,
+    params
+  );
+}
+
+async function getCampaignExecutionReport() {
+  return all(
+    `SELECT
+      ce.campaign_id,
+      c.name AS campaign_name,
+      COALESCE(c.seller_name, s.name, ct.seller_name, c.seller, 'Sem vendedor') AS seller_name,
+      COALESCE(c.seller_id, ce.seller_id, ct.seller_id, 0) AS seller_id,
+      COUNT(*) AS total_clients,
+      SUM(CASE WHEN ce.status <> 'pendente' THEN 1 ELSE 0 END) AS processed_count,
+      SUM(CASE WHEN COALESCE(ce.sent_at, '') <> '' OR ce.status IN ('enviado', 'respondeu', 'ignorado') THEN 1 ELSE 0 END) AS sent_count,
+      SUM(CASE WHEN ce.status = 'respondeu' THEN 1 ELSE 0 END) AS responded_count,
+      SUM(CASE WHEN ce.status = 'pendente' THEN 1 ELSE 0 END) AS pending_count,
+      SUM(CASE WHEN ce.status = 'erro' THEN 1 ELSE 0 END) AS error_count,
+      ROUND(
+        CASE WHEN COUNT(*) > 0
+          THEN (SUM(CASE WHEN ce.status <> 'pendente' THEN 1 ELSE 0 END) * 100.0 / COUNT(*))
+          ELSE 0
+        END, 2
+      ) AS executed_percent
+    FROM campaign_execution ce
+    JOIN campaigns c ON c.id = ce.campaign_id
+    JOIN contacts ct ON ct.id = ce.contact_id
+    LEFT JOIN sellers s ON s.id = COALESCE(c.seller_id, ce.seller_id)
+    GROUP BY ce.campaign_id, COALESCE(c.seller_id, ce.seller_id, ct.seller_id, 0), COALESCE(c.seller_name, s.name, ct.seller_name, c.seller, 'Sem vendedor')
+    ORDER BY executed_percent ASC, c.created_at DESC, c.id DESC`
+  );
+}
+
+async function getCampaignExecutionResults(campaignId, page = 1, perPage = 20) {
+  const safePage = Math.max(1, Number(page || 1));
+  const safePerPage = Math.max(1, Math.min(100, Number(perPage || 20)));
+  const offset = (safePage - 1) * safePerPage;
+
+  const [totalRow, rows] = await Promise.all([
+    get(
+      `SELECT COUNT(*) AS total
+      FROM campaign_execution
+      WHERE campaign_id = ?`,
+      [campaignId]
+    ),
+    all(
+      `SELECT
+        ce.contact_id,
+        ct.name AS customer_name,
+        ct.phone,
+        ct.store,
+        COALESCE(ct.seller_name, c.seller_name, c.seller, '') AS seller_name,
+        ce.status,
+        ce.sent_at,
+        ce.responded_at,
+        COALESCE(log.send_type, c.send_type, 'text') AS send_type,
+        COALESCE(log.error_message, '') AS error_message,
+        COALESCE(log.caption_final, c.caption, c.template, '') AS caption_final,
+        COALESCE(log.media_id, c.media_id) AS media_id
+      FROM campaign_execution ce
+      INNER JOIN campaigns c ON c.id = ce.campaign_id
+      INNER JOIN contacts ct ON ct.id = ce.contact_id
+      LEFT JOIN campaign_message_logs log
+        ON log.id = (
+          SELECT l2.id
+          FROM campaign_message_logs l2
+          WHERE l2.campaign_id = ce.campaign_id AND l2.contact_id = ce.contact_id
+          ORDER BY l2.id DESC
+          LIMIT 1
+        )
+      WHERE ce.campaign_id = ?
+      ORDER BY ct.name COLLATE NOCASE ASC, ce.contact_id ASC
+      LIMIT ? OFFSET ?`,
+      [campaignId, safePerPage, offset]
+    )
+  ]);
+
+  return {
+    page: safePage,
+    perPage: safePerPage,
+    total: Number(totalRow?.total || 0),
+    rows
+  };
+}
+
+async function getCampaignExecutionSummaryByCampaignId(campaignId) {
+  return get(
+    `SELECT
+      COUNT(*) AS total_clients,
+      SUM(CASE WHEN status <> 'pendente' THEN 1 ELSE 0 END) AS processed_count,
+      SUM(CASE WHEN status = 'pendente' THEN 1 ELSE 0 END) AS pending_count,
+      SUM(CASE WHEN COALESCE(sent_at, '') <> '' OR status IN ('enviado', 'respondeu', 'ignorado') THEN 1 ELSE 0 END) AS sent_count,
+      SUM(CASE WHEN status = 'erro' THEN 1 ELSE 0 END) AS error_count
+    FROM campaign_execution
+    WHERE campaign_id = ?`,
+    [campaignId]
+  );
+}
+
+async function getCampaignMessageLogSummaryByCampaignId(campaignId) {
+  const [summary, latestError] = await Promise.all([
+    get(
+      `SELECT
+        COUNT(*) AS total_logs,
+        SUM(CASE WHEN status = 'erro' THEN 1 ELSE 0 END) AS error_count,
+        MAX(COALESCE(NULLIF(sent_at, ''), created_at)) AS last_event_at
+      FROM campaign_message_logs
+      WHERE campaign_id = ?`,
+      [campaignId]
+    ),
+    get(
+      `SELECT error_message
+      FROM campaign_message_logs
+      WHERE campaign_id = ? AND status = 'erro'
+      ORDER BY id DESC
+      LIMIT 1`,
+      [campaignId]
+    )
+  ]);
+
+  return {
+    errorCount: Number(summary?.error_count || 0),
+    totalLogs: Number(summary?.total_logs || 0),
+    lastEventAt: summary?.last_event_at || "",
+    lastError: latestError?.error_message || ""
+  };
+}
+
+async function getCampaignOperationData(campaignId) {
+  const campaign = (await listCampaigns()).find((item) => item.id === Number(campaignId));
+  if (!campaign) {
+    return null;
+  }
+
+  const [contacts, executionRows, logSummary] = await Promise.all([
+    getCampaignContacts(campaign.id),
+    all(
+      `SELECT
+        ce.contact_id,
+        ct.name AS customer_name,
+        ct.phone,
+        ct.store,
+        COALESCE(ct.seller_name, c.seller_name, c.seller, '') AS seller_name,
+        ce.status,
+        ce.sent_at,
+        ce.responded_at,
+        COALESCE(log.send_type, c.send_type, 'text') AS send_type,
+        COALESCE(log.error_message, '') AS error_message,
+        COALESCE(log.caption_final, c.caption, c.template, '') AS caption_final,
+        COALESCE(log.media_id, c.media_id) AS media_id
+      FROM campaign_execution ce
+      INNER JOIN campaigns c ON c.id = ce.campaign_id
+      INNER JOIN contacts ct ON ct.id = ce.contact_id
+      LEFT JOIN campaign_message_logs log
+        ON log.id = (
+          SELECT l2.id
+          FROM campaign_message_logs l2
+          WHERE l2.campaign_id = ce.campaign_id AND l2.contact_id = ce.contact_id
+          ORDER BY l2.id DESC
+          LIMIT 1
+        )
+      WHERE ce.campaign_id = ?
+      ORDER BY ct.name COLLATE NOCASE ASC, ce.contact_id ASC`,
+      [campaign.id]
+    ),
+    getCampaignMessageLogSummaryByCampaignId(campaign.id)
+  ]);
+
+  let media = null;
+  if (campaign.media_id) {
+    const mediaRow = await get(
+      "SELECT id, original_name, file_path, mime_type, media_type, file_size FROM campaign_media WHERE id = ? AND status = 'active'",
+      [campaign.media_id]
+    );
+    if (mediaRow) {
+      media = {
+        ...mediaRow,
+        exists: fs.existsSync(mediaRow.file_path)
+      };
+    }
+  }
+
+  const stats = {
+    total: Number(campaign.execution?.totalClients || contacts.length || 0),
+    sent: Number(campaign.execution?.sentCount || 0),
+    pending: Number(campaign.execution?.pendingCount || 0),
+    errors: Number(campaign.execution?.errorCount || 0)
+  };
+
+  return {
+    campaign: {
+      id: campaign.id,
+      name: campaign.name,
+      status: campaign.status,
+      send_type: campaign.send_type || "text",
+      media_id: campaign.media_id || null,
+      caption: campaign.caption || "",
+      message: campaign.template || "",
+      loja: campaign.store || "",
+      vendedor: campaign.sellerName || campaign.seller || "",
+      has_media: Boolean(campaign.hasMedia),
+      last_error: campaign.lastError || "",
+      last_execution_at: campaign.lastExecutionAt || ""
+    },
+    media,
+    stats,
+    humanizedOperation: serializeCampaignHumanizedOperation(campaignHumanizedOperations.get(Number(campaign.id))),
+    contacts: executionRows.map((row) => ({
+      id: Number(row.contact_id),
+      name: row.customer_name || "",
+      phone: row.phone || "",
+      status: contacts.find((contact) => Number(contact.id) === Number(row.contact_id))?.status || "",
+      execution_status: row.status || "",
+      error_message: row.error_message || ""
+    })),
+    logs: executionRows
+  };
+}
+
+async function listCampaigns() {
+  const campaigns = await all("SELECT * FROM campaigns ORDER BY active DESC, id DESC");
+  const result = [];
+  for (const campaign of campaigns) {
+    const contactIds = await getCampaignContactIds(campaign.id);
+    const executionSummary = await getCampaignExecutionSummaryByCampaignId(campaign.id);
+    const logSummary = await getCampaignMessageLogSummaryByCampaignId(campaign.id);
+    let sellerIds = [];
+    let filters = {};
+    try {
+      sellerIds = JSON.parse(campaign.seller_ids_json || "[]");
+    } catch (error) {}
+    try {
+      filters = JSON.parse(campaign.filters_json || "{}");
+    } catch (error) {}
+    result.push({
+      ...campaign,
+      sellerId: campaign.seller_id || null,
+      sellerName: campaign.seller_name || campaign.seller || "",
+      status: campaignStatusFromExecution({
+        totalClients: Number(executionSummary?.total_clients ?? contactIds.length ?? 0),
+        processedCount: Number(executionSummary?.processed_count ?? 0),
+        pendingCount: Number(executionSummary?.pending_count ?? contactIds.length ?? 0),
+        errorCount: Number(executionSummary?.error_count ?? logSummary.errorCount ?? 0),
+        storedStatus: campaign.status
+      }),
+      execution: {
+        totalClients: Number(executionSummary?.total_clients ?? contactIds.length ?? 0),
+        processedCount: Number(executionSummary?.processed_count ?? 0),
+        pendingCount: Number(executionSummary?.pending_count ?? Math.max(contactIds.length, 0)),
+        sentCount: Number(executionSummary?.sent_count ?? 0),
+        errorCount: Number(executionSummary?.error_count ?? logSummary.errorCount ?? 0)
+      },
+      hasMedia: Boolean(Number(campaign.has_media || 0) || campaign.media_id),
+      lastExecutionAt: logSummary.lastEventAt || "",
+      lastError: logSummary.lastError || "",
+      selectedContactIds: contactIds,
+      sellerIds,
+      filters
+    });
+  }
+  return result;
+}
+
+function userCanViewCampaigns(user = {}) {
+  const role = String(user?.role || "").toLowerCase();
+  return role === "admin" || role === "manager" || userHasPermission(user, "can_view_campaigns") || userHasPermission(user, "can_manage_campaigns");
+}
+
+function userCanManageCampaigns(user = {}) {
+  const role = String(user?.role || "").toLowerCase();
+  return role === "admin" || userHasPermission(user, "can_manage_campaigns");
+}
+
+function filterCampaignsForUser(campaigns = [], user = {}) {
+  if (!userCanViewCampaigns(user)) {
+    return [];
+  }
+  if (userHasPermission(user, "can_view_all_stores")) {
+    return campaigns;
+  }
+  return campaigns.filter((campaign) => userCanAccessStore(user, campaign.store || campaign.loja || ""));
+}
+
+async function getScopedCampaignById(campaignId, user = {}) {
+  const campaigns = await listCampaigns();
+  const scoped = filterCampaignsForUser(campaigns, user);
+  return scoped.find((campaign) => Number(campaign.id) === Number(campaignId)) || null;
+}
+
+async function getCampaignExecutionReportForUser(user = {}) {
+  const rows = await getCampaignExecutionReport();
+  if (userHasPermission(user, "can_view_all_stores")) {
+    return rows;
+  }
+  const scopedCampaigns = filterCampaignsForUser(await listCampaigns(), user);
+  const allowedCampaignIds = new Set(scopedCampaigns.map((campaign) => Number(campaign.id)));
+  return rows.filter((row) => allowedCampaignIds.has(Number(row.campaign_id)));
+}
+
+function buildCampaignAudienceFilters({ store = "", scope = "store_contacts", gender = "", sellerId = "", topSize = "", bottomSize = "", shoeSize = "", hasWhatsapp = "" } = {}) {
+  const normalizedStore = normalizeStoreKey(store || "");
+  const normalizedScope = String(scope || "store_contacts").trim().toLowerCase();
+  const filters = { store: normalizedStore };
+  if (gender) filters.gender = String(gender || "").trim().toLowerCase();
+  if (sellerId) filters.sellerId = String(sellerId || "").trim();
+  if (topSize) filters.topSize = String(topSize || "").trim();
+  if (bottomSize) filters.bottomSize = String(bottomSize || "").trim();
+  if (shoeSize) filters.shoeSize = String(shoeSize || "").trim();
+  if (hasWhatsapp !== undefined && String(hasWhatsapp || "").trim() !== "") {
+    filters.hasWhatsapp = String(hasWhatsapp || "").trim();
+  }
+  if (normalizedScope === "store_whatsapp_valid" || normalizedScope === "store_contacts") {
+    filters.hasWhatsapp = "1";
+  }
+  if (normalizedScope === "cashback_active") {
+    filters.cashbackActive = "1";
+  }
+  if (normalizedScope === "cashback_expiring_7d") {
+    filters.cashbackExpiring = "1";
+    filters.cashbackExpiringDays = 7;
+  }
+  if (normalizedScope === "cashback_expiring_3d") {
+    filters.cashbackExpiring = "1";
+    filters.cashbackExpiringDays = 3;
+  }
+  return filters;
+}
+
+async function countCampaignAudienceEstimate({ store = "", scope = "store_contacts", gender = "", sellerId = "", topSize = "", bottomSize = "", shoeSize = "", hasWhatsapp = "" } = {}) {
+  const filters = buildCampaignAudienceFilters({ store, scope, gender, sellerId, topSize, bottomSize, shoeSize, hasWhatsapp });
+  const matchingFilters = { ...filters };
+  delete matchingFilters.hasWhatsapp;
+  const matchingContacts = await listContacts(matchingFilters);
+  const validWhatsappCount = matchingContacts.filter((item) => sanitizePhone(item.phone || "").length >= 10).length;
+  const filteredContacts = await listContacts(filters);
+  const estimatedCount = filteredContacts.length;
+  return {
+    estimatedCount,
+    linkedCount: estimatedCount,
+    validWhatsappCount,
+    invalidWhatsappCount: Math.max(matchingContacts.length - validWhatsappCount, 0),
+    blockedCount: 0
+  };
+}
+
+async function listImportBatches() {
+  return all(
+    `SELECT *
+    FROM import_batches
+    ORDER BY datetime(created_at) DESC, id DESC`
+  );
+}
+
+async function getImportBatchById(batchId) {
+  return get("SELECT * FROM import_batches WHERE id = ?", [batchId]);
+}
+
+async function getImportBatchItems(batchId, filters = {}) {
+  const clauses = ["batch_id = ?"];
+  const params = [batchId];
+
+  if (filters.sellerName) {
+    clauses.push("seller_name = ?");
+    params.push(String(filters.sellerName));
+  }
+  if (filters.status) {
+    clauses.push("status = ?");
+    params.push(String(filters.status));
+  }
+  if (filters.dateFrom) {
+    clauses.push("sale_date >= ?");
+    params.push(String(filters.dateFrom));
+  }
+  if (filters.dateTo) {
+    clauses.push("sale_date <= ?");
+    params.push(String(filters.dateTo));
+  }
+  if (filters.minCashback) {
+    clauses.push("cashback_value >= ?");
+    params.push(Number(filters.minCashback));
+  }
+  if (filters.onlyNew === "1") {
+    clauses.push("action = 'criar contato'");
+  }
+  if (filters.highestSale === "1") {
+    clauses.push("sale_value >= ?");
+    params.push(Number(filters.highestSaleValue || 500));
+  }
+
+  return all(
+    `SELECT *
+    FROM import_batch_items
+    WHERE ${clauses.join(" AND ")}
+    ORDER BY row_number ASC, id ASC`,
+    params
+  );
+}
+
+async function getImportBatchStats(batchId) {
+  return get(
+    `SELECT
+      COUNT(*) AS total_items,
+      SUM(CASE WHEN status LIKE 'importado%' THEN 1 ELSE 0 END) AS imported_items,
+      SUM(CASE WHEN status = 'ignorado' THEN 1 ELSE 0 END) AS ignored_items,
+      COUNT(DISTINCT phone) AS unique_clients,
+      COUNT(DISTINCT cashback_id) AS total_events,
+      COALESCE(SUM(sale_value), 0) AS total_sales_value,
+      COALESCE(SUM(cashback_value), 0) AS total_cashback_value,
+      COALESCE(AVG(sale_value), 0) AS average_ticket,
+      COALESCE(MAX(cashback_value), 0) AS highest_cashback,
+      COALESCE(MAX(sale_value), 0) AS highest_sale,
+      MIN(NULLIF(sale_date, '')) AS first_date,
+      MAX(NULLIF(sale_date, '')) AS last_date
+    FROM import_batch_items
+    WHERE batch_id = ?`,
+    [batchId]
+  );
+}
+
+function getRelativeDateRange(preset = "") {
+  const today = getToday();
+  switch (String(preset || "").trim()) {
+    case "7d":
+      return { from: addDays(today, -6), to: today };
+    case "15d":
+      return { from: addDays(today, -14), to: today };
+    case "30d":
+      return { from: addDays(today, -29), to: today };
+    default:
+      return { from: "", to: "" };
+  }
+}
+
+async function buildAudienceRows(filters = {}) {
+  const contacts = await all(`
+    SELECT
+      c.*,
+      COALESCE((
+        SELECT SUM(cb.available_balance)
+        FROM cashbacks cb
+        WHERE cb.contact_id = c.id AND cb.status = 'disponivel'
+      ), 0) AS available_cashback,
+      COALESCE((
+        SELECT SUM(CASE WHEN e.event_type = 'cashback_perdido' THEN COALESCE(e.lost_value, e.value, 0) ELSE 0 END)
+        FROM cashback_events e
+        WHERE e.contact_id = c.id
+      ), 0) AS lost_cashback,
+      (
+        SELECT MAX(COALESCE(NULLIF(e.lost_at, ''), NULLIF(e.expired_at, ''), NULLIF(e.event_date, ''), SUBSTR(e.created_at, 1, 10)))
+        FROM cashback_events e
+        WHERE e.contact_id = c.id AND e.event_type = 'cashback_perdido'
+      ) AS lost_date,
+      (
+        SELECT MAX(COALESCE(NULLIF(i.sale_date, ''), ''))
+        FROM import_batch_items i
+        WHERE i.contact_id = c.id AND i.sale_value > 0
+      ) AS last_purchase_date,
+      COALESCE((
+        SELECT sale_value
+        FROM import_batch_items i
+        WHERE i.contact_id = c.id AND i.sale_value > 0
+        ORDER BY COALESCE(NULLIF(i.sale_date, ''), '0000-00-00') DESC, i.id DESC
+        LIMIT 1
+      ), 0) AS last_purchase_value,
+      COALESCE((
+        SELECT AVG(i.sale_value)
+        FROM import_batch_items i
+        WHERE i.contact_id = c.id AND i.sale_value > 0
+      ), 0) AS average_ticket,
+      (
+        SELECT MAX(COALESCE(NULLIF(cb.expires_at, ''), ''))
+        FROM cashbacks cb
+        WHERE cb.contact_id = c.id AND cb.status = 'disponivel'
+      ) AS next_expiration,
+      COALESCE((
+        SELECT seller_name
+        FROM import_batch_items i
+        WHERE i.contact_id = c.id AND COALESCE(i.seller_name, '') <> ''
+        ORDER BY i.id DESC
+        LIMIT 1
+      ), c.seller_name, '') AS latest_seller_name,
+      (
+        SELECT batch_id
+        FROM import_batch_items i
+        WHERE i.contact_id = c.id
+        ORDER BY i.id DESC
+        LIMIT 1
+      ) AS latest_batch_id,
+      (
+        SELECT source
+        FROM import_batches b
+        WHERE b.id = (
+          SELECT batch_id
+          FROM import_batch_items i
+          WHERE i.contact_id = c.id
+          ORDER BY i.id DESC
+          LIMIT 1
+        )
+      ) AS latest_import_source,
+      EXISTS(
+        SELECT 1 FROM campaign_execution ce WHERE ce.contact_id = c.id
+      ) AS has_campaign,
+      EXISTS(
+        SELECT 1 FROM campaign_execution ce WHERE ce.contact_id = c.id AND ce.status = 'respondeu'
+      ) AS responded_campaign,
+      EXISTS(
+        SELECT 1 FROM campaign_execution ce WHERE ce.contact_id = c.id AND ce.status = 'comprou'
+      ) AS bought_after_campaign,
+      EXISTS(
+        SELECT 1 FROM campaign_execution ce WHERE ce.contact_id = c.id AND ce.status = 'pendente'
+      ) AS pending_campaign
+    FROM contacts c
+    ORDER BY c.name COLLATE NOCASE ASC, c.id ASC
+  `);
+
+  const operator = String(filters.operator || "AND").toUpperCase() === "OR" ? "OR" : "AND";
+  const predicates = [];
+  const pushPredicate = (enabled, fn) => {
+    if (enabled) {
+      predicates.push(fn);
+    }
+  };
+  const lostRange = getRelativeDateRange(filters.lostDatePreset || "");
+  const expiringRange = filters.expirationPreset === "today"
+    ? { from: getToday(), to: getToday() }
+    : filters.expirationPreset === "3d"
+      ? { from: getToday(), to: addDays(getToday(), 3) }
+      : filters.expirationPreset === "7d"
+        ? { from: getToday(), to: addDays(getToday(), 7) }
+        : { from: "", to: "" };
+
+  pushPredicate(filters.name, (row) => String(row.name || "").toLowerCase().includes(String(filters.name || "").toLowerCase()));
+  pushPredicate(filters.phone, (row) => {
+    const haystack = sanitizePhone(row.phone || "");
+    const needle = sanitizePhone(filters.phone || "");
+    return haystack.includes(needle);
+  });
+  pushPredicate(filters.gender, (row) => String(row.gender || "") === String(filters.gender));
+  pushPredicate(filters.store, (row) => String(row.store || "") === String(filters.store));
+  pushPredicate(filters.sellerName, (row) => String(row.seller_name || row.latest_seller_name || "") === String(filters.sellerName));
+  pushPredicate(filters.contactStatus, (row) => String(row.status || "") === String(filters.contactStatus));
+  pushPredicate(filters.hasActiveCashback === "1", (row) => Number(row.available_cashback || 0) > 0);
+  pushPredicate(filters.hasActiveCashback === "0", (row) => Number(row.available_cashback || 0) <= 0);
+  pushPredicate(filters.hasLostCashback === "1", (row) => Number(row.lost_cashback || 0) > 0);
+  pushPredicate(filters.hasLostCashback === "0", (row) => Number(row.lost_cashback || 0) <= 0);
+  pushPredicate(filters.minAvailableCashback, (row) => Number(row.available_cashback || 0) >= Number(filters.minAvailableCashback || 0));
+  pushPredicate(filters.maxAvailableCashback, (row) => Number(row.available_cashback || 0) <= Number(filters.maxAvailableCashback || 0));
+  pushPredicate(filters.minLostCashback, (row) => Number(row.lost_cashback || 0) >= Number(filters.minLostCashback || 0));
+  pushPredicate(filters.maxLostCashback, (row) => Number(row.lost_cashback || 0) <= Number(filters.maxLostCashback || 0));
+  pushPredicate(filters.lostDatePreset || filters.lostDateFrom || filters.lostDateTo, (row) => {
+    const value = String(row.lost_date || "");
+    const from = filters.lostDateFrom || lostRange.from;
+    const to = filters.lostDateTo || lostRange.to;
+    return inDateRange(value, from, to);
+  });
+  pushPredicate(filters.expirationPreset || filters.expirationDateFrom || filters.expirationDateTo, (row) => {
+    const value = String(row.next_expiration || "");
+    const from = filters.expirationDateFrom || expiringRange.from;
+    const to = filters.expirationDateTo || expiringRange.to;
+    return inDateRange(value, from, to);
+  });
+  pushPredicate(filters.minLastPurchaseValue, (row) => Number(row.last_purchase_value || 0) >= Number(filters.minLastPurchaseValue || 0));
+  pushPredicate(filters.maxLastPurchaseValue, (row) => Number(row.last_purchase_value || 0) <= Number(filters.maxLastPurchaseValue || 0));
+  pushPredicate(filters.lastPurchasePreset, (row) => {
+    const value = String(row.last_purchase_date || "");
+    if (!value) {
+      return false;
+    }
+    const today = getToday();
+    switch (String(filters.lastPurchasePreset)) {
+      case "30d":
+        return inDateRange(value, addDays(today, -29), today);
+      case "60d":
+        return inDateRange(value, addDays(today, -59), today);
+      case "90d":
+        return inDateRange(value, addDays(today, -89), today);
+      case "90d_plus":
+        return value < addDays(today, -90);
+      default:
+        return true;
+    }
+  });
+  pushPredicate(filters.minAverageTicket, (row) => Number(row.average_ticket || 0) >= Number(filters.minAverageTicket || 0));
+  pushPredicate(filters.maxAverageTicket, (row) => Number(row.average_ticket || 0) <= Number(filters.maxAverageTicket || 0));
+  pushPredicate(filters.importBatchId, (row) => Number(row.latest_batch_id || 0) === Number(filters.importBatchId || 0));
+  pushPredicate(filters.importSource, (row) => String(row.latest_import_source || "").toLowerCase().includes(String(filters.importSource || "").toLowerCase()));
+  pushPredicate(filters.campaignReceived === "1", (row) => Boolean(Number(row.has_campaign || 0)));
+  pushPredicate(filters.campaignReceived === "0", (row) => !Boolean(Number(row.has_campaign || 0)));
+  pushPredicate(filters.campaignResponded === "1", (row) => Boolean(Number(row.responded_campaign || 0)));
+  pushPredicate(filters.campaignResponded === "0", (row) => !Boolean(Number(row.responded_campaign || 0)));
+  pushPredicate(filters.campaignBought === "1", (row) => Boolean(Number(row.bought_after_campaign || 0)));
+  pushPredicate(filters.campaignBought === "0", (row) => !Boolean(Number(row.bought_after_campaign || 0)));
+  pushPredicate(filters.pendingCampaign === "1", (row) => Boolean(Number(row.pending_campaign || 0)));
+  pushPredicate(filters.pendingCampaign === "0", (row) => !Boolean(Number(row.pending_campaign || 0)));
+
+  const filtered = predicates.length
+    ? contacts.filter((row) => operator === "OR" ? predicates.some((predicate) => predicate(row)) : predicates.every((predicate) => predicate(row)))
+    : contacts;
+
+  const results = filtered.map((row) => ({
+    contactId: row.id,
+    name: row.name,
+    phone: row.phone,
+    gender: row.gender || "",
+    store: row.store || "",
+    sellerName: row.seller_name || row.latest_seller_name || "",
+    contactStatus: row.status || "",
+    availableCashback: Number(row.available_cashback || 0),
+    lostCashback: Number(row.lost_cashback || 0),
+    lostDate: row.lost_date || "",
+    lastPurchaseDate: row.last_purchase_date || "",
+    lastPurchaseValue: Number(row.last_purchase_value || 0),
+    averageTicket: Number(row.average_ticket || 0),
+    nextExpiration: row.next_expiration || "",
+    latestImportSource: row.latest_import_source || "",
+    latestBatchId: row.latest_batch_id || null
+  }));
+
+  return {
+    rows: results,
+    cards: {
+      totalClients: results.length,
+      availableCashback: Number(results.reduce((sum, row) => sum + Number(row.availableCashback || 0), 0).toFixed(2)),
+      lostCashback: Number(results.reduce((sum, row) => sum + Number(row.lostCashback || 0), 0).toFixed(2)),
+      estimatedSalesPotential: Number(results.reduce((sum, row) => sum + Math.max(Number(row.availableCashback || 0), Number(row.lostCashback || 0)) * 2, 0).toFixed(2)),
+      highestLostCashback: Number(results.reduce((max, row) => Math.max(max, Number(row.lostCashback || 0)), 0).toFixed(2)),
+      averageTicket: results.length
+        ? Number((results.reduce((sum, row) => sum + Number(row.averageTicket || 0), 0) / results.length).toFixed(2))
+        : 0
+    }
+  };
+}
+
+async function getLostCashbackReport(filters = {}) {
+  const rows = await all(
+    `SELECT
+      e.id,
+      e.contact_id,
+      e.value,
+      e.lost_value,
+      e.event_date,
+      e.expired_at,
+      e.lost_at,
+      e.seller,
+      c.name AS contact_name,
+      c.gender,
+      c.store
+    FROM cashback_events e
+    LEFT JOIN contacts c ON c.id = e.contact_id
+    WHERE e.event_type = 'cashback_perdido'
+    ORDER BY COALESCE(NULLIF(e.lost_at, ''), NULLIF(e.expired_at, ''), NULLIF(e.event_date, ''), SUBSTR(e.created_at, 1, 10)) DESC, e.id DESC`
+  );
+
+  const dateFrom = String(filters.dateFrom || "").trim();
+  const dateTo = String(filters.dateTo || "").trim();
+  const store = String(filters.store || "").trim();
+  const sellerName = String(filters.sellerName || "").trim();
+  const gender = String(filters.gender || "").trim();
+  const minLost = Number(filters.minLost || 0);
+  const filtered = rows.filter((row) => {
+    const eventDate = row.lost_at || row.expired_at || row.event_date || "";
+    if (!inDateRange(eventDate, dateFrom, dateTo)) {
+      return false;
+    }
+    if (store && String(row.store || "") !== store) {
+      return false;
+    }
+    if (sellerName && String(row.seller || "") !== sellerName) {
+      return false;
+    }
+    if (gender && String(row.gender || "") !== gender) {
+      return false;
+    }
+    if (minLost && Number(row.lost_value || row.value || 0) < minLost) {
+      return false;
+    }
+    return true;
+  });
+
+  const totalLost = Number(filtered.reduce((sum, row) => sum + Number(row.lost_value || row.value || 0), 0).toFixed(2));
+  const uniqueClients = new Set(filtered.map((row) => row.contact_id).filter(Boolean)).size;
+  const largestLost = Number(filtered.reduce((max, row) => Math.max(max, Number(row.lost_value || row.value || 0)), 0).toFixed(2));
+  const byStoreMap = new Map();
+  const bySellerMap = new Map();
+  const byGenderMap = new Map();
+
+  filtered.forEach((row) => {
+    const lostValue = Number(row.lost_value || row.value || 0);
+    const storeKey = row.store || "Sem loja";
+    const sellerKey = row.seller || "Sem vendedor";
+    const genderKey = row.gender || "Sem gênero";
+    byStoreMap.set(storeKey, Number(((byStoreMap.get(storeKey) || 0) + lostValue).toFixed(2)));
+    bySellerMap.set(sellerKey, Number(((bySellerMap.get(sellerKey) || 0) + lostValue).toFixed(2)));
+    byGenderMap.set(genderKey, Number(((byGenderMap.get(genderKey) || 0) + lostValue).toFixed(2)));
+  });
+
+  return {
+    summary: {
+      totalLost,
+      impactedClients: uniqueClients,
+      averageLostTicket: uniqueClients ? Number((totalLost / uniqueClients).toFixed(2)) : 0,
+      largestLost
+    },
+    byStore: Array.from(byStoreMap.entries()).map(([label, value]) => ({ label, value })),
+    bySeller: Array.from(bySellerMap.entries()).map(([label, value]) => ({ label, value })),
+    byGender: Array.from(byGenderMap.entries()).map(([label, value]) => ({ label, value })),
+    rows: filtered.map((row) => ({
+      id: row.id,
+      contactId: row.contact_id,
+      customerName: row.contact_name || "Cliente sem nome",
+      lostValue: Number(row.lost_value || row.value || 0),
+      eventDate: row.lost_at || row.expired_at || row.event_date || "",
+      seller: row.seller || "",
+      store: row.store || "",
+      gender: row.gender || ""
+    }))
+  };
+}
+
+async function getDashboardData() {
+  await expireCashbacks();
+  const contactCount = await get("SELECT COUNT(*) AS total FROM contacts");
+  const campaignCount = await get("SELECT COUNT(*) AS total FROM campaigns");
+  const metrics = await all("SELECT key, value FROM metrics ORDER BY key");
+  const metricMap = Object.fromEntries(metrics.map((metric) => [metric.key, metric.value]));
+
+  const cashbackTotals = await get(
+    `SELECT
+      COALESCE(SUM(generated_value), 0) AS generated_total,
+      COALESCE(SUM(available_balance), 0) AS available_total,
+      COALESCE(SUM(used_value), 0) AS used_total,
+      COALESCE(SUM(lost_value), 0) AS lost_total,
+      COALESCE(SUM(CASE WHEN status = 'cancelado' THEN generated_value ELSE 0 END), 0) AS canceled_total
+    FROM cashbacks`
+  );
+
+  const activeClients = await get(
+    `SELECT COUNT(DISTINCT contact_id) AS total
+    FROM cashbacks
+    WHERE status = 'disponivel' AND available_balance > 0`
+  );
+
+  const expiringSoon = await get(
+    `SELECT COUNT(*) AS total
+    FROM cashbacks
+    WHERE status = 'disponivel' AND expires_at <> '' AND expires_at BETWEEN ? AND ?`,
+    [getToday(), addDays(getToday(), 7)]
+  );
+
+  const generatedTotal = Number(cashbackTotals?.generated_total || 0);
+  const usedTotal = Number(cashbackTotals?.used_total || 0);
+  const todayValue = getToday();
+  const yesterdayValue = addDays(todayValue, -1);
+  const cashbackSalesToday = await get(
+    `SELECT
+      COALESCE(SUM(purchase_value), 0) AS sales_total,
+      COALESCE(SUM(cashback_used), 0) AS cashback_used_total,
+      COALESCE(SUM(generated_value), 0) AS generated_total
+    FROM cashback_pin_tokens
+    WHERE status = 'validado' AND SUBSTR(COALESCE(validated_at, created_at), 1, 10) = ?`,
+    [todayValue]
+  );
+  const cashbackSalesPrevious = await get(
+    `SELECT
+      COALESCE(SUM(purchase_value), 0) AS sales_total,
+      COALESCE(SUM(cashback_used), 0) AS cashback_used_total,
+      COALESCE(SUM(generated_value), 0) AS generated_total
+    FROM cashback_pin_tokens
+    WHERE status = 'validado' AND SUBSTR(COALESCE(validated_at, created_at), 1, 10) = ?`,
+    [yesterdayValue]
+  );
+  const lostRecent = await get(
+    `SELECT
+      COALESCE(SUM(value), 0) AS lost_total,
+      COUNT(DISTINCT contact_id) AS clients_total
+    FROM cashback_events
+    WHERE event_type = 'cashback_vencido'
+      AND SUBSTR(COALESCE(created_at, event_date), 1, 10) BETWEEN ? AND ?`,
+    [addDays(todayValue, -15), todayValue]
+  );
+  const sellerRanking = await all(
+    `SELECT
+      COALESCE(c.seller_name, cp.seller_name, 'Sem vendedor') AS seller_name,
+      SUM(CASE WHEN al.action = 'enviado' THEN 1 ELSE 0 END) AS sent_total,
+      SUM(CASE WHEN al.action = 'respondeu' THEN 1 ELSE 0 END) AS response_total,
+      SUM(CASE WHEN al.action = 'comprou' THEN 1 ELSE 0 END) AS conversion_total
+    FROM assistant_logs al
+    LEFT JOIN contacts c ON c.id = al.contact_id
+    LEFT JOIN campaigns cp ON cp.id = al.campaign_id
+    GROUP BY COALESCE(c.seller_name, cp.seller_name, 'Sem vendedor')
+    ORDER BY sent_total DESC, response_total DESC, conversion_total DESC
+    LIMIT 5`
+  );
+  const salesToday = Number(cashbackSalesToday?.sales_total || 0);
+  const salesYesterday = Number(cashbackSalesPrevious?.sales_total || 0);
+  const cashbackUsedToday = Number(cashbackSalesToday?.cashback_used_total || 0);
+  const cashbackUsedYesterday = Number(cashbackSalesPrevious?.cashback_used_total || 0);
+  const generatedToday = Number(cashbackSalesToday?.generated_total || 0);
+  const generatedYesterday = Number(cashbackSalesPrevious?.generated_total || 0);
+  const salesComparison = percentChange(salesToday, salesYesterday);
+  const generatedComparison = percentChange(generatedToday, generatedYesterday);
+  const roiToday = cashbackUsedToday > 0 ? Number((salesToday / cashbackUsedToday).toFixed(2)) : 0;
+  const roiYesterday = cashbackUsedYesterday > 0 ? Number((salesYesterday / cashbackUsedYesterday).toFixed(2)) : 0;
+  const roiComparison = percentChange(roiToday, roiYesterday);
+  const conversionRate = Number(metricMap.sent || 0) > 0
+    ? Number(((Number(metricMap.conversions || 0) / Number(metricMap.sent || 0)) * 100).toFixed(2))
+    : 0;
+
+  return {
+    totalContacts: Number(contactCount?.total || 0),
+    campaignsCreated: Number(campaignCount?.total || 0),
+    messagesPrepared: Number(metricMap.messages_prepared || 0),
+    sent: Number(metricMap.sent || 0),
+    responses: Number(metricMap.responses || 0),
+    conversions: Number(metricMap.conversions || 0),
+    reactivated: Number(metricMap.reactivated || 0),
+    cashbackGeneratedTotal: generatedTotal,
+    cashbackAvailable: Number(cashbackTotals?.available_total || 0),
+    cashbackUsed: usedTotal,
+    cashbackExpired: Number(cashbackTotals?.lost_total || 0),
+    cashbackCanceled: Number(cashbackTotals?.canceled_total || 0),
+    cashbackActiveClients: Number(activeClients?.total || 0),
+    cashbackExpiringSoon: Number(expiringSoon?.total || 0),
+    cashbackRescueRate: generatedTotal > 0 ? Number(((usedTotal / generatedTotal) * 100).toFixed(2)) : 0,
+    cashbackSalesToday: salesToday,
+    cashbackRoiToday: roiToday,
+    conversionRate,
+    periodComparison: {
+      sales: salesComparison,
+      generated: generatedComparison,
+      roi: roiComparison
+    },
+    alerts: {
+      lostRecentValue: Number(lostRecent?.lost_total || 0),
+      lostRecentClients: Number(lostRecent?.clients_total || 0),
+      expiringClients: Number(expiringSoon?.total || 0)
+    },
+    sellerRanking: sellerRanking.map((row) => {
+      const sentTotal = Number(row.sent_total || 0);
+      const responseTotal = Number(row.response_total || 0);
+      const conversionTotal = Number(row.conversion_total || 0);
+      return {
+        sellerName: row.seller_name || "Sem vendedor",
+        sentTotal,
+        responseTotal,
+        conversionTotal,
+        conversionRate: sentTotal > 0 ? Number(((conversionTotal / sentTotal) * 100).toFixed(2)) : 0
+      };
+    })
+  };
+}
+
+async function listCashbacks(filters = {}) {
+  await expireCashbacks();
+  const clauses = [];
+  const params = [];
+
+  if (filters.contactId) {
+    clauses.push("contact_id = ?");
+    params.push(filters.contactId);
+  }
+  if (filters.phone) {
+    clauses.push("customer_phone = ?");
+    params.push(normalizePhone(filters.phone));
+  }
+  if (filters.store) {
+    clauses.push("store = ?");
+    params.push(filters.store);
+  }
+  if (filters.status) {
+    if (filters.status === "vencendo") {
+      clauses.push("status = 'disponivel' AND expires_at <> '' AND expires_at BETWEEN ? AND ?");
+      params.push(getToday(), addDays(getToday(), 7));
+    } else {
+      clauses.push("status = ?");
+      params.push(filters.status);
+    }
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  return all(`SELECT * FROM cashbacks ${where} ORDER BY id DESC`, params);
+}
+
+async function getCashbackSummaryByContactId(contactId) {
+  await expireCashbacks();
+  const totals = await get(
+    `SELECT
+      COALESCE(SUM(CASE WHEN status = 'disponivel' THEN available_balance ELSE 0 END), 0) AS total_disponivel,
+      COALESCE(SUM(CASE WHEN status = 'a_receber' THEN generated_value ELSE 0 END), 0) AS total_a_receber,
+      COALESCE(SUM(generated_value), 0) AS total_gerado,
+      COALESCE(SUM(used_value), 0) AS total_resgatado,
+      COALESCE(SUM(lost_value), 0) AS total_vencido,
+      COALESCE(SUM(CASE WHEN status = 'disponivel' AND expires_at BETWEEN ? AND ? THEN available_balance ELSE 0 END), 0) AS total_a_vencer
+    FROM cashbacks
+    WHERE contact_id = ?`,
+    [getToday(), addDays(getToday(), 7), contactId]
+  );
+
+  return {
+    totalDisponivelHoje: Number(totals?.total_disponivel || 0),
+    bonusAReceber: Number(totals?.total_a_receber || 0),
+    bonusGerado: Number(totals?.total_gerado || 0),
+    bonusResgatado: Number(totals?.total_resgatado || 0),
+    bonusVencido: Number(totals?.total_vencido || 0),
+    bonusAVencer: Number(totals?.total_a_vencer || 0)
+  };
+}
+
+function buildContactsCsv(contacts) {
+  const headers = [
+    "ID",
+    "Nome",
+    "Telefone",
+    "Gênero",
+    "Loja",
+    "Vendedor responsável",
+    "Tags",
+    "Cashback",
+    "Status",
+    "Observações",
+    "Criado em",
+    "Atualizado em"
+  ];
+
+  const rows = contacts.map((contact) => [
+    contact.id,
+    contact.name,
+    contact.phone,
+    contact.gender,
+    contact.store,
+    contact.seller_name || "",
+    contact.status,
+    contact.created_at,
+    contact.updated_at
+  ]);
+
+  return `\uFEFF${headers.join(",")}\n${rows.map((row) => row.map(escapeCsvValue).join(",")).join("\n")}`;
+}
+
+function buildCashbacksCsv(rows) {
+  const headers = [
+    "ID",
+    "Cliente",
+    "Telefone",
+    "Gênero",
+    "Loja",
+    "Vendedor responsável",
+    "Valor da compra",
+    "Percentual",
+    "Cashback gerado",
+    "Saldo disponível",
+    "Usado",
+    "Perdido",
+    "Compra mínima",
+    "Validade",
+    "Status",
+    "Origem",
+    "Criado em",
+    "Atualizado em"
+  ];
+
+  const values = rows.map((row) => [
+    row.id,
+    row.customer_name,
+    row.customer_phone,
+    row.customer_gender || "",
+    row.store,
+    row.seller_name || row.seller,
+    row.purchase_value,
+    row.percentage,
+    row.generated_value,
+    row.available_balance,
+    row.used_value,
+    row.lost_value,
+    row.minimum_purchase,
+    row.expires_at,
+    row.status,
+    row.origin,
+    row.created_at,
+    row.updated_at
+  ]);
+
+  return `\uFEFF${headers.join(",")}\n${values.map((row) => row.map(escapeCsvValue).join(",")).join("\n")}`;
+}
+
+function buildContactsCsv(contacts) {
+  const headers = ["ID", "Nome", "Telefone", "Gênero", "Loja", "Vendedor responsavel", "Status", "Criado em", "Atualizado em"];
+  const rows = contacts.map((contact) => [
+    contact.id,
+    contact.name,
+    contact.phone,
+    contact.gender,
+    contact.store,
+    contact.seller_name || "",
+    contact.status,
+    contact.created_at,
+    contact.updated_at
+  ]);
+  return `\uFEFF${headers.join(",")}\n${rows.map((row) => row.map(escapeCsvValue).join(",")).join("\n")}`;
+}
+
+function campaignStatusFromExecution({ totalClients = 0, processedCount = 0, pendingCount = 0, errorCount = 0, storedStatus = "" }) {
+  const total = Number(totalClients || 0);
+  const processed = Number(processedCount || 0);
+  const pending = Number(pendingCount || 0);
+  const errors = Number(errorCount || 0);
+  const manualStatus = String(storedStatus || "").trim().toLowerCase();
+  if (total <= 0) {
+    return "rascunho";
+  }
+  if (manualStatus === "pausada" && pending > 0) {
+    return errors > 0 ? "pausada com erros" : "pausada";
+  }
+  if (pending <= 0) {
+    return errors > 0 ? "concluída com erros" : "concluída";
+  }
+  if (errors > 0 && processed > 0) {
+    return "em envio com erros";
+  }
+  if (processed > 0) {
+    return "em envio";
+  }
+  return "pronta";
+}
+
+function inDateRange(dateValue, start, end) {
+  const value = String(dateValue || "").slice(0, 10);
+  if (!value) {
+    return true;
+  }
+  if (start && value < start) {
+    return false;
+  }
+  if (end && value > end) {
+    return false;
+  }
+  return true;
+}
+
+function normalizeReportFilters(query = {}) {
+  return {
+    dateFrom: String(query.dateFrom || query.start || "").trim(),
+    dateTo: String(query.dateTo || query.end || "").trim(),
+    store: String(query.store || "").trim(),
+    sellerId: query.sellerId ? Number(query.sellerId) : null,
+    gender: String(query.gender || "").trim(),
+    status: String(query.status || "").trim(),
+    campaignId: query.campaignId ? Number(query.campaignId) : null
+  };
+}
+
+function shiftDateString(dateString, days) {
+  const date = new Date(`${String(dateString).slice(0, 10)}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return date.toISOString().slice(0, 10);
+}
+
+function getMonthBounds(offsetMonths = 0) {
+  const base = new Date(`${getToday()}T00:00:00Z`);
+  const start = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + offsetMonths, 1));
+  const end = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + offsetMonths + 1, 0));
+  return {
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10)
+  };
+}
+
+function percentChange(currentValue, previousValue) {
+  const current = Number(currentValue || 0);
+  const previous = Number(previousValue || 0);
+  const absolute = Number((current - previous).toFixed(2));
+  const percent = previous > 0
+    ? Number((((current - previous) / previous) * 100).toFixed(2))
+    : (current > 0 ? 100 : 0);
+  return { absolute, percent };
+}
+
+function getPresetRange(preset = "today") {
+  const today = getToday();
+  switch (String(preset || "today")) {
+    case "yesterday":
+      return { dateFrom: shiftDateString(today, -1), dateTo: shiftDateString(today, -1) };
+    case "7d":
+      return { dateFrom: shiftDateString(today, -6), dateTo: today };
+    case "30d":
+      return { dateFrom: shiftDateString(today, -29), dateTo: today };
+    case "month":
+      return getMonthBounds(0);
+    case "last-month":
+      return getMonthBounds(-1);
+    case "custom":
+      return { dateFrom: "", dateTo: "" };
+    case "today":
+    default:
+      return { dateFrom: today, dateTo: today };
+  }
+}
+
+function normalizeCashbackReportFilters(query = {}) {
+  const preset = String(query.preset || "today").trim() || "today";
+  const presetRange = getPresetRange(preset);
+  const dateFrom = String(query.dateFrom || presetRange.dateFrom || "").trim();
+  const dateTo = String(query.dateTo || presetRange.dateTo || "").trim();
+  const page = Math.max(1, Number(query.page || 1));
+  const perPage = Math.min(100, Math.max(1, Number(query.perPage || 10)));
+  const sortBy = String(query.sortBy || "date").trim();
+  const sortDir = String(query.sortDir || "desc").trim().toLowerCase() === "asc" ? "asc" : "desc";
+  const metric = String(query.metric || "generated").trim();
+  const previousDateTo = dateFrom ? shiftDateString(dateFrom, -1) : "";
+  const previousDateFrom = dateFrom && dateTo
+    ? shiftDateString(dateFrom, -Math.max(1, Math.round((new Date(`${dateTo}T00:00:00Z`) - new Date(`${dateFrom}T00:00:00Z`)) / 86400000) + 1))
+    : "";
+
+  return {
+    preset,
+    dateFrom,
+    dateTo,
+    previousDateFrom,
+    previousDateTo,
+    store: String(query.store || "").trim(),
+    sellerId: query.sellerId ? Number(query.sellerId) : null,
+    status: String(query.status || "").trim(),
+    metric,
+    sortBy,
+    sortDir,
+    page,
+    perPage
+  };
+}
+
+function isExpiringSoon(dateValue) {
+  const value = String(dateValue || "").slice(0, 10);
+  if (!value) {
+    return false;
+  }
+  const today = getToday();
+  const upcoming = addDays(today, 7);
+  return value >= today && value <= upcoming;
+}
+
+function sortCashbackReportRows(rows, sortBy = "date", sortDir = "desc") {
+  const direction = sortDir === "asc" ? 1 : -1;
+  const sorted = [...rows];
+  sorted.sort((left, right) => {
+    const pick = (row) => {
+      switch (sortBy) {
+        case "customer_name":
+          return String(row.customer_name || "").toLowerCase();
+        case "purchase_value":
+          return Number(row.purchase_value || 0);
+        case "cashback_used":
+          return Number(row.cashback_used || 0);
+        case "amount_paid":
+          return Number(row.amount_paid || 0);
+        case "generated_value":
+          return Number(row.generated_value || 0);
+        case "date":
+        default:
+          return String(row.date || "");
+      }
+    };
+    const leftValue = pick(left);
+    const rightValue = pick(right);
+    if (typeof leftValue === "string" || typeof rightValue === "string") {
+      return String(leftValue).localeCompare(String(rightValue), "pt-BR") * direction;
+    }
+    return (Number(leftValue) - Number(rightValue)) * direction;
+  });
+  return sorted;
+}
+
+function filterCashbackRowsByMetric(rows, metric = "generated") {
+  switch (metric) {
+    case "redeemed":
+      return rows.filter((row) => Number(row.cashback_used || 0) > 0);
+    case "lost":
+      return rows.filter((row) => Number(row.lost_value || 0) > 0);
+    case "expiring":
+      return rows.filter((row) => row.expiringSoon);
+    case "generated":
+    default:
+      return rows;
+  }
+}
+
+async function buildCashbackReportData(rawFilters = {}) {
+  const filters = normalizeCashbackReportFilters(rawFilters);
+  const [tokens, cashbacks] = await Promise.all([
+    all("SELECT * FROM cashback_pin_tokens WHERE status = 'validado' ORDER BY id DESC"),
+    all("SELECT * FROM cashbacks ORDER BY id DESC")
+  ]);
+
+  const cashbackByPin = new Map();
+  cashbacks.forEach((cashback) => {
+    if (cashback.pin_code) {
+      const key = `${cashback.contact_id || 0}:${cashback.pin_code}`;
+      if (!cashbackByPin.has(key)) {
+        cashbackByPin.set(key, cashback);
+      }
+    }
+  });
+
+  const tokenRows = tokens.map((token) => {
+    const generatedCashback = cashbackByPin.get(`${token.contact_id || 0}:${token.pin_code}`) || null;
+    const availableCashback = Number(token.available_cashback || 0);
+    const cashbackUsed = Number(token.cashback_used || 0);
+    const lostValue = Number(Math.max(availableCashback - cashbackUsed, 0).toFixed(2));
+    const date = token.validated_at || token.used_at || token.created_at;
+    return {
+      id: `token-${token.id}`,
+      source: "wizard",
+      source_id: token.id,
+      date,
+      customer_name: token.customer_name,
+      customer_phone: token.customer_phone,
+      purchase_value: Number(token.purchase_value || 0),
+      cashback_used: cashbackUsed,
+      amount_paid: Number(token.amount_paid || token.purchase_value || 0),
+      generated_value: Number(token.generated_value || 0),
+      seller_id: token.seller_id ? Number(token.seller_id) : null,
+      seller_name: token.seller_name || "",
+      store: token.store || "",
+      status: generatedCashback?.status || "disponivel",
+      available_balance: Number(generatedCashback?.available_balance || 0),
+      lost_value: lostValue,
+      expires_at: generatedCashback?.expires_at || "",
+      expiringSoon: isExpiringSoon(generatedCashback?.expires_at || ""),
+      growth_date: String(date || "").slice(0, 10)
+    };
+  });
+
+  const manualRows = cashbacks
+    .filter((cashback) => !cashback.pin_code)
+    .map((cashback) => ({
+      id: `cashback-${cashback.id}`,
+      source: "manual",
+      source_id: cashback.id,
+      date: cashback.created_at,
+      customer_name: cashback.customer_name,
+      customer_phone: cashback.customer_phone,
+      purchase_value: Number(cashback.purchase_value || 0),
+      cashback_used: 0,
+      amount_paid: Number(cashback.purchase_value || 0),
+      generated_value: Number(cashback.generated_value || 0),
+      seller_id: cashback.seller_id ? Number(cashback.seller_id) : null,
+      seller_name: cashback.seller_name || cashback.seller || "",
+      store: cashback.store || "",
+      status: cashback.status || "disponivel",
+      available_balance: Number(cashback.available_balance || 0),
+      lost_value: Number(cashback.lost_value || 0),
+      expires_at: cashback.expires_at || "",
+      expiringSoon: isExpiringSoon(cashback.expires_at || ""),
+      growth_date: String(cashback.created_at || "").slice(0, 10)
+    }));
+
+  const allRows = [...tokenRows, ...manualRows];
+
+  const applyBaseFilters = (rows, dateFrom, dateTo) =>
+    rows.filter((row) => {
+      if (!inDateRange(row.growth_date || row.date, dateFrom, dateTo)) {
+        return false;
+      }
+      if (filters.store && row.store !== filters.store) {
+        return false;
+      }
+      if (filters.sellerId && Number(row.seller_id || 0) !== filters.sellerId) {
+        return false;
+      }
+      if (filters.status && row.status !== filters.status) {
+        return false;
+      }
+      return true;
+    });
+
+  const currentRows = applyBaseFilters(allRows, filters.dateFrom, filters.dateTo);
+  const previousRows = applyBaseFilters(allRows, filters.previousDateFrom, filters.previousDateTo);
+  const metricRows = filterCashbackRowsByMetric(currentRows, filters.metric);
+  const sortedRows = sortCashbackReportRows(metricRows, filters.sortBy, filters.sortDir);
+  const totalRows = sortedRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / filters.perPage));
+  const page = Math.min(filters.page, totalPages);
+  const offset = (page - 1) * filters.perPage;
+  const paginatedRows = sortedRows.slice(offset, offset + filters.perPage);
+
+  const sum = (rows, field) => rows.reduce((total, row) => total + Number(row[field] || 0), 0);
+  const generatedValue = sum(currentRows, "generated_value");
+  const generatedCount = currentRows.length;
+  const redeemedValue = sum(currentRows.filter((row) => Number(row.cashback_used || 0) > 0), "cashback_used");
+  const previousRedeemedValue = sum(previousRows.filter((row) => Number(row.cashback_used || 0) > 0), "cashback_used");
+  const lostValue = sum(currentRows.filter((row) => Number(row.lost_value || 0) > 0), "lost_value");
+  const expiringRows = currentRows.filter((row) => row.expiringSoon && Number(row.available_balance || 0) > 0);
+  const expiringValue = sum(expiringRows, "available_balance");
+  const salesFromCashback = sum(currentRows.filter((row) => Number(row.cashback_used || 0) > 0), "purchase_value");
+  const roi = redeemedValue > 0 ? Number((salesFromCashback / redeemedValue).toFixed(2)) : 0;
+  const estimatedProfit = Number((sum(currentRows, "amount_paid") - generatedValue).toFixed(2));
+
+  return {
+    filters: {
+      ...filters,
+      page,
+      totalPages
+    },
+    summary: {
+      generated: {
+        value: generatedValue,
+        quantity: generatedCount
+      },
+      redeemed: {
+        value: redeemedValue,
+        growth: previousRedeemedValue > 0 ? Number((((redeemedValue - previousRedeemedValue) / previousRedeemedValue) * 100).toFixed(2)) : (redeemedValue > 0 ? 100 : 0)
+      },
+      lost: {
+        value: lostValue,
+        returnPercent: lostValue > 0 ? Number(((salesFromCashback / lostValue) * 100).toFixed(2)) : 0
+      },
+      expiring: {
+        value: expiringValue,
+        quantity: expiringRows.length
+      }
+    },
+    indicators: {
+      salesGeneratedByCashback: salesFromCashback,
+      roi,
+      estimatedProfit
+    },
+    pagination: {
+      page,
+      perPage: filters.perPage,
+      totalRows,
+      totalPages
+    },
+    rows: paginatedRows,
+    exportRows: sortedRows
+  };
+}
+
+function buildCashbackReportExcelRows(rows) {
+  return rows.map((row) => ({
+    Data: String(row.date || "").slice(0, 10),
+    Cliente: row.customer_name || "",
+    Telefone: row.customer_phone || "",
+    "Valor da venda": Number(row.purchase_value || 0),
+    "Cashback usado": Number(row.cashback_used || 0),
+    "Valor pago real": Number(row.amount_paid || 0),
+    "Cashback gerado": Number(row.generated_value || 0),
+    Vendedor: row.seller_name || "",
+    Loja: row.store || ""
+  }));
+}
+
+async function buildReportsData(rawFilters = {}) {
+  const filters = normalizeReportFilters(rawFilters);
+  const [contacts, campaigns, executionRows, cashbacks, sellers, assistantLogs] = await Promise.all([
+    all("SELECT * FROM contacts ORDER BY id DESC"),
+    listCampaigns(),
+    all(
+      `SELECT
+        ce.*,
+        c.name AS campaign_name,
+        c.store AS campaign_store,
+        c.seller_id AS campaign_seller_id,
+        c.seller_name AS campaign_seller_name,
+        ct.name AS contact_name,
+        ct.phone AS contact_phone,
+        ct.gender AS contact_gender,
+        ct.store AS contact_store,
+        ct.status AS contact_status,
+        ct.seller_id AS contact_seller_id,
+        ct.seller_name AS contact_seller_name
+      FROM campaign_execution ce
+      JOIN campaigns c ON c.id = ce.campaign_id
+      JOIN contacts ct ON ct.id = ce.contact_id
+      ORDER BY ce.id DESC`
+    ),
+    all(
+      `SELECT
+        cb.*,
+        c.gender AS contact_gender_current
+      FROM cashbacks cb
+      LEFT JOIN contacts c ON c.id = cb.contact_id
+      ORDER BY cb.id DESC`
+    ),
+    all("SELECT * FROM sellers ORDER BY name ASC"),
+    all(
+      `SELECT
+        al.*,
+        c.name AS campaign_name,
+        ct.name AS contact_name,
+        ct.gender AS contact_gender,
+        ct.store AS contact_store,
+        ct.status AS contact_status,
+        ct.seller_id AS contact_seller_id
+      FROM assistant_logs al
+      LEFT JOIN campaigns c ON c.id = al.campaign_id
+      LEFT JOIN contacts ct ON ct.id = al.contact_id
+      ORDER BY al.id DESC`
+    )
+  ]);
+
+  const contactsFiltered = contacts.filter((contact) => {
+    if (!inDateRange(contact.created_at, filters.dateFrom, filters.dateTo)) {
+      return false;
+    }
+    if (filters.store && contact.store !== filters.store) {
+      return false;
+    }
+    if (filters.sellerId && Number(contact.seller_id || 0) !== filters.sellerId) {
+      return false;
+    }
+    if (filters.gender && contact.gender !== filters.gender) {
+      return false;
+    }
+    if (filters.status && contact.status !== filters.status) {
+      return false;
+    }
+    return true;
+  });
+
+  const campaignsFiltered = campaigns.filter((campaign) => {
+    if (!inDateRange(campaign.created_at, filters.dateFrom, filters.dateTo)) {
+      return false;
+    }
+    if (filters.store && campaign.store !== filters.store) {
+      return false;
+    }
+    if (filters.sellerId && Number(campaign.sellerId || 0) !== filters.sellerId) {
+      return false;
+    }
+    if (filters.campaignId && Number(campaign.id) !== filters.campaignId) {
+      return false;
+    }
+    return true;
+  });
+
+  const allowedCampaignIds = new Set(campaignsFiltered.map((campaign) => Number(campaign.id)));
+  const executionFiltered = executionRows.filter((row) => {
+    if (filters.campaignId && Number(row.campaign_id) !== filters.campaignId) {
+      return false;
+    }
+    if (allowedCampaignIds.size && !allowedCampaignIds.has(Number(row.campaign_id))) {
+      return false;
+    }
+    if (!inDateRange(row.created_at || row.sent_at || row.responded_at, filters.dateFrom, filters.dateTo)) {
+      return false;
+    }
+    if (filters.store && (row.contact_store || row.campaign_store) !== filters.store) {
+      return false;
+    }
+    if (filters.sellerId) {
+      const sellerId = Number(row.campaign_seller_id || row.seller_id || row.contact_seller_id || 0);
+      if (sellerId !== filters.sellerId) {
+        return false;
+      }
+    }
+    if (filters.gender && row.contact_gender !== filters.gender) {
+      return false;
+    }
+    if (filters.status && row.contact_status !== filters.status) {
+      return false;
+    }
+    return true;
+  });
+
+  const cashbacksFiltered = cashbacks.filter((row) => {
+    if (!inDateRange(row.created_at, filters.dateFrom, filters.dateTo)) {
+      return false;
+    }
+    if (filters.store && row.store !== filters.store) {
+      return false;
+    }
+    if (filters.sellerId && Number(row.seller_id || 0) !== filters.sellerId) {
+      return false;
+    }
+    const gender = row.customer_gender || row.contact_gender_current || "";
+    if (filters.gender && gender !== filters.gender) {
+      return false;
+    }
+    if (filters.status && row.status !== filters.status) {
+      return false;
+    }
+    return true;
+  });
+
+  const logsFiltered = assistantLogs.filter((row) => {
+    if (!inDateRange(row.created_at, filters.dateFrom, filters.dateTo)) {
+      return false;
+    }
+    if (filters.campaignId && Number(row.campaign_id) !== filters.campaignId) {
+      return false;
+    }
+    if (filters.store && row.contact_store !== filters.store) {
+      return false;
+    }
+    if (filters.sellerId && Number(row.contact_seller_id || 0) !== filters.sellerId) {
+      return false;
+    }
+    if (filters.gender && row.contact_gender !== filters.gender) {
+      return false;
+    }
+    if (filters.status && row.contact_status !== filters.status) {
+      return false;
+    }
+    return true;
+  });
+
+  return {
+    filters,
+    contactsFiltered,
+    campaignsFiltered,
+    executionFiltered,
+    cashbacksFiltered,
+    sellers,
+    logsFiltered
+  };
+}
+
+async function getReportsOverview(rawFilters = {}) {
+  const { contactsFiltered, campaignsFiltered, executionFiltered, cashbacksFiltered, sellers, logsFiltered } = await buildReportsData(rawFilters);
+  const totalExecution = executionFiltered.length;
+  const processedExecution = executionFiltered.filter((row) => row.status !== "pendente").length;
+  const sentLogs = logsFiltered.filter((row) => row.action === "enviado").length;
+  const generatedTotal = cashbacksFiltered.reduce((sum, row) => sum + Number(row.generated_value || 0), 0);
+  const usedTotal = cashbacksFiltered.reduce((sum, row) => sum + Number(row.used_value || 0), 0);
+  const expiredTotal = cashbacksFiltered.reduce((sum, row) => sum + Number(row.lost_value || 0), 0);
+  const canceledTotal = cashbacksFiltered
+    .filter((row) => row.status === "cancelado")
+    .reduce((sum, row) => sum + Number(row.generated_value || 0), 0);
+
+  return {
+    totalContacts: contactsFiltered.length,
+    contactsByGender: CONTACT_GENDERS.map((gender) => ({
+      gender,
+      total: contactsFiltered.filter((contact) => contact.gender === gender).length
+    })),
+    contactsByStore: STORES.map((store) => ({
+      store,
+      total: contactsFiltered.filter((contact) => contact.store === store).length
+    })),
+    contactsBySeller: sellers.map((seller) => ({
+      sellerId: seller.id,
+      sellerName: seller.name,
+      total: contactsFiltered.filter((contact) => Number(contact.seller_id || 0) === Number(seller.id)).length
+    })),
+    totalCampaigns: campaignsFiltered.length,
+    campaignsActive: campaignsFiltered.filter((campaign) => campaign.status === "em envio" || campaign.status === "pronta").length,
+    campaignsCompleted: campaignsFiltered.filter((campaign) => campaign.status === "concluida").length,
+    messagesSent: sentLogs,
+    campaignExecutionRate: totalExecution > 0 ? Number(((processedExecution / totalExecution) * 100).toFixed(2)) : 0,
+    cashbackGenerated: generatedTotal,
+    cashbackUsed: usedTotal,
+    cashbackExpired: expiredTotal,
+    cashbackCanceled: canceledTotal,
+    rescueRate: generatedTotal > 0 ? Number(((usedTotal / generatedTotal) * 100).toFixed(2)) : 0
+  };
+}
+
+async function getReportsBySeller(rawFilters = {}) {
+  const { contactsFiltered, campaignsFiltered, executionFiltered, cashbacksFiltered, sellers, logsFiltered } = await buildReportsData(rawFilters);
+  return sellers.map((seller) => {
+    const sellerId = Number(seller.id);
+    const sellerContacts = contactsFiltered.filter((contact) => Number(contact.seller_id || 0) === sellerId);
+    const sellerCampaigns = campaignsFiltered.filter((campaign) => Number(campaign.sellerId || 0) === sellerId);
+    const sellerExecution = executionFiltered.filter((row) => Number(row.campaign_seller_id || row.seller_id || row.contact_seller_id || 0) === sellerId);
+    const sent = sellerExecution.filter((row) => row.status !== "pendente").length;
+    const responded = sellerExecution.filter((row) => row.status === "respondeu").length;
+    const purchases = logsFiltered.filter((row) => row.action === "comprou" && Number(row.contact_seller_id || 0) === sellerId).length;
+    const cashbackGenerated = cashbacksFiltered
+      .filter((row) => Number(row.seller_id || 0) === sellerId)
+      .reduce((sum, row) => sum + Number(row.generated_value || 0), 0);
+    return {
+      sellerId,
+      sellerName: seller.name,
+      contactsRegistered: sellerContacts.length,
+      campaignsCreated: sellerCampaigns.length,
+      sends: sent,
+      responses: responded,
+      purchases,
+      cashbackGenerated,
+      executionRate: sellerExecution.length ? Number(((sent / sellerExecution.length) * 100).toFixed(2)) : 0
+    };
+  });
+}
+
+async function getReportsByGender(rawFilters = {}) {
+  const { contactsFiltered, cashbacksFiltered, executionFiltered, logsFiltered } = await buildReportsData(rawFilters);
+  return CONTACT_GENDERS.map((gender) => {
+    const genderCashbacks = cashbacksFiltered.filter((row) => (row.customer_gender || row.contact_gender_current || "") === gender);
+    const genderExecution = executionFiltered.filter((row) => row.contact_gender === gender);
+    const purchases = logsFiltered.filter((row) => row.action === "comprou" && row.contact_gender === gender).length;
+    return {
+      gender,
+      totalContacts: contactsFiltered.filter((contact) => contact.gender === gender).length,
+      cashbackGenerated: genderCashbacks.reduce((sum, row) => sum + Number(row.generated_value || 0), 0),
+      cashbackUsed: genderCashbacks.reduce((sum, row) => sum + Number(row.used_value || 0), 0),
+      campaigns: new Set(genderExecution.map((row) => row.campaign_id)).size,
+      conversion: genderExecution.length ? Number(((purchases / genderExecution.length) * 100).toFixed(2)) : 0
+    };
+  });
+}
+
+async function getReportsByStore(rawFilters = {}) {
+  const { contactsFiltered, campaignsFiltered, executionFiltered, cashbacksFiltered } = await buildReportsData(rawFilters);
+  return STORES.map((store) => {
+    const storeCashbacks = cashbacksFiltered.filter((row) => row.store === store);
+    const storeExecution = executionFiltered.filter((row) => (row.contact_store || row.campaign_store) === store);
+    const generated = storeCashbacks.reduce((sum, row) => sum + Number(row.generated_value || 0), 0);
+    const used = storeCashbacks.reduce((sum, row) => sum + Number(row.used_value || 0), 0);
+    const expired = storeCashbacks.reduce((sum, row) => sum + Number(row.lost_value || 0), 0);
+    return {
+      store,
+      contacts: contactsFiltered.filter((contact) => contact.store === store).length,
+      campaigns: campaignsFiltered.filter((campaign) => campaign.store === store).length,
+      sends: storeExecution.filter((row) => row.status !== "pendente").length,
+      cashbackGenerated: generated,
+      cashbackUsed: used,
+      cashbackExpired: expired,
+      rescueRate: generated > 0 ? Number(((used / generated) * 100).toFixed(2)) : 0
+    };
+  });
+}
+
+async function buildReportsCsv(rawFilters = {}) {
+  const overview = await getReportsOverview(rawFilters);
+  const sellers = await getReportsBySeller(rawFilters);
+  const genders = await getReportsByGender(rawFilters);
+  const stores = await getReportsByStore(rawFilters);
+  const headers = ["Secao", "Chave", "Metrica", "Valor"];
+  const rows = [];
+
+  rows.push(["overview", "contatos", "Total de contatos", overview.totalContacts]);
+  rows.push(["overview", "campanhas", "Total campanhas", overview.totalCampaigns]);
+  rows.push(["overview", "campanhas", "Campanhas ativas", overview.campaignsActive]);
+  rows.push(["overview", "campanhas", "Campanhas concluidas", overview.campaignsCompleted]);
+  rows.push(["overview", "mensagens", "Mensagens enviadas", overview.messagesSent]);
+  rows.push(["overview", "execucao", "Taxa execucao campanhas", `${overview.campaignExecutionRate}%`]);
+  rows.push(["overview", "cashback", "Cashback gerado", overview.cashbackGenerated]);
+  rows.push(["overview", "cashback", "Cashback usado", overview.cashbackUsed]);
+  rows.push(["overview", "cashback", "Cashback vencido", overview.cashbackExpired]);
+  rows.push(["overview", "cashback", "Cashback cancelado", overview.cashbackCanceled]);
+  rows.push(["overview", "cashback", "Taxa de resgate", `${overview.rescueRate}%`]);
+
+  sellers.forEach((row) => {
+    rows.push(["seller", row.sellerName, "Contatos cadastrados", row.contactsRegistered]);
+    rows.push(["seller", row.sellerName, "Campanhas criadas", row.campaignsCreated]);
+    rows.push(["seller", row.sellerName, "Envios", row.sends]);
+    rows.push(["seller", row.sellerName, "Respostas", row.responses]);
+    rows.push(["seller", row.sellerName, "Compras", row.purchases]);
+    rows.push(["seller", row.sellerName, "Cashback gerado", row.cashbackGenerated]);
+    rows.push(["seller", row.sellerName, "Taxa execucao", `${row.executionRate}%`]);
+  });
+
+  genders.forEach((row) => {
+    rows.push(["gender", row.gender, "Total contatos", row.totalContacts]);
+    rows.push(["gender", row.gender, "Cashback gerado", row.cashbackGenerated]);
+    rows.push(["gender", row.gender, "Cashback usado", row.cashbackUsed]);
+    rows.push(["gender", row.gender, "Campanhas", row.campaigns]);
+    rows.push(["gender", row.gender, "Conversão", `${row.conversion}%`]);
+  });
+
+  stores.forEach((row) => {
+    rows.push(["store", row.store, "Contatos", row.contacts]);
+    rows.push(["store", row.store, "Campanhas", row.campaigns]);
+    rows.push(["store", row.store, "Envios", row.sends]);
+    rows.push(["store", row.store, "Cashback gerado", row.cashbackGenerated]);
+    rows.push(["store", row.store, "Cashback usado", row.cashbackUsed]);
+    rows.push(["store", row.store, "Cashback vencido", row.cashbackExpired]);
+    rows.push(["store", row.store, "Taxa resgaté", `${row.rescueRate}%`]);
+  });
+
+  return `\uFEFF${headers.join(",")}\n${rows.map((row) => row.map(escapeCsvValue).join(",")).join("\n")}`;
+}
+
+app.get("/api/health", async (req, res) => {
+  res.json({
+    ok: true,
+    port: PORT,
+    database: dbPath
+  });
+});
+
+app.get("/api/runtime-version", async (req, res) => {
+  let tables = [];
+  try {
+    tables = await all(
+      `SELECT name
+       FROM sqlite_master
+       WHERE type = 'table'
+         AND name IN ('ai_conversation_state', 'ai_product_categories', 'ai_product_genders', 'ai_product_colors', 'ai_product_sizes')
+       ORDER BY name`
+    );
+  } catch (error) {
+    tables = [];
+  }
+
+  res.json({
+    version: RUNTIME_VERSION,
+    cwd: process.cwd(),
+    dirname: __dirname,
+    filename: __filename,
+    bootTime: BOOT_TIME,
+    nodeVersion: process.version,
+    database: dbPath,
+    tables: tables.map((item) => item.name)
+  });
+});
+
+async function handleAuthLogin(req, res) {
+  try {
+    const usernameOrEmail = String(req.body.username || req.body.email || req.body.login || "").trim();
+    const email = usernameOrEmail.includes("@") ? usernameOrEmail.toLowerCase() : "";
+    const username = usernameOrEmail.includes("@") ? "" : usernameOrEmail.toLowerCase();
+    const password = String(req.body.password || "");
+    if ((!email && !username) || !password) {
+      res.status(400).json({ error: "Informe usuário/e-mail e senha." });
+      return;
+    }
+
+    const user = email
+      ? await get(
+        `SELECT *
+         FROM users
+         WHERE status = 'ativo'
+           AND lower(email) = ?
+         ORDER BY id ASC
+         LIMIT 1`,
+        [email]
+      )
+      : await get(
+        `SELECT *
+         FROM users
+         WHERE status = 'ativo'
+           AND lower(username) = ?
+         ORDER BY id ASC
+         LIMIT 1`,
+        [username]
+      );
+    if (!user || user.password_hash !== hashPassword(password)) {
+      res.status(401).json({ error: "Credenciais invalidas." });
+      return;
+    }
+
+    const token = createSessionToken();
+    const expiresAt = new Date(Date.now() + AUTH_SESSION_MAX_AGE_MS).toISOString();
+    await run(
+      "INSERT INTO user_sessions (user_id, token, expires_at, created_at) VALUES (?, ?, ?, datetime('now'))",
+      [user.id, token, expiresAt]
+    );
+    setAuthSessionCookie(res, token);
+
+    res.json({
+      success: true,
+      session: COOKIE_SESSION_MARKER,
+      user: serializeAuthUser(user)
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao realizar login." });
+  }
+}
+
+app.post("/api/login", handleAuthLogin);
+app.post("/api/auth/login", handleAuthLogin);
+
+app.post("/api/payments/pagbank/webhook", async (req, res) => {
+  try {
+    const mapped = applyPagBankWebhookToSale(req.body || {}, { source: "generic" });
+    console.log("[PAGBANK WEBHOOK] generic", {
+      headers: {
+        "content-type": req.headers["content-type"] || "",
+        "x-request-id": req.headers["x-request-id"] || ""
+      },
+      payload: req.body || {},
+      mapped
+    });
+    // TODO: validar autenticidade da notificação PagBank.
+    res.status(200).json({ received: true, mapped });
+  } catch (error) {
+    console.error("[PAGBANK WEBHOOK] generic error", error);
+    res.status(200).json({ received: true });
+  }
+});
+
+app.post("/api/payments/pagbank/webhook/checkout", async (req, res) => {
+  try {
+    const mapped = applyPagBankWebhookToSale(req.body || {}, { source: "checkout" });
+    console.log("[PAGBANK WEBHOOK] checkout", { payload: req.body || {}, mapped });
+    // TODO: validar autenticidade da notificação PagBank.
+    // TODO: consultar o checkout antes de refletir qualquer alteração interna.
+    res.status(200).json({ received: true, mapped });
+  } catch (error) {
+    console.error("[PAGBANK WEBHOOK] checkout error", error);
+    res.status(200).json({ received: true });
+  }
+});
+
+app.post("/api/payments/pagbank/webhook/payment", async (req, res) => {
+  try {
+    const mapped = applyPagBankWebhookToSale(req.body || {}, { source: "payment" });
+    console.log("[PAGBANK WEBHOOK] payment", { payload: req.body || {}, mapped });
+    // TODO: validar autenticidade da notificação PagBank.
+    // TODO: consultar o pagamento no PagBank antes de atualizar pedido/financeiro interno.
+    res.status(200).json({ received: true, mapped });
+  } catch (error) {
+    console.error("[PAGBANK WEBHOOK] payment error", error);
+    res.status(200).json({ received: true });
+  }
+});
+
+app.use("/api", authMiddleware);
+
+function handleAuthMe(req, res) {
+  res.json({
+    success: true,
+    user: serializeAuthUser(req.user)
+  });
+}
+
+app.get("/api/me", handleAuthMe);
+app.get("/api/auth/me", handleAuthMe);
+
+app.get("/api/pdv/manifest", async (req, res) => {
+  try {
+    res.json(getPdvFoundationManifest());
+  } catch (error) {
+    console.error("Erro ao carregar manifesto do PDV:", error);
+    res.status(500).json({ error: "Falha ao carregar a fundação do PDV." });
+  }
+});
+
+app.use("/api/pdv/imports", pdvImportRouter);
+app.use("/api/pdv/consolidation", requirePermission("can_view_consolidation"), pdvConsolidationRouter);
+app.use("/api/pdv/operational", requirePermission("can_sell"), pdvOperationalRouter);
+app.use("/api/pdv/sales", pdvSalesRouter);
+app.use("/api/pdv/control", pdvControlRouter);
+app.use("/api/pdv/experience", pdvExperienceRouter);
+app.use("/api/pdv/inventory", pdvInventoryRouter);
+app.use("/api/pdv/labels", pdvLabelRouter);
+app.use("/api/pdv/reports", requirePermission("can_view_store_reports"), pdvReportsRouter);
+app.use("/api/pdv/insights", requirePermission("can_view_store_reports"), pdvInsightsRouter);
+app.use("/api/pdv/seed", pdvSeedRouter);
+
+app.get("/api/payments/pagbank/config", requireManager, async (req, res) => {
+  try {
+    const config = getPagBankConfig();
+    res.json({
+      env: config.env,
+      hasToken: Boolean(config.token),
+      webhookUrl: config.webhookUrl,
+      redirectUrl: config.redirectUrl,
+      returnUrl: config.returnUrl,
+      installmentsLimit: config.installmentsLimit,
+      interestFreeInstallments: config.interestFreeInstallments,
+      softDescriptor: config.softDescriptor
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar a configuração do PagSeguro/PagBank." });
+  }
+});
+
+app.post("/api/payments/pagbank/checkout", requireManager, async (req, res) => {
+  try {
+    const result = await createPagBankCheckout(req.body || {});
+    res.json(result);
+  } catch (error) {
+    const isKnown = error instanceof PagBankError;
+    const providerStatus = error.details?.providerStatus || 0;
+    const providerBody = error.details?.providerBody || null;
+    const sanitizedPayload = error.details?.sanitizedPayload || null;
+    console.error("PagBank provider error:", JSON.stringify({
+      status: providerStatus,
+      body: providerBody,
+      payload: sanitizedPayload
+    }, null, 2));
+    res.status(isKnown ? error.statusCode : 500).json({
+      error: isKnown ? error.message : "Não foi possível gerar o link PagSeguro/PagBank. Verifique token, ambiente e dados enviados.",
+      details: isKnown ? error.details || null : null
+    });
+  }
+});
+
+app.get("/api/payments/pagbank/checkout/:checkoutId", requireManager, async (req, res) => {
+  try {
+    const result = await getPagBankCheckout(req.params.checkoutId);
+    res.json(result);
+  } catch (error) {
+    const isKnown = error instanceof PagBankError;
+    console.error("[PAGBANK CHECKOUT LOOKUP ERROR]", {
+      checkoutId: req.params.checkoutId,
+      message: error.message || error,
+      details: error.details || null
+    });
+    res.status(isKnown ? error.statusCode : 500).json({
+      error: isKnown ? error.message : "Não foi possível consultar o checkout PagSeguro/PagBank.",
+      details: isKnown ? error.details || null : null
+    });
+  }
+});
+
+async function handleAuthLogout(req, res) {
+  const authHeader = String(req.headers.authorization || "");
+  const token = getSessionTokenFromRequest(req) || (authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "");
+  if (token) {
+    await run("DELETE FROM user_sessions WHERE token = ?", [token]);
+  }
+  clearAuthSessionCookie(res);
+  res.json({ success: true });
+}
+
+app.post("/api/logout", handleAuthLogout);
+app.post("/api/auth/logout", handleAuthLogout);
+
+app.get("/api/dashboard", async (req, res) => {
+  try {
+    res.json(await getDashboardData());
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar o painel." });
+  }
+});
+
+app.get("/api/dashboard/cashback", async (req, res) => {
+  try {
+    const dashboard = await getDashboardData();
+    res.json({
+      cashbackGeneratedTotal: dashboard.cashbackGeneratedTotal,
+      cashbackAvailable: dashboard.cashbackAvailable,
+      cashbackUsed: dashboard.cashbackUsed,
+      cashbackExpired: dashboard.cashbackExpired,
+      cashbackCanceled: dashboard.cashbackCanceled,
+      cashbackActiveClients: dashboard.cashbackActiveClients,
+      cashbackExpiringSoon: dashboard.cashbackExpiringSoon,
+      cashbackRescueRate: dashboard.cashbackRescueRate
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar o dashboard de cashback." });
+  }
+});
+
+app.get("/api/reports/overview", async (req, res) => {
+  try {
+    if (!isManager(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+      return;
+    }
+    const filters = req.user.role === "gerente" && !req.query.store ? { ...req.query, store: req.user.store } : req.query;
+    res.json(await getReportsOverview(filters));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar a visão geral dos relatérios." });
+  }
+});
+
+app.get("/api/reports/sellers", async (req, res) => {
+  try {
+    if (!isManager(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+      return;
+    }
+    const filters = req.user.role === "gerente" && !req.query.store ? { ...req.query, store: req.user.store } : req.query;
+    res.json(await getReportsBySeller(filters));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar relatério por vendedor." });
+  }
+});
+
+app.get("/api/reports/gender", async (req, res) => {
+  try {
+    if (!isManager(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+      return;
+    }
+    const filters = req.user.role === "gerente" && !req.query.store ? { ...req.query, store: req.user.store } : req.query;
+    res.json(await getReportsByGender(filters));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar relatério por gênero." });
+  }
+});
+
+app.get("/api/reports/stores", async (req, res) => {
+  try {
+    if (!isManager(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+      return;
+    }
+    const filters = req.user.role === "gerente" && !req.query.store ? { ...req.query, store: req.user.store } : req.query;
+    res.json(await getReportsByStore(filters));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar relatério por loja." });
+  }
+});
+
+app.get("/api/reports/export", async (req, res) => {
+  try {
+    if (!isManager(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+      return;
+    }
+    const filters = req.user.role === "gerente" && !req.query.store ? { ...req.query, store: req.user.store } : req.query;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="relatorio-aerostore-${getToday()}.csv"`);
+    res.send(await buildReportsCsv(filters));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao exportar relatério." });
+  }
+});
+
+app.get("/api/reports/cashback", async (req, res) => {
+  try {
+    if (!isManager(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+      return;
+    }
+    const report = await buildCashbackReportData(req.query);
+    res.json({
+      filters: report.filters,
+      summary: report.summary,
+      indicators: report.indicators,
+      pagination: report.pagination,
+      rows: report.rows
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar os relatórios de cashback." });
+  }
+});
+
+app.get("/api/reports/cashback/export.xlsx", async (req, res) => {
+  try {
+    if (!isManager(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+      return;
+    }
+    const report = await buildCashbackReportData(req.query);
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(buildCashbackReportExcelRows(report.exportRows));
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Cashback");
+    const buffer = XLSX.write(workbook, { bookType: "xlsx", type: "buffer" });
+    const today = getToday();
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename=\"relatorio-cashback-aerostore-${today}.xlsx\"`);
+    res.send(buffer);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao exportar o relatório de cashback." });
+  }
+});
+
+app.get("/api/contacts", async (req, res) => {
+  try {
+    res.json(await listContacts(req.query));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar contatos." });
+  }
+});
+
+app.get("/api/contacts/search", async (req, res) => {
+  try {
+    res.json(await listContacts({
+      q: req.query.q,
+      tag: req.query.tag,
+      status: req.query.status,
+      gender: req.query.gender,
+      store: req.query.store,
+      sellerId: req.query.sellerId,
+      cashbackActive: req.query.cashbackActive,
+      cashbackExpiring: req.query.cashbackExpiring,
+      limit: Number(req.query.limit || 50)
+    }));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao buscar contatos." });
+  }
+});
+
+app.get("/api/clientes/busca", async (req, res) => {
+  try {
+    res.json(await listContacts({
+      q: req.query.q,
+      tag: req.query.tag,
+      status: req.query.status,
+      gender: req.query.gender,
+      store: req.query.store,
+      sellerId: req.query.sellerId,
+      cashbackActive: req.query.cashbackActive,
+      cashbackExpiring: req.query.cashbackExpiring,
+      limit: Number(req.query.limit || 10)
+    }));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao buscar clientes." });
+  }
+});
+
+app.get("/api/contatos", async (req, res) => {
+  try {
+    res.json(await listContacts(req.query));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar contatos." });
+  }
+});
+
+app.get("/api/contatos/exportar", async (req, res) => {
+  try {
+    const contacts = await all("SELECT * FROM contacts ORDER BY id ASC");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="contatos-aerostore-${getToday()}.csv"`);
+    res.send(buildContactsCsv(contacts));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao exportar contatos." });
+  }
+});
+
+app.get("/api/crm_contacts", async (req, res) => {
+  try {
+    res.json(await listCrmContacts({
+      q: req.query.q,
+      city: req.query.city,
+      state: req.query.state,
+      sellerName: req.query.sellerName,
+      contactType: req.query.contactType,
+      status: req.query.status,
+      limit: Number(req.query.limit || 500)
+    }));
+  } catch (error) {
+    console.error("Erro ao listar base consolidada de clientes:", error);
+    res.status(500).json({ error: "Falha ao listar a base consolidada de clientes." });
+  }
+});
+
+app.get("/api/crm_contacts/summary", async (req, res) => {
+  try {
+    const summary = await getCrmContactsSummary();
+    const importHistory = safeJsonParse(fs.readFileSync(crmContactImportLogPath, "utf8"), []);
+    res.json({
+      ...summary,
+      importHistory: Array.isArray(importHistory) ? importHistory.slice(0, 10) : []
+    });
+  } catch (error) {
+    console.error("Erro ao carregar resumo da base consolidada de clientes:", error);
+    res.status(500).json({ error: "Falha ao carregar o resumo da base consolidada de clientes." });
+  }
+});
+
+app.post("/api/crm_contacts/import/preview", requireManager, crmContactImportUpload.array("files", 50), async (req, res) => {
+  if (!req.files?.length) {
+    return res.status(400).json({ error: "Selecione ao menos um arquivo .csv, .xls ou .xlsx para gerar a prévia." });
+  }
+
+  try {
+    cleanupCrmContactImportPreviews();
+    const parsed = await parseCrmContactImportFiles(req.files);
+    const previewId = crypto.randomUUID();
+    const payload = buildCrmContactImportPreview(parsed);
+
+    crmContactImportPreviews.set(previewId, {
+      createdAt: Date.now(),
+      createdBy: req.user?.id || 0,
+      files: req.files.map((file) => ({
+        path: file.path,
+        filename: file.filename,
+        originalname: sanitizeFilename(file.originalname)
+      })),
+      parsed
+    });
+
+    res.json({
+      success: true,
+      previewId,
+      summary: payload.summary,
+      diagnostics: payload.diagnostics,
+      preview: payload.previewRows,
+      invalidRows: payload.invalidRows
+    });
+  } catch (error) {
+    (req.files || []).forEach((file) => {
+      if (file?.path && fs.existsSync(file.path)) {
+        moveCrmContactImportFile(file.path, crmContactImportErrorsDir);
+      }
+    });
+    console.error("Erro ao gerar preview da base consolidada de clientes:", error);
+    res.status(400).json({ error: error.message || "Falha ao gerar a prévia da base consolidada de clientes." });
+  }
+});
+
+app.post("/api/crm_contacts/import/commit", requireManager, crmContactImportUpload.array("files", 50), async (req, res) => {
+  let parsed = null;
+  let files = req.files || [];
+  let batchId = 0;
+  let previewId = "";
+  try {
+    cleanupCrmContactImportPreviews();
+    previewId = String(req.body.previewId || "").trim();
+    if (previewId) {
+      const preview = crmContactImportPreviews.get(previewId);
+      if (!preview) {
+        return res.status(404).json({ error: "Preview da base consolidada de clientes não encontrado ou expirado." });
+      }
+      parsed = preview.parsed;
+      files = preview.files || [];
+    } else if (files.length) {
+      parsed = await parseCrmContactImportFiles(files);
+    } else {
+      return res.status(400).json({ error: "Envie arquivos ou informe um previewId para concluir a importação." });
+    }
+
+    const summary = {
+      filesProcessed: Number(parsed.filesProcessed || 0),
+      totalRows: Number(parsed.totalRows || 0),
+      validContacts: Number(parsed.validContacts || 0),
+      invalidContacts: Number(parsed.invalidContacts || 0),
+      duplicatesDetected: Number(parsed.duplicatesDetected || 0),
+      newContacts: Number(parsed.newContacts || 0),
+      contactsToUpdate: Number(parsed.contactsToUpdate || 0),
+      created: 0,
+      updated: 0,
+      skippedDuplicates: 0,
+      errors: 0,
+      totalContactsProcessed: Number(parsed.previewRows?.length || 0)
+    };
+
+    batchId = await createCrmContactImportBatch({
+      filenames: (files || []).map((file) => sanitizeFilename(file.originalname || file.originalname || file.filename || "")),
+      status: "processando",
+      summary,
+      createdBy: req.user?.email || req.user?.name || ""
+    });
+
+    for (const invalidRow of parsed.invalidRows || []) {
+      await run(
+        `INSERT INTO crm_contact_import_errors
+         (batch_id, source_file, source_row, name, document, mobile, email, error_message, raw_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [
+          batchId,
+          invalidRow.source_file || "",
+          Number(invalidRow.source_row || 0),
+          invalidRow.name || "",
+          invalidRow.document || "",
+          invalidRow.mobile || "",
+          invalidRow.email || "",
+          invalidRow.reason || "Contato inválido.",
+          JSON.stringify(invalidRow || {})
+        ]
+      );
+    }
+
+    for (const row of parsed.previewRows || []) {
+      try {
+        const dedupeKey = JSON.stringify(buildCrmContactMatchCandidates(row));
+        if (row.action === "skip_duplicate") {
+          summary.skippedDuplicates += 1;
+          continue;
+        }
+
+        const payload = row.action === "update" && row.merged_contact ? row.merged_contact : row;
+        const sourceFilesJson = JSON.stringify(Array.from(new Set((payload.source_files || row.source_files || []).filter(Boolean))));
+        if (row.action === "update" && Number(row.matched_contact_id || 0) > 0) {
+          await run(
+            `UPDATE crm_contacts
+             SET external_id = ?, external_code = ?, name = ?, fantasy_name = ?, document = ?, person_type = ?,
+                 phone = ?, mobile = ?, email = ?, address = ?, number = ?, complement = ?, neighborhood = ?,
+                 zipcode = ?, city = ?, state = ?, contact_notes = ?, status = ?, gender = ?, birth_date = ?,
+                 seller_name = ?, contact_type = ?, credit_limit = ?, source_file = ?, source_row = ?, import_hash = ?,
+                 source_files_json = ?, dedupe_key = ?, updated_at = datetime('now')
+             WHERE id = ?`,
+            [
+              payload.external_id || "",
+              payload.external_code || "",
+              payload.name || "",
+              payload.fantasy_name || "",
+              payload.document || "",
+              payload.person_type || "",
+              payload.phone || "",
+              payload.mobile || "",
+              payload.email || "",
+              payload.address || "",
+              payload.number || "",
+              payload.complement || "",
+              payload.neighborhood || "",
+              payload.zipcode || "",
+              payload.city || "",
+              payload.state || "",
+              payload.contact_notes || "",
+              payload.status || "",
+              payload.gender || "",
+              payload.birth_date || "",
+              payload.seller_name || "",
+              payload.contact_type || "",
+              Number(payload.credit_limit || 0),
+              payload.source_file || "",
+              Number(payload.source_row || 0),
+              payload.import_hash || "",
+              sourceFilesJson,
+              dedupeKey,
+              Number(row.matched_contact_id || 0)
+            ]
+          );
+          summary.updated += 1;
+        } else {
+          await run(
+            `INSERT INTO crm_contacts
+             (external_id, external_code, name, fantasy_name, document, person_type, phone, mobile, email, address, number,
+              complement, neighborhood, zipcode, city, state, contact_notes, status, gender, birth_date, seller_name,
+              contact_type, credit_limit, source_file, source_row, import_hash, source_files_json, dedupe_key, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+            [
+              payload.external_id || "",
+              payload.external_code || "",
+              payload.name || "",
+              payload.fantasy_name || "",
+              payload.document || "",
+              payload.person_type || "",
+              payload.phone || "",
+              payload.mobile || "",
+              payload.email || "",
+              payload.address || "",
+              payload.number || "",
+              payload.complement || "",
+              payload.neighborhood || "",
+              payload.zipcode || "",
+              payload.city || "",
+              payload.state || "",
+              payload.contact_notes || "",
+              payload.status || "",
+              payload.gender || "",
+              payload.birth_date || "",
+              payload.seller_name || "",
+              payload.contact_type || "",
+              Number(payload.credit_limit || 0),
+              payload.source_file || "",
+              Number(payload.source_row || 0),
+              payload.import_hash || "",
+              sourceFilesJson,
+              dedupeKey
+            ]
+          );
+          summary.created += 1;
+        }
+      } catch (error) {
+        summary.errors += 1;
+        await run(
+          `INSERT INTO crm_contact_import_errors
+           (batch_id, source_file, source_row, name, document, mobile, email, error_message, raw_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+          [
+            batchId,
+            row.source_file || "",
+            Number(row.source_row || 0),
+            row.name || "",
+            row.document || "",
+            row.mobile || row.phone || "",
+            row.email || "",
+            error.message || "Falha ao importar contato.",
+            JSON.stringify(row || {})
+          ]
+        );
+      }
+    }
+
+    await finalizeCrmContactImportBatch(batchId, {
+      status: summary.errors ? "concluido_com_alertas" : "concluido",
+      summary
+    });
+
+    appendCrmContactImportLog({
+      batchId,
+      filenames: (files || []).map((file) => sanitizeFilename(file.originalname || file.filename || "")),
+      summary
+    });
+
+    (files || []).forEach((file) => {
+      if (file?.path && fs.existsSync(file.path)) {
+        moveCrmContactImportFile(file.path, summary.errors ? crmContactImportErrorsDir : crmContactImportProcessedDir);
+      }
+    });
+    if (previewId) {
+      crmContactImportPreviews.delete(previewId);
+    }
+
+    res.json({
+      success: true,
+      created: summary.created,
+      updated: summary.updated,
+      skippedDuplicates: summary.skippedDuplicates,
+      errors: summary.errors,
+      totalContactsProcessed: summary.totalContactsProcessed,
+      filesProcessed: summary.filesProcessed,
+      summary
+    });
+  } catch (error) {
+    console.error("Erro ao concluir importação da base consolidada de clientes:", error);
+    if (batchId) {
+      await finalizeCrmContactImportBatch(batchId, {
+        status: "erro",
+        summary: {
+          filesProcessed: Number(parsed?.filesProcessed || files.length || 0),
+          totalRows: Number(parsed?.totalRows || 0),
+          validContacts: Number(parsed?.validContacts || 0),
+          invalidContacts: Number(parsed?.invalidContacts || 0),
+          duplicatesDetected: Number(parsed?.duplicatesDetected || 0),
+          newContacts: Number(parsed?.newContacts || 0),
+          contactsToUpdate: Number(parsed?.contactsToUpdate || 0),
+          created: 0,
+          updated: 0,
+          skippedDuplicates: 0,
+          errors: 1,
+          totalContactsProcessed: Number(parsed?.previewRows?.length || 0)
+        }
+      });
+    }
+    (files || []).forEach((file) => {
+      if (file?.path && fs.existsSync(file.path)) {
+        moveCrmContactImportFile(file.path, crmContactImportErrorsDir);
+      }
+    });
+    res.status(500).json({ error: error.message || "Falha ao concluir a importação da base consolidada de clientes." });
+  }
+});
+
+app.get("/api/sellers", async (req, res) => {
+  try {
+    const rows = await all("SELECT * FROM sellers ORDER BY status ASC, name ASC");
+    res.json(rows.filter((row) => userCanAccessStore(req.user, row.store || row.store_id || "")));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar vendedores." });
+  }
+});
+
+app.post("/api/sellers", async (req, res) => {
+  try {
+    if (!isAdmin(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a admin." });
+      return;
+    }
+    const name = String(req.body.name || "").trim();
+    const store = String(req.body.store || "").trim();
+    const status = String(req.body.status || "ativo").trim();
+
+    if (!name) {
+      res.status(400).json({ error: "O nome do vendedor e obrigatorio." });
+      return;
+    }
+    if (!store) {
+      res.status(400).json({ error: "A loja principal do vendedor e obrigatoria." });
+      return;
+    }
+    if (!SELLER_STATUSES.includes(status)) {
+      res.status(400).json({ error: "Status do vendedor invalido." });
+      return;
+    }
+
+    const result = await run(
+      `INSERT INTO sellers
+      (name, store, status, created_at, updated_at)
+      VALUES (?, ?, ?, datetime('now'), datetime('now'))`,
+      [name, store, status]
+    );
+    res.status(201).json(await get("SELECT * FROM sellers WHERE id = ?", [result.lastID]));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao cadastrar vendedor." });
+  }
+});
+
+app.put("/api/sellers/:id", async (req, res) => {
+  try {
+    if (!isAdmin(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a admin." });
+      return;
+    }
+    const current = await get("SELECT * FROM sellers WHERE id = ?", [req.params.id]);
+    if (!current) {
+      res.status(404).json({ error: "Vendedor não encontrado." });
+      return;
+    }
+
+    const name = String(req.body.name ?? current.name).trim();
+    const store = String(req.body.store ?? current.store).trim();
+    const status = String(req.body.status ?? current.status).trim();
+    if (!name || !store || !SELLER_STATUSES.includes(status)) {
+      res.status(400).json({ error: "Dados do vendedor invalidos." });
+      return;
+    }
+
+    await run(
+      `UPDATE sellers SET
+      name = ?, store = ?, status = ?, updated_at = datetime('now')
+      WHERE id = ?`,
+      [name, store, status, req.params.id]
+    );
+
+    if (current.name !== name) {
+      await run(
+        `UPDATE contacts SET seller_name = ?, updated_at = datetime('now')
+        WHERE seller_id = ?`,
+        [name, req.params.id]
+      );
+      await run(
+        `UPDATE cashbacks SET seller_name = ?, seller = ?, updated_at = datetime('now')
+        WHERE seller_id = ?`,
+        [name, name, req.params.id]
+      );
+    }
+
+    res.json(await get("SELECT * FROM sellers WHERE id = ?", [req.params.id]));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao atualizar vendedor." });
+  }
+});
+
+app.delete("/api/sellers/:id", async (req, res) => {
+  try {
+    if (!isAdmin(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a admin." });
+      return;
+    }
+    const seller = await get("SELECT * FROM sellers WHERE id = ?", [req.params.id]);
+    if (!seller) {
+      res.status(404).json({ error: "Vendedor não encontrado." });
+      return;
+    }
+    await run(
+      `UPDATE contacts SET seller_id = NULL, seller_name = 'Vendedor excluido', updated_at = datetime('now')
+      WHERE seller_id = ?`,
+      [req.params.id]
+    );
+    await run(
+      `UPDATE cashbacks SET seller_id = NULL, seller_name = 'Vendedor excluido', seller = 'Vendedor excluido', updated_at = datetime('now')
+      WHERE seller_id = ?`,
+      [req.params.id]
+    );
+    await run(
+      `UPDATE campaigns SET seller_id = NULL, seller_name = 'Vendedor excluido', seller = 'Vendedor excluido', updated_at = datetime('now')
+      WHERE seller_id = ?`,
+      [req.params.id]
+    );
+    await run(
+      `UPDATE campaign_execution SET seller_id = NULL
+      WHERE seller_id = ?`,
+      [req.params.id]
+    );
+    await run("DELETE FROM sellers WHERE id = ?", [req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao excluir vendedor." });
+  }
+});
+
+app.post("/api/contacts", async (req, res) => {
+  try {
+    const contact = buildContactPayload(req.body);
+    const seller = await resolveSellerPayload(req.body, true);
+    const validationError = validateContact(contact);
+    if (validationError) {
+      res.status(400).json({ error: validationError });
+      return;
+    }
+    const duplicate = await findDuplicateContact(contact);
+    if (duplicate) {
+      res.status(400).json({ error: "Já existe um cliente com este CPF ou WhatsApp. Revise antes de cadastrar novamente." });
+      return;
+    }
+
+    const result = await run(
+      `INSERT INTO contacts
+      (name, phone, document, email, birth_date, zipcode, city, state, neighborhood, top_size, bottom_size, shoe_size, gender, store, seller_id, seller_name, tags, cashback, validity, status, notes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      [
+        contact.name,
+        contact.phone,
+        contact.document,
+        contact.email,
+        contact.birthDate,
+        contact.zipcode,
+        contact.city,
+        contact.state,
+        contact.neighborhood,
+        contact.topSize,
+        contact.bottomSize,
+        contact.shoeSize,
+        contact.gender,
+        contact.store,
+        seller.sellerId,
+        seller.sellerName,
+        contact.tags,
+        contact.cashback,
+        "",
+        contact.status,
+        contact.notes
+      ]
+    );
+    res.status(201).json(await get("SELECT * FROM contacts WHERE id = ?", [result.lastID]));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao cadastrar contato." });
+  }
+});
+
+app.post("/api/contatos", async (req, res) => {
+  req.url = "/api/contacts";
+  app._router.handle(req, res, () => {});
+});
+
+app.put("/api/contacts/:id", async (req, res) => {
+  try {
+    const contact = buildContactPayload(req.body);
+    const seller = await resolveSellerPayload(req.body, true);
+    const validationError = validateContact(contact);
+    if (validationError) {
+      res.status(400).json({ error: validationError });
+      return;
+    }
+    const duplicate = await findDuplicateContact(contact, req.params.id);
+    if (duplicate) {
+      res.status(400).json({ error: "Já existe um cliente com este CPF ou WhatsApp. Revise antes de cadastrar novamente." });
+      return;
+    }
+
+    const result = await run(
+      `UPDATE contacts SET
+      name = ?, phone = ?, document = ?, email = ?, birth_date = ?, zipcode = ?, city = ?, state = ?, neighborhood = ?, top_size = ?, bottom_size = ?, shoe_size = ?, gender = ?, store = ?, seller_id = ?, seller_name = ?, tags = ?, cashback = ?, status = ?, notes = ?, updated_at = datetime('now')
+      WHERE id = ?`,
+      [
+        contact.name,
+        contact.phone,
+        contact.document,
+        contact.email,
+        contact.birthDate,
+        contact.zipcode,
+        contact.city,
+        contact.state,
+        contact.neighborhood,
+        contact.topSize,
+        contact.bottomSize,
+        contact.shoeSize,
+        contact.gender,
+        contact.store,
+        seller.sellerId,
+        seller.sellerName,
+        contact.tags,
+        contact.cashback,
+        contact.status,
+        contact.notes,
+        req.params.id
+      ]
+    );
+
+    if (!result.changes) {
+      res.status(404).json({ error: "Contato não encontrado." });
+      return;
+    }
+
+    res.json(await get("SELECT * FROM contacts WHERE id = ?", [req.params.id]));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao atualizar contato." });
+  }
+});
+
+app.put("/api/contatos/:id", async (req, res) => {
+  req.url = `/api/contacts/${req.params.id}`;
+  app._router.handle(req, res, () => {});
+});
+
+app.delete("/api/contacts/:id", async (req, res) => {
+  try {
+    if (!isAdmin(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a admin." });
+      return;
+    }
+    await run("DELETE FROM campaign_contacts WHERE contact_id = ?", [req.params.id]);
+    await run("DELETE FROM campaign_execution WHERE contact_id = ?", [req.params.id]);
+    await run("DELETE FROM assistant_logs WHERE contact_id = ?", [req.params.id]);
+    await run("DELETE FROM cashback_events WHERE contact_id = ?", [req.params.id]);
+    await run("DELETE FROM cashbacks WHERE contact_id = ?", [req.params.id]);
+    const result = await run("DELETE FROM contacts WHERE id = ?", [req.params.id]);
+    if (!result.changes) {
+      res.status(404).json({ error: "Contato não encontrado." });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao excluir contato." });
+  }
+});
+
+app.delete("/api/contatos/:id", async (req, res) => {
+  req.url = `/api/contacts/${req.params.id}`;
+  app._router.handle(req, res, () => {});
+});
+
+app.get("/api/customers", async (req, res) => {
+  try {
+    if (!canViewCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de clientes." });
+    }
+    const payload = await listManualCustomers(req.query || {});
+    res.json({
+      success: true,
+      items: payload.items,
+      summary: buildCustomersSummary(payload.items, payload.pagination),
+      pagination: payload.pagination
+    });
+  } catch (error) {
+    console.error("Erro ao listar clientes do cadastro manual:", error);
+    res.status(500).json({ success: false, error: "Falha ao listar os clientes." });
+  }
+});
+
+app.get("/api/customers/:id/cashback-summary", async (req, res) => {
+  try {
+    if (!canViewCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de clientes." });
+    }
+    const customer = await get("SELECT id FROM contacts WHERE id = ? AND COALESCE(deleted_at, '') = ''", [req.params.id]);
+    if (!customer) {
+      return res.status(404).json({ success: false, error: "Cliente nao encontrado." });
+    }
+    const summary = await getCustomerCashbackSummary(req.params.id);
+    res.json({ success: true, customerId: Number(req.params.id), summary });
+  } catch (error) {
+    console.error("Erro ao carregar resumo de cashback do cliente:", error);
+    res.status(500).json({ success: false, error: "Falha ao carregar o resumo de cashback do cliente." });
+  }
+});
+
+app.get("/api/customers/:id/cashback-ledger", async (req, res) => {
+  try {
+    if (!canViewCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de clientes." });
+    }
+    const customer = await get("SELECT id FROM contacts WHERE id = ? AND COALESCE(deleted_at, '') = ''", [req.params.id]);
+    if (!customer) {
+      return res.status(404).json({ success: false, error: "Cliente nao encontrado." });
+    }
+    const payload = await listCustomerCashbackLedger(req.params.id, req.query || {});
+    res.json({ success: true, customerId: Number(req.params.id), ...payload });
+  } catch (error) {
+    console.error("Erro ao carregar ledger de cashback do cliente:", error);
+    res.status(500).json({ success: false, error: "Falha ao carregar o historico de cashback do cliente." });
+  }
+});
+
+// Alias interno para evitar conflitos de roteamento em subrotas aninhadas.
+app.get("/api/customer-cashback-summary/:id", async (req, res) => {
+  try {
+    if (!canViewCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de clientes." });
+    }
+    const customer = await get("SELECT id FROM contacts WHERE id = ? AND COALESCE(deleted_at, '') = ''", [req.params.id]);
+    if (!customer) {
+      return res.status(404).json({ success: false, error: "Cliente nao encontrado." });
+    }
+    const summary = await getCustomerCashbackSummary(req.params.id);
+    res.json({ success: true, customerId: Number(req.params.id), summary });
+  } catch (error) {
+    console.error("Erro ao carregar resumo de cashback do cliente:", error);
+    res.status(500).json({ success: false, error: "Falha ao carregar o resumo de cashback do cliente." });
+  }
+});
+
+// Alias interno para evitar conflitos de roteamento em subrotas aninhadas.
+app.get("/api/customer-cashback-ledger/:id", async (req, res) => {
+  try {
+    if (!canViewCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de clientes." });
+    }
+    const customer = await get("SELECT id FROM contacts WHERE id = ? AND COALESCE(deleted_at, '') = ''", [req.params.id]);
+    if (!customer) {
+      return res.status(404).json({ success: false, error: "Cliente nao encontrado." });
+    }
+    const payload = await listCustomerCashbackLedger(req.params.id, req.query || {});
+    res.json({ success: true, customerId: Number(req.params.id), ...payload });
+  } catch (error) {
+    console.error("Erro ao carregar ledger de cashback do cliente:", error);
+    res.status(500).json({ success: false, error: "Falha ao carregar o historico de cashback do cliente." });
+  }
+});
+
+app.get("/api/cashback/reactivation-segments", async (req, res) => {
+  try {
+    if (!canViewCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito a segmentacao de giftback." });
+    }
+    const payload = await listCashbackReactivationSegments(req.query || {});
+    res.json({ success: true, ...payload });
+  } catch (error) {
+    console.error("Erro ao carregar segmentacao de reativacao:", error);
+    res.status(500).json({ success: false, error: "Falha ao carregar a segmentacao de reativacao." });
+  }
+});
+
+app.post("/api/cashback/reactivation-preview-message", async (req, res) => {
+  try {
+    if (!canViewCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao preview de reativacao." });
+    }
+    const customerId = Number(req.body?.customer_id || 0);
+    if (!customerId) {
+      return res.status(400).json({ success: false, error: "customer_id e obrigatorio." });
+    }
+    const payload = await listCashbackReactivationSegments({
+      potential: req.body?.potential || "",
+      minLostAmount: 0,
+      minEvents: 0,
+      withPhone: "1",
+      withName: "1",
+      activeOnly: "0",
+      source_system: "crm_bonus"
+    });
+    const item = payload.items.find((entry) => Number(entry.customer_id || 0) === customerId);
+    if (!item) {
+      return res.status(404).json({ success: false, error: "Cliente nao encontrado na segmentacao de reativacao." });
+    }
+    res.json({
+      success: true,
+      customer_id: customerId,
+      template_type: normalizeText(req.body?.template_type || "default").toLowerCase() || "default",
+      suggestedSegment: item.suggestedSegment,
+      suggestedMessageAngle: item.suggestedMessageAngle,
+      message_preview: buildCashbackReactivationPreviewMessage(item, req.body?.template_type || "default")
+    });
+  } catch (error) {
+    console.error("Erro ao gerar preview de reativacao:", error);
+    res.status(500).json({ success: false, error: "Falha ao gerar o preview da reativacao." });
+  }
+});
+
+app.get("/api/cashback/reactivation-segments/export", async (req, res) => {
+  try {
+    if (!canViewCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito a exportacao da segmentacao." });
+    }
+    const payload = await listCashbackReactivationSegments(req.query || {});
+    const rows = payload.items.map((item) => serializeReactivationSegmentExportRow(item));
+    const csv = buildCsvFromRows(rows, [
+      "nome",
+      "telefone",
+      "total_perdido",
+      "quantidade_eventos",
+      "ultima_perda",
+      "potencial",
+      "segmento_sugerido",
+      "angulo_mensagem"
+    ]);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="cashback_reativacao_segmentos.csv"');
+    res.send(`\uFEFF${csv}`);
+  } catch (error) {
+    console.error("Erro ao exportar segmentacao de reativacao:", error);
+    res.status(500).json({ success: false, error: "Falha ao exportar a segmentacao de reativacao." });
+  }
+});
+
+app.get("/api/customers/:id", async (req, res) => {
+  try {
+    if (!canViewCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de clientes." });
+    }
+    const row = await get("SELECT * FROM contacts WHERE id = ? AND COALESCE(deleted_at, '') = ''", [req.params.id]);
+    if (!row) {
+      return res.status(404).json({ success: false, error: "Cliente nao encontrado." });
+    }
+    const cashbackSummary = await getCustomerCashbackSummary(req.params.id);
+    const cashbackLedgerPayload = await listCustomerCashbackLedger(req.params.id, { limit: 8, offset: 0 });
+    res.json({
+      success: true,
+      customer: serializeCustomer(row),
+      cashbackSummary,
+      cashbackLedger: cashbackLedgerPayload.items,
+      cashbackLedgerPagination: cashbackLedgerPayload.pagination
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Falha ao carregar o cliente." });
+  }
+});
+
+app.post("/api/customers", async (req, res) => {
+  try {
+    if (!canCreateCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode cadastrar clientes." });
+    }
+    const payload = buildCustomerPayload(req.body || {});
+    const validationError = validateCustomerPayload(payload);
+    if (validationError) {
+      return res.status(400).json({ success: false, error: validationError });
+    }
+    const duplicate = await findDuplicateCustomer(payload);
+    if (duplicate) {
+      return res.status(400).json({
+        success: false,
+        error: duplicate.mobile_normalized === payload.mobile_normalized ? "Ja existe um cliente com este celular." : "Ja existe um cliente com este documento.",
+        existing_customer: serializeCustomer(duplicate)
+      });
+    }
+    const seller = await resolveSellerPayload({ ...req.body, sellerName: payload.preferred_seller || payload.seller_name }, true);
+    const result = await run(
+      `INSERT INTO contacts
+      (name, first_name, phone, mobile, mobile_normalized, phone_fixed, document, email, birth_date, gender, city, state, address, neighborhood, zipcode, preferred_store, store, seller_id, seller_name, preferred_seller, status, source, notes, quality_flags, top_size, bottom_size, shoe_size, size_profile_json, size_profile_source, size_profile_confidence, size_profile_updated_at, preferences_json, behavior_signals_json, favorite_brands_json, favorite_colors_json, favorite_categories_json, average_ticket, last_purchase_at, ai_notes, aerointel_last_enriched_at, aerointel_confidence_score, tags, cashback, validity, deleted_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, '', '', datetime('now'), datetime('now'))`,
+      [
+        payload.name,
+        payload.first_name,
+        payload.phone,
+        payload.mobile,
+        payload.mobile_normalized,
+        payload.phone_fixed,
+        payload.document,
+        payload.email,
+        payload.birth_date,
+        payload.gender,
+        payload.city,
+        payload.state,
+        payload.address,
+        payload.neighborhood,
+        payload.zipcode,
+        payload.preferred_store,
+        payload.store,
+        seller.sellerId,
+        seller.sellerName,
+        payload.preferred_seller || seller.sellerName,
+        payload.status,
+        payload.source,
+        payload.notes,
+        payload.quality_flags,
+        payload.top_size,
+        payload.bottom_size,
+        payload.shoe_size,
+        payload.size_profile_json,
+        payload.size_profile_source,
+        payload.size_profile_confidence,
+        payload.size_profile_updated_at,
+        payload.preferences_json,
+        payload.behavior_signals_json,
+        payload.favorite_brands_json,
+        payload.favorite_colors_json,
+        payload.favorite_categories_json,
+        payload.average_ticket,
+        payload.last_purchase_at,
+        payload.ai_notes,
+        payload.aerointel_last_enriched_at,
+        payload.aerointel_confidence_score
+      ]
+    );
+    const row = await get("SELECT * FROM contacts WHERE id = ?", [result.lastID]);
+    res.status(201).json({ success: true, customer: serializeCustomer(row) });
+  } catch (error) {
+    console.error("Erro ao criar cliente manual:", error);
+    res.status(500).json({ success: false, error: error.message || "Falha ao salvar o cliente." });
+  }
+});
+
+app.put("/api/customers/:id", async (req, res) => {
+  try {
+    if (!canManageCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode editar clientes." });
+    }
+    const current = await get("SELECT * FROM contacts WHERE id = ? AND COALESCE(deleted_at, '') = ''", [req.params.id]);
+    if (!current) {
+      return res.status(404).json({ success: false, error: "Cliente nao encontrado." });
+    }
+    const payload = buildCustomerPayload(req.body || {}, current);
+    const validationError = validateCustomerPayload(payload);
+    if (validationError) {
+      return res.status(400).json({ success: false, error: validationError });
+    }
+    const duplicate = await findDuplicateCustomer(payload, req.params.id);
+    if (duplicate) {
+      return res.status(400).json({
+        success: false,
+        error: duplicate.mobile_normalized === payload.mobile_normalized ? "Ja existe um cliente com este celular." : "Ja existe um cliente com este documento.",
+        existing_customer: serializeCustomer(duplicate)
+      });
+    }
+    const seller = await resolveSellerPayload({ ...req.body, sellerName: payload.preferred_seller || payload.seller_name }, true);
+    await run(
+      `UPDATE contacts SET
+       name = ?, first_name = ?, phone = ?, mobile = ?, mobile_normalized = ?, phone_fixed = ?, document = ?, email = ?, birth_date = ?, gender = ?, city = ?, state = ?, address = ?, neighborhood = ?, zipcode = ?, preferred_store = ?, store = ?, seller_id = ?, seller_name = ?, preferred_seller = ?, status = ?, source = ?, notes = ?, quality_flags = ?, top_size = ?, bottom_size = ?, shoe_size = ?, size_profile_json = ?, size_profile_source = ?, size_profile_confidence = ?, size_profile_updated_at = ?, preferences_json = ?, behavior_signals_json = ?, favorite_brands_json = ?, favorite_colors_json = ?, favorite_categories_json = ?, average_ticket = ?, last_purchase_at = ?, ai_notes = ?, aerointel_last_enriched_at = ?, aerointel_confidence_score = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+      [
+        payload.name,
+        payload.first_name,
+        payload.phone,
+        payload.mobile,
+        payload.mobile_normalized,
+        payload.phone_fixed,
+        payload.document,
+        payload.email,
+        payload.birth_date,
+        payload.gender,
+        payload.city,
+        payload.state,
+        payload.address,
+        payload.neighborhood,
+        payload.zipcode,
+        payload.preferred_store,
+        payload.store,
+        seller.sellerId,
+        seller.sellerName,
+        payload.preferred_seller || seller.sellerName,
+        payload.status,
+        payload.source,
+        payload.notes,
+        payload.quality_flags,
+        payload.top_size,
+        payload.bottom_size,
+        payload.shoe_size,
+        payload.size_profile_json,
+        payload.size_profile_source,
+        payload.size_profile_confidence,
+        payload.size_profile_updated_at,
+        payload.preferences_json,
+        payload.behavior_signals_json,
+        payload.favorite_brands_json,
+        payload.favorite_colors_json,
+        payload.favorite_categories_json,
+        payload.average_ticket,
+        payload.last_purchase_at,
+        payload.ai_notes,
+        payload.aerointel_last_enriched_at,
+        payload.aerointel_confidence_score,
+        req.params.id
+      ]
+    );
+    const row = await get("SELECT * FROM contacts WHERE id = ?", [req.params.id]);
+    res.json({ success: true, customer: serializeCustomer(row) });
+  } catch (error) {
+    console.error("Erro ao atualizar cliente manual:", error);
+    res.status(500).json({ success: false, error: error.message || "Falha ao atualizar o cliente." });
+  }
+});
+
+app.post("/api/customers/:id/deactivate", async (req, res) => {
+  try {
+    if (!canManageCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode inativar clientes." });
+    }
+    await run("UPDATE contacts SET status = 'inativo', updated_at = datetime('now') WHERE id = ? AND COALESCE(deleted_at, '') = ''", [req.params.id]);
+    const row = await get("SELECT * FROM contacts WHERE id = ?", [req.params.id]);
+    if (!row) {
+      return res.status(404).json({ success: false, error: "Cliente nao encontrado." });
+    }
+    res.json({ success: true, customer: serializeCustomer(row) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Falha ao inativar o cliente." });
+  }
+});
+
+app.post("/api/customers/:id/reactivate", async (req, res) => {
+  try {
+    if (!canManageCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode reativar clientes." });
+    }
+    await run("UPDATE contacts SET status = 'ativo', deleted_at = '', updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    const row = await get("SELECT * FROM contacts WHERE id = ?", [req.params.id]);
+    if (!row) {
+      return res.status(404).json({ success: false, error: "Cliente nao encontrado." });
+    }
+    res.json({ success: true, customer: serializeCustomer(row) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Falha ao reativar o cliente." });
+  }
+});
+
+app.delete("/api/customers/:id", async (req, res) => {
+  try {
+    if (!canManageCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode excluir clientes." });
+    }
+    const result = await run("UPDATE contacts SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND COALESCE(deleted_at, '') = ''", [req.params.id]);
+    if (!result.changes) {
+      return res.status(404).json({ success: false, error: "Cliente nao encontrado." });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Falha ao excluir o cliente." });
+  }
+});
+
+app.post("/api/contacts/import", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ error: "Selecione um arquivo CSV ou Excel." });
+    return;
+  }
+
+  try {
+    const workbook = XLSX.readFile(req.file.path);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+    let inserted = 0;
+    let ignored = 0;
+
+    for (const row of rows) {
+      const name = String(getImportCellValue(row, ["Nome", "nome", "Cliente", "cliente"]) || "").trim();
+      const phone = normalizePhone(
+        getImportCellValue(row, ["Numero", "Número", "n?mero", "número", "Telefone", "telefone", "WhatsApp", "whatsapp", "Celular", "celular"])
+      );
+
+      if (!name || !phone) {
+        ignored += 1;
+        continue;
+      }
+      const existing = await findDuplicateContactByPhone(phone);
+      if (existing) {
+        ignored += 1;
+        continue;
+      }
+
+      const result = await run(
+        `INSERT INTO contacts
+        (name, phone, gender, store, tags, cashback, validity, status, notes, created_at, updated_at)
+        VALUES (?, ?, '', '', 'importado', 0, '', 'ativo', 'Importado por planilha', datetime('now'), datetime('now'))`,
+        [name, phone]
+      );
+      inserted += result.lastID ? 1 : 0;
+    }
+
+    fs.unlinkSync(req.file.path);
+    res.json({ inserted, ignored });
+  } catch (error) {
+    if (fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ error: "Falha ao importar contatos." });
+  }
+});
+
+app.post("/api/contacts/import/preview", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ error: "Selecione um arquivo Excel para pré-visualizar." });
+    return;
+  }
+
+  try {
+    cleanupContactImportPreviews();
+    const workbook = XLSX.readFile(req.file.path);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const matrixRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+    const { rows, importType } = buildObjectsFromWorksheetMatrix(matrixRows);
+    if (!rows.length) {
+      fs.unlinkSync(req.file.path);
+      res.status(400).json({
+        error: "Não foi possível localizar o cabeçalho da planilha CRM Bonus. Verifique as colunas Cliente, Celular e Bônus gerado ou Bônus perdido."
+      });
+      return;
+    }
+    const { previewRows, summary } = await buildContactImportPreview(rows, importType);
+    const previewId = crypto.randomUUID();
+
+    contactImportPreviews.set(previewId, {
+      createdAt: Date.now(),
+      createdBy: req.user?.id || 0,
+      filename: sanitizeFilename(req.file.originalname),
+      source: importType === "bonus_perdido" ? "CRM Bonus - bônus perdido" : "CRM Bonus",
+      importType,
+      summary,
+      rows: previewRows
+    });
+
+    fs.unlinkSync(req.file.path);
+    res.json({
+      previewId,
+      importType,
+      summary,
+      rows: previewRows
+    });
+  } catch (error) {
+    if (fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ error: "Falha ao gerar o preview da importação." });
+  }
+});
+
+app.post("/api/contacts/import/confirm", async (req, res) => {
+  try {
+    cleanupContactImportPreviews();
+    const previewId = String(req.body.previewId || "").trim();
+    const preview = contactImportPreviews.get(previewId);
+    const importType = preview?.importType || "bonus_gerado";
+    if (!preview) {
+      res.status(404).json({ error: "Preview da importação não encontrado ou expirado." });
+      return;
+    }
+
+    let imported = 0;
+    let ignored = 0;
+    let duplicates = 0;
+    let createdContacts = 0;
+    let updatedContacts = 0;
+    let createdCashbacks = 0;
+    let totalSalesValue = 0;
+    let totalCashbackValue = 0;
+
+    const batch = await run(
+      `INSERT INTO import_batches
+      (filename, source, imported_by, created_at, total_rows, ready_rows, ignored_rows, duplicate_rows, contacts_created, contacts_updated, events_created, total_sales_value, total_cashback_value, status)
+      VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, 0, 0, 0, 0, 0, 'processando')`,
+      [
+        preview.filename || "importacao.xlsx",
+        preview.source || "CRM Bonus",
+        req.user?.email || getUserDisplayName(req.user) || "",
+        Number(preview.summary?.total || preview.rows.length || 0),
+        Number(preview.summary?.ready || 0),
+        Number(preview.summary?.ignored || 0),
+        Number(preview.summary?.duplicates || 0)
+      ]
+    );
+    const batchId = batch.lastID;
+
+    for (const row of preview.rows) {
+      let itemStatus = "importado";
+      let itemErrorMessage = "";
+      let contactId = null;
+      let cashbackId = null;
+
+      if (row.invalid) {
+        ignored += 1;
+        itemStatus = "ignorado";
+        itemErrorMessage = row.note || "Linha ignorada.";
+        await run(
+          `INSERT INTO import_batch_items
+          (batch_id, contact_id, cashback_id, customer_name, phone, sale_date, sale_value, cashback_value, seller_name, ticket, nf, row_number, action, status, error_message, created_at)
+          VALUES (?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+          [
+            batchId,
+            row.name || "",
+            row.phone || "",
+            row.importDate || "",
+            Number(row.purchaseValue || 0),
+            Number(row.cashbackValue || 0),
+            row.sellerName || "",
+            row.ticket || "",
+            row.nf || "",
+            Number(row.line || 0),
+            row.action || "",
+            itemStatus,
+            itemErrorMessage
+          ]
+        );
+        continue;
+      }
+      if (row.duplicate) {
+        duplicates += 1;
+      }
+
+      let contact = row.existingContactId ? await get("SELECT * FROM contacts WHERE id = ?", [row.existingContactId]) : null;
+
+      if (contact) {
+        await run(
+          `UPDATE contacts SET
+            name = ?,
+            phone = ?,
+            notes = CASE WHEN COALESCE(notes, '') = '' THEN ? ELSE notes END,
+            updated_at = datetime('now')
+          WHERE id = ?`,
+          [
+            row.name,
+            row.phone,
+            importType === "bonus_perdido" ? "Importado via migração CRM Bonus - bônus perdido." : "Importado via migração CRM Bonus.",
+            contact.id
+          ]
+        );
+        updatedContacts += 1;
+        contactId = contact.id;
+      } else {
+        const notesValue = importType === "bonus_perdido" ? "Importado via migração CRM Bonus - bônus perdido." : "Importado via migração CRM Bonus.";
+        const result = await run(
+          `INSERT INTO contacts
+          (name, phone, gender, store, seller_id, seller_name, tags, cashback, validity, status, notes, created_at, updated_at)
+          VALUES (?, ?, '', '', NULL, '', 'importado', 0, '', 'ativo', ?, datetime('now'), datetime('now'))`,
+          [row.name, row.phone, notesValue]
+        );
+        contact = await get("SELECT * FROM contacts WHERE id = ?", [result.lastID]);
+        createdContacts += 1;
+        contactId = contact.id;
+      }
+
+      const amount = Number(row.cashbackValue || 0);
+      const purchaseValue = Number(row.purchaseValue || 0);
+      const sourceDate = row.importDate || getToday();
+      totalSalesValue += purchaseValue;
+      totalCashbackValue += amount;
+      const sellerPayload = await resolveSellerPayload({ sellerName: row.sellerName || "" }, true);
+
+      const cashbackInsert = importType === "bonus_perdido"
+        ? await run(
+          `INSERT INTO cashbacks
+          (contact_id, customer_name, customer_phone, customer_gender, store, seller_id, seller_name, seller, purchase_value, percentage, generated_value, available_balance, used_value, lost_value, minimum_purchase, status, origin, valid_from, expires_at, created_at, updated_at, used_at, canceled_at, cancel_reason, reactivated_at, anticipated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0, 0, ?, 0, 'vencido', ?, '', ?, datetime('now'), datetime('now'), '', '', '', '', '')`,
+          [
+            contact.id,
+            row.name,
+            row.phone,
+            contact.gender || "",
+            contact.store || "",
+            sellerPayload.sellerId,
+            sellerPayload.sellerName || row.sellerName || "",
+            sellerPayload.sellerName || row.sellerName || "",
+            amount,
+            amount,
+            "migração CRM Bonus - bônus perdido",
+            sourceDate
+          ]
+        )
+        : await run(
+          `INSERT INTO cashbacks
+          (contact_id, customer_name, customer_phone, customer_gender, store, seller_id, seller_name, seller, purchase_value, percentage, generated_value, available_balance, used_value, lost_value, minimum_purchase, status, origin, valid_from, expires_at, created_at, updated_at, used_at, canceled_at, cancel_reason, reactivated_at, anticipated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, 0, 0, 'disponivel', ?, ?, '', datetime('now'), datetime('now'), '', '', '', '', '')`,
+          [
+            contact.id,
+            row.name,
+            row.phone,
+            contact.gender || "",
+            contact.store || "",
+            sellerPayload.sellerId,
+            sellerPayload.sellerName || row.sellerName || "",
+            sellerPayload.sellerName || row.sellerName || "",
+            purchaseValue,
+            amount,
+            amount,
+            "migração CRM Bonus",
+            sourceDate
+          ]
+        );
+      cashbackId = cashbackInsert.lastID;
+
+      await createCashbackEvent({
+        cashbackId: cashbackInsert.lastID,
+        contactId: contact.id,
+        eventType: importType === "bonus_perdido" ? "cashback_perdido" : "cashback_gerado",
+        value: amount,
+        store: contact.store || "",
+        seller: sellerPayload.sellerName || row.sellerName || "",
+        eventDate: sourceDate,
+        campaign: importType === "bonus_perdido" ? "migração CRM Bonus - bônus perdido" : "migração CRM Bonus",
+        status: importType === "bonus_perdido" ? "vencido" : "disponivel",
+        lostValue: importType === "bonus_perdido" ? amount : 0,
+        expiredAt: importType === "bonus_perdido" ? sourceDate : "",
+        lostAt: importType === "bonus_perdido" ? sourceDate : "",
+        origin: importType === "bonus_perdido" ? "migração CRM Bonus - bônus perdido" : "migração CRM Bonus",
+        ticket: row.ticket || "",
+        nf: row.nf || "",
+        notes: importType === "bonus_perdido"
+          ? `Bônus perdido importado via migração CRM Bonus. Data da perda: ${sourceDate}. Ticket: ${row.ticket || "-"}. NF: ${row.nf || "-"}.`
+          : `Cashback importado via migração CRM Bonus. Venda: R$ ${formatCurrencyNumber(purchaseValue)}. Data: ${sourceDate}. Ticket: ${row.ticket || "-"}. NF: ${row.nf || "-"}.`
+      });
+
+      if (sellerPayload.sellerId || sellerPayload.sellerName) {
+        await run(
+          `UPDATE contacts SET seller_id = COALESCE(?, seller_id), seller_name = CASE WHEN ? <> '' THEN ? ELSE seller_name END, updated_at = datetime('now') WHERE id = ?`,
+          [sellerPayload.sellerId, sellerPayload.sellerName || "", sellerPayload.sellerName || "", contact.id]
+        );
+      }
+
+      await syncContactCashback(contact.id);
+      await run(
+        `INSERT INTO import_batch_items
+        (batch_id, contact_id, cashback_id, customer_name, phone, sale_date, sale_value, cashback_value, seller_name, ticket, nf, row_number, action, status, error_message, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [
+          batchId,
+          contactId || contact.id,
+          cashbackId,
+          row.name || "",
+          row.phone || "",
+          sourceDate,
+          purchaseValue,
+          amount,
+          sellerPayload.sellerName || row.sellerName || "",
+          row.ticket || "",
+          row.nf || "",
+          Number(row.line || 0),
+          row.action || "",
+          row.duplicate ? "importado_duplicado" : "importado",
+          row.note || ""
+        ]
+      );
+      imported += 1;
+      createdCashbacks += 1;
+    }
+
+    await run(
+      `UPDATE import_batches SET
+        contacts_created = ?,
+        contacts_updated = ?,
+        events_created = ?,
+        total_sales_value = ?,
+        total_cashback_value = ?,
+        status = 'concluido'
+      WHERE id = ?`,
+      [createdContacts, updatedContacts, createdCashbacks, totalSalesValue, totalCashbackValue, batchId]
+    );
+
+    contactImportPreviews.delete(previewId);
+    res.json({
+      batchId,
+      imported,
+      ignored,
+      duplicates,
+      createdContacts,
+      updatedContacts,
+      createdCashbacks
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao confirmar a importação de clientes." });
+  }
+});
+
+app.get("/api/import-batches", async (req, res) => {
+  try {
+    res.json(await listImportBatches());
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar os lotes de importação." });
+  }
+});
+
+app.get("/api/import-batches/:id", async (req, res) => {
+  try {
+    const batch = await getImportBatchById(Number(req.params.id));
+    if (!batch) {
+      res.status(404).json({ error: "Lote de importação não encontrado." });
+      return;
+    }
+
+    const items = await getImportBatchItems(Number(req.params.id), {
+      minCashback: req.query.minCashback || "",
+      highestSale: req.query.highestSale || "",
+      highestSaleValue: req.query.highestSaleValue || "",
+      onlyNew: req.query.onlyNew || "",
+      sellerName: req.query.sellerName || "",
+      dateFrom: req.query.dateFrom || "",
+      dateTo: req.query.dateTo || "",
+      status: req.query.status || ""
+    });
+    const stats = await getImportBatchStats(Number(req.params.id));
+    res.json({ batch, stats, items });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar o lote de importação." });
+  }
+});
+
+app.get("/api/import-batches/:id/export", async (req, res) => {
+  try {
+    const batch = await getImportBatchById(Number(req.params.id));
+    if (!batch) {
+      res.status(404).json({ error: "Lote de importação não encontrado." });
+      return;
+    }
+    const items = await getImportBatchItems(Number(req.params.id));
+    const isLostBatch = String(batch.source || "").toLowerCase().includes("bônus perdido") || String(batch.source || "").toLowerCase().includes("bonus perdido");
+    const headers = ["Cliente", "Telefone", isLostBatch ? "Valor da venda" : "Venda", isLostBatch ? "Bônus perdido" : "Bônus gerado", isLostBatch ? "Data em que perdeu" : "Data", "Vendedor", "Ticket", "NF", "Status", "Ação", "Observação"];
+    const rows = [headers.join(",")].concat(
+      items.map((item) => [
+        escapeCsvValue(item.customer_name),
+        escapeCsvValue(item.phone),
+        escapeCsvValue(formatCurrencyNumber(item.sale_value)),
+        escapeCsvValue(formatCurrencyNumber(item.cashback_value)),
+        escapeCsvValue(item.sale_date),
+        escapeCsvValue(item.seller_name),
+        escapeCsvValue(item.ticket),
+        escapeCsvValue(item.nf),
+        escapeCsvValue(item.status),
+        escapeCsvValue(item.action),
+        escapeCsvValue(item.error_message)
+      ].join(","))
+    );
+    res.setHeader("Content-Disposition", `attachment; filename=\"lote-importacao-${batch.id}.csv\"`);
+    res.send(`\uFEFF${rows.join("\n")}`);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao exportar o lote de importação." });
+  }
+});
+
+app.post("/api/import-batches/:id/campaign", async (req, res) => {
+  try {
+    const batch = await getImportBatchById(Number(req.params.id));
+    if (!batch) {
+      res.status(404).json({ error: "Lote de importação não encontrado." });
+      return;
+    }
+
+    const mode = String(req.body.mode || "all");
+    const items = await getImportBatchItems(Number(req.params.id));
+    let selectedItems = items.filter((item) => Number(item.contact_id));
+    if (mode === "cashback50") {
+      selectedItems = selectedItems.filter((item) => Number(item.cashback_value || 0) >= 50);
+    } else if (mode === "cashback100") {
+      selectedItems = selectedItems.filter((item) => Number(item.cashback_value || 0) >= 100);
+    } else if (mode === "highSale") {
+      selectedItems = selectedItems.filter((item) => Number(item.sale_value || 0) >= 500);
+    } else if (mode === "new") {
+      selectedItems = selectedItems.filter((item) => item.action === "criar contato");
+    }
+
+    const selectedContactIds = Array.from(new Set(selectedItems.map((item) => Number(item.contact_id)).filter(Boolean)));
+    const campaign = await createCampaignFromContacts({
+      name: req.body.name || `Lote ${batch.id} - ${mode}`,
+      template:
+        req.body.template ||
+        "Oi, {{nome}}! Aqui é a equipe AEROSTORE. Separei uma mensagem especial com base no seu histórico recente. Posso te mostrar as novidades?",
+      selectedContactIds,
+      filters: { importBatchId: batch.id, mode }
+    });
+    res.json(campaign);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao criar campanha a partir do lote." });
+  }
+});
+
+app.post("/api/import-batches/:id/undo", async (req, res) => {
+  try {
+    const batchId = Number(req.params.id);
+    const batch = await getImportBatchById(batchId);
+    if (!batch) {
+      res.status(404).json({ error: "Lote de importação não encontrado." });
+      return;
+    }
+    const items = await getImportBatchItems(batchId);
+    for (const item of items) {
+      if (item.cashback_id) {
+        await run("DELETE FROM cashback_events WHERE cashback_id = ?", [item.cashback_id]);
+        await run("DELETE FROM cashbacks WHERE id = ?", [item.cashback_id]);
+      }
+      if (item.contact_id && item.action === "criar contato") {
+        const remainingCashbacks = await get("SELECT COUNT(*) AS total FROM cashbacks WHERE contact_id = ?", [item.contact_id]);
+        if (Number(remainingCashbacks?.total || 0) === 0) {
+          await run("DELETE FROM contacts WHERE id = ?", [item.contact_id]);
+        } else {
+          await syncContactCashback(item.contact_id);
+        }
+      } else if (item.contact_id) {
+        await syncContactCashback(item.contact_id);
+      }
+    }
+    await run("UPDATE import_batches SET status = 'desfeito' WHERE id = ?", [batchId]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao desfazer o lote de importação." });
+  }
+});
+
+app.get("/api/reports/lost-cashback", async (req, res) => {
+  try {
+    res.json(await getLostCashbackReport(req.query || {}));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao gerar o relatório de bônus perdido." });
+  }
+});
+
+app.get("/api/audiences/query", async (req, res) => {
+  try {
+    res.json(await buildAudienceRows(req.query || {}));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao montar o público." });
+  }
+});
+
+app.get("/api/audiences/export", async (req, res) => {
+  try {
+    const audience = await buildAudienceRows(req.query || {});
+    const headers = ["Cliente", "Telefone", "Loja", "Vendedor", "Cashback disponível", "Cashback perdido", "Data em que perdeu", "Última compra", "Status"];
+    const rows = audience.rows.map((row) => [
+      row.name,
+      row.phone,
+      row.store,
+      row.sellerName,
+      formatCurrencyNumber(row.availableCashback),
+      formatCurrencyNumber(row.lostCashback),
+      row.lostDate,
+      formatCurrencyNumber(row.lastPurchaseValue),
+      row.contactStatus
+    ]);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="publico-aerostore-${getToday()}.csv"`);
+    res.send(`\uFEFF${[headers, ...rows].map((row) => row.map(escapeCsvValue).join(",")).join("\n")}`);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao exportar o público." });
+  }
+});
+
+app.get("/api/audiences/saved", async (req, res) => {
+  try {
+    const rows = await all("SELECT * FROM saved_audiences ORDER BY datetime(updated_at) DESC, id DESC");
+    res.json(rows.map((row) => ({
+      ...row,
+      definition: safeJsonParse(row.definition_json, {})
+    })));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar públicos salvos." });
+  }
+});
+
+app.post("/api/audiences/saved", async (req, res) => {
+  try {
+    const name = String(req.body.name || "").trim();
+    if (!name) {
+      res.status(400).json({ error: "Informe um nome para o público salvo." });
+      return;
+    }
+    const definitionJson = JSON.stringify(req.body.definition || {});
+    const result = await run(
+      `INSERT INTO saved_audiences (name, definition_json, created_at, updated_at)
+      VALUES (?, ?, datetime('now'), datetime('now'))`,
+      [name, definitionJson]
+    );
+    const saved = await get("SELECT * FROM saved_audiences WHERE id = ?", [result.lastID]);
+    res.status(201).json({ ...saved, definition: safeJsonParse(saved.definition_json, {}) });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao salvar o público." });
+  }
+});
+
+app.put("/api/audiences/saved/:id", async (req, res) => {
+  try {
+    const name = String(req.body.name || "").trim();
+    if (!name) {
+      res.status(400).json({ error: "Informe um nome para o público salvo." });
+      return;
+    }
+    await run(
+      `UPDATE saved_audiences
+      SET name = ?, definition_json = ?, updated_at = datetime('now')
+      WHERE id = ?`,
+      [name, JSON.stringify(req.body.definition || {}), Number(req.params.id)]
+    );
+    const saved = await get("SELECT * FROM saved_audiences WHERE id = ?", [Number(req.params.id)]);
+    res.json({ ...saved, definition: safeJsonParse(saved.definition_json, {}) });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao atualizar o público salvo." });
+  }
+});
+
+app.delete("/api/audiences/saved/:id", async (req, res) => {
+  try {
+    await run("DELETE FROM saved_audiences WHERE id = ?", [Number(req.params.id)]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao excluir o público salvo." });
+  }
+});
+
+app.post("/api/audiences/campaign", async (req, res) => {
+  try {
+    const audience = await buildAudienceRows(req.body.filters || {});
+    const selectedContactIds = Array.from(new Set(audience.rows.map((row) => Number(row.contactId)).filter(Boolean)));
+    const campaign = await createCampaignFromContacts({
+      name: String(req.body.name || "").trim() || `Público ${getToday()}`,
+      template: String(req.body.template || "").trim() || "Oi, {{nome}}! Aqui é a equipe AEROSTORE. Posso te mostrar uma oportunidade especial?",
+      selectedContactIds,
+      filters: req.body.filters || {}
+    });
+    res.status(201).json({ campaign, audienceCount: selectedContactIds.length });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao criar campanha a partir do público." });
+  }
+});
+
+app.get("/api/campaigns", async (req, res) => {
+  try {
+    if (!userCanViewCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    res.json(filterCampaignsForUser(await listCampaigns(), req.user));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar campanhas." });
+  }
+});
+
+app.post("/api/campaigns", async (req, res) => {
+  try {
+    if (!userCanManageCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const sellerId = String(req.body.sellerId || "").trim() === "__all__" || !req.body.sellerId
+      ? null
+      : Number(req.body.sellerId);
+    const sellerRow = sellerId ? await getSellerById(sellerId) : null;
+    const payload = {
+      name: String(req.body.name || "").trim(),
+      seller: sellerRow ? sellerRow.name : "Todos os vendedores",
+      store: String(req.body.store || "").trim(),
+      template: String(req.body.template || "").trim(),
+      sellerId,
+      sellerName: sellerRow ? sellerRow.name : "Todos os vendedores",
+      sellerIdsJson: JSON.stringify(sellerId ? [sellerId] : ["__all__"]),
+      filtersJson: JSON.stringify(req.body.filters || {}),
+      sendType: String(req.body.sendType || "text").trim(),
+      mediaId: req.body.mediaId ? Number(req.body.mediaId) : null,
+      caption: String(req.body.caption || "").trim(),
+      hasMedia: req.body.mediaId ? 1 : 0
+    };
+    if (!userCanAccessStore(req.user, payload.store)) {
+      res.status(403).json({ error: "Acesso restrito a loja da campanha.", store_id: normalizeStoreKey(payload.store) });
+      return;
+    }
+    const validationError = validateCampaign(payload);
+    if (validationError) {
+      res.status(400).json({ error: validationError });
+      return;
+    }
+
+    const result = await run(
+      `INSERT INTO campaigns
+      (name, seller, seller_id, seller_name, store, template, seller_ids_json, filters_json, send_type, media_id, caption, has_media, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))`,
+      [payload.name, payload.seller, payload.sellerId, payload.sellerName, payload.store, payload.template, payload.sellerIdsJson, payload.filtersJson, payload.sendType, payload.mediaId, payload.caption, payload.hasMedia]
+    );
+
+    const selectedContactIds = Array.isArray(req.body.selectedContactIds)
+      ? req.body.selectedContactIds
+      : [];
+    const campaignStatus = selectedContactIds.length ? "pronta" : "rascunho";
+    for (const contactId of selectedContactIds.map(Number).filter(Boolean)) {
+      await run(
+        `INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, created_at)
+        VALUES (?, ?, datetime('now'))`,
+        [result.lastID, contactId]
+      );
+    }
+    await syncCampaignExecution(result.lastID, selectedContactIds);
+    await run("UPDATE campaigns SET status = ? WHERE id = ?", [campaignStatus, result.lastID]);
+
+    res.status(201).json((await listCampaigns()).find((item) => item.id === result.lastID));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao salvar campanha." });
+  }
+});
+
+app.put("/api/campaigns/:id", async (req, res) => {
+  try {
+    if (!userCanManageCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const existingCampaign = await getScopedCampaignById(req.params.id, req.user);
+    if (!existingCampaign) {
+      res.status(404).json({ error: "Campanha nao encontrada." });
+      return;
+    }
+    const sellerId = String(req.body.sellerId || "").trim() === "__all__" || !req.body.sellerId
+      ? null
+      : Number(req.body.sellerId);
+    const sellerRow = sellerId ? await getSellerById(sellerId) : null;
+    const payload = {
+      name: String(req.body.name || "").trim(),
+      seller: sellerRow ? sellerRow.name : "Todos os vendedores",
+      store: String(req.body.store || "").trim(),
+      template: String(req.body.template || "").trim(),
+      sellerId,
+      sellerName: sellerRow ? sellerRow.name : "Todos os vendedores",
+      sellerIdsJson: JSON.stringify(sellerId ? [sellerId] : ["__all__"]),
+      filtersJson: JSON.stringify(req.body.filters || {}),
+      sendType: String(req.body.sendType || "text").trim(),
+      mediaId: req.body.mediaId ? Number(req.body.mediaId) : null,
+      caption: String(req.body.caption || "").trim(),
+      hasMedia: req.body.mediaId ? 1 : 0
+    };
+    if (!userCanAccessStore(req.user, payload.store || existingCampaign.store || "")) {
+      res.status(403).json({ error: "Acesso restrito a loja da campanha.", store_id: normalizeStoreKey(payload.store || existingCampaign.store || "") });
+      return;
+    }
+    const validationError = validateCampaign(payload);
+    if (validationError) {
+      res.status(400).json({ error: validationError });
+      return;
+    }
+
+    const result = await run(
+      `UPDATE campaigns SET
+      name = ?, seller = ?, seller_id = ?, seller_name = ?, store = ?, template = ?, seller_ids_json = ?, filters_json = ?, send_type = ?, media_id = ?, caption = ?, has_media = ?, updated_at = datetime('now')
+      WHERE id = ?`,
+      [payload.name, payload.seller, payload.sellerId, payload.sellerName, payload.store, payload.template, payload.sellerIdsJson, payload.filtersJson, payload.sendType, payload.mediaId, payload.caption, payload.hasMedia, req.params.id]
+    );
+    if (!result.changes) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+
+    await run("DELETE FROM campaign_contacts WHERE campaign_id = ?", [req.params.id]);
+    const selectedContactIds = Array.isArray(req.body.selectedContactIds)
+      ? req.body.selectedContactIds
+      : [];
+    const campaignStatus = selectedContactIds.length ? "pronta" : "rascunho";
+    for (const contactId of selectedContactIds.map(Number).filter(Boolean)) {
+      await run(
+        `INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, created_at)
+        VALUES (?, ?, datetime('now'))`,
+        [req.params.id, contactId]
+      );
+    }
+    await syncCampaignExecution(Number(req.params.id), selectedContactIds);
+    await run("UPDATE campaigns SET status = ? WHERE id = ?", [campaignStatus, req.params.id]);
+
+    res.json((await listCampaigns()).find((item) => item.id === Number(req.params.id)));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao atualizar campanha." });
+  }
+});
+
+app.delete("/api/campaigns/:id", async (req, res) => {
+  try {
+    if (!userCanManageCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const campaign = await getScopedCampaignById(req.params.id, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+
+    await run("DELETE FROM campaign_contacts WHERE campaign_id = ?", [req.params.id]);
+    await run("DELETE FROM campaign_execution WHERE campaign_id = ?", [req.params.id]);
+    await run("DELETE FROM campaigns WHERE id = ?", [req.params.id]);
+
+    if (Number(campaign.active) === 1) {
+      const fallback = await get("SELECT id FROM campaigns ORDER BY id DESC LIMIT 1");
+      if (fallback) {
+        await run("UPDATE campaigns SET active = 1, updated_at = datetime('now') WHERE id = ?", [fallback.id]);
+      }
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao excluir campanha." });
+  }
+});
+
+app.post("/api/campaigns/:id/duplicate", async (req, res) => {
+  try {
+    if (!userCanManageCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const source = await getScopedCampaignById(req.params.id, req.user);
+    if (!source) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+
+    const result = await run(
+      `INSERT INTO campaigns
+      (name, seller, seller_id, seller_name, store, template, seller_ids_json, filters_json, send_type, media_id, caption, has_media, status, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pronta', 0, datetime('now'), datetime('now'))`,
+      [
+        `${source.name} - Copia`,
+        source.seller,
+        source.sellerId,
+        source.sellerName,
+        source.store,
+        source.template,
+        JSON.stringify(source.sellerIds || []),
+        JSON.stringify(source.filters || {}),
+        source.send_type || "text",
+        source.media_id || null,
+        source.caption || "",
+        source.hasMedia ? 1 : 0
+      ]
+    );
+
+    for (const contactId of (source.selectedContactIds || []).map(Number).filter(Boolean)) {
+      await run(
+        `INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, created_at)
+        VALUES (?, ?, datetime('now'))`,
+        [result.lastID, contactId]
+      );
+    }
+    await syncCampaignExecution(result.lastID, source.selectedContactIds || []);
+    res.status(201).json((await listCampaigns()).find((item) => item.id === result.lastID));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao duplicar campanha." });
+  }
+});
+
+app.post("/api/campaigns/:id/restart", async (req, res) => {
+  try {
+    if (!userCanManageCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const campaign = await getScopedCampaignById(req.params.id, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+    await syncCampaignExecution(campaign.id, campaign.selectedContactIds || []);
+    await run("UPDATE campaigns SET status = 'pronta', updated_at = datetime('now') WHERE id = ?", [campaign.id]);
+    res.json((await listCampaigns()).find((item) => item.id === campaign.id));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao reiniciar campanha." });
+  }
+});
+
+app.post("/api/campaigns/:id/unlock", async (req, res) => {
+  try {
+    if (!userCanManageCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const campaign = await getScopedCampaignById(req.params.id, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+    await run("UPDATE campaigns SET status = 'pausada', updated_at = datetime('now') WHERE id = ?", [campaign.id]);
+    res.json((await listCampaigns()).find((item) => item.id === campaign.id));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao destravar campanha." });
+  }
+});
+
+app.post("/api/campaigns/:id/activate", async (req, res) => {
+  try {
+    if (!userCanManageCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const campaign = await getScopedCampaignById(req.params.id, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+    await run("UPDATE campaigns SET active = 0");
+    await run("UPDATE campaigns SET active = 1, updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    res.json(await get("SELECT * FROM campaigns WHERE id = ?", [req.params.id]));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao ativar campanha." });
+  }
+});
+
+// Upload de mídia para campanhas
+app.post("/api/uploads/media", mediaUpload.single("media"), async (req, res) => {
+  try {
+    // Verificar autenticação
+    if (!req.user) {
+      console.warn('[UPLOAD] Tentativa de upload sem autenticação');
+      return res.status(401).json({ error: "Sessão expirada ou usuário não autenticado", details: "Faça login novamente" });
+    }
+
+    if (!userCanManageCampaigns(req.user)) {
+      return res.status(403).json({ error: "Acesso restrito para o seu perfil.", details: "Seu perfil nao pode anexar midia em campanhas." });
+    }
+
+    // Verificar se arquivo foi enviado
+    if (!req.file) {
+      console.warn('[UPLOAD] Nenhum arquivo enviado por usuário:', req.user.id);
+      return res.status(400).json({ error: "Arquivo não enviado", details: "Nenhum arquivo foi recebido pelo servidor" });
+    }
+
+    const { originalname, filename, mimetype, size, path: filePath } = req.file;
+    console.log('[UPLOAD] Arquivo recebido:', { originalname, filename, mimetype, size, userId: req.user.id });
+
+    // Determinar tipo de mídia
+    const mediaType = mimetype.startsWith('image/')
+      ? 'image'
+      : mimetype.startsWith('video/')
+      ? 'video'
+      : mimetype.startsWith('audio/')
+      ? 'audio'
+      : mimetype === 'application/pdf'
+      ? 'document'
+      : null;
+
+    if (!mediaType) {
+      fs.unlinkSync(filePath);
+      console.warn('[UPLOAD] Tipo de arquivo não permitido:', mimetype);
+      return res.status(400).json({ error: "Tipo de arquivo não permitido", details: `Tipo MIME: ${mimetype}. Aceitos: JPG, PNG, WebP, MP4, MP3, OGG, WAV e PDF` });
+    }
+
+    // Validar tamanho (máximo 16MB para todos)
+    const maxSize = 16 * 1024 * 1024;
+    if (size > maxSize) {
+      fs.unlinkSync(filePath);
+      console.warn('[UPLOAD] Arquivo acima do limite:', { size, maxSize, user: req.user.id });
+      return res.status(400).json({ error: "Arquivo muito grande", details: `Tamanho: ${(size / (1024 * 1024)).toFixed(2)}MB. Máximo permitido: ${maxSize / (1024 * 1024)}MB` });
+    }
+
+    // Salvar no banco de dados
+    let result;
+    try {
+      result = await run(
+        `INSERT INTO campaign_media (original_name, file_name, mime_type, file_size, file_path, media_type, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [originalname, filename, mimetype, size, filePath, mediaType, req.user.id]
+      );
+      console.log('[UPLOAD] Arquivo salvo no banco:', { mediaId: result.lastID, user: req.user.id });
+    } catch (dbError) {
+      fs.unlinkSync(filePath);
+      console.error('[UPLOAD] Erro ao salvar no banco:', dbError);
+      return res.status(500).json({ error: "Erro ao salvar no banco de dados", details: dbError.message });
+    }
+
+    const mediaId = result.lastID;
+
+    res.json({
+      mediaId,
+      filename,
+      originalName: originalname,
+      mimeType: mimetype,
+      size,
+      path: filePath,
+      mediaType,
+      previewUrl: mediaType === 'image' ? `/api/uploads/media/${mediaId}/preview` : null
+    });
+  } catch (error) {
+    console.error('[UPLOAD] Erro não tratado:', error);
+    if (req.file && req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (e) {
+        console.warn('[UPLOAD] Erro ao remover arquivo após erro:', e.message);
+      }
+    }
+    res.status(500).json({ error: "Erro interno no upload de mídia", details: error.message });
+  }
+});
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: "Arquivo maior que 16MB", details: "O arquivo enviado excedeu o limite de 16MB." });
+    }
+    return res.status(400).json({ error: "Erro no upload de mídia", details: err.message });
+  }
+
+  if (err && err.message && err.message.includes('Tipo de arquivo não permitido')) {
+    return res.status(400).json({ error: "Tipo de arquivo não permitido", details: err.message });
+  }
+
+  next(err);
+});
+
+// Preview de imagem
+app.get("/api/uploads/media/:id/preview", async (req, res) => {
+  try {
+    const media = await get("SELECT * FROM campaign_media WHERE id = ? AND status = 'active'", [req.params.id]);
+    if (!media || media.media_type !== 'image') {
+      return res.status(404).json({ error: "Mídia não encontrada ou não é uma imagem." });
+    }
+
+    if (!fs.existsSync(media.file_path)) {
+      return res.status(404).json({ error: "Arquivo não encontrado." });
+    }
+
+    res.setHeader('Content-Type', media.mime_type);
+    res.sendFile(media.file_path);
+  } catch (error) {
+    console.error('Erro ao servir preview:', error);
+    res.status(500).json({ error: "Erro interno ao carregar preview." });
+  }
+});
+
+app.get("/api/uploads/media/:id/info", async (req, res) => {
+  try {
+    const media = await get("SELECT id, media_type, original_name, mime_type, file_path, file_size FROM campaign_media WHERE id = ? AND status = 'active'", [req.params.id]);
+    if (!media) {
+      return res.status(404).json({ error: "Mídia não encontrada." });
+    }
+
+    res.json({
+      id: media.id,
+      media_type: media.media_type,
+      original_name: media.original_name,
+      mime_type: media.mime_type,
+      file_path: media.file_path,
+      file_size: media.file_size,
+      exists: fs.existsSync(media.file_path)
+    });
+  } catch (error) {
+    console.error('Erro ao obter informações da mídia:', error);
+    res.status(500).json({ error: "Erro interno ao obter informações da mídia." });
+  }
+});
+
+app.get("/api/uploads/media/:id/file", async (req, res) => {
+  try {
+    const media = await get("SELECT * FROM campaign_media WHERE id = ? AND status = 'active'", [req.params.id]);
+    if (!media) {
+      return res.status(404).json({ error: "Mídia não encontrada." });
+    }
+
+    if (!fs.existsSync(media.file_path)) {
+      return res.status(404).json({ error: "Arquivo não encontrado." });
+    }
+
+    res.setHeader('Content-Type', media.mime_type);
+    res.sendFile(media.file_path);
+  } catch (error) {
+    console.error('Erro ao servir arquivo:', error);
+    res.status(500).json({ error: "Erro interno ao carregar arquivo." });
+  }
+});
+
+app.get("/api/campaigns/active/current", async (req, res) => {
+  try {
+    if (!userCanViewCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const campaigns = filterCampaignsForUser(await listCampaigns(), req.user);
+    const campaign = campaigns.find((item) => Number(item.active) === 1);
+    if (!campaign) {
+      res.json(null);
+      return;
+    }
+    res.json(campaign);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar campanha ativa." });
+  }
+});
+
+app.get("/api/campaigns/audience-estimate", async (req, res) => {
+  try {
+    if (!userCanViewCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const scope = String(req.query.scope || "store_whatsapp_valid").trim().toLowerCase();
+    const store = normalizeStoreKey(req.query.store || "");
+    const campaignId = Number(req.query.campaignId || 0);
+    if (scope === "campaign_contacts" || scope === "manual_selection") {
+      const campaign = campaignId ? await getScopedCampaignById(campaignId, req.user) : null;
+      if (!campaign) {
+        res.json({ scope, store, estimatedCount: 0, linkedCount: 0, validWhatsappCount: 0, invalidWhatsappCount: 0, blockedCount: 0 });
+        return;
+      }
+      const linkedCount = Array.isArray(campaign.selectedContactIds) ? campaign.selectedContactIds.length : 0;
+      const contacts = await getCampaignContacts(campaign.id);
+      const validWhatsappCount = Array.isArray(contacts) ? contacts.filter((item) => sanitizePhone(item.phone || "").length >= 10).length : 0;
+      res.json({
+        scope,
+        store: normalizeStoreKey(campaign.store || ""),
+        estimatedCount: linkedCount,
+        linkedCount,
+        validWhatsappCount,
+        invalidWhatsappCount: Array.isArray(contacts) ? Math.max(contacts.length - validWhatsappCount, 0) : 0,
+        blockedCount: 0
+      });
+      return;
+    }
+    if (!store) {
+      res.status(400).json({ error: "Informe a loja para validar o publico." });
+      return;
+    }
+    if (!userCanAccessStore(req.user, store)) {
+      res.status(403).json({ error: "Acesso restrito a loja solicitada.", store_id: store });
+      return;
+    }
+    const estimate = await countCampaignAudienceEstimate({
+      store,
+      scope,
+      gender: req.query.gender || "",
+      sellerId: req.query.sellerId || "",
+      topSize: req.query.topSize || "",
+      bottomSize: req.query.bottomSize || "",
+      shoeSize: req.query.shoeSize || "",
+      hasWhatsapp: req.query.hasWhatsapp || ""
+    });
+    res.json({
+      scope,
+      store,
+      estimatedCount: Number(estimate.estimatedCount || 0),
+      linkedCount: Number(estimate.linkedCount || 0),
+      validWhatsappCount: Number(estimate.validWhatsappCount || 0),
+      invalidWhatsappCount: Number(estimate.invalidWhatsappCount || 0),
+      blockedCount: Number(estimate.blockedCount || 0)
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao validar o publico da campanha." });
+  }
+});
+
+app.get("/api/campaigns/execution", async (req, res) => {
+  try {
+    if (!userCanViewCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    res.json(await getCampaignExecutionReportForUser(req.user));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar o relatério de execu?o das campanhas." });
+  }
+});
+
+app.get("/api/campaigns/:id/execution-results", async (req, res) => {
+  try {
+    if (!userCanViewCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const campaign = await getScopedCampaignById(req.params.id, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+    res.json(await getCampaignExecutionResults(req.params.id, req.query.page, req.query.perPage));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar os resultados da execução." });
+  }
+});
+
+app.get("/api/campaigns/:id/operation", async (req, res) => {
+  try {
+    if (!userCanViewCampaigns(req.user)) {
+      res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+      return;
+    }
+    const campaign = await getScopedCampaignById(req.params.id, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: "Campanha nao encontrada." });
+      return;
+    }
+    const payload = await getCampaignOperationData(req.params.id);
+    if (!payload) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar a operação da campanha." });
+  }
+});
+
+app.get("/api/campaigns/:id/humanized-status", async (req, res) => {
+  try {
+    const campaign = await get("SELECT id FROM campaigns WHERE id = ?", [Number(req.params.id)]);
+    if (!campaign) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+    res.json(await getCampaignHumanizedStatusPayload(Number(req.params.id)));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar o status do envio humanizado." });
+  }
+});
+
+app.post("/api/campaigns/:id/humanized-start", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    if (whatsappState.status !== "conectado") {
+      res.status(400).json({ error: "WhatsApp CRM desconectado. Conecte o motor antes de iniciar a campanha humanizada." });
+      return;
+    }
+    const payload = await getCampaignOperationData(campaignId);
+    if (!payload) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+    const existingOperation = campaignHumanizedOperations.get(campaignId);
+    if (existingOperation && existingOperation.status === "running") {
+      res.status(409).json({ error: "Já existe um envio humanizado em andamento para esta campanha." });
+      return;
+    }
+    const contactsQueue = (Array.isArray(payload.contacts) ? payload.contacts : []).filter((contact) => String(contact.execution_status || "").toLowerCase() === "pendente");
+    if (!contactsQueue.length) {
+      res.status(400).json({ error: "Não há clientes pendentes para esta campanha." });
+      return;
+    }
+    const operation = createCampaignHumanizedOperation(payload.campaign, contactsQueue, payload.stats || {});
+    operation.status = "starting";
+    operation.startedAt = new Date().toISOString();
+    operation.updatedAt = operation.startedAt;
+    campaignHumanizedOperations.set(campaignId, operation);
+    operation.loopPromise = runHumanizedCampaignOperation(operation, req.user).catch(async (error) => {
+      operation.status = "error";
+      operation.lastError = String(error?.userMessage || error?.message || error);
+      operation.completedAt = new Date().toISOString();
+      operation.updatedAt = operation.completedAt;
+      pushCampaignHumanizedLog(operation, {
+        type: "fatal",
+        message: `Falha fatal na campanha: ${operation.lastError}`
+      });
+      await updateCampaignStoredStatus(campaignId, "pausada");
+    });
+    res.json(await getCampaignHumanizedStatusPayload(campaignId));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao iniciar o envio humanizado." });
+  }
+});
+
+app.post("/api/campaigns/:id/humanized-pause", async (req, res) => {
+  try {
+    const operation = campaignHumanizedOperations.get(Number(req.params.id));
+    if (!operation) {
+      res.status(404).json({ error: "Nenhuma operação humanizada ativa para esta campanha." });
+      return;
+    }
+    operation.pauseRequested = true;
+    operation.pauseReason = "Pausado pelo operador.";
+    if (operation.status !== "running") {
+      operation.status = "paused";
+      operation.pausedAt = new Date().toISOString();
+      await updateCampaignStoredStatus(operation.campaignId, "pausada");
+    }
+    pushCampaignHumanizedLog(operation, {
+      type: "paused",
+      message: "Pausa solicitada pelo operador."
+    });
+    res.json(await getCampaignHumanizedStatusPayload(Number(req.params.id)));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao pausar a campanha." });
+  }
+});
+
+app.post("/api/campaigns/:id/humanized-resume", async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    const operation = campaignHumanizedOperations.get(campaignId);
+    if (!operation) {
+      res.status(404).json({ error: "Nenhuma operação humanizada encontrada para esta campanha." });
+      return;
+    }
+    if (operation.status === "running") {
+      res.status(409).json({ error: "A campanha já está em execução." });
+      return;
+    }
+    if (operation.status === "completed") {
+      res.status(409).json({ error: "A campanha já foi concluída." });
+      return;
+    }
+    operation.pauseRequested = false;
+    operation.stopRequested = false;
+    operation.pausedAt = "";
+    operation.pauseReason = "";
+    pushCampaignHumanizedLog(operation, {
+      type: "resumed",
+      message: "Campanha retomada pelo operador."
+    });
+    operation.loopPromise = runHumanizedCampaignOperation(operation, req.user).catch(async (error) => {
+      operation.status = "error";
+      operation.lastError = String(error?.userMessage || error?.message || error);
+      operation.completedAt = new Date().toISOString();
+      pushCampaignHumanizedLog(operation, {
+        type: "fatal",
+        message: `Falha fatal na retomada: ${operation.lastError}`
+      });
+      await updateCampaignStoredStatus(campaignId, "pausada");
+    });
+    res.json(await getCampaignHumanizedStatusPayload(campaignId));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao retomar a campanha." });
+  }
+});
+
+app.post("/api/campaigns/:id/humanized-stop", async (req, res) => {
+  try {
+    const operation = campaignHumanizedOperations.get(Number(req.params.id));
+    if (!operation) {
+      res.status(404).json({ error: "Nenhuma operação humanizada ativa para esta campanha." });
+      return;
+    }
+    operation.stopRequested = true;
+    operation.pauseRequested = false;
+    operation.pauseReason = "Operação interrompida manualmente.";
+    if (operation.status !== "running") {
+      operation.status = "stopped";
+      operation.completedAt = new Date().toISOString();
+      await updateCampaignStoredStatus(operation.campaignId, "pausada");
+    }
+    pushCampaignHumanizedLog(operation, {
+      type: "stopped",
+      message: "Parada solicitada pelo operador."
+    });
+    res.json(await getCampaignHumanizedStatusPayload(Number(req.params.id)));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao interromper a campanha." });
+  }
+});
+
+app.get("/api/campaigns/:id/contacts", async (req, res) => {
+  try {
+    const campaign = await get("SELECT id FROM campaigns WHERE id = ?", [req.params.id]);
+    if (!campaign) {
+      res.status(404).json({ error: "Campanha não encontrada." });
+      return;
+    }
+    res.json(await getCampaignContacts(req.params.id));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar clientes da campanha." });
+  }
+});
+
+app.get("/api/assistant/contacts", async (req, res) => {
+  try {
+    const baseContacts = await listContacts(req.query);
+    const campaignId = Number(req.query.campaignId || 0);
+    if (!campaignId) {
+      res.json(baseContacts);
+      return;
+    }
+
+    const selectedIds = await getCampaignContactIds(campaignId);
+    res.json(baseContacts.filter((contact) => selectedIds.includes(contact.id)));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar contatos da campanha." });
+  }
+});
+
+app.get("/api/assistant/next", async (req, res) => {
+  try {
+    const campaignId = Number(req.query.campaignId || 0);
+    const offset = Number(req.query.offset || 0);
+    const campaign = campaignId
+      ? await get("SELECT * FROM campaigns WHERE id = ?", [campaignId])
+      : await get("SELECT * FROM campaigns WHERE active = 1 ORDER BY id DESC LIMIT 1");
+
+    if (!campaign) {
+      res.json({
+        empty: true,
+        reason: "no_active_campaign",
+        campaign: null,
+        contact: null,
+        message: "",
+        execution: null,
+        offset,
+        index: 0,
+        total: 0,
+        whatsappUrl: ""
+      });
+      return;
+    }
+
+    const contactFilters = {
+      tag: req.query.tag,
+      status: req.query.status,
+      gender: req.query.gender,
+      store: req.query.store,
+      sellerId: req.query.sellerId,
+      cashbackActive: req.query.cashbackActive
+    };
+    const executionRows = await getCampaignExecutionRows(campaign.id, contactFilters, true);
+
+    const recoverySegment = (() => {
+      try {
+        return JSON.parse(campaign.filters_json || "{}")?.recoverySegment || "";
+      } catch (error) {
+        return "";
+      }
+    })();
+    let enrichedRows = executionRows;
+    if (recoverySegment) {
+      const recoveryEntries = await getCashbackRecoverySegmentEntries(recoverySegment);
+      const recoveryMap = new Map(recoveryEntries.map((entry) => [Number(entry.contact_id), entry]));
+      enrichedRows = executionRows
+        .filter((row) => recoveryMap.has(Number(row.contact_id || row.id)))
+        .map((row) => {
+          const recoveryEntry = recoveryMap.get(Number(row.contact_id || row.id));
+          return {
+            ...row,
+            cashback: Number(recoveryEntry.cashback_value || 0),
+            validity: recoveryEntry.expires_at || "",
+            days_until_expiration: Number(recoveryEntry.days_until_expiration || 0),
+            minimum_purchase: Number(recoveryEntry.minimum_purchase || 0),
+            cashback_lost: Number(recoveryEntry.cashback_lost || 0)
+          };
+        });
+    }
+
+    const executionRow = enrichedRows[offset];
+    const contact = executionRow;
+    if (!contact) {
+      res.json({
+        empty: true,
+        reason: "no_contact_for_filters",
+        campaign,
+        contact: null,
+        message: "",
+        execution: null,
+        offset,
+        index: 0,
+        total: enrichedRows.length,
+        whatsappUrl: ""
+      });
+      return;
+    }
+
+    const message = applyVariables(campaign.template, campaign, contact);
+    await run(
+      `INSERT INTO assistant_logs
+      (contact_id, campaign_id, action, message_snapshot, created_at)
+      VALUES (?, ?, 'prepared', ?, datetime('now'))`,
+      [contact.id, campaign.id, message]
+    );
+    await incrementMetric("messages_prepared", 1);
+
+    res.json({
+      contact,
+      campaign,
+      message,
+      execution: {
+        id: executionRow.id,
+        status: executionRow.status,
+        sellerId: executionRow.seller_id
+      },
+      offset,
+      index: offset + 1,
+      total: enrichedRows.length,
+      whatsappUrl: `https://web.whatsapp.com/send?phone=${contact.phone}&text=${encodeURIComponent(message)}`
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao preparar o proximo disparo." });
+  }
+});
+
+app.post("/api/assistant/action", async (req, res) => {
+  try {
+    const contactId = Number(req.body.contactId);
+    const campaignId = Number(req.body.campaignId);
+    const action = String(req.body.action || "").trim();
+    const message = String(req.body.message || "");
+    const validActions = ["enviado", "respondeu", "comprou", "nao_respondeu", "invalido"];
+
+    if (!contactId || !campaignId || !validActions.includes(action)) {
+      res.status(400).json({ error: "Dados do disparo incompletos ou invalidos." });
+      return;
+    }
+
+    await run(
+      `INSERT INTO assistant_logs
+      (contact_id, campaign_id, action, message_snapshot, created_at)
+      VALUES (?, ?, ?, ?, datetime('now'))`,
+      [contactId, campaignId, action, message]
+    );
+
+    const campaign = await get("SELECT seller_id FROM campaigns WHERE id = ?", [campaignId]);
+    const contact = await get("SELECT seller_id FROM contacts WHERE id = ?", [contactId]);
+    const executionStatusMap = {
+      enviado: "enviado",
+      respondeu: "respondeu",
+      comprou: "respondeu",
+      nao_respondeu: "ignorado",
+      invalido: "ignorado"
+    };
+    await updateCampaignExecutionStatus({
+      campaignId,
+      contactId,
+      sellerId: campaign?.seller_id || contact?.seller_id || null,
+      status: executionStatusMap[action]
+    });
+
+    if (action === "enviado") {
+      await incrementMetric("sent", 1);
+    }
+    if (action === "respondeu") {
+      await incrementMetric("responses", 1);
+    }
+    if (action === "comprou") {
+      await incrementMetric("conversions", 1);
+      await incrementMetric("reactivated", 1);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao registrar a a??o do disparo." });
+  }
+});
+
+app.get("/api/settings/stores", async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "Faça login para acessar as configurações da loja." });
+    }
+    if (!isManager(req.user)) {
+      return res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+    }
+    const rows = listAccessibleStoreSettings(req.user).map((row) => getStoreSettingsSummary(row));
+    res.json({
+      stores: rows,
+      can_edit_any_store: isAdmin(req.user),
+      can_edit_limited_store: !isAdmin(req.user) && userHasPermission(req.user, "can_manage_store_settings")
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar as configurações de loja." });
+  }
+});
+
+app.get("/api/settings/stores/:storeId", async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "Faça login para acessar as configurações da loja." });
+    }
+    if (!isManager(req.user)) {
+      return res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+    }
+    const storeId = normalizeStoreKey(req.params.storeId || "");
+    const row = getStoreSettingsById(storeId);
+    if (!row) {
+      return res.status(404).json({ error: "Configuração da loja não encontrada.", store_id: storeId });
+    }
+    if (!userCanAccessStore(req.user, storeId)) {
+      return res.status(403).json({ error: "Você não tem permissão para acessar esta loja.", store_id: storeId });
+    }
+    res.json({
+      store: row,
+      permissions: {
+        can_edit_full: isAdmin(req.user),
+        can_edit_limited: !isAdmin(req.user) && userHasPermission(req.user, "can_manage_store_settings")
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar a configuração da loja." });
+  }
+});
+
+app.put("/api/settings/stores/:storeId", async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "Faça login para editar a configuração da loja." });
+    }
+    if (!isManager(req.user)) {
+      return res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+    }
+    const storeId = normalizeStoreKey(req.params.storeId || "");
+    const current = getStoreSettingsById(storeId);
+    if (!current) {
+      return res.status(404).json({ error: "Configuração da loja não encontrada.", store_id: storeId });
+    }
+    if (!userCanAccessStore(req.user, storeId)) {
+      return res.status(403).json({ error: "Você não tem permissão para editar esta loja.", store_id: storeId });
+    }
+
+    const payload = isAdmin(req.user)
+      ? buildNormalizedStoreSettingsPayload(req.body || {}, current)
+      : buildManagerEditableStoreSettingsPayload(req.body || {}, current);
+    const validationError = validateStoreSettingsPayload(payload);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
+
+    const nextRecord = finalizeStoreSettingsRecord(payload, current, getUserDisplayName(req.user));
+    const saved = saveStoreSettingsRecord(storeId, nextRecord);
+    res.json({
+      store: saved,
+      permissions: {
+        can_edit_full: isAdmin(req.user),
+        can_edit_limited: !isAdmin(req.user) && userHasPermission(req.user, "can_manage_store_settings")
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao salvar a configuração da loja." });
+  }
+});
+
+app.get("/api/settings/stores/:storeId/public", async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "FaÃ§a login para acessar a leitura operacional da loja." });
+    }
+    const requestedStoreId = normalizeStoreKey(req.params.storeId || "");
+    const row = findStoreSettingsRecord(req.params.storeId || "") || getStoreSettingsById(requestedStoreId);
+    const storeId = requestedStoreId;
+    if (!row?.store_id) {
+      return res.status(404).json({ error: "ConfiguraÃ§Ã£o da loja nÃ£o encontrada.", store_id: requestedStoreId });
+    }
+    const resolvedStoreId = normalizeStoreKey(row.store_id || requestedStoreId || "");
+    if (!userCanAccessStore(req.user, resolvedStoreId) && !isAdmin(req.user)) {
+      return res.status(403).json({ error: "VocÃª nÃ£o tem permissÃ£o para acessar esta loja.", store_id: resolvedStoreId });
+    }
+    res.json(getStorePublicContext(req.params.storeId || resolvedStoreId, {
+      store_id: resolvedStoreId,
+      display_name: row.display_name || formatStoreLabel(resolvedStoreId)
+    }));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar a leitura pÃºblica da loja." });
+  }
+});
+
+app.get("/api/settings/stores/:storeId/public", async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "Faça login para acessar a leitura operacional da loja." });
+    }
+    const requestedStoreId = normalizeStoreKey(req.params.storeId || "");
+    const row = findStoreSettingsRecord(req.params.storeId || "") || getStoreSettingsById(requestedStoreId);
+    const storeId = requestedStoreId;
+    if (!row) {
+      return res.status(404).json({ error: "Configuração da loja não encontrada.", store_id: storeId });
+    }
+    if (req.user && !userCanAccessStore(req.user, storeId) && !isAdmin(req.user)) {
+      return res.status(403).json({ error: "Você não tem permissão para acessar esta loja.", store_id: storeId });
+    }
+    res.json({
+      store_id: row.store_id,
+      display_name: row.display_name,
+      status: row.status,
+      type: row.type,
+      contact: {
+        phone: row.contact?.phone || "",
+        whatsapp: row.contact?.whatsapp || "",
+        email: row.contact?.email || "",
+        manager_name: row.contact?.manager_name || "",
+        opening_hours: row.contact?.opening_hours || ""
+      },
+      terminal: {
+        default_register_id: row.terminal?.default_register_id || "",
+        default_terminal_label: row.terminal?.default_terminal_label || ""
+      },
+      policies: {
+        pickup_enabled: Boolean(row.policies?.pickup_enabled),
+        delivery_enabled: Boolean(row.policies?.delivery_enabled),
+        delivery_policy_label: row.policies?.delivery_policy_label || ""
+      },
+      metadata: {
+        updated_at: row.metadata?.updated_at || "",
+        updated_by: row.metadata?.updated_by || ""
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar a leitura pública da loja." });
+  }
+});
+
+app.use("/api/cashback/settings", (req, res, next) => {
+  if (String(req.method || "").toUpperCase() === "PUT" && !isAdmin(req.user)) {
+    return res.status(403).json({ error: "Acesso restrito a admin." });
+  }
+  next();
+});
+
+app.get("/api/cashback/settings", async (req, res) => {
+  try {
+    const storeOptions = await getRegisteredOperationalStoreOptions();
+    res.json({
+      ...await getCashbackSettings(),
+      stores: STORES,
+      storeOptions,
+      contactGenders: CONTACT_GENDERS,
+      contactStatuses: CONTACT_STATUSES,
+      cashbackStatuses: CASHBACK_STATUSES,
+      cancelReasons: CANCEL_REASONS,
+      eventTypes: CASHBACK_EVENT_TYPES
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar as configurações de cashback." });
+  }
+});
+
+app.put("/api/cashback/settings", requireAdmin, async (req, res) => {
+  try {
+    const row = await getCashbackSettingsRow();
+    const percentages = Array.isArray(req.body.percentages)
+      ? req.body.percentages.map(Number).filter((item) => item > 0)
+      : parsePercentages(req.body.percentages_json);
+
+    await run(
+      `UPDATE cashback_settings SET
+      percentages_json = ?,
+      default_validity_days = ?,
+      default_minimum_purchase = ?,
+      reactivation_limit_per_store = ?,
+      reactivated_validity_days = ?,
+      anticipated_validity_days = ?,
+      updated_at = datetime('now')
+      WHERE id = ?`,
+      [
+        JSON.stringify(percentages.length ? percentages : [5, 10, 15, 20]),
+        Number(req.body.defaultValidityDays || 30),
+        Number(req.body.defaultMinimumPurchase || 0),
+        Number(req.body.reactivationLimitPerStore || 10),
+        Number(req.body.reactivatedValidityDays || 1),
+        Number(req.body.anticipatedValidityDays || 7),
+        row.id
+      ]
+    );
+
+    res.json(await getCashbackSettings());
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao salvar as configurações de cashback." });
+  }
+});
+
+app.get("/api/cashbacks", async (req, res) => {
+  try {
+    res.json(await listCashbacks(req.query));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar cashbacks." });
+  }
+});
+
+app.post("/api/cashbacks/wizard/preview", async (req, res) => {
+  try {
+    const settings = await getCashbackSettings();
+    const purchaseValue = Number(req.body.purchaseValue || 0);
+    if (purchaseValue <= 0) {
+      res.status(400).json({ error: "Informe um valor de compra valido." });
+      return;
+    }
+    const phone = normalizePhone(req.body.phone || "");
+    const contact = req.body.contactId
+      ? await get("SELECT * FROM contacts WHERE id = ?", [req.body.contactId])
+      : (phone ? await findContactByPhone(phone) : null);
+    if (!contact && (!phone || !String(req.body.name || "").trim())) {
+      res.status(400).json({ error: "Informe telefone e nome do cliente para continuar." });
+      return;
+    }
+    const seller = await resolveSellerPayload(req.body, true);
+    const availableCashback = contact?.id ? await getAvailableCashbackTotal(contact.id) : 0;
+    const preview = buildCashbackPreviewPayload({
+      contact,
+      phone,
+      name: req.body.name,
+      gender: req.body.gender,
+      store: req.body.store,
+      sellerName: seller.sellerName,
+      purchaseValue,
+      settings,
+      availableCashback
+    });
+    res.json({
+      contact,
+      preview,
+      summaryText: `Compra: R$ ${formatCurrencyNumber(preview.purchaseValue)} | Cashback disponível: R$ ${formatCurrencyNumber(preview.availableCashback)} | Será usado: R$ ${formatCurrencyNumber(preview.cashbackUsed)} | Cliente paga: R$ ${formatCurrencyNumber(preview.amountPaid)} | Novo cashback: R$ ${formatCurrencyNumber(preview.generatedValue)}`,
+      lgpdText: "Ao gerar ou utilizar o bônus, o cliente concorda com os termos de uso e privacidade."
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao montar a pr?via do cashback." });
+  }
+});
+
+app.post("/api/cashbacks/wizard/pin", async (req, res) => {
+  try {
+    const { preview, seller, contact } = await buildCashbackPinFlowContext(req.body, req.user);
+    const cashback = await createPendingCashbackRecord({
+      preview,
+      seller,
+      contact,
+      user: req.user,
+      notes: "Cashback criado aguardando validação antifraude por PIN."
+    });
+    const result = await createAndSendCashbackPin({
+      cashback,
+      preview,
+      seller,
+      contact,
+      user: req.user,
+      invalidatePrevious: true
+    });
+    res.json({
+      ...result.payload,
+      sent: result.sent
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Falha ao gerar PIN do cashback." });
+  }
+});
+
+app.post("/api/cashbacks/wizard/send-pin", async (req, res) => {
+  try {
+    const tokenId = Number(req.body.tokenId || 0);
+    if (!tokenId) {
+      res.status(400).json({ error: "PIN não encontrado." });
+      return;
+    }
+    const token = await get("SELECT * FROM cashback_pin_tokens WHERE id = ?", [tokenId]);
+    if (!token || !token.cashback_id) {
+      res.status(404).json({ error: "PIN não encontrado." });
+      return;
+    }
+    const cashback = await get("SELECT * FROM cashbacks WHERE id = ?", [token.cashback_id]);
+    if (!cashback) {
+      res.status(404).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    const contact = await ensureContactByPayload({
+      contactId: cashback.contact_id,
+      name: cashback.customer_name,
+      phone: cashback.customer_phone,
+      gender: cashback.customer_gender,
+      store: cashback.store,
+      sellerId: cashback.seller_id,
+      sellerName: cashback.seller_name
+    });
+    const preview = {
+      contactId: contact.id,
+      customerName: cashback.customer_name,
+      customerPhone: cashback.customer_phone,
+      customerGender: cashback.customer_gender,
+      store: cashback.store,
+      sellerName: cashback.seller_name,
+      purchaseValue: Number(token.purchase_value || cashback.purchase_value || 0),
+      percentage: Number(token.percentage || cashback.percentage || 0),
+      generatedValue: Number(token.generated_value || cashback.generated_value || 0),
+      availableCashback: Number(token.available_cashback || 0),
+      cashbackUsed: Number(token.cashback_used || 0),
+      amountPaid: Number(token.amount_paid || cashback.purchase_value || 0),
+      validFrom: token.valid_from || cashback.valid_from || "",
+      expiresAt: token.expires_at || cashback.expires_at || ""
+    };
+    const seller = {
+      sellerId: cashback.seller_id || null,
+      sellerName: cashback.seller_name || cashback.seller || getUserDisplayName(req.user)
+    };
+    const result = await createAndSendCashbackPin({
+      cashback,
+      preview,
+      seller,
+      contact,
+      user: req.user,
+      invalidatePrevious: true
+    });
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: contact.id,
+      eventType: "pin_reenviado",
+      value: cashback.generated_value,
+      store: cashback.store,
+      seller: cashback.seller_name || cashback.seller,
+      notes: result.sent
+        ? "Novo PIN de validação enviado por WhatsApp."
+        : `Falha ao reenviar PIN por WhatsApp: ${result.payload.lastError || "erro desconhecido"}`
+    });
+    res.json({
+      success: result.sent,
+      ...result.payload
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Falha ao preparar envio do PIN." });
+  }
+});
+
+app.post("/api/cashbacks/wizard/confirm", async (req, res) => {
+  try {
+    const tokenId = Number(req.body.tokenId || 0);
+    const pin = String(req.body.pin || "").trim();
+    if (!tokenId || !pin) {
+      res.status(400).json({ error: "Informe o token e o PIN para confirmar." });
+      return;
+    }
+    const token = await get("SELECT * FROM cashback_pin_tokens WHERE id = ?", [tokenId]);
+    if (!token || !token.cashback_id) {
+      res.status(404).json({ error: "PIN não encontrado." });
+      return;
+    }
+
+    const validatedCashback = await validateCashbackPinForCashbackId({
+      cashbackId: token.cashback_id,
+      pin,
+      user: req.user
+    });
+
+    res.status(201).json({
+      cashback: validatedCashback,
+      whatsappMessage: buildCashbackMessage("gerado", validatedCashback),
+      termsLink: TERMS_LINK
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Falha ao confirmar o cashback." });
+  }
+});
+
+app.post("/api/cashback/:id/validate-pin", async (req, res) => {
+  try {
+    const cashbackId = Number(req.params.id || 0);
+    const pin = String(req.body.pin || "").trim();
+    if (!cashbackId || !pin) {
+      res.status(400).json({ error: "Digite o PIN informado pelo cliente." });
+      return;
+    }
+    const cashback = await validateCashbackPinForCashbackId({
+      cashbackId,
+      pin,
+      user: req.user
+    });
+    res.json({
+      success: true,
+      cashback,
+      status: cashback.status
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Falha ao validar o PIN." });
+  }
+});
+
+app.post("/api/cashback/:id/resend-pin", async (req, res) => {
+  try {
+    const cashbackId = Number(req.params.id || 0);
+    if (!cashbackId) {
+      res.status(400).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    const cashback = await get("SELECT * FROM cashbacks WHERE id = ?", [cashbackId]);
+    if (!cashback) {
+      res.status(404).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    const contact = await ensureContactByPayload({
+      contactId: cashback.contact_id,
+      name: cashback.customer_name,
+      phone: cashback.customer_phone,
+      gender: cashback.customer_gender,
+      store: cashback.store,
+      sellerId: cashback.seller_id,
+      sellerName: cashback.seller_name
+    });
+    const previousToken = await getLatestCashbackPinToken(cashbackId);
+    const preview = {
+      contactId: contact.id,
+      customerName: cashback.customer_name,
+      customerPhone: cashback.customer_phone,
+      customerGender: cashback.customer_gender,
+      store: cashback.store,
+      sellerName: cashback.seller_name,
+      purchaseValue: Number(previousToken?.purchase_value || cashback.purchase_value || 0),
+      percentage: Number(previousToken?.percentage || cashback.percentage || 0),
+      generatedValue: Number(previousToken?.generated_value || cashback.generated_value || 0),
+      availableCashback: Number(previousToken?.available_cashback || await getAvailableCashbackTotal(contact.id) || 0),
+      cashbackUsed: Number(previousToken?.cashback_used || 0),
+      amountPaid: Number(previousToken?.amount_paid || cashback.purchase_value || 0),
+      validFrom: previousToken?.valid_from || cashback.valid_from || "",
+      expiresAt: previousToken?.expires_at || cashback.expires_at || ""
+    };
+    const seller = {
+      sellerId: cashback.seller_id || null,
+      sellerName: cashback.seller_name || cashback.seller || getUserDisplayName(req.user)
+    };
+    const result = await createAndSendCashbackPin({
+      cashback,
+      preview,
+      seller,
+      contact,
+      user: req.user,
+      invalidatePrevious: true
+    });
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: contact.id,
+      eventType: "pin_reenviado",
+      value: cashback.generated_value,
+      store: cashback.store,
+      seller: cashback.seller_name || cashback.seller,
+      notes: result.sent
+        ? "Novo PIN de validação enviado por WhatsApp."
+        : `Falha ao reenviar PIN por WhatsApp: ${result.payload.lastError || "erro desconhecido"}`
+    });
+    res.json({
+      success: result.sent,
+      ...result.payload
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Falha ao reenviar o PIN." });
+  }
+});
+
+app.post("/api/cashback/:id/cancel-pin", async (req, res) => {
+  try {
+    const cashbackId = Number(req.params.id || 0);
+    if (!cashbackId) {
+      res.status(400).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    const cashback = await get("SELECT * FROM cashbacks WHERE id = ?", [cashbackId]);
+    if (!cashback) {
+      res.status(404).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    await run(
+      `UPDATE cashback_pin_tokens
+      SET status = 'cancelled', cancelled_at = datetime('now'), last_error = 'Lançamento cancelado pelo operador.'
+      WHERE cashback_id = ? AND status IN ('pending', 'sent', 'failed', 'expired')`,
+      [cashbackId]
+    );
+    await run(
+      `UPDATE cashbacks
+      SET status = 'cancelado', cancel_reason = ?, updated_at = datetime('now')
+      WHERE id = ?`,
+      ["Lançamento cancelado antes da validação do PIN.", cashbackId]
+    );
+    await createCashbackEvent({
+      cashbackId,
+      contactId: cashback.contact_id,
+      eventType: "cashback_cancelado",
+      value: cashback.generated_value,
+      store: cashback.store,
+      seller: cashback.seller_name || cashback.seller,
+      reason: "Lançamento cancelado antes da validação do PIN.",
+      notes: "Lançamento com PIN cancelado pelo operador."
+    });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Falha ao cancelar o lançamento." });
+  }
+});
+
+app.post("/api/cashbacks", async (req, res) => {
+  try {
+    if (req.user?.role === "vendedor") {
+      res.status(403).json({ error: "Use o fluxo com PIN para confirmar o bônus." });
+      return;
+    }
+    const settings = await getCashbackSettings();
+    const contact = await ensureContactByPayload(req.body);
+    const seller = await resolveSellerPayload(req.body, true);
+    const purchaseValue = Number(req.body.purchaseValue || 0);
+    const percentage = getConfiguredCashbackPercentage(settings);
+    const generatedValue = calculateCashbackValue(purchaseValue, percentage);
+    const validFrom = getToday();
+    const expiresAt = addDays(validFrom, settings.defaultValidityDays);
+    const status = "disponivel";
+    const availableBalance = generatedValue;
+
+    const result = await run(
+      `INSERT INTO cashbacks
+      (contact_id, customer_name, customer_phone, customer_gender, store, seller_id, seller_name, seller, purchase_value, percentage, generated_value, available_balance, used_value, lost_value, minimum_purchase, status, origin, valid_from, expires_at, created_at, updated_at, used_at, canceled_at, cancel_reason, reactivated_at, anticipated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), '', '', '', '', '')`,
+      [
+        contact.id,
+        contact.name,
+        contact.phone,
+        contact.gender || "",
+        String(req.body.store || ""),
+        seller.sellerId,
+        seller.sellerName,
+        seller.sellerName || String(req.body.seller || ""),
+        purchaseValue,
+        percentage,
+        generatedValue,
+        Number(req.body.status === "a_receber" ? 0 : availableBalance),
+        0,
+        0,
+        Number(settings.defaultMinimumPurchase || 0),
+        status,
+        String(req.body.origin || "compra"),
+        validFrom,
+        expiresAt
+      ]
+    );
+
+    const cashback = await getCashbackById(result.lastID);
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: cashback.contact_id,
+      eventType: "cashback_gerado",
+      value: cashback.generated_value,
+      store: cashback.store,
+      seller: cashback.seller,
+      notes: String(req.body.notes || "Cashback gerado manualmente.")
+    });
+    await syncContactCashback(cashback.contact_id);
+
+    res.status(201).json({
+      cashback,
+      whatsappMessage: buildCashbackMessage("gerado", cashback)
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao lancar cashback." });
+  }
+});
+
+app.put("/api/cashbacks/:id", async (req, res) => {
+  try {
+    const cashback = await getCashbackById(req.params.id);
+    if (!cashback) {
+      res.status(404).json({ error: "Cashback não encontrado." });
+      return;
+    }
+
+    const seller = await resolveSellerPayload(req.body, true);
+    const settings = await getCashbackSettings();
+    const purchaseValue = Number(req.body.purchaseValue ?? cashback.purchase_value);
+    const percentage = Number(cashback.percentage || getConfiguredCashbackPercentage(settings));
+    const generatedValue = calculateCashbackValue(purchaseValue, percentage);
+    const availableBalance = Number(req.body.availableBalance ?? cashback.available_balance);
+
+    await run(
+      `UPDATE cashbacks SET
+      customer_gender = ?, store = ?, seller_id = ?, seller_name = ?, seller = ?, purchase_value = ?, percentage = ?, generated_value = ?, available_balance = ?, minimum_purchase = ?, status = ?, origin = ?, valid_from = ?, expires_at = ?, updated_at = datetime('now')
+      WHERE id = ?`,
+      [
+        String(cashback.customer_gender || cashback.contact_gender_current || ""),
+        String(req.body.store ?? cashback.store),
+        seller.sellerId,
+        seller.sellerName || cashback.seller_name || "",
+        seller.sellerName || String(req.body.seller ?? cashback.seller),
+        purchaseValue,
+        percentage,
+        generatedValue,
+        availableBalance,
+        Number(cashback.minimum_purchase ?? settings.defaultMinimumPurchase ?? 0),
+        mapCashbackStatus(req.body.status ?? cashback.status),
+        String(req.body.origin ?? cashback.origin),
+        String(req.body.validFrom ?? cashback.valid_from),
+        String(req.body.expiresAt ?? cashback.expires_at),
+        cashback.id
+      ]
+    );
+
+    const updated = await getCashbackById(cashback.id);
+    await syncContactCashback(updated.contact_id);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao atualizar cashback." });
+  }
+});
+
+app.post("/api/cashbacks/:id/reactivate", async (req, res) => {
+  try {
+    await expireCashbacks();
+    const cashback = await getCashbackById(req.params.id);
+    if (!cashback) {
+      res.status(404).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    if (cashback.status !== "vencido") {
+      res.status(400).json({ error: "Só é possível reativar bônus vencido." });
+      return;
+    }
+
+    const settings = await getCashbackSettings();
+    const today = getToday();
+    const dailyCount = await get(
+      `SELECT COUNT(*) AS total
+      FROM cashback_events
+      WHERE event_type = 'cashback_reativado' AND store = ? AND DATE(created_at) = DATE('now')`,
+      [cashback.store]
+    );
+    if (Number(dailyCount?.total || 0) >= settings.reactivationLimitPerStore) {
+      res.status(400).json({ error: "Limite diario de reativacoes atingido para esta loja." });
+      return;
+    }
+
+    const informedPin = String(req.body.pin || "");
+    const seller = String(req.body.seller || "").trim();
+    if (!cashback.pin_code || cashback.pin_code !== informedPin) {
+      res.status(400).json({ error: "PIN invalido para reativa??o." });
+      return;
+    }
+    if (cashback.pin_expires_at && new Date(cashback.pin_expires_at).getTime() < Date.now()) {
+      res.status(400).json({ error: "PIN expirado. Reenvie um novo código." });
+      return;
+    }
+    if (!seller) {
+      res.status(400).json({ error: "Informe o vendedor responsavel." });
+      return;
+    }
+
+    const restoredValue = Number(
+      cashback.available_balance > 0
+        ? cashback.available_balance
+        : cashback.lost_value > 0
+          ? cashback.lost_value
+          : cashback.generated_value - cashback.used_value
+    );
+    const newExpiration = addDays(today, settings.reactivatedValidityDays);
+    await run(
+      `UPDATE cashbacks SET
+      status = 'disponivel',
+      available_balance = ?,
+      lost_value = CASE WHEN lost_value >= ? THEN lost_value - ? ELSE 0 END,
+      expires_at = ?,
+      reactivated_at = datetime('now'),
+      updated_at = datetime('now')
+      WHERE id = ?`,
+      [restoredValue, restoredValue, restoredValue, newExpiration, cashback.id]
+    );
+
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: cashback.contact_id,
+      eventType: "cashback_reativado",
+      value: restoredValue,
+      store: cashback.store,
+      seller,
+      pin: informedPin,
+      notes: "Bônus reativado manualmente."
+    });
+
+    await incrementMetric("reactivated", 1);
+    const updated = await getCashbackById(cashback.id);
+    await syncContactCashback(updated.contact_id);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao reativar bônus." });
+  }
+});
+
+app.post("/api/cashbacks/:id/anticipate", async (req, res) => {
+  try {
+    const cashback = await getCashbackById(req.params.id);
+    if (!cashback) {
+      res.status(404).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    if (cashback.status !== "a_receber") {
+      res.status(400).json({ error: "Só é possível antecipar bônus com status a_receber." });
+      return;
+    }
+
+    const settings = await getCashbackSettings();
+    const informedPin = String(req.body.pin || "");
+    const seller = String(req.body.seller || "").trim();
+    if (!cashback.pin_code || cashback.pin_code !== informedPin) {
+      res.status(400).json({ error: "PIN invalido para antecipa??o." });
+      return;
+    }
+    if (cashback.pin_expires_at && new Date(cashback.pin_expires_at).getTime() < Date.now()) {
+      res.status(400).json({ error: "PIN expirado. Reenvie um novo código." });
+      return;
+    }
+    if (!seller) {
+      res.status(400).json({ error: "Informe o vendedor responsavel." });
+      return;
+    }
+
+    const today = getToday();
+    await run(
+      `UPDATE cashbacks SET
+      status = 'disponivel',
+      valid_from = ?,
+      expires_at = ?,
+      available_balance = generated_value,
+      anticipated_at = datetime('now'),
+      updated_at = datetime('now')
+      WHERE id = ?`,
+      [today, addDays(today, settings.anticipatedValidityDays), cashback.id]
+    );
+
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: cashback.contact_id,
+      eventType: "cashback_antecipado",
+      value: cashback.generated_value,
+      store: cashback.store,
+      seller,
+      pin: informedPin,
+      notes: "Bônus antecipado manualmente."
+    });
+
+    const updated = await getCashbackById(cashback.id);
+    await syncContactCashback(updated.contact_id);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao antecipar bônus." });
+  }
+});
+
+app.post("/api/cashbacks/:id/cancel", async (req, res) => {
+  try {
+    const cashback = await getCashbackById(req.params.id);
+    if (!cashback) {
+      res.status(404).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    if (!["disponivel", "a_receber"].includes(cashback.status)) {
+      res.status(400).json({ error: "Só é possível cancelar bônus disponivel ou a_receber." });
+      return;
+    }
+
+    const seller = String(req.body.seller || "").trim();
+    const reason = String(req.body.reason || "").trim();
+    if (!seller) {
+      res.status(400).json({ error: "Informe o vendedor responsavel." });
+      return;
+    }
+    if (!reason) {
+      res.status(400).json({ error: "Informe o motivo do cancelamento." });
+      return;
+    }
+
+    const canceledValue = Number(cashback.available_balance > 0 ? cashback.available_balance : cashback.generated_value);
+    await run(
+      `UPDATE cashbacks SET
+      status = 'cancelado',
+      lost_value = lost_value + ?,
+      available_balance = 0,
+      canceled_at = datetime('now'),
+      cancel_reason = ?,
+      updated_at = datetime('now')
+      WHERE id = ?`,
+      [canceledValue, reason, cashback.id]
+    );
+
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: cashback.contact_id,
+      eventType: "cashback_cancelado",
+      value: canceledValue,
+      store: cashback.store,
+      seller,
+      reason,
+      notes: "Bônus cancelado manualmente."
+    });
+
+    const updated = await getCashbackById(cashback.id);
+    await syncContactCashback(updated.contact_id);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao cancelar bônus." });
+  }
+});
+
+app.post("/api/cashbacks/:id/use", async (req, res) => {
+  try {
+    await expireCashbacks();
+    const cashback = await getCashbackById(req.params.id);
+    if (!cashback) {
+      res.status(404).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    if (cashback.status !== "disponivel") {
+      res.status(400).json({ error: "Só é possível usar bônus disponivel." });
+      return;
+    }
+    if (cashback.expires_at && cashback.expires_at < getToday()) {
+      res.status(400).json({ error: "O bônus já venceu." });
+      return;
+    }
+
+    const usedAmount = Number(req.body.usedValue || 0);
+    const seller = String(req.body.seller || "").trim();
+    if (usedAmount <= 0) {
+      res.status(400).json({ error: "Informe um valor usado valido." });
+      return;
+    }
+    if (usedAmount > Number(cashback.available_balance || 0)) {
+      res.status(400).json({ error: "O valor usado não pode ser maior que o saldo disponivel." });
+      return;
+    }
+    if (Number(req.body.purchaseValue || 0) < Number(cashback.minimum_purchase || 0)) {
+      res.status(400).json({ error: "A compra mínima não foi atingida para usar esse bônus." });
+      return;
+    }
+
+    const usageLimit = getCashbackUsageLimit(req.body.purchaseValue || 0, cashback.available_balance || 0);
+    if (usedAmount > usageLimit) {
+      res.status(400).json({ error: "O bônus s? pode cobrir até 50% do valor da compra." });
+      return;
+    }
+    const nextLost = Number((Number(cashback.available_balance || 0) - usedAmount).toFixed(2));
+    await run(
+      `UPDATE cashbacks SET
+      used_value = used_value + ?,
+      lost_value = lost_value + ?,
+      available_balance = 0,
+      status = 'usado',
+      used_at = datetime('now'),
+      updated_at = datetime('now')
+      WHERE id = ?`,
+      [usedAmount, nextLost, cashback.id]
+    );
+
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: cashback.contact_id,
+      eventType: "cashback_resgatado",
+      value: usedAmount,
+      store: cashback.store,
+      seller: seller || cashback.seller,
+      notes: "Bônus utilizado manualmente."
+    });
+
+    const updated = await getCashbackById(cashback.id);
+    await syncContactCashback(updated.contact_id);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao usar bônus." });
+  }
+});
+
+app.get("/api/cashbacks/contact/:contactId", async (req, res) => {
+  try {
+    await expireCashbacks();
+    const contact = await get("SELECT * FROM contacts WHERE id = ?", [req.params.contactId]);
+    if (!contact) {
+      res.status(404).json({ error: "Contato não encontrado." });
+      return;
+    }
+
+    const cashbacks = await listCashbacks({ contactId: req.params.contactId });
+    const summary = await getCashbackSummaryByContactId(req.params.contactId);
+    const events = await all(
+      `SELECT * FROM cashback_events
+      WHERE contact_id = ?
+      ORDER BY created_at DESC, id DESC`,
+      [req.params.contactId]
+    );
+
+    res.json({ contact, summary, cashbacks, events });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao consultar cashback do contato." });
+  }
+});
+
+app.get("/api/cashbacks/phone/:phone", async (req, res) => {
+  try {
+    await expireCashbacks();
+    const contact = await findContactByPhone(req.params.phone);
+    if (!contact) {
+      res.status(404).json({ error: "Cliente não encontrado." });
+      return;
+    }
+
+    const cashbacks = await listCashbacks({ contactId: contact.id });
+    const summary = await getCashbackSummaryByContactId(contact.id);
+    const events = await all(
+      `SELECT * FROM cashback_events
+      WHERE contact_id = ?
+      ORDER BY created_at DESC, id DESC`,
+      [contact.id]
+    );
+
+    res.json({ contact, summary, cashbacks, events });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao consultar por telefone." });
+  }
+});
+
+app.get("/api/cashbacks/exportar", async (req, res) => {
+  try {
+    const rows = await listCashbacks({});
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="cashbacks-aerostore-${getToday()}.csv"`);
+    res.send(buildCashbacksCsv(rows));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao exportar relatério de cashback." });
+  }
+});
+
+app.post("/api/cashbacks/import", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ error: "Selecione um arquivo CSV ou Excel." });
+    return;
+  }
+
+  try {
+    const workbook = XLSX.readFile(req.file.path);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+    let inserted = 0;
+    let ignored = 0;
+
+    for (const row of rows) {
+      const name = String(getImportCellValue(row, ["Nome", "nome", "Cliente", "cliente"]) || "").trim();
+      const phone = normalizePhone(
+        getImportCellValue(row, ["Numero", "Número", "n?mero", "número", "Telefone", "telefone", "WhatsApp", "whatsapp", "Celular", "celular"])
+      );
+      const cashbackValue = Number(getImportCellValue(row, ["Cashback", "cashback"]) || 0);
+      const expiresAt = String(getImportCellValue(row, ["Validade", "validade"]) || "").trim();
+      const store = String(getImportCellValue(row, ["Loja", "loja"]) || "").trim();
+      const seller = String(getImportCellValue(row, ["Vendedor", "vendedor"]) || "").trim();
+      const sellerPayload = await resolveSellerPayload({ sellerName: seller }, true);
+      const status = mapCashbackStatus(getImportCellValue(row, ["Status", "status"]) || "disponivel");
+
+      if (!name || !phone) {
+        ignored += 1;
+        continue;
+      }
+
+      const contact = await ensureContactByPayload({ name, phone, store });
+      const generatedValue = cashbackValue;
+      const availableBalance = status === "disponivel" ? cashbackValue : 0;
+      const usedValue = status === "usado" ? cashbackValue : 0;
+      const lostValue = status === "vencido" || status === "cancelado" ? cashbackValue : 0;
+
+      const result = await run(
+        `INSERT INTO cashbacks
+        (contact_id, customer_name, customer_phone, customer_gender, store, seller_id, seller_name, seller, purchase_value, percentage, generated_value, available_balance, used_value, lost_value, minimum_purchase, status, origin, valid_from, expires_at, created_at, updated_at, used_at, canceled_at, cancel_reason, reactivated_at, anticipated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 0, ?, 'importa??o', ?, ?, datetime('now'), datetime('now'), '', '', '', '', '')`,
+        [
+          contact.id,
+          contact.name,
+          contact.phone,
+          contact.gender || "",
+          store,
+          sellerPayload.sellerId,
+          sellerPayload.sellerName || seller,
+          sellerPayload.sellerName || seller,
+          generatedValue,
+          availableBalance,
+          usedValue,
+          lostValue,
+          status,
+          getToday(),
+          expiresAt
+        ]
+      );
+
+      await createCashbackEvent({
+        cashbackId: result.lastID,
+        contactId: contact.id,
+        eventType: "cashback_gerado",
+        value: generatedValue,
+        store,
+        seller,
+        notes: "Cashback importado por planilha."
+      });
+      await syncContactCashback(contact.id);
+      inserted += 1;
+    }
+
+    fs.unlinkSync(req.file.path);
+    res.json({ inserted, ignored });
+  } catch (error) {
+    if (fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ error: "Falha ao importar cashback." });
+  }
+});
+
+app.get("/api/cashback/assistant/next", async (req, res) => {
+  try {
+    const filter = String(req.query.filter || "disponivel");
+    const cashbacks = await listCashbacks({ status: filter });
+    const offset = Number(req.query.offset || 0);
+    const cashback = cashbacks[offset];
+    if (!cashback) {
+      res.status(404).json({ error: "Nenhum cliente encontrado para esse filtro de cashback." });
+      return;
+    }
+
+    const messageType = filter === "vencendo" ? "vencendo" : filter === "vencido" ? "perdido" : "gerado";
+    const message = buildCashbackMessage(messageType, cashback);
+    res.json({
+      record: cashback,
+      message,
+      offset,
+      whatsappUrl: `https://web.whatsapp.com/send?phone=${cashback.customer_phone}&text=${encodeURIComponent(message)}`
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao preparar disparo assistido do cashback." });
+  }
+});
+
+app.get("/api/cashback/recovery-segments", async (req, res) => {
+  try {
+    res.json(await getCashbackRecoverySegmentSummaries());
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar os segmentos de recupera??o." });
+  }
+});
+
+app.get("/api/cashback/recovery-segments/:key/contacts", async (req, res) => {
+  try {
+    const segment = getCashbackRecoverySegmentDefinition(req.params.key);
+    if (!segment) {
+      res.status(404).json({ error: "Segmento nao encontrado." });
+      return;
+    }
+    res.json(await getCashbackRecoverySegmentEntries(req.params.key));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar os clientes do segmento." });
+  }
+});
+
+app.get("/api/cashback/recovery-segments/:key/next", async (req, res) => {
+  try {
+    const segment = getCashbackRecoverySegmentDefinition(req.params.key);
+    if (!segment) {
+      res.status(404).json({ error: "Segmento nao encontrado." });
+      return;
+    }
+    const entries = await getCashbackRecoverySegmentEntries(req.params.key);
+    const offset = Number(req.query.offset || 0);
+    const entry = entries[offset];
+    if (!entry) {
+      res.status(404).json({ error: "Nenhum cliente encontrado para esse segmento." });
+      return;
+    }
+    const message = buildRecoverySegmentMessage(req.params.key, entry);
+    res.json({
+      segment: { key: segment.key, title: segment.title },
+      record: entry,
+      message,
+      offset,
+      index: offset + 1,
+      total: entries.length,
+      whatsappUrl: `https://web.whatsapp.com/send?phone=${normalizePhone(entry.customer_phone)}&text=${encodeURIComponent(message)}`
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao preparar o proximo cliente do segmento." });
+  }
+});
+
+app.post("/api/cashback/recovery-segments/:key/campaign", async (req, res) => {
+  try {
+    const campaign = await createRecoveryCampaign(req.params.key, req.user);
+    res.status(201).json(campaign);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao criar campanha de recupera??o." });
+  }
+});
+
+app.post("/api/cashback/recovery-segments/:key/whatsapp", async (req, res) => {
+  try {
+    const segment = getCashbackRecoverySegmentDefinition(req.params.key);
+    if (!segment) {
+      res.status(404).json({ error: "Segmento nao encontrado." });
+      return;
+    }
+    const contactId = Number(req.body.contactId || 0);
+    const entries = await getCashbackRecoverySegmentEntries(req.params.key);
+    const entry = entries.find((item) => Number(item.contact_id) === contactId);
+    if (!entry) {
+      res.status(404).json({ error: "Cliente nao encontrado no segmento." });
+      return;
+    }
+    const message = buildRecoverySegmentMessage(req.params.key, entry);
+    await createCashbackEvent({
+      cashbackId: entry.cashback_ids?.[0] || null,
+      contactId: entry.contact_id,
+      eventType: "whatsapp_enviado",
+      value: Number(entry.cashback_value || entry.cashback_lost || 0),
+      store: entry.store,
+      seller: req.body.seller || entry.seller_name,
+      campaign: segment.title,
+      notes: `Mensagem preparada para recupera??o de cashback: ${segment.title}.`
+    });
+    res.json({
+      url: `https://web.whatsapp.com/send?phone=${normalizePhone(entry.customer_phone)}&text=${encodeURIComponent(message)}`,
+      message
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao preparar mensagem de recupera??o." });
+  }
+});
+
+app.post("/api/cashbacks/:id/whatsapp", async (req, res) => {
+  try {
+    const cashback = await getCashbackById(req.params.id);
+    if (!cashback) {
+      res.status(404).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    const type = String(req.body.type || "gerado");
+    const message = buildCashbackMessage(type, cashback);
+    await registerWhatsappEvent(cashback, req.body.seller);
+    res.json({
+      url: `https://web.whatsapp.com/send?phone=${normalizePhone(cashback.customer_phone)}&text=${encodeURIComponent(message)}`,
+      message
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao preparar mensagem de WhatsApp." });
+  }
+});
+
+app.post("/api/cashbacks/:id/pin", async (req, res) => {
+  try {
+    const cashback = await getCashbackById(req.params.id);
+    if (!cashback) {
+      res.status(404).json({ error: "Cashback não encontrado." });
+      return;
+    }
+    if (!isWhatsAppReady()) {
+      res.status(400).json({ error: "WhatsApp desconectado. Reconecte antes de enviar o PIN." });
+      return;
+    }
+    const pin = randomPin();
+    const pinExpiresAt = addMinutes(new Date(), CASHBACK_PIN_EXPIRATION_MINUTES);
+    await run(
+      `UPDATE cashbacks SET pin_code = ?, pin_expires_at = ?, pin_validated_at = '', updated_at = datetime('now')
+      WHERE id = ?`,
+      [pin, pinExpiresAt, cashback.id]
+    );
+    const sendResult = await sendWhatsAppTextMessage(
+      cashback.customer_phone,
+      `AEROSTORE: seu PIN de validação é ${pin}.\nInforme este código ao vendedor para confirmar seu bônus.`,
+      { debugLabel: "PIN WHATSAPP" }
+    );
+    await createCashbackEvent({
+      cashbackId: cashback.id,
+      contactId: cashback.contact_id,
+      eventType: "pin_enviado",
+      value: cashback.available_balance || cashback.generated_value,
+      store: cashback.store,
+      seller: cashback.seller,
+      notes: `PIN de validação enviado por WhatsApp em ${formatDateTimeBR(new Date().toISOString())}.`
+    });
+    res.json({
+      success: true,
+      pinExpiresAt,
+      sentByWhatsapp: true,
+      whatsappMessageId: sendResult.messageId || ""
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Falha ao gerar PIN." });
+  }
+});
+
+app.get("/api/cashback/events", async (req, res) => {
+  try {
+    const clauses = [];
+    const params = [];
+    if (req.query.contactId) {
+      clauses.push("e.contact_id = ?");
+      params.push(req.query.contactId);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = await all(
+      `SELECT e.*, c.name AS contact_name
+      FROM cashback_events e
+      LEFT JOIN contacts c ON c.id = e.contact_id
+      ${where}
+      ORDER BY e.created_at DESC, e.id DESC`,
+      params
+    );
+    res.json(rows.map((row) => ({
+      ...row,
+      pin: ""
+    })));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar eventos de cashback." });
+  }
+});
+
+app.get("/api/ai/templates", (req, res) => {
+  res.json([
+    {
+      key: "cashback",
+      title: "Cashback",
+      template: "Oi, {{nome}}! Seu cashback de R$ {{cashback}} na {{loja}} está reservado até {{validade}}. Quer que eu separe algumas novidades para você?"
+    },
+    {
+      key: "novidades",
+      title: "Novidades",
+      template: "Oi, {{nome}}! Chegaram novidades na {{loja}} com a curadoria do {{vendedor}}. Posso te enviar as peças que combinam com seu estilo?"
+    },
+    {
+      key: "aniversario",
+      title: "Aniversário",
+      template: "Parabéns, {{nome}}! Preparamos uma experiência especial na {{loja}} com cashback de R$ {{cashback}} válido até {{validade}}. Quer aproveitar?"
+    },
+    {
+      key: "liquidação",
+      title: "Liquidação",
+      template: "Oi, {{nome}}! A liquidação premium da {{loja}} começou e seu atendimento com {{vendedor}} já está pronto. Posso te mostrar as melhores oportunidades?"
+    },
+    {
+      key: "reativa??o",
+      title: "Reativação",
+      template: "Oi, {{nome}}! Faz tempo que você não visita a {{loja}}. Separei um mimo com cashback de R$ {{cashback}} até {{validade}} para te receber de volta."
+    }
+  ]);
+});
+
+app.post("/api/ai/variation", (req, res) => {
+  const base = String(req.body.base || "").trim();
+  const style = String(req.body.style || "elegante").trim();
+  const openers = {
+    elegante: ["Ol?", "Oi", "Que prazer falar com você"],
+    direto: ["Oi", "Ol?", "Passando rapidinho"],
+    caloroso: ["Oi", "Ol?, tudo bem?", "Que bom te encontrar por aqui"]
+  };
+  const closers = {
+    elegante: ["Posso cuidar disso para você?", "Se quiser, preparo tudo com carinho.", "Fico a disposição para te aténder."],
+    direto: ["Quer que eu te envie agora?", "Posso separar para você.", "Me avise que eu preparo tudo."],
+    caloroso: ["Vai ser um prazer te receber.", "Se quiser, eu te acompanho em tudo.", "Conta comigo para deixar tudo pronto."]
+  };
+  const prefix = openers[style] || openers.elegante;
+  const suffix = closers[style] || closers.elegante;
+  const variation = `${prefix[Math.floor(Math.random() * prefix.length)]}! ${base} ${suffix[Math.floor(Math.random() * suffix.length)]}`;
+  res.json({ variation });
+});
+
+app.get("/", (req, res) => {
+  servePublicIndex(res);
+});
+
+app.get("/settings", (req, res) => {
+  servePublicIndex(res);
+});
+
+app.get("/login", (req, res) => {
+  servePublicIndex(res);
+});
+
+app.get("/whatsapp-crm", (req, res) => {
+  servePublicIndex(res);
+});
+
+app.get("/aerointel", (req, res) => {
+  servePublicIndex(res);
+});
+
+app.get(
+  [
+    "/painel",
+    "/campanhas",
+    "/cashback",
+    "/relatorios",
+    "/consolidacao",
+    "/importacoes",
+    "/configuracoes"
+  ],
+  (req, res) => {
+    servePublicIndex(res);
+  }
+);
+
+app.get(PDV_WEB_ROUTES, (req, res) => {
+  servePublicIndex(res);
+});
+
+app.get("/api/ia/settings", requireManager, async (req, res) => {
+  try {
+    res.json(await getAiSettings());
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar as configurações da IA." });
+  }
+});
+
+app.put("/api/ia/settings", async (req, res) => {
+  try {
+    if (!isManager(req.user)) {
+      res.status(403).json({ error: "Acesso restrito a gerente ou admin." });
+      return;
+    }
+    res.json(await saveAiSettings(req.body || {}));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao salvar as configurações da IA." });
+  }
+});
+
+app.get("/api/ia/logs", requireManager, async (req, res) => {
+  try {
+    res.json(await listAiMessageLogs({
+      limit: req.query.limit || 25,
+      page: req.query.page || 1,
+      filter: req.query.filter || "all"
+    }));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar os registros da IA." });
+  }
+});
+
+app.get("/api/ia/catalogs", requireManager, async (req, res) => {
+  try {
+    const includeInactive = isManager(req.user) && String(req.query.includeInactive || "1") !== "0";
+    res.json(await getAiCatalogBundle({ includeInactive }));
+  } catch (error) {
+    console.error("Erro ao carregar catálogos da vitrine IA:", error);
+    res.status(500).json({ error: "Falha ao carregar os catálogos da vitrine IA." });
+  }
+});
+
+app.post("/api/ia/catalogs/:type", requireManager, async (req, res) => {
+  try {
+    const tableMap = {
+      categories: "ai_product_categories",
+      genders: "ai_product_genders",
+      colors: "ai_product_colors",
+      sizes: "ai_product_sizes"
+    };
+    const tableName = tableMap[String(req.params.type || "").trim()];
+    if (!tableName) {
+      return res.status(404).json({ error: "Tipo de catálogo não encontrado." });
+    }
+    const row = await saveAiCatalogItem(tableName, req.body || {});
+    res.json(buildAiCatalogOption(row));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao salvar item do catálogo." });
+  }
+});
+
+app.put("/api/ia/catalogs/:type/:id", requireManager, async (req, res) => {
+  try {
+    const tableMap = {
+      categories: "ai_product_categories",
+      genders: "ai_product_genders",
+      colors: "ai_product_colors",
+      sizes: "ai_product_sizes"
+    };
+    const tableName = tableMap[String(req.params.type || "").trim()];
+    if (!tableName) {
+      return res.status(404).json({ error: "Tipo de catálogo não encontrado." });
+    }
+    const row = await saveAiCatalogItem(tableName, req.body || {}, { id: req.params.id });
+    res.json(buildAiCatalogOption(row));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao atualizar item do catálogo." });
+  }
+});
+
+app.get("/api/ia/product-catalogs", requireManager, async (req, res) => {
+  try {
+    const includeInactive = isManager(req.user) && String(req.query.includeInactive || "1") !== "0";
+    res.json(await getAiCatalogBundle({ includeInactive }));
+  } catch (error) {
+    console.error("Erro ao carregar catálogos da vitrine IA:", error);
+    res.status(500).json({ error: "Falha ao carregar os catálogos da vitrine IA." });
+  }
+});
+
+app.post("/api/ia/product-catalogs/:type", requireManager, async (req, res) => {
+  try {
+    const tableMap = {
+      categories: "ai_product_categories",
+      genders: "ai_product_genders",
+      colors: "ai_product_colors",
+      sizes: "ai_product_sizes"
+    };
+    const tableName = tableMap[String(req.params.type || "").trim()];
+    if (!tableName) {
+      return res.status(404).json({ error: "Tipo de catálogo não encontrado." });
+    }
+    const row = await saveAiCatalogItem(tableName, req.body || {});
+    res.json(buildAiCatalogOption(row));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao salvar item do catálogo." });
+  }
+});
+
+app.put("/api/ia/product-catalogs/:type/:id", requireManager, async (req, res) => {
+  try {
+    const tableMap = {
+      categories: "ai_product_categories",
+      genders: "ai_product_genders",
+      colors: "ai_product_colors",
+      sizes: "ai_product_sizes"
+    };
+    const tableName = tableMap[String(req.params.type || "").trim()];
+    if (!tableName) {
+      return res.status(404).json({ error: "Tipo de catálogo não encontrado." });
+    }
+    const row = await saveAiCatalogItem(tableName, req.body || {}, { id: req.params.id });
+    res.json(buildAiCatalogOption(row));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao atualizar item do catálogo." });
+  }
+});
+
+app.get("/api/ia/products", requireManager, async (req, res) => {
+  try {
+    if (String(req.query.catalogs || "0") === "1") {
+      const includeInactive = isManager(req.user) && String(req.query.includeInactive || "1") !== "0";
+      res.json(await getAiCatalogBundle({ includeInactive }));
+      return;
+    }
+    const includeInactive = isManager(req.user) && String(req.query.includeInactive || "1") !== "0";
+    res.json(await listAiProducts({ includeInactive }));
+  } catch (error) {
+    console.error("Erro ao listar produtos da vitrine IA:", error);
+    res.status(500).json({ error: "Falha ao listar os produtos da vitrine IA." });
+  }
+});
+
+app.get("/api/ia/products/search", requireManager, async (req, res) => {
+  try {
+    const products = await searchAiProducts(String(req.query.q || ""), {
+      limit: Math.max(1, Math.min(10, Number(req.query.limit || 6)))
+    });
+    res.json({ products });
+  } catch (error) {
+    console.error("Erro ao buscar produtos da vitrine IA:", error);
+    res.status(500).json({ error: "Falha ao buscar produtos da vitrine IA." });
+  }
+});
+
+app.post("/api/ia/products", requireManager, async (req, res) => {
+  try {
+    const catalogType = String(req.query.catalogType || "").trim();
+    if (catalogType) {
+      const tableMap = {
+        categories: "ai_product_categories",
+        genders: "ai_product_genders",
+        colors: "ai_product_colors",
+        sizes: "ai_product_sizes"
+      };
+      const tableName = tableMap[catalogType];
+      if (!tableName) {
+        return res.status(404).json({ error: "Tipo de catálogo não encontrado." });
+      }
+      const row = await saveAiCatalogItem(tableName, req.body || {});
+      res.json(buildAiCatalogOption(row));
+      return;
+    }
+    const payload = await normalizeAiProductPayload(req.body || {});
+    const resolvedBrand = normalizeAiBrandValue(req.body?.marca ?? req.body?.brand ?? payload.marca ?? "");
+    const name = String(payload.name || "").trim();
+    if (!name) {
+      return res.status(400).json({ error: "O nome do produto estratégico é obrigatório." });
+    }
+
+    const result = await run(
+      `INSERT INTO ai_products
+      (name, commercial_name, category_id, gender_id, color_id, size_ids, category, gender, color, sizes, price, marca, store, short_description, sales_argument, tags, priority, status, main_media_id, ai_title, ai_short_description, ai_sales_argument, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      [
+        name,
+        String(payload.commercial_name || "").trim(),
+        payload.category_id || null,
+        payload.gender_id || null,
+        payload.color_id || null,
+        payload.size_ids || "",
+        String(payload.category || "").trim(),
+        String(payload.gender || "").trim(),
+        String(payload.color || "").trim(),
+        stringifyDelimitedValues(payload.sizes || ""),
+        payload.price,
+        String(resolvedBrand || "").trim(),
+        String(payload.store || "").trim(),
+        String(payload.short_description || "").trim(),
+        String(payload.sales_argument || "").trim(),
+        stringifyDelimitedValues(payload.tags || ""),
+        normalizeAiProductPriority(payload.priority),
+        normalizeAiProductVisibilityStatus(payload.status),
+        payload.main_media_id || payload.media_id || null,
+        payload.ai_title || "",
+        payload.ai_short_description || "",
+        payload.ai_sales_argument || ""
+      ]
+    );
+    if (resolvedBrand) {
+      await run(`UPDATE ai_products SET marca = ?, updated_at = datetime('now') WHERE id = ?`, [resolvedBrand, result.lastID]);
+    }
+    await upsertAiProductBrandMeta(result.lastID, resolvedBrand);
+    await syncAiProductMedia(result.lastID, payload.media_ids || (payload.main_media_id ? [payload.main_media_id] : []));
+    res.json(await getAiProductById(result.lastID));
+  } catch (error) {
+    console.error("Erro ao criar produto da vitrine IA:", error);
+    if (String(req.query.catalogType || "").trim()) {
+      return res.status(400).json({ error: error.message || "Falha ao salvar item do catálogo." });
+    }
+    if (error.message) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "Falha ao criar o produto da vitrine IA." });
+  }
+});
+
+app.put("/api/ia/products/:id", requireManager, async (req, res) => {
+  try {
+    const catalogType = String(req.query.catalogType || "").trim();
+    if (catalogType) {
+      const tableMap = {
+        categories: "ai_product_categories",
+        genders: "ai_product_genders",
+        colors: "ai_product_colors",
+        sizes: "ai_product_sizes"
+      };
+      const tableName = tableMap[catalogType];
+      if (!tableName) {
+        return res.status(404).json({ error: "Tipo de catálogo não encontrado." });
+      }
+      const row = await saveAiCatalogItem(tableName, req.body || {}, { id: req.params.id });
+      res.json(buildAiCatalogOption(row));
+      return;
+    }
+    const current = await getAiProductById(req.params.id);
+    if (!current) {
+      return res.status(404).json({ error: "Produto estratégico não encontrado." });
+    }
+
+    const payload = await normalizeAiProductPayload(req.body || {}, current);
+    const resolvedBrand = normalizeAiBrandValue(req.body?.marca ?? req.body?.brand ?? payload.marca ?? current?.marca ?? "");
+    const name = String(payload.name || current.name || "").trim();
+    if (!name) {
+      return res.status(400).json({ error: "O nome do produto estratégico é obrigatório." });
+    }
+
+    await run(
+      `UPDATE ai_products
+       SET name = ?, commercial_name = ?, category_id = ?, gender_id = ?, color_id = ?, size_ids = ?, category = ?, gender = ?, color = ?, sizes = ?, price = ?, marca = ?, store = ?, short_description = ?, sales_argument = ?, tags = ?, priority = ?, status = ?, main_media_id = ?, ai_title = ?, ai_short_description = ?, ai_sales_argument = ?, deleted_at = CASE WHEN ? = 'deleted' THEN datetime('now') ELSE '' END, updated_at = datetime('now')
+       WHERE id = ?`,
+      [
+        name,
+        String(payload.commercial_name ?? current.commercial_name ?? "").trim(),
+        payload.category_id || null,
+        payload.gender_id || null,
+        payload.color_id || null,
+        payload.size_ids || "",
+        String(payload.category ?? current.category ?? "").trim(),
+        String(payload.gender ?? current.gender ?? "").trim(),
+        String(payload.color ?? current.color ?? "").trim(),
+        stringifyDelimitedValues(payload.sizes ?? current.sizesText ?? ""),
+        payload.price,
+        String(resolvedBrand || "").trim(),
+        String(payload.store ?? current.store ?? "").trim(),
+        String(payload.short_description ?? current.short_description ?? "").trim(),
+        String(payload.sales_argument ?? current.sales_argument ?? "").trim(),
+        stringifyDelimitedValues(payload.tags ?? current.tagsText ?? ""),
+        normalizeAiProductPriority(payload.priority ?? current.priority),
+        normalizeAiProductVisibilityStatus(payload.status ?? current.status),
+        payload.main_media_id === undefined ? current.main_media_id : (payload.main_media_id || null),
+        payload.ai_title || "",
+        payload.ai_short_description || "",
+        payload.ai_sales_argument || "",
+        normalizeAiProductVisibilityStatus(payload.status ?? current.status),
+        req.params.id
+      ]
+    );
+    if (resolvedBrand) {
+      await run(`UPDATE ai_products SET marca = ?, updated_at = datetime('now') WHERE id = ?`, [resolvedBrand, req.params.id]);
+    }
+    await upsertAiProductBrandMeta(req.params.id, resolvedBrand);
+    await syncAiProductMedia(req.params.id, payload.media_ids || (payload.main_media_id ? [payload.main_media_id] : []));
+    res.json(await getAiProductById(req.params.id));
+  } catch (error) {
+    console.error("Erro ao atualizar produto da vitrine IA:", error);
+    if (String(req.query.catalogType || "").trim()) {
+      return res.status(400).json({ error: error.message || "Falha ao atualizar item do catálogo." });
+    }
+    if (error.message) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "Falha ao atualizar o produto da vitrine IA." });
+  }
+});
+
+app.post("/api/ia/products/:id/hide", requireManager, async (req, res) => {
+  try {
+    await run(`UPDATE ai_products SET status = 'hidden', updated_at = datetime('now') WHERE id = ?`, [req.params.id]);
+    res.json(await getAiProductById(req.params.id));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao ocultar o produto da vitrine IA." });
+  }
+});
+
+app.post("/api/ia/products/:id/reactivate", requireManager, async (req, res) => {
+  try {
+    await run(`UPDATE ai_products SET status = 'ativo', deleted_at = '', updated_at = datetime('now') WHERE id = ?`, [req.params.id]);
+    res.json(await getAiProductById(req.params.id));
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao reativar o produto da vitrine IA." });
+  }
+});
+
+app.delete("/api/ia/products/:id", requireManager, async (req, res) => {
+  try {
+    const catalogType = String(req.query.catalogType || "").trim();
+    if (catalogType) {
+      const tableMap = {
+        categories: "ai_product_categories",
+        genders: "ai_product_genders",
+        colors: "ai_product_colors",
+        sizes: "ai_product_sizes"
+      };
+      const tableName = tableMap[catalogType];
+      if (!tableName) {
+        return res.status(404).json({ error: "Tipo de catálogo não encontrado." });
+      }
+      const result = await removeAiCatalogItem(tableName, req.params.id);
+      res.json({
+        success: true,
+        mode: result.mode,
+        linkedCount: result.linkedCount,
+        item: buildAiCatalogOption(result.row || {})
+      });
+      return;
+    }
+    await run(`UPDATE ai_products SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`, [req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao excluir o produto da vitrine IA." });
+  }
+});
+
+app.get("/api/products", async (req, res) => {
+  try {
+    if (!canViewProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de produtos." });
+    }
+    const items = await listManualProducts(req.query || {});
+    res.json({
+      success: true,
+      items,
+      summary: buildProductsSummary(items)
+    });
+  } catch (error) {
+    console.error("Erro ao listar produtos manuais:", error);
+    res.status(500).json({ success: false, error: "Falha ao listar os produtos." });
+  }
+});
+
+app.get("/api/products/:id", async (req, res) => {
+  try {
+    if (!canViewProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de produtos." });
+    }
+    const product = await getAiProductById(req.params.id);
+    if (!product || product.deleted_at) {
+      return res.status(404).json({ success: false, error: "Produto nao encontrado." });
+    }
+    res.json({ success: true, product });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Falha ao carregar o produto." });
+  }
+});
+
+function receiveProductPhoto(req, res, next) {
+  productPhotoUpload.single("photo")(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      res.status(400).json({ success: false, error: "A foto excede o limite de 5MB." });
+      return;
+    }
+    res.status(400).json({ success: false, error: error.message || "Falha ao receber a foto do produto." });
+  });
+}
+
+function ensureProductPhotoManageAccess(req, res, next) {
+  if (!canManageProductsCrud(req.user)) {
+    res.status(403).json({ success: false, error: "Seu perfil nao pode editar a foto do produto." });
+    return;
+  }
+  next();
+}
+
+app.post("/api/products/:id/photo", ensureProductPhotoManageAccess, receiveProductPhoto, async (req, res) => {
+  try {
+    const product = await getAiProductById(req.params.id);
+    if (!product || product.deleted_at) {
+      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(404).json({ success: false, error: "Produto nao encontrado." });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: "Envie uma foto JPG, PNG ou WEBP." });
+    }
+    const { originalname, filename, mimetype, size, path: filePath } = req.file;
+    const mediaResult = await run(
+      `INSERT INTO campaign_media (original_name, file_name, mime_type, file_size, file_path, media_type, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, 'image', ?, datetime('now'))`,
+      [originalname, filename, mimetype, size, filePath, req.user?.id || null]
+    );
+    const mediaIds = [Number(mediaResult.lastID)].filter(Boolean);
+    await syncAiProductMedia(req.params.id, mediaIds);
+    const updatedProduct = await getAiProductById(req.params.id);
+    res.json({ success: true, product: updatedProduct });
+  } catch (error) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    console.error("Erro ao salvar foto do produto:", error);
+    res.status(500).json({ success: false, error: "Falha ao salvar a foto do produto." });
+  }
+});
+
+app.delete("/api/products/:id/photo", async (req, res) => {
+  try {
+    if (!canManageProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode remover a foto do produto." });
+    }
+    const product = await getAiProductById(req.params.id);
+    if (!product || product.deleted_at) {
+      return res.status(404).json({ success: false, error: "Produto nao encontrado." });
+    }
+    // Keep the physical upload for audit/recovery; remove only the product link here.
+    await syncAiProductMedia(req.params.id, []);
+    const updatedProduct = await getAiProductById(req.params.id);
+    res.json({ success: true, product: updatedProduct });
+  } catch (error) {
+    console.error("Erro ao remover foto do produto:", error);
+    res.status(500).json({ success: false, error: "Falha ao remover a foto do produto." });
+  }
+});
+
+app.post("/api/products", async (req, res) => {
+  try {
+    if (!canManageProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode cadastrar produtos." });
+    }
+    const payload = await buildManualProductPayload(req.body || {});
+    const validationError = validateManualProductPayload(payload);
+    if (validationError) {
+      return res.status(400).json({ success: false, error: validationError });
+    }
+    if (payload.sku) {
+      const duplicate = await findDuplicateManualProductBySku(payload.sku);
+      if (duplicate) {
+        return res.status(400).json({ success: false, error: "Ja existe um produto com este SKU." });
+      }
+    }
+    const result = await run(
+      `INSERT INTO ai_products
+      (name, commercial_name, category_id, gender_id, color_id, size_ids, category, gender, color, sizes, price, promotional_price, cost_price, stock, estoque_total, location, gtin_ean, ncm, sku, codigo, tiny_id, marca, store, short_description, sales_argument, tags, priority, status, use_in_ai, use_in_pos, source, notes, main_media_id, ai_title, ai_short_description, ai_sales_argument, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      [
+        payload.name,
+        payload.commercial_name,
+        payload.category_id || null,
+        payload.gender_id || null,
+        payload.color_id || null,
+        payload.size_ids || "",
+        payload.category || "",
+        payload.gender || "",
+        payload.color || "",
+        stringifyDelimitedValues(payload.sizes || ""),
+        payload.price,
+        payload.promotional_price,
+        payload.cost_price,
+        payload.stock,
+        payload.stock,
+        payload.location,
+        payload.gtin_ean,
+        payload.ncm,
+        payload.sku,
+        payload.codigo || payload.sku,
+        payload.tiny_id,
+        payload.marca,
+        payload.store || "",
+        payload.short_description || "",
+        payload.sales_argument || "",
+        stringifyDelimitedValues(payload.tags || ""),
+        normalizeAiProductPriority(payload.priority),
+        normalizeAiProductVisibilityStatus(payload.status),
+        payload.use_in_ai ? 1 : 0,
+        payload.use_in_pos ? 1 : 0,
+        payload.source || "manual",
+        payload.notes || "",
+        payload.main_media_id || null,
+        payload.ai_title || "",
+        payload.ai_short_description || "",
+        payload.ai_sales_argument || ""
+      ]
+    );
+    await upsertAiProductBrandMeta(result.lastID, payload.marca);
+    await syncAiProductMedia(result.lastID, payload.media_ids || (payload.main_media_id ? [payload.main_media_id] : []));
+    const product = await getAiProductById(result.lastID);
+    res.status(201).json({ success: true, product });
+  } catch (error) {
+    console.error("Erro ao criar produto manual:", error);
+    res.status(500).json({ success: false, error: error.message || "Falha ao salvar o produto." });
+  }
+});
+
+app.put("/api/products/:id", async (req, res) => {
+  try {
+    if (!canManageProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode editar produtos." });
+    }
+    const current = await getAiProductById(req.params.id);
+    if (!current) {
+      return res.status(404).json({ success: false, error: "Produto nao encontrado." });
+    }
+    const payload = await buildManualProductPayload(req.body || {}, current);
+    const validationError = validateManualProductPayload(payload);
+    if (validationError) {
+      return res.status(400).json({ success: false, error: validationError });
+    }
+    if (payload.sku) {
+      const duplicate = await findDuplicateManualProductBySku(payload.sku, req.params.id);
+      if (duplicate) {
+        return res.status(400).json({ success: false, error: "Ja existe um produto com este SKU." });
+      }
+    }
+    await run(
+      `UPDATE ai_products
+       SET name = ?, commercial_name = ?, category_id = ?, gender_id = ?, color_id = ?, size_ids = ?, category = ?, gender = ?, color = ?, sizes = ?, price = ?, promotional_price = ?, cost_price = ?, stock = ?, estoque_total = ?, location = ?, gtin_ean = ?, ncm = ?, sku = ?, codigo = ?, tiny_id = ?, marca = ?, store = ?, short_description = ?, sales_argument = ?, tags = ?, priority = ?, status = ?, use_in_ai = ?, use_in_pos = ?, source = ?, notes = ?, main_media_id = ?, ai_title = ?, ai_short_description = ?, ai_sales_argument = ?, deleted_at = CASE WHEN ? = 'deleted' THEN datetime('now') ELSE COALESCE(deleted_at, '') END, updated_at = datetime('now')
+       WHERE id = ?`,
+      [
+        payload.name,
+        payload.commercial_name,
+        payload.category_id || null,
+        payload.gender_id || null,
+        payload.color_id || null,
+        payload.size_ids || "",
+        payload.category || "",
+        payload.gender || "",
+        payload.color || "",
+        stringifyDelimitedValues(payload.sizes || ""),
+        payload.price,
+        payload.promotional_price,
+        payload.cost_price,
+        payload.stock,
+        payload.stock,
+        payload.location,
+        payload.gtin_ean,
+        payload.ncm,
+        payload.sku,
+        payload.codigo || payload.sku,
+        payload.tiny_id,
+        payload.marca,
+        payload.store || "",
+        payload.short_description || "",
+        payload.sales_argument || "",
+        stringifyDelimitedValues(payload.tags || ""),
+        normalizeAiProductPriority(payload.priority),
+        normalizeAiProductVisibilityStatus(payload.status),
+        payload.use_in_ai ? 1 : 0,
+        payload.use_in_pos ? 1 : 0,
+        payload.source || "manual",
+        payload.notes || "",
+        payload.main_media_id || null,
+        payload.ai_title || "",
+        payload.ai_short_description || "",
+        payload.ai_sales_argument || "",
+        normalizeAiProductVisibilityStatus(payload.status),
+        req.params.id
+      ]
+    );
+    await upsertAiProductBrandMeta(req.params.id, payload.marca);
+    await syncAiProductMedia(req.params.id, payload.media_ids || (payload.main_media_id ? [payload.main_media_id] : []));
+    const product = await getAiProductById(req.params.id);
+    res.json({ success: true, product });
+  } catch (error) {
+    console.error("Erro ao atualizar produto manual:", error);
+    res.status(500).json({ success: false, error: error.message || "Falha ao atualizar o produto." });
+  }
+});
+
+app.post("/api/products/:id/hide", async (req, res) => {
+  try {
+    if (!canManageProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode ocultar produtos." });
+    }
+    await run("UPDATE ai_products SET status = 'hidden', updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    const product = await getAiProductById(req.params.id);
+    res.json({ success: true, product });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Falha ao ocultar o produto." });
+  }
+});
+
+app.post("/api/products/:id/reactivate", async (req, res) => {
+  try {
+    if (!canManageProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode reativar produtos." });
+    }
+    await run("UPDATE ai_products SET status = 'ativo', deleted_at = '', updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    const product = await getAiProductById(req.params.id);
+    res.json({ success: true, product });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Falha ao reativar o produto." });
+  }
+});
+
+app.delete("/api/products/:id", async (req, res) => {
+  try {
+    if (!canManageProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode excluir produtos." });
+    }
+    await run("UPDATE ai_products SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Falha ao excluir o produto." });
+  }
+});
+
+app.get("/api/ia/vitrine-import/history", requireManager, async (req, res) => {
+  try {
+    await run(
+      `UPDATE ai_vitrine_imports
+       SET status = 'processamento_incompleto'
+       WHERE status = 'processando'
+         AND datetime(created_at) <= datetime('now', '-120 seconds')
+         AND COALESCE(created_count, 0) = 0
+         AND COALESCE(updated_count, 0) = 0
+         AND COALESCE(skipped_count, 0) = 0
+         AND COALESCE(error_count, 0) = 0`
+    );
+    const rows = await all(
+      `SELECT * FROM ai_vitrine_imports ORDER BY id DESC LIMIT 20`
+    );
+    res.json({
+      imports: rows.map((row) => ({
+        id: Number(row.id || 0),
+        filename: row.filename || "",
+        original_filename: row.original_filename || "",
+        import_type: row.import_type || "tiny",
+        status: row.status || "",
+        total_rows: Number(row.total_rows || 0),
+        valid_rows: Number(row.valid_rows || 0),
+        selected_count: Number(row.selected_count || 0),
+        created_count: Number(row.created_count || 0),
+        updated_count: Number(row.updated_count || 0),
+        skipped_count: Number(row.skipped_count || 0),
+        error_count: Number(row.error_count || 0),
+        summary: safeJsonParse(row.summary_json || "{}", {}),
+        created_by: row.created_by || "",
+        created_at: row.created_at || ""
+      }))
+    });
+  } catch (error) {
+    console.error("Erro ao listar histórico da importação Tiny:", error);
+    res.status(500).json({ error: "Falha ao carregar o histórico da importação Tiny." });
+  }
+});
+
+app.post("/api/pdv/inventory/import/tiny/preview", requireManager, tinyImportUpload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "Formato não suportado. Envie uma planilha .xlsx, .xls ou .csv exportada do Tiny." });
+  }
+
+  try {
+    cleanupPdvTinyProductImportPreviews();
+    const manualStoreOverride = String(req.body?.storeOverride || "").trim();
+    const parsed = readTinyVitrineWorkbookFromFile(req.file.path);
+    const mapping = parseTinyPdvImportMapping(req.body?.mapping || "", parsed.headerAnalysis || {});
+    const mappedRows = applyTinyPdvImportMapping(parsed.rows || [], mapping);
+    const groupedItems = groupTinyVitrineImportRows(mappedRows, {
+      sourceType: parsed.sourceType || "spreadsheet",
+      groupByParent: false
+    });
+    const previewPayload = previewTinyInventoryImport(groupedItems, {
+      manualStoreOverride
+    });
+    const previewId = crypto.randomUUID();
+    pdvTinyProductImportPreviews.set(previewId, {
+      createdAt: Date.now(),
+      createdBy: req.user?.id || 0,
+      filePath: req.file.path,
+      filename: req.file.filename,
+      originalFilename: sanitizeFilename(req.file.originalname),
+      worksheetName: parsed.worksheetName,
+      sourceType: parsed.sourceType || "spreadsheet",
+      delimiter: parsed.delimiter || "",
+      groupedItems,
+      manualStoreOverride,
+      mapping,
+      summary: previewPayload.summary
+    });
+
+    res.json({
+      success: true,
+      previewId,
+      worksheetName: parsed.worksheetName,
+      sourceType: parsed.sourceType || "spreadsheet",
+      delimiter: parsed.delimiter || "",
+      headersOriginais: parsed.headerAnalysis?.originalHeaders || [],
+      headersNormalizados: parsed.headerAnalysis?.normalizedHeaders || [],
+      availableHeaders: parsed.headerAnalysis?.originalHeaders || [],
+      mapping,
+      fields: PDV_TINY_IMPORT_FIELD_DEFINITIONS,
+      summary: previewPayload.summary,
+      preview: (previewPayload.preview || []).slice(0, 300),
+      storeOverride: manualStoreOverride,
+      diagnostics: {
+        selectedSheet: parsed.worksheetName || "",
+        missingMinimum: parsed.headerAnalysis?.missingMinimum || []
+      }
+    });
+  } catch (error) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      moveTinyImportFile(req.file.path, tinyVitrineImportErrorsDir);
+    }
+    console.error("Erro ao gerar preview Tiny do PDV:", error);
+    res.status(400).json({
+      error: error.message || "Não foi possível importar a planilha. Verifique o arquivo e tente novamente.",
+      ...(error.details || {})
+    });
+  }
+});
+
+app.post("/api/pdv/inventory/import/tiny/commit", requireManager, async (req, res) => {
+  let filePath = "";
+  try {
+    cleanupPdvTinyProductImportPreviews();
+    const previewId = String(req.body?.previewId || "").trim();
+    if (!previewId) {
+      return res.status(400).json({ error: "Gere a prévia da importação Tiny antes de confirmar." });
+    }
+    const preview = pdvTinyProductImportPreviews.get(previewId);
+    if (!preview) {
+      return res.status(404).json({ error: "Preview da importação Tiny não encontrado ou expirado." });
+    }
+    filePath = preview.filePath;
+    const payload = commitTinyInventoryImport(preview.groupedItems || [], req.user || {}, {
+      manualStoreOverride: preview.manualStoreOverride || ""
+    });
+    if (filePath && fs.existsSync(filePath)) {
+      moveTinyImportFile(filePath, payload.errors ? tinyVitrineImportErrorsDir : tinyVitrineImportProcessedDir);
+    }
+    pdvTinyProductImportPreviews.delete(previewId);
+    res.json({
+      success: true,
+      summary: {
+        totalRows: Number(payload.totalRows || 0),
+        imported: Number(payload.imported || 0),
+        pending: Number(payload.pending || 0),
+        duplicates: Number(payload.duplicates || 0),
+        ignored: Number(payload.ignored || 0),
+        errors: Number(payload.errors || 0)
+      },
+      previewSummary: payload.previewSummary || null,
+      importedProducts: payload.importedProducts || [],
+      ignoredRows: payload.ignoredRows || [],
+      errorRows: payload.errorRows || []
+    });
+  } catch (error) {
+    if (filePath && fs.existsSync(filePath)) {
+      moveTinyImportFile(filePath, tinyVitrineImportErrorsDir);
+    }
+    console.error("Erro ao concluir importação Tiny do PDV:", error);
+    res.status(500).json({
+      error: error.message || "Não foi possível importar a planilha. Verifique o arquivo e tente novamente."
+    });
+  }
+});
+
+app.post("/api/ia/vitrine-import/preview", requireManager, tinyImportUpload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "Selecione um arquivo .csv, .xls ou .xlsx para pré-visualizar." });
+  }
+
+  try {
+    cleanupTinyVitrineImportPreviews();
+    const options = parseTinyImportOptions(req.body || {});
+    const parsed = readTinyVitrineWorkbookFromFile(req.file.path);
+    const { preview, summary } = await buildTinyVitrinePreview(parsed.groupedItems, options);
+    const previewId = crypto.randomUUID();
+
+    tinyVitrineImportPreviews.set(previewId, {
+      createdAt: Date.now(),
+      createdBy: req.user?.id || 0,
+      filePath: req.file.path,
+      filename: req.file.filename,
+      originalFilename: sanitizeFilename(req.file.originalname),
+      worksheetName: parsed.worksheetName,
+      sourceType: parsed.sourceType || "spreadsheet",
+      delimiter: parsed.delimiter || "",
+      groupedItems: parsed.groupedItems,
+      summary,
+      options
+    });
+
+    res.json({
+      success: true,
+      previewId,
+      worksheetName: parsed.worksheetName,
+      sourceType: parsed.sourceType || "spreadsheet",
+      delimiter: parsed.delimiter || "",
+      originalHeaders: parsed.headerAnalysis?.originalHeaders || [],
+      normalizedHeaders: parsed.headerAnalysis?.normalizedHeaders || [],
+      summary,
+      preview
+    });
+  } catch (error) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      moveTinyImportFile(req.file.path, tinyVitrineImportErrorsDir);
+    }
+    console.error("Erro ao gerar preview Tiny:", error);
+    res.status(400).json({
+      error: error.message || "Falha ao gerar a pré-visualização da importação Tiny.",
+      ...(error.details || {})
+    });
+  }
+});
+
+app.post("/api/ia/vitrine-import/commit", requireManager, tinyImportUpload.single("file"), async (req, res) => {
+  let filePath = req.file?.path || "";
+  let originalFilename = sanitizeFilename(req.file?.originalname || "");
+  let groupedItems = [];
+  let preview = null;
+  let importId = 0;
+  let options = parseTinyImportOptions(req.body || {});
+  let previewSummary = null;
+
+  try {
+    cleanupTinyVitrineImportPreviews();
+    const previewId = String(req.body.previewId || "").trim();
+    if (previewId) {
+      preview = tinyVitrineImportPreviews.get(previewId);
+      if (!preview) {
+        return res.status(404).json({ error: "Preview da importação Tiny não encontrado ou expirado." });
+      }
+      filePath = preview.filePath;
+      originalFilename = preview.originalFilename;
+      groupedItems = preview.groupedItems || [];
+      options = { ...preview.options, ...options };
+      previewSummary = preview.summary || null;
+    } else if (req.file?.path) {
+      const parsed = readTinyVitrineWorkbookFromFile(req.file.path);
+      groupedItems = parsed.groupedItems;
+      const previewPayload = await buildTinyVitrinePreview(groupedItems, options);
+      previewSummary = previewPayload.summary || null;
+    } else {
+      return res.status(400).json({ error: "Envie um arquivo ou informe um previewId para importar." });
+    }
+
+    const catalogBundle = await getAiCatalogBundle({ includeInactive: true });
+    normalizeTinyImportBrands(groupedItems, catalogBundle.brands || []);
+    const catalogCache = {
+      __bundle: {
+        ai_product_categories: catalogBundle.categories || [],
+        ai_product_genders: catalogBundle.genders || [],
+        ai_product_colors: catalogBundle.colors || [],
+        ai_product_sizes: catalogBundle.sizes || []
+      }
+    };
+    const existingMaps = await loadExistingAiProductsForImport();
+    const summary = createTinyCommitSummary(previewSummary || { totalRows: groupedItems.length, validRows: groupedItems.length });
+    const errorsDetails = [];
+    const skippedDetails = [];
+    const warningDetails = [];
+
+    importId = await createTinyVitrineImportBatch({
+      filename: path.basename(filePath || originalFilename || "importacao.xlsx"),
+      originalFilename,
+      status: "processando",
+      summary,
+      createdBy: req.user?.email || req.user?.name || ""
+    });
+
+    for (const item of groupedItems) {
+      try {
+        const existingProduct = findExistingAiProductForImport(item, existingMaps);
+        const result = await upsertTinyImportedProduct(item, {
+          existingProduct,
+          updateExisting: options.updateExisting,
+          importOnlyWithStock: options.importOnlyWithStock,
+          createCatalogs: options.createCatalogs,
+          defaultPriority: options.defaultPriority,
+          defaultStatus: options.defaultStatus,
+          createdBy: req.user?.id || null,
+          catalogCache
+        });
+
+        if (result.action === "created") {
+          summary.created += 1;
+        } else if (result.action === "updated") {
+          summary.updated += 1;
+        } else if (result.action === "skipped") {
+          summary.skipped += 1;
+          const mappedReason = mapTinySkipReason(result.reason, item);
+          summary.skipReasons[mappedReason] = Number(summary.skipReasons[mappedReason] || 0) + 1;
+          skippedDetails.push(buildTinyCommitLineDetail(item, {
+            reason: mappedReason,
+            detail: result.reason || ""
+          }));
+        } else {
+          summary.skipped += 1;
+          summary.skipReasons.unknown += 1;
+          skippedDetails.push(buildTinyCommitLineDetail(item, {
+            reason: "unknown",
+            detail: result.reason || ""
+          }));
+        }
+
+        (result.warnings || []).forEach((warning) => {
+          warningDetails.push(buildTinyCommitLineDetail(item, {
+            warning,
+            raw_json: item
+          }));
+        });
+      } catch (error) {
+        summary.errors += 1;
+        errorsDetails.push({
+          ...buildTinyCommitLineDetail(item),
+          error_message: error.message || "Falha ao importar o produto.",
+          stack: String(error.stack || "").split("\n").slice(0, 3).join("\n"),
+          raw_json: item
+        });
+      }
+    }
+
+    for (const item of errorsDetails) {
+      await run(
+        `INSERT INTO ai_vitrine_import_errors
+        (import_id, row_number, sku, product_name, error_message, raw_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [
+          importId,
+          Number(item.row_number || 0),
+          item.sku || "",
+          item.product_name || "",
+          item.error_message || "",
+          JSON.stringify(item.raw_json || {})
+        ]
+      );
+    }
+
+    await finalizeTinyVitrineImportBatch(importId, {
+      status: summary.errors ? "concluido_com_alertas" : "concluido",
+      summary
+    });
+
+    appendTinyVitrineImportLog({
+      importId,
+      filename: path.basename(filePath || originalFilename || ""),
+      originalFilename,
+      summary
+    });
+
+    if (filePath && fs.existsSync(filePath)) {
+      moveTinyImportFile(filePath, summary.errors ? tinyVitrineImportErrorsDir : tinyVitrineImportProcessedDir);
+    }
+    if (previewId && preview) {
+      tinyVitrineImportPreviews.delete(previewId);
+    }
+
+    res.json({
+      success: true,
+      summary,
+      skipReasons: summary.skipReasons,
+      skippedDetails,
+      errorsDetails,
+      warningDetails,
+      errors: errorsDetails
+    });
+  } catch (error) {
+    console.error("Erro ao concluir importação Tiny:", error);
+    if (importId) {
+      await finalizeTinyVitrineImportBatch(importId, {
+        status: "erro",
+        summary: { totalRows: groupedItems.length, validRows: 0, created: 0, updated: 0, skipped: 0, errors: 1 }
+      });
+    }
+    if (filePath && fs.existsSync(filePath)) {
+      moveTinyImportFile(filePath, tinyVitrineImportErrorsDir);
+    }
+    res.status(500).json({ error: error.message || "Falha ao concluir a importação Tiny." });
+  }
+});
+
+// Stage B Top 100 curado - preview e commit controlado.
+// Fluxo deliberadamente read-first: sem gravar nada ate confirmacao explicita do usuario.
+app.get("/api/ia/vitrine-import/top100/preview", requireManager, async (req, res) => {
+  try {
+    cleanupTop100CuratedImportPreviews();
+    const updateExisting = normalizeBooleanFlag(req.query?.updateExisting, false);
+    const createCatalogs = normalizeBooleanFlag(req.query?.createCatalogs, true);
+    const payload = await buildCuratedTop100Preview({ updateExisting, createCatalogs });
+    const previewId = crypto.randomUUID();
+    top100CuratedImportPreviews.set(previewId, {
+      createdAt: Date.now(),
+      createdBy: req.user?.id || 0,
+      createdByName: req.user?.email || req.user?.name || "",
+      filePath: payload.filePath,
+      summary: payload.summary,
+      options: { updateExisting, createCatalogs },
+      preview: payload.preview
+    });
+    res.json({
+      success: true,
+      previewId,
+      filePath: payload.filePath,
+      headers: payload.headers || [],
+      normalizedHeaders: payload.normalizedHeaders || [],
+      summary: payload.summary,
+      preview: payload.preview
+    });
+  } catch (error) {
+    console.error("Erro ao gerar preview do Top 100 curado:", error);
+    res.status(400).json({ success: false, error: error.message || "Falha ao carregar o Top 100 curado." });
+  }
+});
+
+app.post("/api/ia/vitrine-import/top100/commit", requireManager, async (req, res) => {
+  let importId = 0;
+  try {
+    cleanupTop100CuratedImportPreviews();
+    const previewId = normalizeText(req.body?.previewId || "");
+    if (!previewId) {
+      return res.status(400).json({ success: false, error: "Carregue a previa do Top 100 curado antes de importar." });
+    }
+    const preview = top100CuratedImportPreviews.get(previewId);
+    if (!preview) {
+      return res.status(404).json({ success: false, error: "Preview do Top 100 curado nao encontrado ou expirado." });
+    }
+
+    const updateExisting = normalizeBooleanFlag(req.body?.updateExisting, preview.options?.updateExisting || false);
+    const createCatalogs = normalizeBooleanFlag(req.body?.createCatalogs, preview.options?.createCatalogs ?? true);
+    const confirmLargeImport = normalizeBooleanFlag(req.body?.confirmLargeImport, false);
+    const selectedItems = (Array.isArray(req.body?.items) ? req.body.items : [])
+      .map(normalizeCuratedTop100CommitItem)
+      .filter((item) => item.sku || item.name || item.commercial_name);
+
+    if (!selectedItems.length) {
+      return res.status(400).json({ success: false, error: "Selecione pelo menos um produto para importar." });
+    }
+    if (selectedItems.length > 20 && !confirmLargeImport) {
+      return res.status(400).json({
+        success: false,
+        requiresConfirmation: true,
+        error: `Para o primeiro lote, recomendamos importar ate 20 produtos. Voce selecionou ${selectedItems.length}.`
+      });
+    }
+
+    const catalogBundle = await getAiCatalogBundle({ includeInactive: true });
+    const catalogCache = {
+      __bundle: {
+        ai_product_categories: catalogBundle.categories || [],
+        ai_product_genders: catalogBundle.genders || [],
+        ai_product_colors: catalogBundle.colors || [],
+        ai_product_sizes: catalogBundle.sizes || []
+      }
+    };
+    const existingMaps = await loadExistingAiProductsForImport();
+    const summary = {
+      totalRows: Number(preview.summary?.totalRows || 0),
+      validRows: Number(preview.summary?.validRows || selectedItems.length),
+      selectedCount: selectedItems.length,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      errors: 0,
+      withoutPhoto: 0,
+      withoutGender: 0,
+      skipReasons: {
+        already_exists: 0,
+        missing_sku: 0,
+        missing_price: 0,
+        unknown: 0
+      }
+    };
+    const createdItems = [];
+    const updatedItems = [];
+    const skippedItems = [];
+    const errorsDetails = [];
+    const warningDetails = [];
+
+    importId = await createTinyVitrineImportBatch({
+      filename: path.basename(preview.filePath || curatedTop100ImportFilePath),
+      originalFilename: path.basename(preview.filePath || curatedTop100ImportFilePath),
+      status: "processando",
+      summary,
+      createdBy: req.user?.email || req.user?.name || "",
+      importType: "top100_curado",
+      selectedCount: selectedItems.length
+    });
+
+    for (const item of selectedItems) {
+      try {
+        const existingProduct = findExistingAiProductForImport(item, existingMaps);
+        const result = await upsertCuratedTop100Product(item, {
+          existingProduct,
+          updateExisting,
+          createCatalogs,
+          createdBy: req.user?.id || null,
+          catalogCache
+        });
+        if (result.action === "created") {
+          summary.created += 1;
+          createdItems.push(result.product);
+        } else if (result.action === "updated") {
+          summary.updated += 1;
+          updatedItems.push(result.product);
+        } else {
+          summary.skipped += 1;
+          const mappedReason = result.reason === "duplicate_existing"
+            ? "already_exists"
+            : result.reason === "missing_sku"
+              ? "missing_sku"
+              : result.reason === "missing_price"
+                ? "missing_price"
+                : "unknown";
+          summary.skipReasons[mappedReason] = Number(summary.skipReasons[mappedReason] || 0) + 1;
+          skippedItems.push({
+            row_number: Number(item.row_number || 0),
+            sku: item.sku || "",
+            product_name: item.commercial_name || item.name || "",
+            reason: mappedReason,
+            detail: result.reason || ""
+          });
+        }
+        (result.warnings || []).forEach((warning) => {
+          warningDetails.push({
+            row_number: Number(item.row_number || 0),
+            sku: item.sku || "",
+            product_name: item.commercial_name || item.name || "",
+            warning
+          });
+          if (warning === "Produto importado sem foto.") {
+            summary.withoutPhoto += 1;
+          }
+        });
+        if (!item.gender || normalizeLookup(item.gender) === "unissex") {
+          summary.withoutGender += 1;
+        }
+      } catch (error) {
+        summary.errors += 1;
+        errorsDetails.push({
+          row_number: Number(item.row_number || 0),
+          sku: item.sku || "",
+          product_name: item.commercial_name || item.name || "",
+          error_message: error.message || "Falha ao importar o produto."
+        });
+      }
+    }
+
+    for (const item of errorsDetails) {
+      await run(
+        `INSERT INTO ai_vitrine_import_errors
+        (import_id, row_number, sku, product_name, error_message, raw_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [
+          importId,
+          Number(item.row_number || 0),
+          item.sku || "",
+          item.product_name || "",
+          item.error_message || "",
+          JSON.stringify(item)
+        ]
+      );
+    }
+
+    await finalizeTinyVitrineImportBatch(importId, {
+      status: summary.errors ? "concluido_com_alertas" : "concluido",
+      summary
+    });
+
+    appendTinyVitrineImportLog({
+      importId,
+      filename: path.basename(preview.filePath || curatedTop100ImportFilePath),
+      originalFilename: path.basename(preview.filePath || curatedTop100ImportFilePath),
+      summary
+    });
+
+    top100CuratedImportPreviews.delete(previewId);
+
+    res.json({
+      success: true,
+      summary,
+      createdItems,
+      updatedItems,
+      skippedItems,
+      errorsDetails,
+      warningDetails
+    });
+  } catch (error) {
+    console.error("Erro ao importar o Top 100 curado:", error);
+    if (importId) {
+      await finalizeTinyVitrineImportBatch(importId, {
+        status: "erro",
+        summary: { totalRows: 0, validRows: 0, selectedCount: 0, created: 0, updated: 0, skipped: 0, errors: 1 }
+      });
+    }
+    res.status(500).json({ success: false, error: error.message || "Falha ao importar os produtos selecionados do Top 100 curado." });
+  }
+});
+
+app.post("/api/aerointel/import/preview", requireManager, aeroIntelImportUpload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "Selecione um arquivo CSV ou Excel para gerar a prévia do AEROINTEL." });
+  }
+
+  try {
+    cleanupAeroIntelImportPreviews();
+    const parsed = await parseAeroIntelSalesHistoryFile(req.file.path, {
+      originalFilename: sanitizeFilename(req.file.originalname)
+    });
+    const existingHashes = await getExistingCommercialImportHashes(parsed.items);
+    const { previewRows, duplicateInFileCount, existingDuplicateCount } = buildAeroIntelPreviewRows(parsed.items, existingHashes);
+    const previewId = crypto.randomUUID();
+    const summary = {
+      physicalRows: Number(parsed.physicalRows || 0),
+      customersDetected: Number(parsed.customersDetected || 0),
+      salesItemsDetected: Number(parsed.salesItemsDetected || 0),
+      salesItemsWithSku: Number(parsed.salesItemsWithSku || 0),
+      salesItemsWithoutSku: Number(parsed.salesItemsWithoutSku || 0),
+      invalidRows: Number(parsed.invalidRows?.length || 0),
+      totalRevenue: Number(parsed.totalRevenue || 0),
+      totalQuantity: Number(parsed.totalQuantity || 0),
+      duplicateInFileCount,
+      existingDuplicateCount,
+      topCustomers: parsed.topCustomers || [],
+      topProducts: parsed.topProducts || [],
+      topSkus: parsed.topSkus || []
+    };
+
+    aeroIntelImportPreviews.set(previewId, {
+      createdAt: Date.now(),
+      createdBy: req.user?.id || 0,
+      filePath: req.file.path,
+      filename: req.file.filename,
+      originalFilename: sanitizeFilename(req.file.originalname),
+      parsed,
+      summary
+    });
+
+    res.json({
+      success: true,
+      previewId,
+      delimiter: parsed.delimiter || ";",
+      headersOriginais: parsed.headerRow || [],
+      headersNormalizados: parsed.normalizedHeaders || [],
+      detectedIndexes: parsed.columnIndexes || {},
+      originalHeaders: parsed.headerRow || [],
+      normalizedHeaders: parsed.normalizedHeaders || [],
+      skuDebugSamples: parsed.skuDebugSamples || [],
+      summary,
+      preview: previewRows.slice(0, 300),
+      invalidRows: (parsed.invalidRows || []).slice(0, 100)
+    });
+  } catch (error) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      moveAeroIntelImportFile(req.file.path, aeroIntelImportErrorsDir);
+    }
+    console.error("Erro ao gerar preview do AEROINTEL:", error);
+    res.status(400).json({
+      error: error.message || "Falha ao gerar a prévia do AEROINTEL.",
+      ...(error.details || {})
+    });
+  }
+});
+
+app.post("/api/aerointel/import/commit", requireManager, aeroIntelImportUpload.single("file"), async (req, res) => {
+  let filePath = req.file?.path || "";
+  let originalFilename = sanitizeFilename(req.file?.originalname || "");
+  let parsed = null;
+  let importId = 0;
+
+  try {
+    cleanupAeroIntelImportPreviews();
+    const previewId = String(req.body.previewId || "").trim();
+    if (previewId) {
+      const preview = aeroIntelImportPreviews.get(previewId);
+      if (!preview) {
+        return res.status(404).json({ error: "Preview do AEROINTEL não encontrado ou expirado." });
+      }
+      filePath = preview.filePath;
+      originalFilename = preview.originalFilename;
+      parsed = preview.parsed;
+    } else if (req.file?.path) {
+      parsed = await parseAeroIntelSalesHistoryFile(req.file.path, {
+        originalFilename: sanitizeFilename(req.file.originalname)
+      });
+    } else {
+      return res.status(400).json({ error: "Envie um arquivo ou informe um previewId para importar no AEROINTEL." });
+    }
+
+    const existingHashes = await getExistingCommercialImportHashes(parsed.items || []);
+    const seenInFile = new Set();
+    const summary = {
+      totalReceived: Number(parsed.salesItemsDetected || 0),
+      physicalRows: Number(parsed.physicalRows || 0),
+      customersDetected: Number(parsed.customersDetected || 0),
+      salesItemsDetected: Number(parsed.salesItemsDetected || 0),
+      created: 0,
+      skippedDuplicates: 0,
+      errors: 0,
+      customersUpdated: 0,
+      productsUpdated: 0,
+      totalRevenue: Number(parsed.totalRevenue || 0),
+      totalQuantity: Number(parsed.totalQuantity || 0)
+    };
+    const errorDetails = [];
+    const skippedDetails = [];
+    const touchedCustomers = new Set();
+    const touchedSkus = new Set();
+
+    importId = await createAeroIntelImportBatch({
+      filename: path.basename(filePath || originalFilename || "historico-vendas.csv"),
+      originalFilename,
+      status: "processando",
+      summary,
+      createdBy: req.user?.email || req.user?.name || ""
+    });
+
+    for (const item of parsed.items || []) {
+      try {
+        const duplicateInFile = seenInFile.has(item.import_hash);
+        seenInFile.add(item.import_hash);
+        if (duplicateInFile) {
+          summary.skippedDuplicates += 1;
+          skippedDetails.push({
+            source_row: Number(item.source_row || 0),
+            customer_name: item.customer_name || "",
+            sku: item.sku || "",
+            product_name: item.product_name || "",
+            reason: "duplicate_in_file"
+          });
+          continue;
+        }
+        if (existingHashes.has(item.import_hash)) {
+          summary.skippedDuplicates += 1;
+          skippedDetails.push({
+            source_row: Number(item.source_row || 0),
+            customer_name: item.customer_name || "",
+            sku: item.sku || "",
+            product_name: item.product_name || "",
+            reason: "already_imported"
+          });
+          continue;
+        }
+
+        await run(
+          `INSERT INTO commercial_sales_history
+           (customer_key, customer_name, customer_document, product_name, sku, quantity, unit_price, freight_amount, total_amount, inferred_brand, inferred_category, source_file, source_row, imported_at, import_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`,
+          [
+            item.customer_key || "",
+            item.customer_name || "",
+            item.customer_document || "",
+            item.product_name || "",
+            item.sku || "",
+            Number(item.quantity || 0),
+            Number(item.unit_price || 0),
+            Number(item.freight_amount || 0),
+            Number(item.total_amount || 0),
+            item.inferred_brand || "",
+            item.inferred_category || "",
+            item.source_file || originalFilename,
+            Number(item.source_row || 0),
+            item.import_hash || ""
+          ]
+        );
+        summary.created += 1;
+        touchedCustomers.add(item.customer_key || "");
+        if (item.sku) {
+          touchedSkus.add(item.sku);
+        }
+      } catch (error) {
+        summary.errors += 1;
+        const errorRow = {
+          source_row: Number(item.source_row || 0),
+          customer_key: item.customer_key || "",
+          customer_name: item.customer_name || "",
+          sku: item.sku || "",
+          product_name: item.product_name || "",
+          error_message: error.message || "Falha ao importar item do AEROINTEL.",
+          raw_json: item
+        };
+        errorDetails.push(errorRow);
+        await run(
+          `INSERT INTO commercial_import_errors
+           (import_id, source_row, customer_key, sku, product_name, error_message, raw_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+          [
+            importId,
+            errorRow.source_row,
+            errorRow.customer_key,
+            errorRow.sku,
+            errorRow.product_name,
+            errorRow.error_message,
+            JSON.stringify(errorRow.raw_json || {})
+          ]
+        );
+      }
+    }
+
+    await rebuildCommercialProfilesForKeys({
+      customerKeys: Array.from(touchedCustomers),
+      skus: Array.from(touchedSkus)
+    });
+    summary.customersUpdated = touchedCustomers.size;
+    summary.productsUpdated = touchedSkus.size;
+
+    await finalizeAeroIntelImportBatch(importId, {
+      status: summary.errors ? "concluido_com_alertas" : "concluido",
+      summary
+    });
+
+    appendAeroIntelImportLog({
+      importId,
+      filename: path.basename(filePath || originalFilename || ""),
+      originalFilename,
+      summary
+    });
+
+    if (filePath && fs.existsSync(filePath)) {
+      moveAeroIntelImportFile(filePath, summary.errors ? aeroIntelImportErrorsDir : aeroIntelImportProcessedDir);
+    }
+    if (previewId) {
+      aeroIntelImportPreviews.delete(previewId);
+    }
+
+    res.json({
+      success: true,
+      summary,
+      created: summary.created,
+      skippedDuplicates: summary.skippedDuplicates,
+      errors: summary.errors,
+      customersUpdated: summary.customersUpdated,
+      productsUpdated: summary.productsUpdated,
+      totalRevenue: summary.totalRevenue,
+      totalQuantity: summary.totalQuantity,
+      skippedDetails,
+      errorsDetails: errorDetails
+    });
+  } catch (error) {
+    console.error("Erro ao concluir importação do AEROINTEL:", error);
+    if (importId) {
+      await finalizeAeroIntelImportBatch(importId, {
+        status: "erro",
+        summary: {
+          totalReceived: Number(parsed?.salesItemsDetected || 0),
+          physicalRows: Number(parsed?.physicalRows || 0),
+          customersDetected: Number(parsed?.customersDetected || 0),
+          salesItemsDetected: Number(parsed?.salesItemsDetected || 0),
+          created: 0,
+          skippedDuplicates: 0,
+          errors: 1,
+          customersUpdated: 0,
+          productsUpdated: 0,
+          totalRevenue: Number(parsed?.totalRevenue || 0),
+          totalQuantity: Number(parsed?.totalQuantity || 0)
+        }
+      });
+    }
+    if (filePath && fs.existsSync(filePath)) {
+      moveAeroIntelImportFile(filePath, aeroIntelImportErrorsDir);
+    }
+    res.status(500).json({ error: error.message || "Falha ao concluir a importação do AEROINTEL." });
+  }
+});
+
+app.post("/api/aerointel/abc/import/preview", requireManager, aeroIntelImportUpload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "Selecione o CSV da Curva ABC para gerar a prévia." });
+  }
+
+  try {
+    cleanupAeroIntelAbcImportPreviews();
+    const parsed = await parseAeroIntelAbcFile(req.file.path, {
+      originalFilename: sanitizeFilename(req.file.originalname)
+    });
+    const existingHashes = await getExistingCommercialAbcImportHashes(parsed.items || []);
+    const { previewRows, duplicateInFileCount, existingDuplicateCount } = buildAeroIntelAbcPreviewRows(parsed.items || [], existingHashes);
+    const previewId = crypto.randomUUID();
+    const summary = {
+      physicalRows: Number(parsed.physicalRows || 0),
+      customersDetected: Number(parsed.customersDetected || 0),
+      classACount: Number(parsed.classCounts?.A || 0),
+      classBCount: Number(parsed.classCounts?.B || 0),
+      classCCount: Number(parsed.classCounts?.C || 0),
+      invalidRows: Number(parsed.invalidRows?.length || 0),
+      duplicateInFileCount,
+      existingDuplicateCount,
+      totalAbcValue: Number(parsed.totalAbcValue || 0),
+      topCustomers: parsed.topCustomers || []
+    };
+
+    aeroIntelAbcImportPreviews.set(previewId, {
+      createdAt: Date.now(),
+      createdBy: req.user?.id || 0,
+      filePath: req.file.path,
+      filename: req.file.filename,
+      originalFilename: sanitizeFilename(req.file.originalname),
+      parsed,
+      summary
+    });
+
+    res.json({
+      success: true,
+      previewId,
+      delimiter: parsed.delimiter || ";",
+      headersOriginais: parsed.headerRow || [],
+      headersNormalizados: parsed.normalizedHeaders || [],
+      detectedIndexes: parsed.columnIndexes || {},
+      summary,
+      preview: previewRows.slice(0, 300),
+      invalidRows: (parsed.invalidRows || []).slice(0, 100)
+    });
+  } catch (error) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      moveAeroIntelImportFile(req.file.path, aeroIntelImportErrorsDir);
+    }
+    console.error("Erro ao gerar preview da Curva ABC do AEROINTEL:", error);
+    res.status(400).json({
+      error: error.message || "Falha ao gerar a prévia da Curva ABC.",
+      ...(error.details || {})
+    });
+  }
+});
+
+app.post("/api/aerointel/abc/import/commit", requireManager, aeroIntelImportUpload.single("file"), async (req, res) => {
+  let filePath = req.file?.path || "";
+  let originalFilename = sanitizeFilename(req.file?.originalname || "");
+  let parsed = null;
+  let importId = 0;
+
+  try {
+    cleanupAeroIntelAbcImportPreviews();
+    const previewId = String(req.body.previewId || "").trim();
+    if (previewId) {
+      const preview = aeroIntelAbcImportPreviews.get(previewId);
+      if (!preview) {
+        return res.status(404).json({ error: "Preview da Curva ABC não encontrado ou expirado." });
+      }
+      filePath = preview.filePath;
+      originalFilename = preview.originalFilename;
+      parsed = preview.parsed;
+    } else if (req.file?.path) {
+      parsed = await parseAeroIntelAbcFile(req.file.path, {
+        originalFilename: sanitizeFilename(req.file.originalname)
+      });
+    } else {
+      return res.status(400).json({ error: "Envie um arquivo ou informe um previewId para importar a Curva ABC." });
+    }
+
+    const existingHashes = await getExistingCommercialAbcImportHashes(parsed.items || []);
+    const seenInFile = new Set();
+    const summary = {
+      totalReceived: Number(parsed.customersDetected || 0),
+      physicalRows: Number(parsed.physicalRows || 0),
+      customersDetected: Number(parsed.customersDetected || 0),
+      created: 0,
+      skippedDuplicates: 0,
+      errors: 0,
+      customersUpdated: 0,
+      totalAbcValue: Number(parsed.totalAbcValue || 0),
+      classACount: Number(parsed.classCounts?.A || 0),
+      classBCount: Number(parsed.classCounts?.B || 0),
+      classCCount: Number(parsed.classCounts?.C || 0)
+    };
+    const skippedDetails = [];
+    const errorDetails = [];
+    const touchedCustomers = new Set();
+
+    importId = await createAeroIntelAbcImportBatch({
+      filename: path.basename(filePath || originalFilename || "curva-abc.csv"),
+      originalFilename,
+      status: "processando",
+      summary,
+      createdBy: req.user?.email || req.user?.name || ""
+    });
+
+    for (const item of parsed.items || []) {
+      try {
+        const duplicateInFile = seenInFile.has(item.import_hash);
+        seenInFile.add(item.import_hash);
+        if (duplicateInFile) {
+          summary.skippedDuplicates += 1;
+          skippedDetails.push({
+            source_row: Number(item.source_row || 0),
+            customer_name: item.customer_name || "",
+            reason: "duplicate_in_file"
+          });
+          continue;
+        }
+        if (existingHashes.has(item.import_hash)) {
+          summary.skippedDuplicates += 1;
+          skippedDetails.push({
+            source_row: Number(item.source_row || 0),
+            customer_name: item.customer_name || "",
+            reason: "already_imported"
+          });
+          continue;
+        }
+
+        await run(
+          `INSERT INTO commercial_customer_abc_profile
+           (customer_key, customer_name, customer_document, abc_value, abc_individual_percent, abc_accumulated_percent, abc_class, source_file, source_row, imported_at, import_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`,
+          [
+            item.customer_key || "",
+            item.customer_name || "",
+            item.customer_document || "",
+            Number(item.abc_value || 0),
+            Number(item.abc_individual_percent || 0),
+            Number(item.abc_accumulated_percent || 0),
+            item.abc_class || "",
+            item.source_file || originalFilename,
+            Number(item.source_row || 0),
+            item.import_hash || ""
+          ]
+        );
+        await syncCustomerAbcIntoProfile(item);
+        summary.created += 1;
+        touchedCustomers.add(item.customer_key || "");
+      } catch (error) {
+        summary.errors += 1;
+        errorDetails.push({
+          source_row: Number(item.source_row || 0),
+          customer_key: item.customer_key || "",
+          customer_name: item.customer_name || "",
+          error_message: error.message || "Falha ao importar cliente da Curva ABC."
+        });
+      }
+    }
+
+    summary.customersUpdated = touchedCustomers.size;
+    await finalizeAeroIntelAbcImportBatch(importId, {
+      status: summary.errors ? "concluido_com_alertas" : "concluido",
+      summary
+    });
+    appendAeroIntelAbcImportLog({
+      importId,
+      filename: path.basename(filePath || originalFilename || ""),
+      originalFilename,
+      summary
+    });
+
+    if (filePath && fs.existsSync(filePath)) {
+      moveAeroIntelImportFile(filePath, summary.errors ? aeroIntelImportErrorsDir : aeroIntelImportProcessedDir);
+    }
+    if (previewId) {
+      aeroIntelAbcImportPreviews.delete(previewId);
+    }
+
+    res.json({
+      success: true,
+      summary,
+      created: summary.created,
+      skippedDuplicates: summary.skippedDuplicates,
+      errors: summary.errors,
+      customersUpdated: summary.customersUpdated,
+      totalAbcValue: summary.totalAbcValue,
+      skippedDetails,
+      errorsDetails: errorDetails
+    });
+  } catch (error) {
+    console.error("Erro ao concluir importação da Curva ABC do AEROINTEL:", error);
+    if (importId) {
+      await finalizeAeroIntelAbcImportBatch(importId, {
+        status: "erro",
+        summary: {
+          totalReceived: Number(parsed?.customersDetected || 0),
+          physicalRows: Number(parsed?.physicalRows || 0),
+          customersDetected: Number(parsed?.customersDetected || 0),
+          created: 0,
+          skippedDuplicates: 0,
+          errors: 1,
+          customersUpdated: 0,
+          totalAbcValue: Number(parsed?.totalAbcValue || 0),
+          classACount: Number(parsed?.classCounts?.A || 0),
+          classBCount: Number(parsed?.classCounts?.B || 0),
+          classCCount: Number(parsed?.classCounts?.C || 0)
+        }
+      });
+    }
+    if (filePath && fs.existsSync(filePath)) {
+      moveAeroIntelImportFile(filePath, aeroIntelImportErrorsDir);
+    }
+    res.status(500).json({ error: error.message || "Falha ao concluir a importação da Curva ABC." });
+  }
+});
+
+app.get("/api/aerointel/abc/summary", requireAdmin, async (req, res) => {
+  try {
+    const payload = await getAeroIntelAbcSummaryPayload();
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar o resumo da Curva ABC." });
+  }
+});
+
+app.get("/api/aerointel/abc/customers", requireAdmin, async (req, res) => {
+  try {
+    const query = normalizeSearchText(req.query.q || "");
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50)));
+    const rows = await all(
+      `SELECT *
+       FROM commercial_customer_profile
+       WHERE COALESCE(TRIM(abc_class), '') <> ''
+       ORDER BY abc_value DESC, customer_name COLLATE NOCASE ASC
+       LIMIT 500`
+    );
+    const filtered = rows.filter((row) => {
+      if (!query) return true;
+      const haystack = normalizeSearchText([
+        row.customer_name,
+        row.customer_document,
+        row.abc_class,
+        row.commercial_profile,
+        row.favorite_products,
+        row.favorite_brands_suggested
+      ].join(" "));
+      return haystack.includes(query);
+    }).slice(0, limit);
+    res.json({
+      customers: filtered.map(serializeCommercialCustomerProfile),
+      total: filtered.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar clientes da Curva ABC." });
+  }
+});
+
+app.get("/api/aerointel/summary", requireAdmin, async (req, res) => {
+  try {
+    const payload = await getAeroIntelSummaryPayload();
+    const importRows = await all(`SELECT * FROM commercial_import_batches ORDER BY id DESC LIMIT 10`);
+    res.json({
+      ...payload,
+      imports: importRows.map((row) => ({
+        id: Number(row.id || 0),
+        filename: row.filename || "",
+        original_filename: row.original_filename || "",
+        status: row.status || "",
+        physical_rows: Number(row.physical_rows || 0),
+        customers_detected: Number(row.customers_detected || 0),
+        sales_items_detected: Number(row.sales_items_detected || 0),
+        created_count: Number(row.created_count || 0),
+        skipped_duplicates_count: Number(row.skipped_duplicates_count || 0),
+        error_count: Number(row.error_count || 0),
+        total_revenue: Number(row.total_revenue || 0),
+        total_quantity: Number(row.total_quantity || 0),
+        summary: safeJsonParse(row.summary_json, {}),
+        created_by: row.created_by || "",
+        created_at: row.created_at || ""
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar o resumo do AEROINTEL." });
+  }
+});
+
+app.get("/api/aerointel/customers", requireAdmin, async (req, res) => {
+  try {
+    const query = normalizeSearchText(req.query.q || "");
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50)));
+    const rows = await all(
+      `SELECT * FROM commercial_customer_profile
+       ORDER BY total_spent DESC, customer_name COLLATE NOCASE ASC
+       LIMIT 500`
+    );
+    const filtered = rows.filter((row) => {
+      if (!query) return true;
+      const haystack = normalizeSearchText([
+        row.customer_name,
+        row.customer_document,
+        row.price_profile,
+        row.commercial_profile,
+        row.favorite_products,
+        row.favorite_brands_suggested,
+        row.favorite_categories_suggested
+      ].join(" "));
+      return haystack.includes(query);
+    }).slice(0, limit);
+    res.json({
+      customers: filtered.map(serializeCommercialCustomerProfile),
+      total: filtered.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar clientes do AEROINTEL." });
+  }
+});
+
+app.get("/api/aerointel/customer/:customerKey", requireAdmin, async (req, res) => {
+  try {
+    const customerKey = decodeURIComponent(String(req.params.customerKey || ""));
+    const row = await get(`SELECT * FROM commercial_customer_profile WHERE customer_key = ?`, [customerKey]);
+    if (!row) {
+      return res.status(404).json({ error: "Cliente do AEROINTEL não encontrado." });
+    }
+    const history = await all(
+      `SELECT * FROM commercial_sales_history WHERE customer_key = ? ORDER BY id DESC LIMIT 50`,
+      [customerKey]
+    );
+    res.json({
+      customerFound: true,
+      profile: serializeCommercialCustomerProfile(row),
+      history: history.map((item) => ({
+        id: Number(item.id || 0),
+        product_name: item.product_name || "",
+        sku: item.sku || "",
+        quantity: Number(item.quantity || 0),
+        unit_price: Number(item.unit_price || 0),
+        freight_amount: Number(item.freight_amount || 0),
+        total_amount: Number(item.total_amount || 0),
+        inferred_brand: item.inferred_brand || "",
+        inferred_category: item.inferred_category || "",
+        imported_at: item.imported_at || ""
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao consultar cliente do AEROINTEL." });
+  }
+});
+
+app.get("/api/aerointel/conversations/:customerIdentifier", async (req, res) => {
+  try {
+    if (!userCanViewAerointelConversationRead(req.user)) {
+      return res.status(403).json({ error: "Acesso restrito para o seu perfil." });
+    }
+    const requestedStore = normalizeStoreKey(req.query.store_id || "");
+    if (requestedStore && !userCanAccessStore(req.user, requestedStore)) {
+      return res.status(403).json({ error: "Acesso restrito a loja solicitada.", store_id: requestedStore });
+    }
+    const payload = await buildAerointelConversationPayload({
+      identifier: decodeURIComponent(String(req.params.customerIdentifier || "")),
+      query: req.query || {},
+      user: req.user || {}
+    });
+    res.json(payload);
+  } catch (error) {
+    if (Number(error?.statusCode || 0) >= 400) {
+      return res.status(Number(error.statusCode)).json({ error: error.message || "Falha ao carregar a leitura analitica do WhatsApp." });
+    }
+    res.status(500).json({ error: "Falha ao carregar a leitura analitica do WhatsApp." });
+  }
+});
+
+app.get("/api/aerointel/products", requireAdmin, async (req, res) => {
+  try {
+    const query = normalizeSearchText(req.query.q || "");
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50)));
+    const rows = await all(
+      `SELECT * FROM commercial_product_profile
+       ORDER BY total_quantity_sold DESC, total_revenue DESC, product_name COLLATE NOCASE ASC
+       LIMIT 500`
+    );
+    const filtered = rows.filter((row) => {
+      if (!query) return true;
+      const haystack = normalizeSearchText([
+        row.sku,
+        row.product_name,
+        row.inferred_brand,
+        row.inferred_category
+      ].join(" "));
+      return haystack.includes(query);
+    }).slice(0, limit);
+    res.json({
+      products: filtered.map(serializeCommercialProductProfile),
+      total: filtered.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar produtos do AEROINTEL." });
+  }
+});
+
+app.get("/api/aerointel/product/:sku", requireAdmin, async (req, res) => {
+  try {
+    const sku = decodeURIComponent(String(req.params.sku || ""));
+    const row = await get(`SELECT * FROM commercial_product_profile WHERE sku = ?`, [sku]);
+    if (!row) {
+      return res.status(404).json({ error: "Produto do AEROINTEL não encontrado." });
+    }
+    const history = await all(
+      `SELECT customer_name, customer_key, quantity, unit_price, total_amount, imported_at
+       FROM commercial_sales_history
+       WHERE sku = ?
+       ORDER BY id DESC
+       LIMIT 50`,
+      [sku]
+    );
+    res.json({
+      product: serializeCommercialProductProfile(row),
+      history: history.map((item) => ({
+        customer_name: item.customer_name || "",
+        customer_key: item.customer_key || "",
+        quantity: Number(item.quantity || 0),
+        unit_price: Number(item.unit_price || 0),
+        total_amount: Number(item.total_amount || 0),
+        imported_at: item.imported_at || ""
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao consultar produto do AEROINTEL." });
+  }
+});
+
+app.post("/api/aerointel/sync-catalog", requireAdmin, async (req, res) => {
+  try {
+    const skus = Array.isArray(req.body?.skus)
+      ? req.body.skus
+      : req.body?.sku
+        ? [req.body.sku]
+        : [];
+    const summary = await syncCommercialCatalogLinks({ skus });
+    res.json({
+      success: true,
+      ...summary
+    });
+  } catch (error) {
+    console.error("Erro ao sincronizar AEROINTEL com catálogo atual:", error);
+    res.status(500).json({ error: "Falha ao sincronizar o AEROINTEL com a Vitrine IA." });
+  }
+});
+
+app.get("/api/aerointel/products/enriched", requireAdmin, async (req, res) => {
+  try {
+    const query = normalizeSearchText(req.query.q || "");
+    const matchStatus = String(req.query.matchStatus || "").trim();
+    const availability = String(req.query.availability || "").trim();
+    const limit = Math.min(300, Math.max(1, Number(req.query.limit || 50)));
+    const rows = await all(
+      `SELECT p.*, l.catalog_product_id, l.catalog_product_name, l.brand, l.category,
+              l.current_price, l.promotional_price, l.current_stock, l.availability,
+              l.color, l.size, l.image, l.status,
+              l.allow_sale, l.match_status, l.last_synced_at
+       FROM commercial_product_profile p
+       LEFT JOIN commercial_product_catalog_link l ON l.sku = p.sku
+       ORDER BY p.total_quantity_sold DESC, p.total_revenue DESC, p.product_name COLLATE NOCASE ASC
+       LIMIT 1000`
+    );
+    const filtered = rows.filter((row) => {
+      if (matchStatus && String(row.match_status || "") !== matchStatus) {
+        return false;
+      }
+      if (availability && String(row.availability || "") !== availability) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      const haystack = normalizeSearchText([
+        row.sku,
+        row.product_name,
+        row.inferred_brand,
+        row.inferred_category,
+        row.catalog_product_name,
+        row.brand,
+        row.category,
+        row.color,
+        row.size
+      ].join(" "));
+      return haystack.includes(query);
+    }).slice(0, limit);
+    res.json({
+      products: filtered.map((row) => buildCommercialProductEnriched(row, row)),
+      total: filtered.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao listar produtos enriquecidos do AEROINTEL." });
+  }
+});
+
+app.get("/api/aerointel/product/:sku/enriched", requireAdmin, async (req, res) => {
+  try {
+    const sku = decodeURIComponent(String(req.params.sku || ""));
+    const payload = await getEnrichedCommercialProductBySku(sku);
+    if (!payload.productFound) {
+      return res.status(404).json({ error: "Produto enriquecido do AEROINTEL não encontrado." });
+    }
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao consultar produto enriquecido do AEROINTEL." });
+  }
+});
+
+app.post("/api/ia/responder", async (req, res) => {
+  const { mensagem, telefone = "", nome = "", contexto = "" } = req.body || {};
+  if (!mensagem) {
+    return res.status(400).json({ error: "Mensagem é obrigatória" });
+  }
+  try {
+    const payload = await buildAiReplyPayload({ mensagem, telefone, nome, contexto });
+    await createAiMessageLog({
+      contactId: payload.contact?.id || null,
+      phone: payload.telefoneNormalizado || telefone,
+      customerName: payload.contact?.name || nome || "",
+      customerMessage: mensagem,
+      direction: "suggested",
+      source: "panel",
+      messageText: payload.resposta,
+      intent: payload.intencao,
+      needsHuman: payload.precisaHumano,
+      autoSent: false,
+      productId: payload.produtosSugeridos?.[0]?.id || null,
+      mediaId: payload.produtosSugeridos?.[0]?.media_id || null,
+      status: "ok"
+    });
+    res.json({
+      resposta: payload.resposta,
+      intencao: payload.intencao,
+      precisaHumano: payload.precisaHumano,
+      storeId: payload.storeId || "",
+      storeName: payload.storeName || "",
+      produtosSugeridos: payload.produtosSugeridos || [],
+      products: payload.products || [],
+      needsHumanHelp: Boolean(payload.needsHumanHelp),
+      commercialReasoning: payload.commercialReasoning || null,
+      customerFacts: payload.customerFacts || null,
+      sellerContext: payload.sellerContext || null,
+      contextSources: payload.contextSources || [],
+      aerointelUsed: Boolean(payload.aerointelUsed),
+      aerointelProfileFound: Boolean(payload.aerointelProfileFound),
+      aerointelSignals: payload.aerointelSignals || null
+    });
+  } catch (error) {
+    console.error("Erro na rota /api/ia/responder:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
+});
+
+app.post("/api/ia/send-product-suggestion", async (req, res) => {
+  try {
+    const { contactId, phone = "", productId, customMessage = "" } = req.body || {};
+    const result = await sendAiProductSuggestionToWhatsApp({
+      contactId,
+      phone,
+      productId,
+      customMessage,
+      source: "product_suggestion",
+      autoSent: false
+    });
+    res.json({
+      success: true,
+      product: result.product,
+      messageId: result.messageId,
+      chatId: result.chatId,
+      caption: result.caption
+    });
+  } catch (error) {
+    console.error("Erro ao enviar sugestão de produto por WhatsApp:", error);
+    await createAiMessageLog({
+      contactId: req.body?.contactId || null,
+      phone: normalizePhone(req.body?.phone || ""),
+      customerName: "",
+      customerMessage: "",
+      direction: "sent",
+      source: "product_suggestion",
+      connectedNumber: whatsappState.connectedNumber || "",
+      messageText: String(req.body?.customMessage || ""),
+      intent: "produto",
+      needsHuman: false,
+      autoSent: false,
+      productId: req.body?.productId || null,
+      mediaId: null,
+      status: "erro",
+      errorMessage: String(error.userMessage || error.message || "Falha ao enviar a sugestão de produto.")
+    }).catch((logError) => console.warn("Falha ao registrar log de erro da IA:", logError.message || logError));
+    res.status(error.code === "INVALID_WHATSAPP_PHONE" || error.code === "WHATSAPP_NUMBER_NOT_FOUND" || error.code === "WHATSAPP_LID_NOT_FOUND" ? 400 : 500).json({
+      error: error.userMessage || error.message || "Falha ao enviar a sugestão de produto."
+    });
+  }
+});
+
+async function initializeWhatsAppClient() {
+  if (whatsappInitializationPromise) {
+    return whatsappInitializationPromise;
+  }
+
+  const lifecycleNonce = bumpWhatsAppLifecycleNonce();
+  isWhatsAppInitializing = true;
+  whatsappInitializationStartedAt = Date.now();
+  resetWhatsAppState("autenticando");
+
+  whatsappInitializationPromise = (async () => {
+    const authProfiles = getWhatsAppAuthProfiles();
+    let lastInitializationError = null;
+
+    const attemptClientBootstrap = async (profile) => {
+      await destroyWhatsAppClientSafely(`reinitialize_${profile.key}`);
+      if (profile.sessionPath && !fs.existsSync(profile.sessionPath)) {
+        fs.mkdirSync(profile.sessionPath, { recursive: true });
+      }
+      if (profile.useDedicatedBrowserProfile && profile.browserProfilePath && !fs.existsSync(profile.browserProfilePath)) {
+        fs.mkdirSync(profile.browserProfilePath, { recursive: true });
+      }
+
+      const client = new Client({
+        authStrategy: profile.createAuthStrategy(),
+        puppeteer: resolveWhatsAppPuppeteerLaunchConfig({
+          useDedicatedBrowserProfile: profile.useDedicatedBrowserProfile,
+          browserProfilePath: profile.browserProfilePath
+        })
+      });
+      whatsappClient = client;
+      whatsappRuntimeProfile = {
+        key: profile.key,
+        label: profile.label,
+        clientId: profile.clientId,
+        sessionPath: profile.sessionPath,
+        browserProfilePath: profile.browserProfilePath || null
+      };
+
+      const isActiveClient = () => lifecycleNonce === whatsappClientLifecycleNonce && client === whatsappClient;
+
+      client.on('qr', async (qr) => {
+        if (!isActiveClient()) {
+          return;
+        }
+        whatsappState.status = 'aguardando_qr';
+        whatsappState.lastQrRaw = qr;
+        whatsappState.qrBase64 = null;
+        whatsappState.lastError = null;
+        qrcode.generate(qr, { small: true });
+        console.log(`QR Code WhatsApp gerado para terminal e web (${profile.key}).`);
+
+        try {
+          whatsappState.qrBase64 = await QRCode.toDataURL(qr);
+        } catch (error) {
+          console.error('Erro ao gerar QR Web:', error);
+          if (!isActiveClient()) {
+            return;
+          }
+          whatsappState.status = 'erro';
+          whatsappState.lastError = normalizeWhatsAppBootstrapError(error);
+          whatsappState.qrBase64 = null;
+        }
+      });
+
+      client.on('ready', () => {
+        if (!isActiveClient()) {
+          return;
+        }
+        whatsappState.status = 'conectado';
+        whatsappState.lastConnectedAt = new Date().toISOString();
+        whatsappState.lastQrRaw = null;
+        whatsappState.qrBase64 = null;
+        whatsappState.lastError = null;
+        console.log(`WhatsApp conectado! (${profile.key})`);
+
+        try {
+          const info = client.info;
+          whatsappState.connectedNumber = info?.wid?.user || null;
+        } catch (e) {
+          whatsappState.connectedNumber = null;
+        }
+        if (!instanceConfig.warmup?.last_increment_date) {
+          instanceConfig.warmup = {
+            ...(instanceConfig.warmup || {}),
+            last_increment_date: getToday()
+          };
+          saveInstanceConfig(instanceConfig);
+        }
+      });
+
+      client.on('change_state', (runtimeState) => {
+        if (!isActiveClient()) {
+          return;
+        }
+        const normalizedState = String(runtimeState || "").trim().toUpperCase();
+        if (normalizedState && !isWhatsAppRuntimeHealthyState(normalizedState)) {
+          whatsappState.lastError = `Estado do motor: ${normalizedState}`;
+          if (normalizedState === "DISCONNECTED" || normalizedState === "UNPAIRED") {
+            whatsappState.status = 'desconectado';
+            whatsappState.connectedNumber = null;
+          }
+        }
+      });
+
+      client.on('auth_failure', (message) => {
+        if (!isActiveClient()) {
+          return;
+        }
+        whatsappState.status = 'erro';
+        whatsappState.connectedNumber = null;
+        whatsappState.lastError = normalizeWhatsAppBootstrapError(message || 'Falha de autenticação no WhatsApp CRM.');
+      });
+
+      client.on('message', async (message) => {
+        if (!isActiveClient()) {
+          return;
+        }
+        try {
+          if (!message) return;
+          if (message.fromMe) return;
+          const from = String(message.from || "");
+          if (!from || from.endsWith("@g.us") || from === "status@broadcast") return;
+          if (message.hasMedia && !String(message.body || "").trim()) {
+            console.log("[IA WHATSAPP INBOUND]", {
+              connectedNumber: getCurrentConnectedNumber(),
+              from,
+              phoneNormalized: normalizePhone(from.replace(/@(c|s)\.us$/i, "").replace(/@lid$/i, "")),
+              body: "",
+              autoReplyEnabled: (await getAiSettings()).autoReplyEnabled,
+              testMode: (await getAiSettings()).autoReplyTestMode,
+              allowed: false,
+              cooldownBlocked: false,
+              intencao: "outro",
+              productsCount: 0,
+              textSent: false,
+              photoSent: false,
+              error: "Mídia ignorada nesta fase"
+            });
+            return;
+          }
+          await handleInboundAiWhatsAppMessage(message);
+        } catch (error) {
+          console.error("Erro ao processar mensagem recebida do WhatsApp:", error);
+        }
+      });
+
+      client.on('disconnected', (reason) => {
+        if (!isActiveClient()) {
+          return;
+        }
+        whatsappState.status = 'desconectado';
+        whatsappState.connectedNumber = null;
+        whatsappState.lastError = normalizeWhatsAppBootstrapError(reason || 'Sessão do WhatsApp CRM encerrada.');
+        console.log(`WhatsApp desconectado (${profile.key}):`, reason);
+      });
+
+      client.on('change_battery', () => {
+        if (!isActiveClient()) {
+          return;
+        }
+      });
+
+      await Promise.race([
+        client.initialize(),
+        new Promise((_, reject) => setTimeout(() => {
+          reject(new Error(`WhatsApp CRM bootstrap timed out before QR Code generation [${profile.key}].`));
+        }, WHATSAPP_BOOTSTRAP_TIMEOUT_MS))
+      ]);
+    };
+
+    try {
+      for (let index = 0; index < authProfiles.length; index += 1) {
+        const profile = authProfiles[index];
+        try {
+          console.log(`[WHATSAPP] Tentando inicializar em modo ${profile.key}.`);
+          await attemptClientBootstrap(profile);
+          lastInitializationError = null;
+          break;
+        } catch (profileError) {
+          lastInitializationError = profileError;
+          console.error(`[WHATSAPP] Falha ao inicializar em modo ${profile.key}:`, profileError?.message || profileError);
+          if (isRecoverableWhatsAppRuntimeError(profileError)) {
+            await destroyWhatsAppClientSafely(`initialize_failure_${profile.key}`);
+          }
+          const hasNextProfile = index < authProfiles.length - 1;
+          if (!hasNextProfile) {
+            throw profileError;
+          }
+          console.warn(`[WHATSAPP] Ativando fallback de compatibilidade após falha em ${profile.key}.`);
+          resetWhatsAppState("autenticando");
+        }
+      }
+
+      if (lastInitializationError) {
+        throw lastInitializationError;
+      }
+    } catch (error) {
+      console.error('Erro ao inicializar WhatsApp:', error);
+      if (lifecycleNonce === whatsappClientLifecycleNonce) {
+        whatsappState.status = 'erro';
+        whatsappState.connectedNumber = null;
+        whatsappState.lastError = normalizeWhatsAppBootstrapError(error);
+      }
+      if (isRecoverableWhatsAppRuntimeError(error)) {
+        await destroyWhatsAppClientSafely("initialize_failure");
+      }
+      throw error;
+    } finally {
+      if (lifecycleNonce === whatsappClientLifecycleNonce) {
+        isWhatsAppInitializing = false;
+        whatsappInitializationStartedAt = 0;
+        whatsappInitializationPromise = null;
+      }
+    }
+  })();
+
+  return whatsappInitializationPromise;
+}
+
+async function sendWhatsAppTextMessage(phone, message, options = {}) {
+  const debugLabel = String(options.debugLabel || "").trim();
+  try {
+    await ensureWhatsAppClientReadyForSend("text_send");
+    const destination = options.preResolvedDestination || await resolveWhatsAppDestination(phone);
+    if (debugLabel) {
+      console.log(`[${debugLabel}]`, {
+        stage: "destination_resolved",
+        whatsappStatus: whatsappState.status,
+        hasClient: Boolean(whatsappClient),
+        phoneOriginal: destination.originalPhone,
+        phoneNormalized: destination.normalizedPhone,
+        numberId: destination.numberId?._serialized || null,
+        chatId: destination.chatId
+      });
+    }
+    const sendResult = await whatsappClient.sendMessage(destination.chatId, message);
+    if (debugLabel) {
+      console.log(`[${debugLabel}]`, {
+        stage: "message_sent",
+        sendResult: {
+          success: true,
+          messageId: sendResult?.id?._serialized || null,
+          chatId: destination.chatId
+        }
+      });
+    }
+    return {
+      success: true,
+      messageId: sendResult?.id?._serialized || null,
+      originalPhone: destination.originalPhone,
+      normalizedPhone: destination.normalizedPhone,
+      chatId: destination.chatId,
+      numberIdSerialized: destination.numberId?._serialized || null
+    };
+  } catch (error) {
+    const recoveredError = await recoverWhatsAppClientAfterFailure(error, "text_send");
+    const normalizedError = normalizeWhatsAppSendError(recoveredError, {
+      originalPhone: String(phone || ""),
+      normalizedPhone: sanitizePhone(phone),
+      cleanNumber: sanitizePhone(phone),
+      chatId: null
+    });
+    if (debugLabel) {
+      console.log(`[${debugLabel}]`, {
+        stage: "send_failed",
+        whatsappStatus: whatsappState.status,
+        hasClient: Boolean(whatsappClient),
+        phoneOriginal: String(phone || ""),
+        phoneNormalized: normalizedError.normalizedPhone || sanitizePhone(phone),
+        numberId: normalizedError.numberId?._serialized || null,
+        chatId: normalizedError.chatId || null,
+        error: normalizedError.message || String(normalizedError)
+      });
+    }
+    console.error('Erro ao enviar mensagem:', normalizedError.originalError || normalizedError.message || normalizedError);
+    throw normalizedError;
+  }
+}
+
+async function sendAutomatedMessage(phone, message) {
+  return sendWhatsAppTextMessage(phone, message);
+}
+
+app.use(
+  "/api/pdv/whatsapp",
+  requirePermission("can_use_whatsapp"),
+  requireStoreAccess({
+    resolver: () => instanceConfig.store?.id || ""
+  }),
+  createPdvWhatsappRouter({
+  sendWhatsAppTextMessage,
+  createAiMessageLog,
+  getWhatsAppRuntimeState: () => ({
+    status: whatsappState.status,
+    connectedNumber: whatsappState.connectedNumber,
+    lastConnectedAt: whatsappState.lastConnectedAt,
+    lastError: whatsappState.lastError
+  })
+  })
+);
+
+function normalizeCampaignSendType(sendType = "", mediaType = "") {
+  const normalizedSendType = String(sendType || "").trim().toLowerCase();
+  if (normalizedSendType.startsWith("image")) return "image";
+  if (normalizedSendType.startsWith("video")) return "video";
+  if (normalizedSendType.startsWith("audio")) return "audio";
+  if (normalizedSendType.startsWith("document")) return "document";
+  if (normalizedSendType === "text") return "text";
+  return String(mediaType || "").trim().toLowerCase();
+}
+
+function buildStoredMessageMedia(media) {
+  const absolutePath = path.resolve(media.file_path);
+  const fileExists = fs.existsSync(absolutePath);
+  if (!fileExists) {
+    const error = new Error("Arquivo de mídia não encontrado");
+    error.code = "MEDIA_FILE_MISSING";
+    error.absolutePath = absolutePath;
+    throw error;
+  }
+
+  const hasExtension = Boolean(path.extname(absolutePath));
+  if (hasExtension) {
+    try {
+      return {
+        messageMedia: MessageMedia.fromFilePath(absolutePath),
+        absolutePath,
+        fileExists,
+        strategy: "fromFilePath"
+      };
+    } catch (error) {
+      console.warn("[WHATSAPP MEDIA] Falha no fromFilePath, usando base64 manual:", error.message || error);
+    }
+  }
+
+  const fileBuffer = fs.readFileSync(absolutePath);
+  return {
+    messageMedia: new MessageMedia(
+      media.mime_type,
+      fileBuffer.toString("base64"),
+      media.original_name || media.file_name || path.basename(absolutePath)
+    ),
+    absolutePath,
+    fileExists,
+    strategy: "base64_manual"
+  };
+}
+
+async function sendAutomatedMediaMessage({ phone, media, caption, sendType }) {
+  await ensureWhatsAppClientReadyForSend("media_send");
+  const destination = await resolveWhatsAppDestination(phone, {
+    originalPhone: media.original_phone || phone
+  });
+  const normalizedSendType = normalizeCampaignSendType(sendType, media?.media_type);
+  const {
+    messageMedia,
+    absolutePath,
+    fileExists,
+    strategy
+  } = buildStoredMessageMedia(media);
+
+  const debugPayload = {
+    campaignId: media.campaign_id || null,
+    contactId: media.contact_id || null,
+    phone,
+    originalPhone: destination.originalPhone,
+    normalizedPhone: destination.normalizedPhone,
+    chatId: destination.chatId,
+    numberIdSerialized: destination.numberId?._serialized || null,
+    sendType: normalizedSendType,
+    mediaId: media.id,
+    mediaType: media.media_type,
+    mimeType: media.mime_type,
+    filePath: media.file_path,
+    absolutePath,
+    existsSync: fileExists,
+    fileSize: media.file_size,
+    captionFinal: caption || "",
+    route: "/api/whatsapp/send-media",
+    strategy
+  };
+  console.log("[WHATSAPP MEDIA] Tentando envio:", debugPayload);
+
+  try {
+    let sendResult;
+    let audioFallbackUsed = false;
+
+    if (normalizedSendType === 'audio') {
+      if (caption) {
+        await whatsappClient.sendMessage(destination.chatId, caption);
+      }
+      try {
+        sendResult = await whatsappClient.sendMessage(destination.chatId, messageMedia, {
+          sendAudioAsVoice: false
+        });
+      } catch (error) {
+        console.warn("[WHATSAPP MEDIA] Áudio nativo falhou, tentando como documento:", error.message || error);
+        audioFallbackUsed = true;
+        sendResult = await whatsappClient.sendMessage(destination.chatId, messageMedia, {
+          sendMediaAsDocument: true
+        });
+      }
+    } else if (['image', 'video', 'document'].includes(normalizedSendType)) {
+      sendResult = await whatsappClient.sendMessage(destination.chatId, messageMedia, {
+        caption: caption || undefined
+      });
+    } else {
+      throw new Error('Tipo de mídia não suportado');
+    }
+
+    if (!sendResult?.id?._serialized) {
+      throw new Error("WhatsApp não retornou confirmação do envio da mídia");
+    }
+
+    console.log("[WHATSAPP MEDIA] Envio concluído:", {
+      ...debugPayload,
+      messageId: sendResult.id._serialized,
+      audioFallbackUsed
+    });
+
+    return {
+      success: true,
+      messageId: sendResult.id._serialized,
+      sendType: normalizedSendType,
+      mediaId: media.id,
+      originalPhone: destination.originalPhone,
+      normalizedPhone: destination.normalizedPhone,
+      chatId: destination.chatId,
+      numberIdSerialized: destination.numberId?._serialized || null,
+      route: "/api/whatsapp/send-media",
+      strategy,
+      audioFallbackUsed
+    };
+  } catch (error) {
+    const recoveredError = await recoverWhatsAppClientAfterFailure(error, "media_send");
+    const normalizedError = normalizeWhatsAppSendError(recoveredError, {
+      originalPhone: media.original_phone || String(phone || ""),
+      normalizedPhone: sanitizePhone(phone),
+      cleanNumber: sanitizePhone(phone),
+      chatId: null
+    });
+    console.error('[WHATSAPP MEDIA] Erro ao enviar mídia:', {
+      ...debugPayload,
+      error: normalizedError.originalError || normalizedError.message || String(normalizedError)
+    });
+    throw normalizedError;
+  }
+}
+
+async function createCampaignMessageLog({
+  campaignId = null,
+  contactId = null,
+  phone = "",
+  sendType = "text",
+  mediaId = null,
+  captionFinal = "",
+  status = "enviado",
+  errorMessage = "",
+  sentAt = ""
+}) {
+  await run(
+    `INSERT INTO campaign_message_logs
+    (campaign_id, contact_id, phone, send_type, media_id, caption_final, status, error_message, sent_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [
+      campaignId,
+      contactId,
+      String(phone || ""),
+      String(sendType || "text"),
+      mediaId || null,
+      String(captionFinal || ""),
+      String(status || "enviado"),
+      String(errorMessage || ""),
+      String(sentAt || "")
+    ]
+  );
+}
+
+function getRandomDelay() {
+  return Math.floor(Math.random() * (40000 - 15000 + 1)) + 15000; // 15-40 segundos
+}
+
+function buildCampaignMessage(campaign, contact, fallbackMessage = "") {
+  const template = String(campaign?.template || fallbackMessage || "").trim();
+  if (!template) {
+    return "";
+  }
+  return applyVariables(template, campaign || {}, contact || {});
+}
+
+async function waitRandomizedWhatsAppDelay() {
+  const delay = getRandomDelay();
+  await new Promise((resolve) => setTimeout(resolve, delay));
+  return delay;
+}
+
+async function updateCampaignStoredStatus(campaignId, status = "pronta") {
+  await run(
+    "UPDATE campaigns SET status = ?, updated_at = datetime('now') WHERE id = ?",
+    [String(status || "pronta"), Number(campaignId)]
+  );
+}
+
+async function getCampaignWarmupAccountAgeDays() {
+  const configuredWarmupDay = syncWarmupDayWithCalendar();
+  if (configuredWarmupDay > 0 || Number(instanceConfig.warmup?.daily_limit_override || 0) > 0) {
+    return configuredWarmupDay;
+  }
+  const authPath = getInstanceSessionPath();
+  if (fs.existsSync(authPath)) {
+    try {
+      const stats = fs.statSync(authPath);
+      const ageMs = Date.now() - Number(stats.birthtimeMs || stats.ctimeMs || Date.now());
+      return Math.max(1, Math.floor(ageMs / 86400000) + 1);
+    } catch (error) {
+      // noop
+    }
+  }
+  const firstSuccessfulLog = await get(
+    `SELECT MIN(COALESCE(NULLIF(sent_at, ''), created_at)) AS first_sent_at
+    FROM campaign_message_logs
+    WHERE status = 'enviado'`
+  );
+  if (firstSuccessfulLog?.first_sent_at) {
+    const ageMs = Date.now() - new Date(firstSuccessfulLog.first_sent_at).getTime();
+    return Math.max(1, Math.floor(ageMs / 86400000) + 1);
+  }
+  return 1;
+}
+
+async function countSuccessfulCampaignSendsToday() {
+  const today = getToday();
+  const row = await get(
+    `SELECT COUNT(*) AS total
+    FROM campaign_message_logs
+    WHERE status = 'enviado'
+      AND SUBSTR(COALESCE(NULLIF(sent_at, ''), created_at), 1, 10) = ?`,
+    [today]
+  );
+  return Number(row?.total || 0);
+}
+
+function evaluateWarmupLimit(sentToday, accountAgeDays) {
+  const overrideLimit = Number(instanceConfig.warmup?.daily_limit_override || 0);
+  const limit = overrideLimit > 0 ? overrideLimit : getWarmupDailyLimit(accountAgeDays);
+  if (Number(sentToday || 0) >= limit) {
+    return {
+      allowed: false,
+      limit,
+      remaining: 0,
+      message: `Limite diário atingido (${sentToday}/${limit}). Continue amanhã.`
+    };
+  }
+  return {
+    allowed: true,
+    limit,
+    remaining: Math.max(0, limit - Number(sentToday || 0))
+  };
+}
+
+function evaluateCampaignCircuitBreaker(operation) {
+  const breaker = operation?.circuitBreaker || createCampaignCircuitBreakerState();
+  const now = Date.now();
+  breaker.errors = breaker.errors.filter((timestamp) => (now - timestamp) < 3600000);
+  breaker.blocks = breaker.blocks.filter((timestamp) => (now - timestamp) < 86400000);
+  breaker.reports = breaker.reports.filter((timestamp) => (now - timestamp) < 86400000);
+
+  if (breaker.state === "open") {
+    const elapsed = now - Number(breaker.lastTrip || 0);
+    const cooldownMs = breaker.cooldownMinutes * 60000;
+    if (elapsed < cooldownMs) {
+      return {
+        shouldStop: true,
+        state: "open",
+        reason: breaker.lastReason || "Cooldown de segurança ativo.",
+        remainingMs: cooldownMs - elapsed
+      };
+    }
+    breaker.state = "half-open";
+  }
+
+  if (breaker.errors.length >= breaker.maxErrorsPerHour) {
+    breaker.state = "open";
+    breaker.lastTrip = now;
+    breaker.lastReason = `${breaker.errors.length} erros na última hora`;
+    return { shouldStop: true, state: "open", reason: breaker.lastReason, remainingMs: breaker.cooldownMinutes * 60000 };
+  }
+
+  if (breaker.blocks.length >= breaker.maxBlocksPerDay) {
+    breaker.state = "open";
+    breaker.lastTrip = now;
+    breaker.lastReason = `${breaker.blocks.length} bloqueios hoje — risco alto de ban`;
+    return { shouldStop: true, state: "open", reason: breaker.lastReason, remainingMs: breaker.cooldownMinutes * 60000 };
+  }
+
+  if (breaker.reports.length >= breaker.maxReportsPerDay) {
+    breaker.state = "open";
+    breaker.lastTrip = now;
+    breaker.lastReason = `${breaker.reports.length} reports hoje — risco alto de ban`;
+    return { shouldStop: true, state: "open", reason: breaker.lastReason, remainingMs: breaker.cooldownMinutes * 60000 };
+  }
+
+  const recentErrors = breaker.errors.slice(-breaker.maxConsecutiveErrors);
+  if (recentErrors.length >= breaker.maxConsecutiveErrors) {
+    const spanMs = now - recentErrors[0];
+    if (spanMs < 60000) {
+      breaker.state = "open";
+      breaker.lastTrip = now;
+      breaker.lastReason = "Erros consecutivos rápidos — possível rate limit";
+      return { shouldStop: true, state: "open", reason: breaker.lastReason, remainingMs: breaker.cooldownMinutes * 60000 };
+    }
+  }
+
+  breaker.state = "closed";
+  breaker.lastReason = "";
+  return { shouldStop: false, state: breaker.state, reason: "" };
+}
+
+function recordCampaignSendResult(operation, result = {}) {
+  const breaker = operation?.circuitBreaker || createCampaignCircuitBreakerState();
+  const now = Date.now();
+  if (result.error) {
+    breaker.errors.push(now);
+  }
+  if (result.blocked) {
+    breaker.blocks.push(now);
+  }
+  if (result.reported) {
+    breaker.reports.push(now);
+  }
+  return evaluateCampaignCircuitBreaker(operation);
+}
+
+async function waitForCampaignOperationDelay(operation, totalMs, type = "delay") {
+  const safeMs = Math.max(0, Number(totalMs || 0));
+  const startedAt = Date.now();
+  operation.nextDelayMs = safeMs;
+  operation.nextEligibleAt = new Date(startedAt + safeMs).toISOString();
+  while ((Date.now() - startedAt) < safeMs) {
+    if (operation.stopRequested) {
+      operation.nextDelayMs = 0;
+      operation.nextEligibleAt = "";
+      return { interrupted: "stopped" };
+    }
+    if (operation.pauseRequested) {
+      operation.status = "paused";
+      operation.pauseReason = type === "break" ? "Pausa natural em andamento." : "Pausado pelo operador.";
+      operation.pausedAt = new Date().toISOString();
+      operation.nextDelayMs = Math.max(0, safeMs - (Date.now() - startedAt));
+      return { interrupted: "paused" };
+    }
+    const elapsed = Date.now() - startedAt;
+    operation.nextDelayMs = Math.max(0, safeMs - elapsed);
+    await sleep(Math.min(1000, operation.nextDelayMs));
+  }
+  operation.nextDelayMs = 0;
+  operation.nextEligibleAt = "";
+  return { interrupted: null };
+}
+
+async function sendWithTypingSimulation(phone, message, options = {}) {
+  const typingEnabled = Boolean(options.enableTyping);
+  const debugLabel = String(options.debugLabel || "").trim();
+  let destination = null;
+  let typingSupported = false;
+  if (typingEnabled) {
+    await ensureWhatsAppClientReadyForSend("typing_probe");
+    destination = await resolveWhatsAppDestination(phone, { originalPhone: options.originalPhone || phone });
+    try {
+      if (typeof whatsappClient.getChatById === "function") {
+        const chat = await whatsappClient.getChatById(destination.chatId);
+        if (chat && typeof chat.sendStateTyping === "function") {
+          await chat.sendStateTyping();
+          typingSupported = true;
+          const baseTypingMs = Math.min(Math.max(Math.round((String(message || "").length / 200) * 60000), 1200), 8000);
+          const actualTypingMs = Math.round(baseTypingMs * (0.7 + (Math.random() * 0.6)));
+          await sleep(actualTypingMs);
+        }
+      }
+    } catch (error) {
+      if (debugLabel) {
+        console.warn(`[${debugLabel}] Falha ao simular digitação:`, error.message || error);
+      }
+      typingSupported = false;
+    }
+  }
+  const sendResult = await sendWhatsAppTextMessage(phone, message, {
+    debugLabel,
+    preResolvedDestination: destination
+  });
+  return {
+    ...sendResult,
+    typingSupported
+  };
+}
+
+async function sendCampaignMessageToContact({
+  contact = null,
+  contactId = null,
+  phone = "",
+  message = "",
+  caption = "",
+  mediaId = null,
+  campaignId = null,
+  sendType = "text",
+  user = null,
+  humanized = false,
+  enableTyping = false
+} = {}) {
+  if (whatsappState.status !== "conectado") {
+    throw createWhatsAppDestinationError("WhatsApp não está conectado", "WHATSAPP_NOT_CONNECTED", {
+      userMessage: "WhatsApp CRM desconectado. Conecte o motor antes de enviar."
+    });
+  }
+
+  let resolvedContact = contact;
+  if (!resolvedContact && contactId) {
+    resolvedContact = await get(`SELECT * FROM contacts WHERE id = ?`, [Number(contactId)]);
+  }
+  if (!resolvedContact && !phone) {
+    throw new Error("Contato ou telefone são obrigatórios para a campanha.");
+  }
+
+  const finalPhone = normalizePhone(resolvedContact?.phone || phone);
+  if (!finalPhone) {
+    const invalidError = createWhatsAppDestinationError(
+      "Telefone inválido para envio de campanha.",
+      "INVALID_WHATSAPP_PHONE",
+      { userMessage: "Cliente com WhatsApp inválido para esta campanha." }
+    );
+    throw invalidError;
+  }
+
+  const campaign = campaignId
+    ? await get("SELECT * FROM campaigns WHERE id = ?", [Number(campaignId)])
+    : null;
+  const normalizedSendType = normalizeCampaignSendType(sendType || campaign?.send_type || "text", "");
+  const baseMessage = resolvedContact && campaign
+    ? buildCampaignMessage(campaign, resolvedContact, message || campaign.template || "")
+    : String(message || "").trim();
+  const finalMessage = humanized
+    ? humanizeMessage(baseMessage, {
+        name: resolvedContact?.name || "",
+        phone: resolvedContact?.phone || finalPhone
+      })
+    : baseMessage;
+  const baseCaption = resolvedContact && campaign
+    ? buildCampaignMessage(campaign, resolvedContact, caption || message || campaign.caption || campaign.template || "")
+    : String(caption || message || "").trim();
+  const finalCaption = humanized
+    ? humanizeMessage(baseCaption, {
+        name: resolvedContact?.name || "",
+        phone: resolvedContact?.phone || finalPhone
+      })
+    : baseCaption;
+
+  let sendResult = null;
+  if (normalizedSendType === "text") {
+    if (!finalMessage) {
+      throw new Error("Mensagem da campanha está vazia.");
+    }
+    sendResult = enableTyping
+      ? await sendWithTypingSimulation(finalPhone, finalMessage, {
+          enableTyping: true,
+          originalPhone: resolvedContact?.phone || finalPhone,
+          debugLabel: "CAMPAIGN_HUMANIZED_TEXT"
+        })
+      : await sendAutomatedMessage(finalPhone, finalMessage);
+  } else {
+    if (!mediaId && !campaign?.media_id) {
+      throw new Error("A campanha exige mídia, mas nenhum arquivo foi vinculado.");
+    }
+    const media = await get(
+      `SELECT * FROM campaign_media WHERE id = ? AND status = 'active'`,
+      [Number(mediaId || campaign?.media_id || 0)]
+    );
+    if (!media) {
+      throw new Error("Mídia não encontrada para esta campanha.");
+    }
+    sendResult = await sendAutomatedMediaMessage({
+      phone: finalPhone,
+      media: {
+        ...media,
+        campaign_id: campaignId ? Number(campaignId) : null,
+        contact_id: resolvedContact?.id || null,
+        original_phone: resolvedContact?.phone || phone || finalPhone
+      },
+      caption: finalCaption || undefined,
+      sendType: normalizedSendType || media.media_type
+    });
+  }
+
+  await createCampaignMessageLog({
+    campaignId: campaignId ? Number(campaignId) : null,
+    contactId: resolvedContact?.id || Number(contactId) || null,
+    phone: finalPhone,
+    sendType: normalizedSendType,
+    mediaId: mediaId ? Number(mediaId) : (campaign?.media_id || null),
+    captionFinal: normalizedSendType === "text" ? finalMessage : (finalCaption || ""),
+    status: "enviado",
+    errorMessage: "",
+    sentAt: new Date().toISOString()
+  });
+
+  await createCashbackEvent({
+    cashbackId: null,
+    contactId: resolvedContact?.id || Number(contactId) || null,
+    eventType: "mensagem_automatica",
+    value: 0,
+    store: resolvedContact?.store || "",
+    seller: user?.seller_name || resolvedContact?.seller_name || campaign?.seller_name || campaign?.seller || "",
+    eventDate: getToday(),
+    campaign: campaign?.name || "",
+    status: "sucesso",
+    origin: campaignId ? "campanha automatica" : "envio individual",
+    notes: normalizedSendType === "text"
+      ? `Mensagem enviada para ${resolvedContact?.name || finalPhone}`
+      : `Mídia (${normalizedSendType}) enviada para ${resolvedContact?.name || finalPhone}`
+  });
+
+  if (campaignId && (resolvedContact?.id || contactId)) {
+    await updateCampaignExecutionStatus({
+      campaignId: Number(campaignId),
+      contactId: Number(resolvedContact?.id || contactId),
+      sellerId: user?.seller_id || null,
+      status: "enviado"
+    });
+  }
+
+  return {
+    success: true,
+    messageId: sendResult?.messageId || "",
+    normalizedPhone: sendResult?.normalizedPhone || finalPhone,
+    chatId: sendResult?.chatId || "",
+    sendType: normalizedSendType,
+    typingSupported: Boolean(sendResult?.typingSupported),
+    finalMessage,
+    finalCaption,
+    contact: resolvedContact
+  };
+}
+
+async function failCampaignMessageToContact({
+  contact = null,
+  contactId = null,
+  phone = "",
+  message = "",
+  caption = "",
+  mediaId = null,
+  campaignId = null,
+  sendType = "text",
+  user = null,
+  error
+} = {}) {
+  const friendlyError = String(error?.userMessage || error?.message || error || "Falha no envio");
+  if (campaignId && (contact?.id || contactId)) {
+    await updateCampaignExecutionStatus({
+      campaignId: Number(campaignId),
+      contactId: Number(contact?.id || contactId),
+      sellerId: user?.seller_id || null,
+      status: "erro"
+    });
+  }
+  await createCampaignMessageLog({
+    campaignId: campaignId ? Number(campaignId) : null,
+    contactId: Number(contact?.id || contactId) || null,
+    phone: contact?.phone || phone || "",
+    sendType: normalizeCampaignSendType(sendType, "text"),
+    mediaId: mediaId ? Number(mediaId) : null,
+    captionFinal: String(caption || message || ""),
+    status: "erro",
+    errorMessage: friendlyError,
+    sentAt: ""
+  });
+  await createCashbackEvent({
+    cashbackId: null,
+    contactId: Number(contact?.id || contactId) || null,
+    eventType: "mensagem_automatica",
+    value: 0,
+    eventDate: getToday(),
+    campaign: String(campaignId || ""),
+    status: "erro",
+    origin: campaignId ? "campanha automatica" : "envio individual",
+    notes: `Erro ao enviar campanha: ${friendlyError}`
+  });
+}
+
+async function getCampaignHumanizedStatusPayload(campaignId) {
+  const [operationData, executionSummary] = await Promise.all([
+    getCampaignOperationData(campaignId),
+    getCampaignExecutionSummaryByCampaignId(campaignId)
+  ]);
+  const operation = campaignHumanizedOperations.get(Number(campaignId));
+  const execution = {
+    total: Number(executionSummary?.total_clients || operationData?.stats?.total || 0),
+    sent: Number(executionSummary?.sent_count || operationData?.stats?.sent || 0),
+    pending: Number(executionSummary?.pending_count || operationData?.stats?.pending || 0),
+    errors: Number(executionSummary?.error_count || operationData?.stats?.errors || 0)
+  };
+  return {
+    campaignId: Number(campaignId),
+    operation: serializeCampaignHumanizedOperation(operation),
+    execution
+  };
+}
+
+async function runHumanizedCampaignOperation(operation, user) {
+  if (!operation || operation.status === "running") {
+    return;
+  }
+  operation.status = "running";
+  operation.pauseRequested = false;
+  operation.stopRequested = false;
+  operation.pauseReason = "";
+  operation.startedAt = operation.startedAt || new Date().toISOString();
+  operation.updatedAt = new Date().toISOString();
+  await updateCampaignStoredStatus(operation.campaignId, "em envio");
+  pushCampaignHumanizedLog(operation, {
+    type: "info",
+    message: "Envio humanizado iniciado."
+  });
+
+  while (operation.queueIndex < operation.contactsQueue.length) {
+    if (operation.stopRequested) {
+      operation.status = "stopped";
+      operation.completedAt = new Date().toISOString();
+      operation.pauseReason = "Operação interrompida manualmente.";
+      await updateCampaignStoredStatus(operation.campaignId, "pausada");
+      pushCampaignHumanizedLog(operation, { type: "stopped", message: operation.pauseReason });
+      return;
+    }
+    if (operation.pauseRequested) {
+      operation.status = "paused";
+      operation.pausedAt = new Date().toISOString();
+      operation.pauseReason = operation.pauseReason || "Pausado pelo operador.";
+      await updateCampaignStoredStatus(operation.campaignId, "pausada");
+      pushCampaignHumanizedLog(operation, { type: "paused", message: operation.pauseReason });
+      return;
+    }
+
+    operation.accountAgeDays = await getCampaignWarmupAccountAgeDays();
+    operation.sentToday = await countSuccessfulCampaignSendsToday();
+    const warmupCheck = evaluateWarmupLimit(operation.sentToday, operation.accountAgeDays);
+    operation.dailyLimit = warmupCheck.limit;
+    if (!warmupCheck.allowed) {
+      operation.status = "daily_limit";
+      operation.pausedAt = new Date().toISOString();
+      operation.pauseReason = warmupCheck.message;
+      await updateCampaignStoredStatus(operation.campaignId, "pausada");
+      pushCampaignHumanizedLog(operation, { type: "daily_limit", message: warmupCheck.message });
+      return;
+    }
+
+    const windowCheck = isWithinSendingWindow(new Date());
+    if (!windowCheck.allowed) {
+      operation.status = "outside_window";
+      operation.pausedAt = new Date().toISOString();
+      operation.pauseReason = windowCheck.reason;
+      operation.currentWindowLabel = windowCheck.nextWindow || "";
+      await updateCampaignStoredStatus(operation.campaignId, "pausada");
+      pushCampaignHumanizedLog(operation, { type: "window_pause", message: windowCheck.reason });
+      return;
+    }
+    operation.currentWindowLabel = windowCheck.label || "";
+
+    const breakerCheck = evaluateCampaignCircuitBreaker(operation);
+    if (breakerCheck.shouldStop) {
+      operation.status = "cooldown";
+      operation.pausedAt = new Date().toISOString();
+      operation.pauseReason = breakerCheck.reason;
+      await updateCampaignStoredStatus(operation.campaignId, "pausada");
+      pushCampaignHumanizedLog(operation, { type: "circuit_breaker", message: breakerCheck.reason });
+      return;
+    }
+
+    if (operation.messagesSentThisWindow > 0 && operation.messagesSentThisWindow >= operation.nextBreakAfter) {
+      const breakDuration = randomInt(180000, 480000);
+      operation.status = "running";
+      operation.pauseReason = "Pausa natural em andamento.";
+      pushCampaignHumanizedLog(operation, {
+        type: "break",
+        message: `Pausa natural de ${Math.round(breakDuration / 60000)} min para quebrar o ritmo do lote.`
+      });
+      const breakResult = await waitForCampaignOperationDelay(operation, breakDuration, "break");
+      if (breakResult.interrupted) {
+        await updateCampaignStoredStatus(operation.campaignId, "pausada");
+        return;
+      }
+      operation.messagesSentThisWindow = 0;
+      operation.nextBreakAfter = randomInt(15, 25);
+    }
+
+    const contact = operation.contactsQueue[operation.queueIndex];
+    if (!contact) {
+      operation.queueIndex += 1;
+      continue;
+    }
+    const campaign = await get("SELECT * FROM campaigns WHERE id = ?", [operation.campaignId]);
+
+    operation.lastRecipient = contact.name || maskPhoneNumber(contact.phone);
+    pushCampaignHumanizedLog(operation, {
+      type: "sending",
+      message: `Enviando para ${contact.name || maskPhoneNumber(contact.phone)}.`
+    });
+
+    try {
+      const sendResult = await sendCampaignMessageToContact({
+        contact,
+        contactId: contact.id,
+        message: campaign?.template || "",
+        caption: campaign?.caption || "",
+        mediaId: campaign?.media_id || null,
+        campaignId: operation.campaignId,
+        sendType: campaign?.send_type || "text",
+        user,
+        humanized: true,
+        enableTyping: true
+      });
+      operation.typingAttempted = true;
+      operation.typingSupported = operation.typingSupported || Boolean(sendResult.typingSupported);
+      operation.sent += 1;
+      operation.processed += 1;
+      operation.messagesSentThisWindow += 1;
+      operation.sentToday += 1;
+      operation.lastEvent = `Enviado para ${contact.name || maskPhoneNumber(contact.phone)}`;
+      pushCampaignHumanizedLog(operation, {
+        type: "sent",
+        recipient: maskPhoneNumber(contact.phone),
+        message: `Enviado para ${contact.name || maskPhoneNumber(contact.phone)}.`,
+        sendType: sendResult.sendType
+      });
+      recordCampaignSendResult(operation, { error: false });
+    } catch (error) {
+      operation.errors += 1;
+      operation.processed += 1;
+      operation.lastError = String(error?.userMessage || error?.message || error);
+      await failCampaignMessageToContact({
+        contact,
+        contactId: contact.id,
+        phone: contact.phone,
+        message: campaign?.template || "",
+        caption: campaign?.caption || "",
+        mediaId: campaign?.media_id || null,
+        campaignId: operation.campaignId,
+        sendType: campaign?.send_type || "text",
+        user,
+        error
+      });
+      const breakerResult = recordCampaignSendResult(operation, {
+        error: true,
+        blocked: /bloque/i.test(operation.lastError),
+        reported: /report/i.test(operation.lastError)
+      });
+      pushCampaignHumanizedLog(operation, {
+        type: "error",
+        recipient: maskPhoneNumber(contact.phone),
+        message: `Erro ao enviar para ${contact.name || maskPhoneNumber(contact.phone)}: ${operation.lastError}`
+      });
+      if (breakerResult.shouldStop) {
+        operation.status = "cooldown";
+        operation.pausedAt = new Date().toISOString();
+        operation.pauseReason = breakerResult.reason;
+        await updateCampaignStoredStatus(operation.campaignId, "pausada");
+        pushCampaignHumanizedLog(operation, {
+          type: "circuit_breaker",
+          message: breakerResult.reason
+        });
+        return;
+      }
+    }
+
+    operation.queueIndex += 1;
+    if (operation.queueIndex < operation.contactsQueue.length) {
+      const delayProfile = getCampaignDelayProfile(operation.totalRecipients);
+      const delay = humanDelay(delayProfile.mean, delayProfile.stdDev, delayProfile.min, delayProfile.max);
+      operation.lastEvent = `Próximo envio em ${Math.round(delay / 1000)}s`;
+      const waitResult = await waitForCampaignOperationDelay(operation, delay, "delay");
+      if (waitResult.interrupted) {
+        await updateCampaignStoredStatus(operation.campaignId, "pausada");
+        return;
+      }
+    }
+  }
+
+  operation.status = "completed";
+  operation.completedAt = new Date().toISOString();
+  operation.lastEvent = "Campanha concluída com comportamento humanizado.";
+  operation.pauseReason = "";
+  await updateCampaignStoredStatus(operation.campaignId, "concluida");
+  pushCampaignHumanizedLog(operation, {
+    type: "completed",
+    message: operation.lastEvent
+  });
+}
+
+// Rotas WhatsApp
+app.get('/api/instance/info', (req, res) => {
+  res.json(getInstancePublicInfo());
+});
+
+app.get('/api/whatsapp/status', (req, res) => {
+  if (!userHasPermission(req.user, "can_view_whatsapp_status")) {
+    return res.status(403).json({ error: "Acesso restrito ao status do WhatsApp CRM." });
+  }
+  if (!userCanAccessStore(req.user, instanceConfig.store?.id || "")) {
+    return res.status(403).json({ error: "Acesso restrito ao WhatsApp da sua loja." });
+  }
+  const profileLabel = String(whatsappClient?.options?.authStrategy?.clientId || instanceConfig.whatsapp?.session_name || "default").trim() || "default";
+  const effectiveAuthProfile = whatsappRuntimeProfile?.key || getConfiguredWhatsAppAuthMode();
+  const normalizedStatus = String(whatsappState.status || "desconectado").trim().toLowerCase();
+  const sessionStateLabel = normalizedStatus === "conectado"
+    ? "LocalAuth ativa"
+    : normalizedStatus === "autenticando"
+      ? (isWhatsAppInitializationStale() ? "Inicializacao travada - sem QR" : "Inicializando sessao local")
+      : normalizedStatus === "aguardando_qr"
+        ? "Aguardando leitura do QR"
+        : normalizedStatus === "erro"
+          ? "Sessao local com falha"
+          : "Sessao local nao iniciada";
+  res.json({
+    status: whatsappState.status,
+    connected: whatsappState.status === "conectado",
+    connectedNumber: whatsappState.connectedNumber,
+    lastConnectedAt: whatsappState.lastConnectedAt,
+    lastError: whatsappState.lastError,
+    hasQr: Boolean(whatsappState.qrBase64),
+    instanceId: instanceConfig.instance_id,
+    store: instanceConfig.store,
+    profile: profileLabel,
+    authMode: effectiveAuthProfile,
+    localAuthPath: whatsappRuntimeProfile?.sessionPath || instanceConfig.whatsapp?.session_path || DEFAULT_INSTANCE_CONFIG.whatsapp.session_path,
+    configuredLocalAuthPath: instanceConfig.whatsapp?.session_path || DEFAULT_INSTANCE_CONFIG.whatsapp.session_path,
+    sessionName: instanceConfig.whatsapp?.session_name || DEFAULT_INSTANCE_CONFIG.whatsapp.session_name,
+    autoConnect: instanceConfig.whatsapp?.auto_connect !== false,
+    isInitializationStale: isWhatsAppInitializationStale(),
+    sessionStateLabel,
+    warmupDay: syncWarmupDayWithCalendar(),
+    dailyLimit: Number(instanceConfig.warmup?.daily_limit_override || 0) || getWarmupDailyLimit(Math.max(1, syncWarmupDayWithCalendar() || 1)),
+    updatedAt: new Date().toISOString()
+  });
+});
+
+app.get('/api/whatsapp/qr', (req, res) => {
+  if (!userHasPermission(req.user, "can_reconnect_whatsapp")) {
+    return res.status(403).json({ error: "Acesso restrito ao QR Code do WhatsApp CRM." });
+  }
+  if (!userCanAccessStore(req.user, instanceConfig.store?.id || "")) {
+    return res.status(403).json({ error: "Acesso restrito ao WhatsApp da sua loja." });
+  }
+  res.json({
+    status: whatsappState.status,
+    qrBase64: whatsappState.qrBase64 || null,
+    hasQr: Boolean(whatsappState.qrBase64),
+    lastError: whatsappState.lastError || null,
+    instanceId: instanceConfig.instance_id,
+    store: instanceConfig.store
+  });
+});
+
+app.post('/api/whatsapp/reinitialize', async (req, res) => {
+  try {
+    if (!userHasPermission(req.user, "can_reconnect_whatsapp")) {
+      return res.status(403).json({ error: "Acesso restrito à reconexão do WhatsApp CRM." });
+    }
+    if (!userCanAccessStore(req.user, instanceConfig.store?.id || "")) {
+      return res.status(403).json({ error: "Acesso restrito ao WhatsApp da sua loja." });
+    }
+    if (String(whatsappState.status || "").trim().toLowerCase() === "autenticando" && whatsappInitializationPromise && !isWhatsAppInitializationStale()) {
+      return res.json({ success: true, message: 'A autenticação do WhatsApp CRM já está em andamento.' });
+    }
+
+    await recycleWhatsAppClient("manual_reinitialize", {
+      nextStatus: "desconectado",
+      clearBrowserRuntime: true
+    });
+
+    initializeWhatsAppClient().catch((error) => {
+      console.error('Falha ao reinicializar WhatsApp:', error);
+      whatsappState.status = 'erro';
+      whatsappState.lastError = normalizeWhatsAppBootstrapError(error);
+    });
+
+    res.json({ success: true, message: 'Reconexão iniciada. Aguarde a geração do QR Code.' });
+  } catch (error) {
+    console.error('Erro ao reinicializar WhatsApp:', error);
+    res.status(500).json({ error: 'Erro ao reinicializar WhatsApp.', details: error.message });
+  }
+});
+
+app.post('/api/whatsapp/send-bulk', async (req, res) => {
+  const { contactId, message, campaignId } = req.body;
+
+  if (!contactId || !message) {
+    return res.status(400).json({ error: 'contactId e message são obrigatórios' });
+  }
+
+  try {
+    const contact = await get(`SELECT * FROM contacts WHERE id = ?`, [contactId]);
+    if (!contact) {
+      return res.status(404).json({ error: 'Contato não encontrado' });
+    }
+    const sendResult = await sendCampaignMessageToContact({
+      contact,
+      contactId: Number(contactId),
+      message: String(message || "").trim(),
+      campaignId: campaignId ? Number(campaignId) : null,
+      sendType: "text",
+      user: req.user,
+      humanized: false,
+      enableTyping: false
+    });
+
+    res.json({
+      success: true,
+      message: 'Mensagem enviada com sucesso',
+      messageId: sendResult.messageId,
+      normalizedPhone: sendResult.normalizedPhone,
+      chatId: sendResult.chatId
+    });
+
+  } catch (error) {
+    console.error('Erro ao enviar mensagem:', error);
+    const friendlyError = String(error.userMessage || error.message || error);
+    await failCampaignMessageToContact({
+      contactId: Number(contactId) || null,
+      message: String(message || "").trim(),
+      campaignId: campaignId ? Number(campaignId) : null,
+      sendType: "text",
+      user: req.user,
+      error
+    });
+
+    res.status(error.code === "INVALID_WHATSAPP_PHONE" || error.code === "WHATSAPP_NUMBER_NOT_FOUND" || error.code === "WHATSAPP_LID_NOT_FOUND" ? 400 : 500).json({
+      error: 'Erro ao enviar mensagem',
+      details: friendlyError
+    });
+  }
+});
+
+// Envio de mídia via WhatsApp
+app.post('/api/whatsapp/send-media', async (req, res) => {
+  const { contactId, phone, message, caption, mediaId, campaignId, sendType } = req.body;
+
+  try {
+    let finalPhone = phone;
+    let contact = null;
+
+    if (contactId) {
+      contact = await get(`SELECT * FROM contacts WHERE id = ?`, [contactId]);
+      if (!contact) {
+        return res.status(404).json({ error: 'Contato não encontrado' });
+      }
+      finalPhone = normalizePhone(contact.phone);
+    } else if (phone) {
+      finalPhone = normalizePhone(phone);
+    } else {
+      return res.status(400).json({ error: 'contactId ou phone são obrigatórios' });
+    }
+
+    if (!finalPhone) {
+      return res.status(400).json({ error: 'Telefone inválido' });
+    }
+    const normalizedSendType = normalizeCampaignSendType(sendType, "");
+    const sendResult = await sendCampaignMessageToContact({
+      contact,
+      contactId: contact?.id || Number(contactId) || null,
+      phone: finalPhone,
+      message: String(message || "").trim(),
+      caption: String(caption || message || "").trim(),
+      mediaId: mediaId ? Number(mediaId) : null,
+      campaignId: campaignId ? Number(campaignId) : null,
+      sendType: normalizedSendType,
+      user: req.user,
+      humanized: false,
+      enableTyping: false
+    });
+
+    res.json({
+      success: true,
+      message: 'Mensagem enviada com sucesso',
+      messageId: sendResult?.messageId || null,
+      sendType: normalizedSendType,
+      mediaId: mediaId ? Number(mediaId) : null,
+      normalizedPhone: sendResult?.normalizedPhone || finalPhone,
+      chatId: sendResult?.chatId || null
+    });
+
+  } catch (error) {
+    console.error('Erro ao enviar mídia:', error);
+    const friendlyError = String(error.userMessage || error.message || error);
+    await failCampaignMessageToContact({
+      contactId: Number(contactId) || null,
+      phone: phone || "",
+      message: String(message || "").trim(),
+      caption: String(caption || message || "").trim(),
+      mediaId: mediaId ? Number(mediaId) : null,
+      campaignId: campaignId ? Number(campaignId) : null,
+      sendType: normalizeCampaignSendType(sendType, "media"),
+      user: req.user,
+      error
+    });
+
+    res.status(error.code === "INVALID_WHATSAPP_PHONE" || error.code === "WHATSAPP_NUMBER_NOT_FOUND" || error.code === "WHATSAPP_LID_NOT_FOUND" ? 400 : 500).json({
+      success: false,
+      error: 'Erro ao enviar mídia',
+      details: friendlyError
+    });
+  }
+});
+
+// Rota temporária para teste local - enviar mensagem simples sem autenticação
+app.post('/api/whatsapp/send', async (req, res) => {
+  const { phone, message } = req.body;
+
+  if (!phone || !message) {
+    return res.status(400).json({ error: 'phone e message são obrigatórios' });
+  }
+
+  try {
+    // Verificar se WhatsApp está conectado
+    if (whatsappState.status !== 'conectado') {
+      return res.status(400).json({ error: 'WhatsApp não está conectado' });
+    }
+
+    const sendResult = await sendAutomatedMessage(phone, message);
+    res.json({
+      success: true,
+      message: 'Mensagem enviada com sucesso',
+      messageId: sendResult.messageId,
+      normalizedPhone: sendResult.normalizedPhone,
+      chatId: sendResult.chatId
+    });
+  } catch (error) {
+    console.error('Erro ao enviar mensagem simples:', error);
+    res.status(error.code === "INVALID_WHATSAPP_PHONE" || error.code === "WHATSAPP_NUMBER_NOT_FOUND" || error.code === "WHATSAPP_LID_NOT_FOUND" ? 400 : 500).json({
+      error: 'Erro ao enviar mensagem',
+      details: String(error.userMessage || error.message || error)
+    });
+  }
+});
+
+app.post('/api/whatsapp/test-send', requirePermission("can_send_whatsapp_test"), async (req, res) => {
+  const { phone, message } = req.body || {};
+  const normalizedPhone = normalizePhone(phone);
+  const text = String(message || "").trim();
+
+  if (!normalizedPhone) {
+    return res.status(400).json({ error: 'WhatsApp de destino inválido.' });
+  }
+  if (!text) {
+    return res.status(400).json({ error: 'Mensagem de teste obrigatória.' });
+  }
+  if (whatsappState.status !== 'conectado') {
+    return res.status(400).json({ error: 'WhatsApp CRM desconectado. Conecte o motor antes de enviar.' });
+  }
+
+  try {
+    const sendResult = await sendWhatsAppTextMessage(normalizedPhone, text, {
+      debugLabel: 'WHATSAPP_CRM_TEST'
+    });
+    await createAiMessageLog({
+      phone: normalizedPhone,
+      phoneOriginal: String(phone || ""),
+      senderUserId: String(req.user?.id || ""),
+      customerName: "Teste WhatsApp CRM",
+      customerMessage: "",
+      direction: "sent",
+      source: "whatsapp_crm_test",
+      connectedNumber: whatsappState.connectedNumber || "",
+      messageText: text,
+      intent: "test_send",
+      status: "ok",
+      errorMessage: "",
+      whatsappMessageId: sendResult?.messageId || ""
+    });
+    res.json({
+      success: true,
+      message: 'Mensagem de teste enviada com sucesso.',
+      messageId: sendResult?.messageId || "",
+      normalizedPhone: sendResult?.normalizedPhone || normalizedPhone,
+      chatId: sendResult?.chatId || ""
+    });
+  } catch (error) {
+    const friendlyError = String(error.userMessage || error.message || error);
+    await createAiMessageLog({
+      phone: normalizedPhone,
+      phoneOriginal: String(phone || ""),
+      senderUserId: String(req.user?.id || ""),
+      customerName: "Teste WhatsApp CRM",
+      customerMessage: "",
+      direction: "sent",
+      source: "whatsapp_crm_test",
+      connectedNumber: whatsappState.connectedNumber || "",
+      messageText: text,
+      intent: "test_send",
+      status: "erro",
+      errorMessage: friendlyError,
+      whatsappMessageId: ""
+    });
+    res.status(error.code === "INVALID_WHATSAPP_PHONE" || error.code === "WHATSAPP_NUMBER_NOT_FOUND" || error.code === "WHATSAPP_LID_NOT_FOUND" ? 400 : 500).json({
+      error: 'Não foi possível enviar o teste pelo CRM agora.',
+      details: friendlyError
+    });
+  }
+});
+
+app.get('/api/whatsapp/logs', requirePermission("can_view_whatsapp_logs"), async (req, res) => {
+  try {
+    const safeLimit = Math.max(1, Math.min(50, Number(req.query.limit || 12)));
+    const rows = await all(
+      `SELECT id, customer_name, phone, direction, source, connected_number, message_text, intent, status, error_message, whatsapp_message_id, created_at
+       FROM ai_message_logs
+       WHERE source IN ('pdv_whatsapp', 'whatsapp_crm_test', 'panel')
+          OR intent IN ('sale_summary', 'product_offer', 'cashback_available', 'test_send')
+       ORDER BY id DESC
+       LIMIT ?`,
+      [safeLimit]
+    );
+    res.json({ rows });
+  } catch (error) {
+    res.status(500).json({ error: 'Falha ao carregar os logs recentes do WhatsApp CRM.' });
+  }
+});
+
+app.post('/api/whatsapp/disconnect', async (req, res) => {
+  if (!userHasPermission(req.user, "can_disconnect_whatsapp")) {
+    return res.status(403).json({ error: "Acesso restrito à desconexão do WhatsApp CRM." });
+  }
+  if (!userCanAccessStore(req.user, instanceConfig.store?.id || "")) {
+    return res.status(403).json({ error: "Acesso restrito ao WhatsApp da sua loja." });
+  }
+  await recycleWhatsAppClient("manual_disconnect", { nextStatus: "desconectado" });
+  res.json({
+    success: true,
+    message: `Sessão do WhatsApp da loja ${instanceConfig.store?.label || "AEROSTORE"} foi desconectada.`
+  });
+});
+
+app.post('/api/whatsapp/reset-session', async (req, res) => {
+  try {
+    if (!isAdmin(req.user) || !userHasPermission(req.user, "can_reset_whatsapp_session")) {
+      return res.status(403).json({ error: "Acesso restrito ao reset de sessão do WhatsApp CRM." });
+    }
+    try {
+    await recycleWhatsAppClient("reset_session", {
+      clearSession: true,
+      clearLegacySession: true,
+      clearBrowserRuntime: true,
+      nextStatus: "desconectado",
+      resetWarmup: true
+      });
+      console.log('Sessão WhatsApp limpa com sucesso.');
+    } catch (error) {
+      if (error.code === 'EBUSY') {
+        console.error('Erro EBUSY ao limpar sessão WhatsApp:', error.message);
+        return res.status(409).json({
+          error: 'Não foi possível limpar a sessão agora. Feche processos do Chrome/WhatsApp e tente novamente.'
+        });
+      }
+      console.warn('Erro ao limpar sessão WhatsApp:', error.message);
+      // Não derrubar, continuar
+    }
+
+    // Reinicializar WhatsApp
+    initializeWhatsAppClient().catch((error) => {
+      console.error('Falha ao reinicializar WhatsApp após reset:', error);
+      whatsappState.status = 'erro';
+      whatsappState.lastError = normalizeWhatsAppBootstrapError(error);
+    });
+
+    res.json({ success: true, message: 'Sessão WhatsApp resetada. Escaneie o QR Code do novo número da loja. Warmup reiniciado para o dia 0.' });
+  } catch (error) {
+    console.error('Erro ao resetar sessão WhatsApp:', error);
+    res.status(500).json({ error: 'Erro interno ao resetar sessão WhatsApp.' });
+  }
+});
+
+app.use((req, res) => {
+  res.status(404).json({
+    error: "Rota não encontrada.",
+    path: req.originalUrl
+  });
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason);
+});
+
+initializeDatabase()
+  .then(async () => {
+    await expireCashbacks();
+    scheduleWarmupIncrement();
+    if (instanceConfig.whatsapp?.auto_connect !== false) {
+      initializeWhatsAppClient().catch((error) => {
+        console.error('Falha ao inicializar WhatsApp:', error);
+        whatsappState.status = 'erro';
+        whatsappState.lastError = normalizeWhatsAppBootstrapError(error);
+      });
+    }
+    app.listen(PORT, HOST, () => {
+      console.log(`AEROSTORE CRM WhatsApp rodando em http://localhost:${PORT}`);
+      console.log(`[INSTANCE] ${instanceConfig.instance_id} • ${instanceConfig.store?.label || "Loja sem nome"} • sessão ${instanceConfig.whatsapp?.session_name || "default"}`);
+      console.log("VERSÃO BACKEND OPERAÇÃO v2 ATIVA");
+    });
+  })
+  .catch((error) => {
+    console.error("Falha ao inicializar o banco SQLite:", error);
+    process.exit(1);
+  });

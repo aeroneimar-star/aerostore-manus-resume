@@ -1,0 +1,91 @@
+# Dependencies
+node_modules/
+
+# Environment and local instance config
+.env
+.env.*
+!.env.example
+config/instance.json
+config/instance.*.json
+!config/instance.template.json
+
+# Databases and local operational data
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime, browser caches, tests and generated artifacts
+tmp/
+temp/
+tmp-*/
+tmp_*
+tmp.*
+temp-*
+.tmp-*/
+.cache/
+.playwright-cli/
+coverage/
+dist/
+build/
+_backups/
+_recovery_backups/
+_qa_artifacts/
+_quality_audit/
+_crm_bonus_exports/
+_tiny_exports/
+
+# WhatsApp and browser sessions
+.wwebjs_auth/
+.wwebjs_cache/
+whatsapp-session/
+whatsapp-sessions/
+sessions/
+auth/
+localAuth/
+chrome-profile/
+chromium-profile/
+tmp-chrome-*/
+
+# Uploads and generated print files
+public/uploads/**
+!public/uploads/
+!public/uploads/products/
+!public/uploads/products/.gitkeep
+tmp/labels/
+data/pdv/label-print-logs.json
+
+# Local editor and OS residue
+.DS_Store
+Thumbs.db
+
+# Temporary validation artifacts
+tmp-*
+*.tmp
+
+# Local validation screenshots / generated debug files
+tmp-*.png
+tmp-*.jpg
+tmp-*.jpeg
+tmp-*.webp
+tmp-*.svg
+tmp-*.txt
+tmp-*.json
+
+# Browser/session/cookie artifacts
+*cookies*.txt
+*cookie*.txt
+
+# Local instance configs
+config/instance*.json
+!config/instance.template.json
+
+# External/local UI skill package
+ui-ux-pro-max-skill/

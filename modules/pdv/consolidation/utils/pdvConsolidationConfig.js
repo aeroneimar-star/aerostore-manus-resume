@@ -1,0 +1,28 @@
+"use strict";
+
+const PDV_CONSOLIDATION_EVENT_TYPES = [
+  "SALE",
+  "CASHBACK_GRANTED",
+  "CASHBACK_USED",
+  "GIFT_SENT",
+  "EXCHANGE",
+  "IMPORT",
+  "RETURN_VISIT",
+  "QUOTE",
+  "RESERVATION",
+  "MANUAL_ADJUSTMENT"
+];
+
+const PDV_CONSOLIDATION_SCORE_LEVELS = ["ALTO", "MEDIO", "BAIXO"];
+
+const PDV_CONSOLIDATION_PRIORITY = {
+  A: "strategic",
+  B: "growth",
+  C: "reactivation"
+};
+
+module.exports = {
+  PDV_CONSOLIDATION_EVENT_TYPES,
+  PDV_CONSOLIDATION_SCORE_LEVELS,
+  PDV_CONSOLIDATION_PRIORITY
+};

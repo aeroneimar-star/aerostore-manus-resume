@@ -1,0 +1,38 @@
+{
+  "name": "aerostore-crm-whatsapp",
+  "version": "1.0.0",
+  "description": "Sistema local AEROSTORE CRM WhatsApp",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js",
+    "backup": "node scripts/create-backup.js",
+    "staging:tiny": "node scripts/staging/tinyStagingIngest.js",
+    "staging:vitrine-candidates": "node scripts/staging/selectVitrineCandidates.js",
+    "staging:crm-bonus": "node scripts/staging/crmBonusNormalize.js",
+    "staging:crm-bonus-reconcile": "node scripts/staging/crmBonusReconcile.js",
+    "staging:crm-bonus-review": "node scripts/staging/crmBonusReview.js",
+    "staging:crm-bonus-customers-preview": "node scripts/staging/crmBonusCustomersBackupPreview.js",
+    "import:crm-bonus-safe-customers": "node scripts/staging/importCrmBonusSafeCustomers.js",
+    "import:crm-bonus-ready-ledger": "node scripts/staging/importCrmBonusReadyLedger.js"
+  },
+  "keywords": [
+    "crm",
+    "whatsapp",
+    "express",
+    "sqlite"
+  ],
+  "author": "OpenAI Codex",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^4.21.2",
+    "multer": "^2.0.2",
+    "openai": "^6.35.0",
+    "qrcode": "^1.5.4",
+    "sqlite3": "^5.1.7",
+    "xlsx": "^0.18.5",
+    "whatsapp-web.js": "^1.23.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

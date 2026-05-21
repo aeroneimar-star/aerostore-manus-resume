@@ -1,0 +1,19 @@
+:root {
+  --pdv-surface: rgba(255, 250, 244, 0.96);
+  --pdv-surface-strong: #fffaf4;
+  --pdv-ink: #182221;
+  --pdv-muted: #66706d;
+  --pdv-accent: #13362f;
+  --pdv-accent-soft: #d7c49b;
+  --pdv-success: #1f7a56;
+  --pdv-warning: #b78127;
+  --pdv-danger: #b03f3f;
+  --pdv-radius-xl: 22px;
+  --pdv-radius-lg: 18px;
+}
+
+/*
+  Arquivo de tokens isolados do PDV.
+  Nesta fase, o visual do CRM segue em public/styles.css.
+  Estes tokens ficam reservados para a futura extração do módulo.
+*/
