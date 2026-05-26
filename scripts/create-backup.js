@@ -1,5 +1,9 @@
 const fs = require('fs');
 const path = require('path');
+const { blockProduction, warnLocalOnly } = require('./scriptSafety');
+
+blockProduction('create-backup.js');
+warnLocalOnly('create-backup.js');
 
 const projectRoot = path.resolve(__dirname, '..');
 const backupsRoot = path.join(projectRoot, '_backups');

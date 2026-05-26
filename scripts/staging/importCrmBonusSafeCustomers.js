@@ -3,6 +3,10 @@
 const fs = require("fs");
 const path = require("path");
 const sqlite3 = require("sqlite3").verbose();
+const { blockProduction, requireExplicitConfirmation, warnLocalOnly } = require("../scriptSafety");
+
+blockProduction("staging/importCrmBonusSafeCustomers.js");
+warnLocalOnly("staging/importCrmBonusSafeCustomers.js");
 
 const DEFAULT_BASE = path.join("_crm_bonus_exports", "2026-05-15-readonly-extraction");
 const DEFAULT_FILE = path.join(DEFAULT_BASE, "customers-backup-preview", "crm_bonus_customers_safe_to_import.csv");
@@ -308,6 +312,7 @@ async function ensureCustomerImportBatchTable(db) {
 }
 
 async function main() {
+  requireExplicitConfirmation("--confirm");
   const options = parseArgs(process.argv);
   const baseDir = path.resolve(options.base || DEFAULT_BASE);
   const inputFile = path.resolve(options.file || path.join(baseDir, "customers-backup-preview", "crm_bonus_customers_safe_to_import.csv"));

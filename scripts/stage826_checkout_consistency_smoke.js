@@ -3,6 +3,10 @@
 const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
+const { blockProduction, requireExplicitConfirmation, warnLocalOnly } = require("./scriptSafety");
+
+blockProduction("stage826_checkout_consistency_smoke.js");
+warnLocalOnly("stage826_checkout_consistency_smoke.js");
 
 const {
   openCustomerSession,
@@ -39,6 +43,7 @@ function computeCheckout({ subtotal, discount, cashback, paid }) {
 }
 
 async function main() {
+  requireExplicitConfirmation("--confirm");
   try {
     const session = openCustomerSession({
       sessionId: `SMOKE_CHECKOUT_${Date.now()}`,

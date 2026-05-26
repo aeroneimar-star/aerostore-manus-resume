@@ -1,6 +1,10 @@
 "use strict";
 
 const assert = require("assert");
+const { blockProduction, requireExplicitConfirmation, warnLocalOnly } = require("./scriptSafety");
+
+blockProduction("stage827_product_photo_upload_smoke.js");
+warnLocalOnly("stage827_product_photo_upload_smoke.js");
 
 const BASE_URL = process.env.AEROSTORE_BASE_URL || "http://localhost:3000";
 const ADMIN = { email: "admin@aerostore.local", password: "123456" };
@@ -40,6 +44,7 @@ function buildPhotoForm({ bytes = PNG_BYTES, type = "image/png", filename = "sta
 }
 
 async function main() {
+  requireExplicitConfirmation("--confirm");
   const adminCookie = await login(ADMIN);
   const sellerCookie = await login(SELLER);
   const candidates = await request("/api/products?withoutPhoto=1&limit=1", { cookie: adminCookie });

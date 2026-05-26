@@ -96,3 +96,15 @@ scripts/stage830_pdv_sales_orders_bulk_actions_smoke.js
 scripts/audit_exchange_credit_duplicates.js
 scripts/stage829_pdv_sales_orders_smoke.js
 scripts/stage830_pdv_sales_orders_bulk_actions_smoke.js
+
+# Local-only scripts and generated script artifacts
+scripts/local/
+scripts/tmp/
+scripts/*_local.*
+scripts/*_smoke.local.*
+scripts/**/*.local.*
+scripts/**/output/
+scripts/**/outputs/
+scripts/**/reports/
+scripts/**/exports/
+scripts/**/backups/

@@ -1,6 +1,10 @@
 "use strict";
 
 const crypto = require("crypto");
+const { blockProduction, requireExplicitConfirmation, warnLocalOnly } = require("./scriptSafety");
+
+blockProduction("stage822_discount_payment_methods_smoke.js");
+warnLocalOnly("stage822_discount_payment_methods_smoke.js");
 
 const controlService = require("../modules/pdv/services/pdvControlService");
 
@@ -87,6 +91,7 @@ async function expectThrows(run, matcher) {
 }
 
 async function main() {
+  requireExplicitConfirmation("--confirm");
   const qaAuthorizer = await ensureAuthorizer("QA Stage 822", "GESTOR");
   const validCode = generateTotpCode(qaAuthorizer.setup.manual_entry_key);
   const results = {};

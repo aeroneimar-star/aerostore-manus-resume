@@ -3,6 +3,10 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { blockProduction, requireExplicitConfirmation, warnLocalOnly } = require("./scriptSafety");
+
+blockProduction("stage819_smoke.js");
+warnLocalOnly("stage819_smoke.js");
 
 const controlService = require("../modules/pdv/services/pdvControlService");
 const operationalService = require("../modules/pdv/services/pdvOperationalService");
@@ -214,6 +218,7 @@ function finalizeSale(sessionId, payload = {}) {
 }
 
 async function main() {
+  requireExplicitConfirmation("--confirm");
   ensureOpenCashRegister("vila_masc");
   const neimar = await ensureAuthorizer("Neimar", "GESTOR");
   const gestora = await ensureAuthorizer("Gestora", "GESTORA");

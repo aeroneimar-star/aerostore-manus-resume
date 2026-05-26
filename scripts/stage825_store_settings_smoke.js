@@ -1,5 +1,10 @@
 "use strict";
 
+const { blockProduction, requireExplicitConfirmation, warnLocalOnly } = require("./scriptSafety");
+
+blockProduction("stage825_store_settings_smoke.js");
+warnLocalOnly("stage825_store_settings_smoke.js");
+
 const BASE_URL = process.env.AEROSTORE_BASE_URL || "http://localhost:3000";
 
 const USERS = {
@@ -85,6 +90,7 @@ function buildManagerAttemptPayload(current = {}) {
 }
 
 async function main() {
+  requireExplicitConfirmation("--confirm");
   const adminCookie = await login(USERS.admin);
   const managerCookie = await login(USERS.managerVila);
   const sellerCookie = await login(USERS.sellerVila);

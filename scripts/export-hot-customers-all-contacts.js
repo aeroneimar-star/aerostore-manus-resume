@@ -1,6 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const { all } = require('../db');
+const { blockProduction, warnLocalOnly } = require('./scriptSafety');
+
+blockProduction('export-hot-customers-all-contacts.js');
+warnLocalOnly('export-hot-customers-all-contacts.js');
 
 function normalizePhone(value) {
   const digits = String(value || '').replace(/\D+/g, '');

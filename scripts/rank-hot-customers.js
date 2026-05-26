@@ -1,5 +1,9 @@
 const fs = require('fs');
 const path = require('path');
+const { blockProduction, warnLocalOnly } = require('./scriptSafety');
+
+blockProduction('rank-hot-customers.js');
+warnLocalOnly('rank-hot-customers.js');
 
 function normalizePhone(value) {
   const digits = String(value || '').replace(/\D+/g, '');

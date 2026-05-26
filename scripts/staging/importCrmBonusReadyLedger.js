@@ -3,6 +3,10 @@
 const fs = require("fs");
 const path = require("path");
 const sqlite3 = require("sqlite3").verbose();
+const { blockProduction, requireExplicitConfirmation, warnLocalOnly } = require("../scriptSafety");
+
+blockProduction("staging/importCrmBonusReadyLedger.js");
+warnLocalOnly("staging/importCrmBonusReadyLedger.js");
 
 const DEFAULT_BASE = path.join("_crm_bonus_exports", "2026-05-15-readonly-extraction");
 const DEFAULT_DB = path.join("data", "aerostore-crm.sqlite");
@@ -279,6 +283,7 @@ async function ensureLedgerTables(db) {
 }
 
 async function main() {
+  requireExplicitConfirmation("--confirm");
   const options = parseArgs(process.argv);
   const baseDir = path.resolve(options.base);
   const reconciliationDir = path.join(baseDir, "reconciliation");

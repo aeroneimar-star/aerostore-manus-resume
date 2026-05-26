@@ -2,6 +2,10 @@
 
 const fs = require("fs");
 const path = require("path");
+const { blockProduction, requireExplicitConfirmation, warnLocalOnly } = require("./scriptSafety");
+
+blockProduction("seedPdvMultistoreQa.js");
+warnLocalOnly("seedPdvMultistoreQa.js");
 
 const {
   createInventoryProduct,
@@ -514,6 +518,7 @@ function printResult(result) {
 }
 
 function main() {
+  requireExplicitConfirmation("--confirm");
   const cleanupMode = process.argv.includes("--cleanup");
   const result = cleanupMode ? runCleanup() : runSeed();
   printResult(result);
