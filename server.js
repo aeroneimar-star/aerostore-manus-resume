@@ -2947,6 +2947,12 @@ function serializeAiProduct(row = {}, catalogs = {}, mediaRows = []) {
     situacao: row.situacao || "",
     store: row.store || "",
     tiny_id: row.tiny_id || "",
+    codigo_interno: row.codigo_interno || row.codigo || "",
+    codigo_etiqueta: row.codigo_etiqueta || row.codigo || "",
+    codigo_barras: row.codigo_barras || row.gtin_ean || "",
+    barcode: row.barcode || row.gtin_ean || "",
+    ean: row.ean || row.gtin_ean || "",
+    gtin: row.gtin || row.gtin_ean || "",
     location: row.location || "",
     gtin_ean: row.gtin_ean || "",
     ncm: row.ncm || "",
@@ -13736,6 +13742,112 @@ function validateManualProductPayload(product = {}) {
   return null;
 }
 
+function buildManualProductSearchClauses(query = "") {
+  const normalized = normalizeText(query || "");
+  if (!normalized) {
+    return { clause: "", params: [] };
+  }
+  const like = `%${normalized.toLowerCase()}%`;
+  const digits = sanitizePhone(normalized || "");
+  const isCodeLikeQuery = Boolean(digits && digits.length >= 3 && /^[\d\s.\-_/]+$/.test(normalized));
+  const clauses = [
+    "LOWER(COALESCE(p.name, '')) LIKE ?",
+    "LOWER(COALESCE(p.commercial_name, '')) LIKE ?",
+    "LOWER(COALESCE(p.sku, '')) LIKE ?",
+    "LOWER(COALESCE(p.codigo, '')) LIKE ?",
+    "LOWER(COALESCE(p.tiny_id, '')) LIKE ?",
+    "LOWER(COALESCE(p.gtin_ean, '')) LIKE ?",
+    "LOWER(COALESCE(p.short_description, '')) LIKE ?",
+    "LOWER(COALESCE(p.sales_argument, '')) LIKE ?",
+    "LOWER(COALESCE(p.notes, '')) LIKE ?",
+    "LOWER(COALESCE(p.marca, '')) LIKE ?",
+    "LOWER(COALESCE(p.category, '')) LIKE ?",
+    "LOWER(COALESCE(p.color, '')) LIKE ?",
+    "LOWER(COALESCE(p.location, '')) LIKE ?",
+    "LOWER(COALESCE(p.ncm, '')) LIKE ?",
+    "LOWER(COALESCE(ab.brand, '')) LIKE ?"
+  ];
+  const params = Array.from({ length: clauses.length }, () => like);
+  if (isCodeLikeQuery) {
+    clauses.push("REPLACE(REPLACE(REPLACE(COALESCE(p.sku, ''), '-', ''), '.', ''), ' ', '') = ?");
+    clauses.push("REPLACE(REPLACE(REPLACE(COALESCE(p.codigo, ''), '-', ''), '.', ''), ' ', '') = ?");
+    clauses.push("REPLACE(REPLACE(REPLACE(COALESCE(p.tiny_id, ''), '-', ''), '.', ''), ' ', '') = ?");
+    clauses.push("REPLACE(REPLACE(REPLACE(COALESCE(p.gtin_ean, ''), '-', ''), '.', ''), ' ', '') = ?");
+    params.push(digits, digits, digits, digits);
+  }
+  return {
+    clause: `(${clauses.join(" OR ")})`,
+    params
+  };
+}
+
+function mapInventoryProductToManualProduct(item = {}) {
+  const identifier = normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "");
+  const gtin = normalizeText(item.gtin_ean || item.gtin || item.ean || item.codigo_barras || item.barcode || "");
+  return {
+    id: `inventory:${identifier}`,
+    product_id: item.product_id || "",
+    inventory_id: item.inventory_id || "",
+    sku: item.sku || item.codigo || item.codigo_interno || item.codigo_etiqueta || "",
+    codigo: item.codigo || item.codigo_interno || item.codigo_etiqueta || item.sku || "",
+    codigo_interno: item.codigo_interno || item.codigo || "",
+    codigo_etiqueta: item.codigo_etiqueta || item.codigo_interno || item.codigo || "",
+    codigo_barras: item.codigo_barras || item.ean || gtin,
+    barcode: item.codigo_barras || item.ean || gtin,
+    ean: item.ean || item.codigo_barras || gtin,
+    gtin,
+    gtin_ean: gtin,
+    tiny_id: item.codigo_tiny || "",
+    name: item.nome || item.name || "Produto",
+    commercial_name: item.nome || item.name || "",
+    display_name: item.nome || item.name || "Produto",
+    category: item.categoria || "",
+    gender: item.linha_genero || "",
+    color: item.cor || "",
+    sizes: parseDelimitedValues(item.tamanho || item.grade || ""),
+    sizesText: item.tamanho || item.grade || "",
+    price: Number(item.preco_venda || item.price || 0),
+    promotional_price: null,
+    promotionalPrice: null,
+    cost_price: Number(item.preco_custo || 0),
+    costPrice: Number(item.preco_custo || 0),
+    marca: item.marca || "",
+    brand: item.marca || "",
+    estoque_total: Number(item.available_qty ?? item.estoque ?? 0),
+    estoque: Number(item.available_qty ?? item.estoque ?? 0),
+    stock: Number(item.available_qty ?? item.estoque ?? 0),
+    availability: Number(item.available_qty ?? item.estoque ?? 0) > 0 ? "in_stock" : "out_of_stock",
+    store: item.store_id || "",
+    location: item.location || "",
+    use_in_ai: false,
+    use_in_pos: true,
+    source: item.source || "pdv_inventory",
+    notes: item.observacao || "",
+    short_description: item.descricao || "",
+    sales_argument: "",
+    tags: [item.marca, item.categoria, item.tipo].map((value) => normalizeText(value || "")).filter(Boolean),
+    tagsText: "",
+    priority: "media",
+    status: normalizeAiProductVisibilityStatus(item.status || "ativo"),
+    main_media_id: Number(item.media_id || 0) || null,
+    preview_url: item.photo_preview_url || item.media_url || item.foto || "",
+    media_gallery: [],
+    media: [],
+    created_at: item.created_at || "",
+    updated_at: item.updated_at || item.last_movement_at || ""
+  };
+}
+
+function buildManualProductMergeKey(item = {}) {
+  return normalizeText(item.product_id || "")
+    || normalizeText(item.inventory_id || "")
+    || normalizeText(item.sku || "")
+    || normalizeText(item.codigo_interno || "")
+    || normalizeText(item.codigo_etiqueta || "")
+    || normalizeText(item.codigo || "")
+    || sanitizePhone(item.gtin_ean || item.ean || item.codigo_barras || item.barcode || "");
+}
+
 async function findDuplicateManualProductBySku(sku = "", exceptId = null) {
   const normalizedSku = normalizeText(sku || "").toUpperCase();
   if (!normalizedSku) {
@@ -13760,21 +13872,11 @@ async function listManualProducts(filters = {}) {
   const params = [];
   const query = normalizeText(filters.q || filters.search || "");
   if (query) {
-    const like = `%${query.toLowerCase()}%`;
-    const digits = sanitizePhone(query || "");
-    clauses.push(`(
-      LOWER(COALESCE(p.name, '')) LIKE ?
-      OR LOWER(COALESCE(p.commercial_name, '')) LIKE ?
-      OR LOWER(COALESCE(p.sku, '')) LIKE ?
-      OR LOWER(COALESCE(p.codigo, '')) LIKE ?
-      OR LOWER(COALESCE(p.marca, '')) LIKE ?
-      OR LOWER(COALESCE(p.category, '')) LIKE ?
-      OR LOWER(COALESCE(p.color, '')) LIKE ?
-      OR LOWER(COALESCE(ab.brand, '')) LIKE ?
-      ${digits ? "OR REPLACE(REPLACE(COALESCE(p.sku, ''), '-', ''), '.', '') LIKE ?" : ""}
-    )`);
-    params.push(like, like, like, like, like, like, like, like);
-    if (digits) params.push(`%${digits}%`);
+    const search = buildManualProductSearchClauses(query);
+    if (search.clause) {
+      clauses.push(search.clause);
+      params.push(...search.params);
+    }
   }
   const status = normalizeText(filters.status || "");
   if (status && normalizeLookup(status) !== "all") {
@@ -13844,12 +13946,46 @@ async function listManualProducts(filters = {}) {
     map.get(key).push(row);
     return map;
   }, new Map());
-  const items = rows.map((row) => serializeAiProduct(row, catalogs, mediaByProductId.get(Number(row.id || 0)) || []));
+  let items = rows.map((row) => serializeAiProduct(row, catalogs, mediaByProductId.get(Number(row.id || 0)) || []));
+  let operationalMatches = [];
+  if (query) {
+    try {
+      operationalMatches = searchInventoryProducts(query, {
+        storeId: normalizeText(filters.store || "") && normalizeLookup(filters.store || "") !== "all" ? filters.store : ""
+      }).map(mapInventoryProductToManualProduct);
+    } catch (error) {
+      operationalMatches = [];
+    }
+    if (operationalMatches.length) {
+      const merged = new Map();
+      [...items, ...operationalMatches].forEach((item) => {
+        const key = buildManualProductMergeKey(item);
+        if (!key || !merged.has(key)) {
+          merged.set(key || `row:${merged.size}`, item);
+          return;
+        }
+        const current = merged.get(key);
+        merged.set(key, {
+          ...item,
+          ...current,
+          codigo_interno: current.codigo_interno || item.codigo_interno || "",
+          codigo_etiqueta: current.codigo_etiqueta || item.codigo_etiqueta || "",
+          gtin_ean: current.gtin_ean || item.gtin_ean || "",
+          ean: current.ean || item.ean || "",
+          codigo_barras: current.codigo_barras || item.codigo_barras || "",
+          inventory_id: current.inventory_id || item.inventory_id || "",
+          product_id: current.product_id || item.product_id || ""
+        });
+      });
+      items = Array.from(merged.values()).slice(0, limit);
+    }
+  }
   const total = Number(totalRow?.total || 0);
+  const effectiveTotal = Math.max(total, offset + items.length);
   return {
     items,
     summary: {
-      total: Number(summaryRow?.total || total),
+      total: Math.max(Number(summaryRow?.total || total), effectiveTotal),
       current_page_count: items.length,
       active: Number(summaryRow?.active || 0),
       hidden: Number(summaryRow?.hidden || 0),
@@ -13862,8 +13998,8 @@ async function listManualProducts(filters = {}) {
     pagination: {
       page: Math.max(1, Math.floor(offset / limit) + 1),
       limit,
-      total,
-      totalPages: Math.max(1, Math.ceil(total / limit))
+      total: effectiveTotal,
+      totalPages: Math.max(1, Math.ceil(effectiveTotal / limit))
     }
   };
 }

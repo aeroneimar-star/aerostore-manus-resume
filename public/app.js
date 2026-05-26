@@ -7459,14 +7459,25 @@ function buildPdvProductIdentifierChips(product = {}) {
     product.sku ? { label: "SKU", value: product.sku } : null,
     product.codigo ? { label: "Codigo", value: product.codigo } : null,
     product.codigo_tiny ? { label: "Tiny", value: product.codigo_tiny } : null,
+    product.tiny_id ? { label: "Tiny", value: product.tiny_id } : null,
     product.codigo_etiqueta ? { label: "Etiqueta", value: product.codigo_etiqueta } : null,
     product.codigo_interno ? { label: "Interno", value: product.codigo_interno } : null,
-    product.ean ? { label: "EAN", value: product.ean } : null
+    product.ean ? { label: "EAN", value: product.ean } : null,
+    product.gtin_ean ? { label: "GTIN", value: product.gtin_ean } : null,
+    product.codigo_barras ? { label: "Barcode", value: product.codigo_barras } : null,
+    product.barcode ? { label: "Barcode", value: product.barcode } : null
   ].filter(Boolean);
-  if (!chips.length) {
+  const seen = new Set();
+  const uniqueChips = chips.filter((chip) => {
+    const key = `${normalizeText(chip.label).toLowerCase()}:${normalizeText(chip.value).toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (!uniqueChips.length) {
     return '<span class="pdv-products-identifier-chip is-muted">Sem identificadores extras</span>';
   }
-  return chips
+  return uniqueChips
     .map((chip) => `<span class="pdv-products-identifier-chip"><strong>${escapeHtml(chip.label)}:</strong>&nbsp;${escapeHtml(chip.value)}</span>`)
     .join("");
 }
@@ -9943,7 +9954,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
     <tr class="${normalizeText(state.pdvProducts.selectedProductId || "") === normalizeText(item.id || "") ? "is-selected" : ""}">
       <td><div class="pdv-products-photo is-product-media">${buildPdvProductImageMarkup(item.preview_url, item.display_name || item.name || "Produto", (item.display_name || item.name || "PR").slice(0, 2).toUpperCase())}</div></td>
       <td><div class="pdv-products-name-cell"><strong>${escapeHtml(item.display_name || item.commercial_name || item.name || "Produto")}</strong><small>${escapeHtml(item.category || "Sem categoria")} • ${escapeHtml(item.gender || "Sem genero")}</small><div class="pdv-customers-inline-badges">${buildManualProductBadges(item)}</div></div></td>
-      <td><div class="pdv-products-identifiers">${escapeHtml(item.sku || "Sem SKU")}${normalizeText(item.brand || "") ? `<small>${escapeHtml(item.brand)}</small>` : ""}</div></td>
+      <td><div class="pdv-products-identifiers">${buildPdvProductIdentifierChips(item)}${normalizeText(item.brand || "") ? `<small>${escapeHtml(item.brand)}</small>` : ""}</div></td>
       <td><div class="pdv-products-price-cell"><strong>${currency(item.price || 0)}</strong>${toNumber(item.promotional_price || item.promotionalPrice || 0) > 0 && toNumber(item.promotional_price || item.promotionalPrice || 0) < toNumber(item.price || 0) ? `<small>POR ${currency(item.promotional_price || item.promotionalPrice || 0)}</small>` : `<small>${escapeHtml(toArray(item.sizes).join(", ") || "Sem tamanhos")}</small>`}</div></td>
       <td><div class="pdv-products-stock-cell"><strong>${escapeHtml(String(toNumber(item.stock || 0)))}</strong><small>${escapeHtml(normalizeText(item.store || "") || "Sem loja")}</small></div></td>
       <td><span class="pdv-products-status-badge is-${escapeHtml(normalizeText(item.status || "ativo"))}">${escapeHtml(getManualProductStatusLabel(item.status))}</span></td>
@@ -9957,7 +9968,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
         ${canManageManualProductsFront() ? `<div class="action-row"><button class="primary-button" type="button" data-pdv-product-create-open="true">Novo produto</button></div>` : ""}
       </div>
       <form class="pdv-products-toolbar" data-pdv-products-search-form="true">
-        <label class="pdv-products-search-label">Buscar por nome, SKU ou marca<input name="productsQuery" type="search" value="${escapeHtml(state.pdvProducts.query || "")}" placeholder="Ex.: camiseta, TESTE-001, Calvin Klein" /></label>
+        <label class="pdv-products-search-label">Buscar por nome, SKU, etiqueta, barcode ou marca<input name="productsQuery" type="search" value="${escapeHtml(state.pdvProducts.query || "")}" placeholder="Ex.: 118511, 7890001185110, camiseta" /></label>
         <div class="pdv-products-toolbar-filters">
           <label>Loja<select name="storeFilter">${storeOptions.map((option) => `<option value="${escapeHtml(option.value)}"${normalizeText(state.pdvProducts.filters.store || "") === normalizeText(option.value || "") ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label>
           <label>Status<select name="statusFilter"><option value="">Todos</option><option value="ativo"${state.pdvProducts.filters.status === "ativo" ? " selected" : ""}>Ativos</option><option value="inativo"${state.pdvProducts.filters.status === "inativo" ? " selected" : ""}>Inativos</option><option value="hidden"${state.pdvProducts.filters.status === "hidden" ? " selected" : ""}>Ocultos</option></select></label>
