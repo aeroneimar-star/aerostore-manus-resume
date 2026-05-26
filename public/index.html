@@ -25,21 +25,58 @@
         }
       })();
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="app-shell">
-            <aside class="sidebar">
-        <div class="brand">
-          <span class="brand-kicker">AEROSTORE</span>
-          <h1>CRM WhatsApp</h1>
-          <p>Relacionamento local com motor oficial e operação por loja.</p>
+            <aside class="sidebar" id="app-sidebar">
+        <div class="sidebar-toggle-row">
+          <button
+            type="button"
+            class="sidebar-toggle-btn"
+            id="sidebar-toggle-btn"
+            aria-label="Recolher barra lateral"
+            title="Recolher barra lateral"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="3"/>
+              <line x1="9" y1="3" x2="9" y2="21"/>
+            </svg>
+          </button>
+        </div>
+        <div class="brand" id="sidebar-brand">
+          <img src="/img/logo-full-gold.png" alt="AEROSTORE" class="sidebar-logo" />
         </div>
         <nav class="menu" id="sidebar-menu" aria-label="Navegação principal"></nav>
         <div class="sidebar-footer">
+          <div class="sidebar-user-card" id="sidebar-user-card">
+            <span class="sidebar-user-avatar" id="sidebar-user-avatar">AE</span>
+            <div class="sidebar-user-copy">
+              <strong id="sidebar-user-name">Sessao nao iniciada</strong>
+              <span id="sidebar-user-meta">Faca login para continuar</span>
+              <small id="sidebar-user-store">AEROSTORE OS</small>
+            </div>
+          </div>
+          <button class="sidebar-logout-button" id="sidebar-logout-button" type="button" data-auth-logout="true">Trocar login</button>
           <span>Local • Seguro • Sem disparo em massa</span>
         </div>
       </aside>
+
+      <button
+        type="button"
+        class="sidebar-expand-btn"
+        id="sidebar-expand-btn"
+        aria-label="Expandir barra lateral"
+        title="Expandir barra lateral"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="3"/>
+          <line x1="9" y1="3" x2="9" y2="21"/>
+        </svg>
+      </button>
 
       <main class="content">
         <header class="topbar">
@@ -49,7 +86,7 @@
           </div>
           <div class="topbar-actions">
             <div class="user-chip" id="current-user-label">Sessão não iniciada</div>
-            <button class="ghost-button" id="logout-button" type="button">Sair</button>
+            <button class="ghost-button" id="logout-button" type="button">Trocar login</button>
             <div class="status-banner" id="feedback"></div>
           </div>
         </header>
@@ -115,6 +152,10 @@
 
         <section class="page" id="pdv-sale">
           <div id="pdv-sale-content"></div>
+        </section>
+
+        <section class="page" id="pdv-sales-orders">
+          <div id="pdv-sales-orders-content"></div>
         </section>
 
         <section class="page" id="pdv-cash-register">
@@ -1215,12 +1256,20 @@
           </div>
         </section>
 
+        <section class="page" id="users-admin">
+          <div id="users-admin-content"></div>
+        </section>
+
+        <section class="page" id="audit-logs">
+          <div id="audit-logs-content"></div>
+        </section>
+
         <section class="page" id="access-denied">
           <article class="hero-card">
             <div>
               <p class="eyebrow">Permissao necessaria</p>
               <h3 id="access-denied-title">Acesso restrito</h3>
-              <p id="access-denied-detail">Seu perfil nao tem permissao para acessar esta area do sistema.</p>
+              <p id="access-denied-detail">Seu perfil não tem permissão para acessar esta frente.</p>
               <div class="settings-list">
                 <div id="access-denied-user">Usuario: -</div>
                 <div id="access-denied-role">Perfil: -</div>
@@ -1280,19 +1329,106 @@
 
     <div class="login-overlay" id="login-overlay" data-mode="guest">
       <form class="login-card" id="login-form">
-        <span class="brand-kicker">AEROSTORE</span>
-        <h2 id="login-title">Entrar no CRM</h2>
-        <p id="login-description">Use seu perfil para acessar contatos, campanhas e cashback.</p>
+        <img src="/img/logo-full-gold.png" alt="AEROSTORE" class="login-logo" />
+        <h2 id="login-title">Entrar na AEROSTORE OS</h2>
+        <p id="login-description">Use seu perfil para acessar o PDV, CRM e permissoes da loja.</p>
         <div class="login-status" id="login-status"></div>
         <div class="login-fields" id="login-fields">
         <label>Email<input id="login-email" type="email" required placeholder="admin@aerostore.local" /></label>
         <label>Senha<input id="login-password" type="password" required placeholder="123456" /></label>
         <button class="primary-button" type="submit">Entrar</button>
-        <div class="login-help">Perfis iniciais: admin@aerostore.local, gerente@aerostore.local, vendedor@aerostore.local — senha 123456</div>
+        <div class="login-help">Perfis iniciais: admin@aerostore.local, gestor.vila@aerostore.local, vendedor.vila@aerostore.local, caixa@aerostore.local — senha 123456</div>
         </div>
         <div class="login-error" id="login-error"></div>
       </form>
     </div>
+    <script>
+      (function () {
+        var sectionStorageKey = "aerostore_active_section";
+        var routeMap = {
+          "/": "",
+          "/painel": "dashboard",
+          "/cashback": "cashback",
+          "/campanhas": "campaigns",
+          "/whatsapp-crm": "whatsapp-crm",
+          "/aerointel": "aerointel",
+          "/settings": "settings",
+          "/usuarios": "users-admin",
+          "/pdv": "pdv-dashboard",
+          "/pdv/dashboard": "pdv-dashboard",
+          "/pdv/venda": "pdv-sale",
+          "/pdv/vendas": "pdv-sales-orders",
+          "/pdv/caixa": "pdv-cash-register",
+          "/pdv/produtos": "pdv-products",
+          "/pdv/clientes": "pdv-customers",
+          "/pdv/estoque": "pdv-stock",
+          "/pdv/relatorios": "pdv-reports",
+          "/pdv/relatorios/cockpit": "pdv-reports",
+          "/pdv/reservas": "pdv-reservations",
+          "/pdv/trocas": "pdv-exchanges",
+          "/pdv/orcamentos": "pdv-quotes",
+          "/pdv/importacoes": "pdv-imports"
+        };
+        var titles = {
+          dashboard: "Painel",
+          cashback: "Cashback",
+          campaigns: "Campanhas",
+          "whatsapp-crm": "WhatsApp CRM",
+          aerointel: "AEROINTEL",
+          "users-admin": "Usuarios e permissoes",
+          settings: "Configurações",
+          "pdv-dashboard": "PDV AEROSTORE",
+          "pdv-sale": "Venda",
+          "pdv-sales-orders": "Pedidos de venda",
+          "pdv-cash-register": "Caixa",
+          "pdv-products": "Produtos",
+          "pdv-customers": "Clientes",
+          "pdv-stock": "Estoque",
+          "pdv-reports": "Relatórios",
+          "pdv-reservations": "Reservas",
+          "pdv-exchanges": "Trocas",
+          "pdv-quotes": "Orçamentos",
+          "pdv-imports": "Importações"
+        };
+        var pathname = window.location.pathname || "/";
+        var targetSection = routeMap[pathname] || "";
+        if (!targetSection && pathname === "/") {
+          try {
+            targetSection = localStorage.getItem(sectionStorageKey) || "dashboard";
+          } catch (error) {
+            targetSection = "dashboard";
+          }
+        }
+        if (!targetSection && window.location.hash) {
+          targetSection = String(window.location.hash || "").replace(/^#/, "").trim();
+        }
+        if (!targetSection) return;
+        var title = document.getElementById("section-title");
+        var targetPage = document.getElementById(targetSection);
+        if (!targetPage) return;
+        document.querySelectorAll(".page").forEach(function (section) {
+          section.classList.toggle("active", section.id === targetSection);
+        });
+        document.body.dataset.section = targetSection;
+        document.body.dataset.routeSection = targetSection;
+        if (title && titles[targetSection]) title.textContent = titles[targetSection];
+        if (targetSection !== "pdv-sale") return;
+        var saleContent = document.getElementById("pdv-sale-content");
+        if (!saleContent) return;
+        saleContent.innerHTML = [
+          '<div class="hero-card pdv-hero-card">',
+          '<div><p class="eyebrow">PDV AEROSTORE</p><h3>Venda</h3><p class="helper-text">Carregando frente de caixa...</p></div>',
+          '<div class="stats-grid pdv-route-summary"><div class="stat-card"><span>Loja ativa</span><strong>Vila Masc.</strong></div><div class="stat-card"><span>Status</span><strong>Preparando PDV</strong></div></div>',
+          '</div>',
+          '<article class="panel pdv-route-shell pdv-route-shell-compact"><div class="action-row pdv-route-tabs"><button class="pdv-route-tab active" type="button">Venda</button><button class="pdv-route-tab" type="button">Caixa</button><button class="pdv-route-tab" type="button">Produtos</button></div></article>',
+          '<section class="pdv-sale-premium-layout">',
+          '<aside class="pdv-sale-sidebar"><article class="panel pdv-sale-zone"><div class="panel-header"><h3>Cliente</h3></div><div class="pdv-sale-empty-state compact"><strong>Preparando atendimento</strong><span>A busca de cliente sera liberada em instantes.</span></div></article></aside>',
+          '<main class="pdv-sale-main"><article class="panel pdv-sale-zone"><div class="panel-header" style="display:none;"><h3>Produtos</h3></div><form class="pdv-sale-search-shell"><label class="pdv-sale-search-label"><input disabled placeholder="Carregando busca de produto..." /></label></form><div class="pdv-sale-empty-state compact"><strong>Frente de caixa abrindo</strong><span>O carrinho e a busca entram sem esperar CRM, campanhas e relatorios.</span></div></article><article class="panel pdv-sale-zone"><div class="panel-header"><h3>Carrinho</h3></div><div class="pdv-sale-empty-state compact"><strong>Carrinho pronto</strong><span>Adicione produtos assim que a sessao carregar.</span></div></article></main>',
+          '<aside class="pdv-sale-sidebar pdv-sale-sidebar-right"><article class="panel pdv-sale-zone"><div class="panel-header"><h3>Resumo financeiro</h3></div><div class="pdv-sale-empty-state compact"><strong>Total R$ 0,00</strong><span>Pagamentos serao liberados com a sessao.</span></div></article></aside>',
+          '</section>'
+        ].join("");
+      })();
+    </script>
     <script src="/app.js"></script>
   </body>
 </html>

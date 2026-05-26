@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   currentUser: null,
   settings: null,
   storeSettings: {
@@ -9,6 +9,34 @@
     saving: false,
     error: "",
     loaded: false
+  },
+  usersAdmin: {
+    loading: false,
+    saving: false,
+    error: "",
+    rows: [],
+    selectedId: "",
+    query: "",
+    role: "",
+    status: "",
+    draft: null,
+    meta: {
+      profiles: [],
+      permission_catalog: [],
+      store_options: []
+    }
+  },
+  auditLogs: {
+    loading: false,
+    error: "",
+    rows: [],
+    filters: {
+      user: "",
+      module: "",
+      action: "",
+      result: "",
+      sale_id: ""
+    }
   },
   storePublicContexts: {},
   storePublicContextsLoading: {},
@@ -146,6 +174,12 @@
     cashbackLoading: false,
     cashbackApplying: false,
     cashbackInput: "",
+    exchangeCreditInfo: null,
+    exchangeCreditCustomerKey: "",
+    exchangeCreditLoading: false,
+    exchangeCreditApplying: false,
+    exchangeCreditInput: "",
+    exchangeCreditSelectedId: "",
     customerQuery: "",
     customerResults: [],
     customerSearching: false,
@@ -178,6 +212,13 @@
     draftDeletingId: "",
     paymentDraft: {},
     discountDraft: { mode: "percent", value: "", reason: "" },
+    generalDiscountBlock: null,
+    itemDiscountOpenItemId: "",
+    itemDiscountDrafts: {},
+    itemDiscountApplyingId: "",
+    discountDetailsOpen: false,
+    discountDetailsSyncing: false,
+    checkoutOpenStep: "",
     discountApplying: false,
     discountAuthorization: {
       loading: false,
@@ -187,12 +228,13 @@
       authorizerId: "",
       code: "",
       reason: "",
-      approvalId: "",
-      approvedBy: "",
-      approvedAt: "",
-      expiresAt: "",
-      error: ""
-    },
+    approvalId: "",
+    approvedBy: "",
+    approvedAt: "",
+    expiresAt: "",
+    contextKey: "",
+    error: ""
+  },
     lastCompletedSale: null,
     postSaleManualPhone: "",
     postSaleWhatsAppStatus: "",
@@ -201,6 +243,60 @@
     postSalePaymentLinkCopiedSaleId: "",
     postSalePrintedSaleId: "",
     postSaleAutoPrintedSaleId: ""
+  },
+  pdvSalesOrders: {
+    loading: false,
+    error: "",
+    rows: [],
+    summary: null,
+    tabs: {},
+    pagination: { page: 1, page_size: 25, total: 0, page_count: 1 },
+    filters: {
+      search: "",
+      period: "30d",
+      date_from: "",
+      date_to: "",
+      store_id: "",
+      seller_id: "",
+      payment_method: "",
+      status: "all"
+    },
+    selectedSaleId: "",
+    detail: null,
+    detailLoading: false,
+    detailError: "",
+    actionBusySaleId: "",
+    cancelModal: {
+      open: false,
+      saleId: "",
+      reason: "",
+      error: ""
+    },
+    selectedSaleIds: [],
+    bulkActionBusy: "",
+    bulkActionMessage: ""
+  },
+  pdvExchanges: {
+    originQuery: "",
+    originResults: [],
+    originLoading: false,
+    originError: "",
+    draft: null,
+    newProductQuery: "",
+    newProductResults: [],
+    newProductLoading: false,
+    newProductError: "",
+    customerQuery: "",
+    customerResults: [],
+    customerLoading: false,
+    customerError: "",
+    customerCreateName: "",
+    customerCreatePhone: "",
+    customerCreateDocument: "",
+    selectedNewProductIndex: -1,
+    finalizing: false,
+    error: "",
+    receipt: null
   },
   campaignMedia: null, // mídia atual da campanha sendo editada
   pdvCash: {
@@ -324,6 +420,7 @@
       alert: ""
     },
     selectedInventoryId: "",
+    pagination: { page: 1, pageSize: 25 },
     error: ""
   },
   aerointel: {
@@ -451,6 +548,126 @@
   appTheme: "light"
 };
 
+const AEROSTORE_PERF_STORAGE_KEY = "AEROSTORE_PERF_DEBUG";
+const AEROSTORE_PERF_SESSION = {
+  startedAt: Date.now(),
+  counters: {},
+  measures: []
+};
+
+function isAeroStorePerfDebugEnabled() {
+  try {
+    return window.localStorage?.getItem(AEROSTORE_PERF_STORAGE_KEY) === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function getAeroStorePerfTime() {
+  return (window.performance && typeof window.performance.now === "function")
+    ? window.performance.now()
+    : Date.now();
+}
+
+function recordAeroStorePerfMeasure(name = "", durationMs = 0, detail = {}) {
+  if (!isAeroStorePerfDebugEnabled()) {
+    return;
+  }
+  const safeName = normalizeText(name || "unknown");
+  const roundedDuration = Number(durationMs || 0).toFixed(2);
+  const entry = {
+    name: safeName,
+    duration_ms: Number(roundedDuration),
+    at_ms: Math.round(Date.now() - AEROSTORE_PERF_SESSION.startedAt),
+    detail: detail && typeof detail === "object" ? detail : {}
+  };
+  AEROSTORE_PERF_SESSION.measures.push(entry);
+  if (AEROSTORE_PERF_SESSION.measures.length > 300) {
+    AEROSTORE_PERF_SESSION.measures.shift();
+  }
+  console.info(`[AEROSTORE PERF] ${safeName}: ${roundedDuration}ms`, entry.detail);
+}
+
+function incrementAeroStorePerfCounter(name = "", amount = 1) {
+  if (!isAeroStorePerfDebugEnabled()) {
+    return 0;
+  }
+  const safeName = normalizeText(name || "counter");
+  AEROSTORE_PERF_SESSION.counters[safeName] = Number(AEROSTORE_PERF_SESSION.counters[safeName] || 0) + Number(amount || 1);
+  return AEROSTORE_PERF_SESSION.counters[safeName];
+}
+
+function startAeroStorePerfMeasure(name = "", detail = {}) {
+  if (!isAeroStorePerfDebugEnabled()) {
+    return null;
+  }
+  return {
+    name: normalizeText(name || "unknown"),
+    detail: detail && typeof detail === "object" ? detail : {},
+    startedAt: getAeroStorePerfTime()
+  };
+}
+
+function endAeroStorePerfMeasure(token = null, extraDetail = {}) {
+  if (!token || !isAeroStorePerfDebugEnabled()) {
+    return;
+  }
+  recordAeroStorePerfMeasure(token.name, getAeroStorePerfTime() - token.startedAt, {
+    ...(token.detail || {}),
+    ...(extraDetail && typeof extraDetail === "object" ? extraDetail : {})
+  });
+}
+
+function exposeAeroStorePerfTools() {
+  try {
+    window.AEROSTORE_PERF = {
+      enable() {
+        window.localStorage?.setItem(AEROSTORE_PERF_STORAGE_KEY, "1");
+        console.info("[AEROSTORE PERF] Debug habilitado. Recarregue a tela para medir desde o boot.");
+      },
+      disable() {
+        window.localStorage?.removeItem(AEROSTORE_PERF_STORAGE_KEY);
+        console.info("[AEROSTORE PERF] Debug desabilitado.");
+      },
+      reset() {
+        AEROSTORE_PERF_SESSION.startedAt = Date.now();
+        AEROSTORE_PERF_SESSION.counters = {};
+        AEROSTORE_PERF_SESSION.measures = [];
+        console.info("[AEROSTORE PERF] Medicoes resetadas.");
+      },
+      summary() {
+        const measures = [...AEROSTORE_PERF_SESSION.measures];
+        const grouped = measures.reduce((acc, item) => {
+          if (!acc[item.name]) {
+            acc[item.name] = { count: 0, total: 0, max: 0 };
+          }
+          acc[item.name].count += 1;
+          acc[item.name].total += Number(item.duration_ms || 0);
+          acc[item.name].max = Math.max(acc[item.name].max, Number(item.duration_ms || 0));
+          return acc;
+        }, {});
+        const rows = Object.entries(grouped).map(([name, item]) => ({
+          name,
+          count: item.count,
+          avg_ms: Number((item.total / Math.max(1, item.count)).toFixed(2)),
+          max_ms: Number(item.max.toFixed(2))
+        })).sort((left, right) => right.max_ms - left.max_ms);
+        console.table(rows);
+        console.table(AEROSTORE_PERF_SESSION.counters);
+        return {
+          counters: { ...AEROSTORE_PERF_SESSION.counters },
+          measures,
+          grouped: rows
+        };
+      }
+    };
+  } catch (error) {
+    // Instrumentacao nunca deve afetar a operacao do PDV.
+  }
+}
+
+exposeAeroStorePerfTools();
+
 let sectionTitle;
 let feedback;
 let campaignSearchDebounce;
@@ -481,8 +698,10 @@ const PDV_SALE_PAYMENT_METHODS = [
   { method: "permuta", label: "Permuta" },
   { method: "link_pagamento", label: "Link pagamento" }
 ];
-const PDV_SALE_CHECKOUT_PAYMENT_METHODS = PDV_SALE_PAYMENT_METHODS.filter((item) => item.method !== "cashback");
+const PDV_SALE_CHECKOUT_PAYMENT_METHODS = PDV_SALE_PAYMENT_METHODS.filter((item) => !["cashback", "credito_troca"].includes(item.method));
 const PDV_AUTOMATIC_DISCOUNT_METHODS = new Set(["pix", "dinheiro"]);
+const PDV_SALE_AUTO_ADJUST_PAYMENT_METHODS = new Set(["pix", "dinheiro"]);
+const PDV_SALE_GENERAL_DISCOUNT_ALLOWED_PAYMENT_METHODS = new Set(["pix", "dinheiro"]);
 
 const brlFormatter = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -622,15 +841,30 @@ function getAuthToken() {
 
 function getRoleLabel(role) {
   const normalizedRole = String(role || "").trim().toLowerCase();
-  if (normalizedRole === "admin") return "Administrador";
-  if (normalizedRole === "manager" || normalizedRole === "gerente") return "Gestor";
+  if (normalizedRole === "admin" || normalizedRole === "administrator" || normalizedRole === "administrador") return "Administrador";
+  if (normalizedRole === "manager" || normalizedRole === "gerente" || normalizedRole === "gestor") return "Gestor";
   if (normalizedRole === "seller" || normalizedRole === "vendedor") return "Vendedor";
+  if (normalizedRole === "cashier" || normalizedRole === "caixa") return "Caixa";
+  if (normalizedRole === "consult" || normalizedRole === "consulta" || normalizedRole === "readonly") return "Consulta";
   return "-";
 }
 
 function getCurrentUserStoreLabel() {
   const fallback = state.currentUser?.store_label || state.currentUser?.store || state.currentUser?.store_id || "-";
   return getPdvStoreDisplayName(state.currentUser?.store_id || state.currentUser?.store || "", fallback);
+}
+
+function getCurrentUserDisplayName() {
+  return normalizeVisibleText(state.currentUser?.name || state.currentUser?.username || state.currentUser?.email || "Usuario");
+}
+
+function getCurrentUserInitials() {
+  const displayName = getCurrentUserDisplayName();
+  const parts = displayName.split(/\s+/).filter(Boolean);
+  const initials = parts.length > 1
+    ? `${parts[0][0] || ""}${parts[1][0] || ""}`
+    : displayName.slice(0, 2);
+  return normalizeText(initials || "AE").slice(0, 2).toUpperCase();
 }
 
 function normalizeTheme(theme) {
@@ -715,12 +949,12 @@ function setLoginOverlayMode(mode = "guest") {
   const statusBox = document.getElementById("login-status");
   const errorBox = document.getElementById("login-error");
   if (title) {
-    title.textContent = resolvedMode === "checking" ? "Carregando sistema..." : "Entrar no CRM";
+    title.textContent = resolvedMode === "checking" ? "Carregando sistema..." : "Entrar na AEROSTORE OS";
   }
   if (description) {
     description.textContent = resolvedMode === "checking"
       ? "Estamos validando sua sessão para abrir a rota correta."
-      : "Use seu perfil para acessar contatos, campanhas e cashback.";
+      : "Use seu perfil para acessar o PDV, CRM e permissoes da loja.";
   }
   if (statusBox) {
     statusBox.textContent = resolvedMode === "checking" ? "Verificando sessão..." : "";
@@ -765,6 +999,21 @@ function getCurrentRole() {
   return state.currentUser?.role || "";
 }
 
+function getCurrentUserRole() {
+  const rawRole = state.currentUser?.role
+    || state.currentUser?.perfil
+    || state.currentUser?.profile
+    || state.currentUser?.permission_profile
+    || "";
+  const normalizedRole = String(rawRole || "").trim().toLowerCase();
+  if (["admin", "administrator", "administrador"].includes(normalizedRole)) return "admin";
+  if (["manager", "gerente", "gestor"].includes(normalizedRole)) return "gestor";
+  if (["seller", "vendedor", "sales"].includes(normalizedRole)) return "vendedor";
+  if (["cashier", "caixa"].includes(normalizedRole)) return "caixa";
+  if (["consult", "consulta", "readonly"].includes(normalizedRole)) return "consulta";
+  return normalizedRole;
+}
+
 function getCurrentPermissions() {
   return state.currentUser?.permissions || {};
 }
@@ -773,12 +1022,90 @@ function hasPermission(permissionKey) {
   return Boolean(getCurrentPermissions()?.[permissionKey]);
 }
 
+function hasAnyPermission(...permissionKeys) {
+  return permissionKeys.some((permissionKey) => hasPermission(permissionKey));
+}
+
+function isCurrentUserManagerProfile() {
+  return ["admin", "gestor"].includes(getCurrentUserRole());
+}
+
+function isCurrentUserSellerProfile() {
+  return getCurrentUserRole() === "vendedor";
+}
+
+function canManageUsersPanel() {
+  return getCurrentUserRole() === "admin" || hasPermission("can_manage_users");
+}
+
+function canViewAuditLogsPanel() {
+  return getCurrentUserRole() === "admin" || hasPermission("can_view_audit");
+}
+
+function getDefaultRouteForCurrentUser() {
+  const role = getCurrentUserRole();
+  if (role === "caixa") {
+    return "/pdv/caixa";
+  }
+  if (role === "consulta") {
+    return "/pdv/produtos";
+  }
+  return "/pdv";
+}
+
+function canSellPdvFrontend() {
+  return isCurrentUserManagerProfile() || hasPermission("can_sell");
+}
+
+function canViewPdvCashFrontend() {
+  return isCurrentUserManagerProfile() || hasAnyPermission("can_view_cash_register", "can_open_close_register");
+}
+
+function canViewPdvProductsFrontend() {
+  return isCurrentUserManagerProfile() || hasPermission("can_view_products") || hasPermission("can_sell");
+}
+
+function canViewPdvCustomersFrontend() {
+  return isCurrentUserManagerProfile() || hasPermission("can_view_customers") || hasPermission("can_sell");
+}
+
+function canViewPdvStockFrontend() {
+  return isCurrentUserManagerProfile() || hasPermission("can_view_stock") || hasPermission("can_view_products");
+}
+
+function canViewPdvOrdersFrontend() {
+  return isCurrentUserManagerProfile() || hasAnyPermission("can_sell", "can_view_cash_register", "can_view_orders");
+}
+
+function canCancelPdvSaleFrontend() {
+  return getCurrentUserRole() === "admin" || hasPermission("can_cancel_sale");
+}
+
+function canViewPdvDashboardFrontend() {
+  return isCurrentUserManagerProfile() || hasAnyPermission(
+    "can_sell",
+    "can_view_products",
+    "can_view_customers",
+    "can_view_cash_register",
+    "can_view_orders",
+    "can_view_stock"
+  );
+}
+
+function canViewPdvExchangesFrontend() {
+  return isCurrentUserManagerProfile() || hasAnyPermission("can_sell", "can_view_exchanges");
+}
+
+function canViewPdvReservationsFrontend() {
+  return isCurrentUserManagerProfile();
+}
+
 function canManageSettings() {
-  return ["admin", "manager", "gerente"].includes(getCurrentRole());
+  return isCurrentUserManagerProfile();
 }
 
 function canManageSellers() {
-  return getCurrentRole() === "admin";
+  return getCurrentUserRole() === "admin";
 }
 
 function canManageGlobalSettings() {
@@ -794,11 +1121,11 @@ function canViewStoreSettingsPanel() {
 }
 
 function canViewGlobalSettingsPanel() {
-  return canManageGlobalSettings() || ["manager", "gerente"].includes(getCurrentRole());
+  return canManageGlobalSettings() || isCurrentUserManagerProfile();
 }
 
 function canViewSettingsTeamPanel() {
-  return canManageSellers() || ["manager", "gerente"].includes(getCurrentRole());
+  return canManageSellers() || isCurrentUserManagerProfile();
 }
 
 function canViewRealStoreSettings() {
@@ -814,27 +1141,27 @@ function canEditFullStoreSettings() {
 }
 
 function canViewReports() {
-  return ["admin", "manager", "gerente"].includes(getCurrentRole());
+  return isCurrentUserManagerProfile();
 }
 
 function canDeleteRecords() {
-  return getCurrentRole() === "admin";
+  return getCurrentUserRole() === "admin";
 }
 
 function canViewAllStores() {
-  return getCurrentRole() === "admin" || hasPermission("can_view_all_stores");
+  return getCurrentUserRole() === "admin" || hasPermission("can_view_all_stores");
 }
 
 function canViewConsolidationMenu() {
-  return getCurrentRole() === "admin" || hasPermission("can_view_consolidation");
+  return isCurrentUserManagerProfile() || hasPermission("can_view_consolidation");
 }
 
 function canViewAerointelMenu() {
-  return getCurrentRole() === "admin" || hasPermission("can_view_aerointel");
+  return isCurrentUserManagerProfile() || hasPermission("can_view_aerointel");
 }
 
 function canViewAerointelConversationRead() {
-  return getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente";
+  return isCurrentUserManagerProfile();
 }
 
 const PATHNAME_SECTION_MAP = {
@@ -842,6 +1169,9 @@ const PATHNAME_SECTION_MAP = {
   "/painel": "dashboard",
   "/settings": "settings",
   "/configuracoes": "settings",
+  "/usuarios": "users-admin",
+  "/users": "users-admin",
+  "/auditoria": "audit-logs",
   "/whatsapp-crm": "whatsapp-crm",
   "/campanhas": "campaigns",
   "/cashback": "cashback",
@@ -852,6 +1182,8 @@ const PATHNAME_SECTION_MAP = {
   "/pdv": "pdv-dashboard",
   "/pdv/dashboard": "pdv-dashboard",
   "/pdv/venda": "pdv-sale",
+  "/pdv/pedidos": "pdv-sales-orders",
+  "/pdv/vendas": "pdv-sales-orders",
   "/pdv/caixa": "pdv-cash-register",
   "/pdv/produtos": "pdv-products",
   "/pdv/clientes": "pdv-customers",
@@ -870,21 +1202,24 @@ const PATHNAME_SECTION_MAP = {
 
 const PATHNAME_SECTION_META = {
   login: { displaySection: "login", title: "Entrar" },
+  "users-admin": { displaySection: "users-admin", title: "Usuarios e permissoes" },
+  "audit-logs": { displaySection: "audit-logs", title: "Auditoria operacional" },
   settings: { displaySection: "settings", title: "Configurações" },
   "whatsapp-crm": { displaySection: "whatsapp-crm", title: "WhatsApp CRM" },
   aerointel: { displaySection: "aerointel", title: "AEROINTEL" },
   "pdv-dashboard": { displaySection: "pdv-dashboard", title: "PDV AEROSTORE" },
   "pdv-sale": { displaySection: "pdv-sale", title: "Venda" },
+  "pdv-sales-orders": { displaySection: "pdv-sales-orders", title: "Pedidos de venda" },
   "pdv-cash-register": { displaySection: "pdv-cash-register", title: "Caixa" },
   "pdv-products": { displaySection: "pdv-products", title: "Produtos" },
   "pdv-customers": { displaySection: "pdv-customers", title: "Clientes" },
   "pdv-stock": { displaySection: "pdv-stock", title: "Estoque" },
-  "pdv-reports": { displaySection: "dashboard", title: "Relatórios" },
-  "pdv-consolidation": { displaySection: "dashboard", title: "Consolidação Estratégica" },
-  "pdv-reservations": { displaySection: "dashboard", title: "Reservas" },
-  "pdv-exchanges": { displaySection: "dashboard", title: "Trocas" },
-  "pdv-quotes": { displaySection: "dashboard", title: "Orçamentos" },
-  "pdv-imports": { displaySection: "dashboard", title: "Importações" }
+  "pdv-reports": { displaySection: "pdv-reports", title: "Relatórios" },
+  "pdv-consolidation": { displaySection: "pdv-consolidation", title: "Consolidação Estratégica" },
+  "pdv-reservations": { displaySection: "pdv-reservations", title: "Reservas" },
+  "pdv-exchanges": { displaySection: "pdv-exchanges", title: "Trocas" },
+  "pdv-quotes": { displaySection: "pdv-quotes", title: "Orçamentos" },
+  "pdv-imports": { displaySection: "pdv-imports", title: "Importações" }
 };
 
 function normalizePathname(pathname = "") {
@@ -909,6 +1244,7 @@ function getSectionMeta(sectionId = "") {
 const OFFICIAL_PDV_SECTIONS = new Set([
   "pdv-dashboard",
   "pdv-sale",
+  "pdv-sales-orders",
   "pdv-cash-register",
   "pdv-products",
   "pdv-customers",
@@ -925,31 +1261,58 @@ const OFFICIAL_ROUTE_SECTIONS = new Set([
   ...OFFICIAL_PDV_SECTIONS,
   "whatsapp-crm",
   "aerointel",
-  "settings"
+  "settings",
+  "users-admin",
+  "audit-logs"
 ]);
 
 const PDV_ROUTE_ITEMS = [
-  { section: "pdv-dashboard", label: "Painel PDV", route: "/pdv", visible: () => true },
-  { section: "pdv-sale", label: "Venda", route: "/pdv/venda", visible: () => getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" || hasPermission("can_sell") },
-  { section: "pdv-cash-register", label: "Caixa", route: "/pdv/caixa", visible: () => getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" || hasPermission("can_view_cash_register") || hasPermission("can_open_close_register") },
-  { section: "pdv-products", label: "Produtos", route: "/pdv/produtos", visible: () => getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" || hasPermission("can_view_products") },
-  { section: "pdv-customers", label: "Clientes", route: "/pdv/clientes", visible: () => getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" || hasPermission("can_view_customers") },
-  { section: "pdv-stock", label: "Estoque", route: "/pdv/estoque", visible: () => getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" },
+  { section: "pdv-dashboard", label: "Painel PDV", route: "/pdv", visible: () => canViewPdvDashboardFrontend() },
+  { section: "pdv-sale", label: "Venda", route: "/pdv/venda", visible: () => canSellPdvFrontend() },
+  { section: "pdv-sales-orders", label: "Pedidos de venda", route: "/pdv/vendas", visible: () => canViewPdvOrdersFrontend() },
+  { section: "pdv-cash-register", label: "Caixa", route: "/pdv/caixa", visible: () => canViewPdvCashFrontend() },
+  { section: "pdv-products", label: "Produtos", route: "/pdv/produtos", visible: () => canViewPdvProductsFrontend() },
+  { section: "pdv-customers", label: "Clientes", route: "/pdv/clientes", visible: () => canViewPdvCustomersFrontend() },
+  { section: "pdv-stock", label: "Estoque", route: "/pdv/estoque", visible: () => canViewPdvStockFrontend() },
   { section: "pdv-reports", label: "Relatórios", route: "/pdv/relatorios", visible: () => canViewReports() || hasPermission("can_view_store_reports") },
   { section: "pdv-consolidation", label: "Consolidação", route: "/pdv/consolidacao", visible: () => canViewConsolidationMenu() },
-  { section: "pdv-reservations", label: "Reservas", route: "/pdv/reservas", visible: () => getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" || hasPermission("can_sell") },
-  { section: "pdv-exchanges", label: "Trocas", route: "/pdv/trocas", visible: () => getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" || hasPermission("can_sell") }
+  { section: "pdv-reservations", label: "Reservas", route: "/pdv/reservas", visible: () => canViewPdvReservationsFrontend() },
+  { section: "pdv-exchanges", label: "Trocas", route: "/pdv/trocas", visible: () => canViewPdvExchangesFrontend() }
 ];
+
+const SELLER_HIDDEN_PDV_MENU_SECTIONS = new Set([
+  "pdv-dashboard",
+  "pdv-stock",
+  "pdv-reports",
+  "pdv-consolidation",
+  "pdv-reservations"
+]);
+
+const SELLER_RESTRICTED_PDV_SECTIONS = new Set([
+  "pdv-stock",
+  "pdv-reports",
+  "pdv-consolidation",
+  "pdv-reservations"
+]);
 
 function canAccessOfficialSection(sectionId = "") {
   if (!OFFICIAL_ROUTE_SECTIONS.has(sectionId)) {
     return true;
   }
+  if (isCurrentUserSellerProfile() && SELLER_RESTRICTED_PDV_SECTIONS.has(sectionId)) {
+    return false;
+  }
   if (sectionId === "settings") {
     return canManageSettings() || hasPermission("can_manage_store_settings") || hasPermission("can_view_store_settings");
   }
+  if (sectionId === "users-admin") {
+    return canManageUsersPanel();
+  }
+  if (sectionId === "audit-logs") {
+    return canViewAuditLogsPanel();
+  }
   if (sectionId === "whatsapp-crm") {
-    return getCurrentRole() === "admin" || hasPermission("can_use_whatsapp") || hasPermission("can_view_whatsapp_status");
+    return isCurrentUserManagerProfile() || hasPermission("can_use_whatsapp") || hasPermission("can_view_whatsapp_status");
   }
   if (sectionId === "aerointel") {
     return canViewAerointelMenu() || canViewAerointelConversationRead();
@@ -961,25 +1324,42 @@ function canAccessOfficialSection(sectionId = "") {
     return canViewReports() || hasPermission("can_view_store_reports");
   }
   if (sectionId === "pdv-cash-register") {
-    return getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" || hasPermission("can_view_cash_register") || hasPermission("can_open_close_register");
+    return canViewPdvCashFrontend();
   }
   if (sectionId === "pdv-stock") {
-    return getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente";
+    return canViewPdvStockFrontend();
   }
   if (sectionId === "pdv-products") {
-    return getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" || hasPermission("can_view_products");
+    return canViewPdvProductsFrontend();
   }
   if (sectionId === "pdv-customers") {
-    return getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" || hasPermission("can_view_customers");
+    return canViewPdvCustomersFrontend();
   }
-  if (["pdv-sale", "pdv-reservations", "pdv-exchanges", "pdv-dashboard", "pdv-quotes", "pdv-imports"].includes(sectionId)) {
-    return getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente" || hasPermission("can_sell");
+  if (sectionId === "pdv-sales-orders") {
+    return canViewPdvOrdersFrontend();
+  }
+  if (sectionId === "pdv-exchanges") {
+    return canViewPdvExchangesFrontend();
+  }
+  if (sectionId === "pdv-reservations") {
+    return canViewPdvReservationsFrontend();
+  }
+  if (sectionId === "pdv-dashboard") {
+    return canViewPdvDashboardFrontend();
+  }
+  if (["pdv-sale", "pdv-quotes", "pdv-imports"].includes(sectionId)) {
+    return isCurrentUserManagerProfile() || hasPermission("can_sell");
   }
   return true;
 }
 
 function getVisiblePdvRouteItems() {
-  return PDV_ROUTE_ITEMS.filter((item) => item.visible());
+  return PDV_ROUTE_ITEMS.filter((item) => {
+    if (isCurrentUserSellerProfile() && SELLER_HIDDEN_PDV_MENU_SECTIONS.has(item.section)) {
+      return false;
+    }
+    return item.visible();
+  });
 }
 
 function buildPdvRouteTabs(activeSection = "") {
@@ -1107,69 +1487,164 @@ function isPdvAutomaticDiscountAllowedPaymentMethod(method = "") {
   return PDV_AUTOMATIC_DISCOUNT_METHODS.has(normalizePdvSaleDiscountMethod(method));
 }
 
+function isPdvSalePaymentMethodEligibleForGeneralDiscount(method = "") {
+  return PDV_SALE_GENERAL_DISCOUNT_ALLOWED_PAYMENT_METHODS.has(normalizePdvSaleDiscountMethod(method || ""));
+}
+
+function getPdvSaleCartItemUnitPrice(item = {}) {
+  return toNumber(item.preco_referencia || item.preco_venda || item.price || 0);
+}
+
+function getPdvSaleCartItemQuantity(item = {}) {
+  return Math.max(1, Math.round(toNumber(item.quantidade || 1)));
+}
+
+function getPdvSaleCartItemGross(item = {}) {
+  return Number((getPdvSaleCartItemUnitPrice(item) * getPdvSaleCartItemQuantity(item)).toFixed(2));
+}
+
+function getPdvSaleCartItemDiscount(item = {}) {
+  const gross = getPdvSaleCartItemGross(item);
+  const source = item?.item_discount && typeof item.item_discount === "object" ? item.item_discount : {};
+  const mode = normalizeText(source.mode || source.discount_mode || "amount").toLowerCase() === "percent" ? "percent" : "amount";
+  const value = Number(Math.max(0, toNumber(source.value ?? source.percent ?? source.amount ?? 0)).toFixed(2));
+  let amount = mode === "percent"
+    ? Number(((gross * value) / 100).toFixed(2))
+    : Number(value.toFixed(2));
+  amount = Number(Math.min(gross, Math.max(0, amount)).toFixed(2));
+  const percent = gross > 0 ? Number(((amount / gross) * 100).toFixed(2)) : 0;
+  return {
+    mode,
+    value,
+    amount,
+    percent,
+    reason: normalizeText(source.reason || ""),
+    appliedBy: normalizeText(source.applied_by || ""),
+    appliedAt: normalizeText(source.applied_at || "")
+  };
+}
+
+function getPdvSaleItemDiscountTotal(session = null) {
+  return Number(toArray(session?.cart_items).reduce((sum, item) => {
+    return sum + getPdvSaleCartItemDiscount(item).amount;
+  }, 0).toFixed(2));
+}
+
+function getPdvSaleItemsGrossSubtotal(session = null) {
+  return Number(toArray(session?.cart_items).reduce((sum, item) => {
+    return sum + getPdvSaleCartItemGross(item);
+  }, 0).toFixed(2));
+}
+
+function getPdvSaleItemsNetSubtotal(session = null) {
+  return Number(Math.max(0, getPdvSaleItemsGrossSubtotal(session) - getPdvSaleItemDiscountTotal(session)).toFixed(2));
+}
+
 function getPdvSaleDiscountPolicy(session = null, options = {}) {
   const currentSession = session || state.pdvSale.session || null;
-  const amount = Number(Math.max(0, toNumber(
+  const itemDiscountAmount = getPdvSaleItemDiscountTotal(currentSession);
+  const generalDiscountAmount = Number(Math.max(0, toNumber(
     options.amount
     ?? currentSession?.desconto_extra
     ?? currentSession?.extra_discount
     ?? currentSession?.discount_amount
     ?? 0
   )).toFixed(2));
-  const percent = Number(Math.max(0, toNumber(
-    options.percent
-    ?? currentSession?.discount_percent
-    ?? 0
-  )).toFixed(2));
+  const grossSubtotal = getPdvSaleItemsGrossSubtotal(currentSession);
+  const itemsNetSubtotal = getPdvSaleItemsNetSubtotal(currentSession);
+  const policyBase = Number(Math.max(
+    0,
+    itemsNetSubtotal
+      - getPdvSaleCashbackApplication(currentSession).amount
+      - getPdvSaleExchangeCreditApplication(currentSession).amount
+  ).toFixed(2));
+  const percent = policyBase > 0 ? Number(((generalDiscountAmount / policyBase) * 100).toFixed(2)) : 0;
+  const automaticLimitAmount = Number(((policyBase * 10) / 100).toFixed(2));
   const sessionPolicy = currentSession?.discount_policy && typeof currentSession.discount_policy === "object"
     ? currentSession.discount_policy
     : null;
   const paymentMethods = uniqueStrings(getPdvSaleFinancialPaymentMethods(currentSession)
     .map((item) => normalizePdvSaleDiscountMethod(item.method || ""))
-    .filter((method) => method && method !== "cashback"));
+    .filter((method) => method && !["cashback", "credito_troca"].includes(method)));
   const invalidMethods = paymentMethods.filter((method) => !isPdvAutomaticDiscountAllowedPaymentMethod(method));
   const invalidMethodsLabel = invalidMethods.map((method) => formatPaymentMethodLabel(method)).join(" + ");
-  const hasDiscount = amount > 0 || percent > 0;
+  const hasItemDiscount = itemDiscountAmount > 0.009;
+  const hasDiscount = hasItemDiscount || generalDiscountAmount > 0.009 || percent > 0;
+  const hasGeneralDiscount = generalDiscountAmount > 0.009;
+  const generalWithinAutomaticPolicy = hasGeneralDiscount
+    && paymentMethods.length > 0
+    && !invalidMethods.length
+    && generalDiscountAmount <= automaticLimitAmount + 0.01;
+  const generalRequiresAuthorization = hasGeneralDiscount
+    && !generalWithinAutomaticPolicy
+    && !(!paymentMethods.length && percent <= 10.001);
   let reason = "NO_DISCOUNT";
   let pendingPaymentMethod = false;
   let requiresAuthorization = false;
   let allowedWithoutAuthorization = true;
   let message = "Sem desconto aplicado.";
 
-  if (hasDiscount && percent > 10.001) {
+  if (hasItemDiscount) {
+    reason = generalRequiresAuthorization && invalidMethods.length
+      ? "ITEM_DISCOUNT_SPECIAL_WITH_NON_CASH_METHOD"
+      : "ITEM_DISCOUNT_SPECIAL";
+    requiresAuthorization = true;
+    pendingPaymentMethod = hasGeneralDiscount && !paymentMethods.length;
+    allowedWithoutAuthorization = false;
+    message = generalRequiresAuthorization && invalidMethods.length
+      ? "Este desconto e permitido apenas para PIX ou dinheiro."
+      : generalRequiresAuthorization
+        ? "Autorizacao gerencial necessaria para desconto especial."
+        : generalWithinAutomaticPolicy
+          ? "Desconto de PIX/dinheiro dentro da politica."
+          : "Autorizacao gerencial necessaria para desconto especial.";
+  } else if (hasGeneralDiscount && percent > 10.001) {
     reason = paymentMethods.length ? "DISCOUNT_ABOVE_LIMIT" : "DISCOUNT_ABOVE_LIMIT_PENDING_PAYMENT_METHOD";
     pendingPaymentMethod = !paymentMethods.length;
     requiresAuthorization = true;
     allowedWithoutAuthorization = false;
-    message = "Descontos acima de 10% exigem autorizacao gerencial.";
-  } else if (hasDiscount && !paymentMethods.length) {
+    message = "Autorizacao gerencial necessaria para desconto especial.";
+  } else if (hasGeneralDiscount && !paymentMethods.length) {
     reason = "PENDING_PAYMENT_METHOD";
     pendingPaymentMethod = true;
     requiresAuthorization = false;
     allowedWithoutAuthorization = false;
     message = "Escolha a forma de pagamento para validar este desconto.";
-  } else if (hasDiscount && invalidMethods.length) {
+  } else if (hasGeneralDiscount && invalidMethods.length) {
     reason = "MANAGER_AUTH_REQUIRED_NON_CASH_METHOD";
     requiresAuthorization = true;
     allowedWithoutAuthorization = false;
-    message = `Desconto automatico de ate 10% e permitido apenas para PIX ou Dinheiro. Para ${invalidMethodsLabel || "este metodo"}, solicite autorizacao gerencial.`;
-  } else if (hasDiscount) {
+    message = "Este desconto e permitido apenas para PIX ou dinheiro.";
+  } else if (hasGeneralDiscount) {
     reason = "PIX_DINHEIRO_10";
     requiresAuthorization = false;
     allowedWithoutAuthorization = true;
-    message = "Desconto permitido para PIX ou Dinheiro.";
+    message = "Desconto de PIX/dinheiro dentro da politica.";
   }
 
+  const effectiveRequiresAuthorization = Boolean(sessionPolicy?.requiresAuthorization || requiresAuthorization);
+  const useLocalPolicy = requiresAuthorization && !sessionPolicy?.requiresAuthorization;
+  const generalExceptionAmount = Number((generalRequiresAuthorization ? generalDiscountAmount : 0).toFixed(2));
+  const authorizationAmount = Number((itemDiscountAmount + generalExceptionAmount).toFixed(2));
+  const authorizationPercent = grossSubtotal > 0 ? Number(((authorizationAmount / grossSubtotal) * 100).toFixed(2)) : 0;
   return {
     limitPercent: Number(toNumber(sessionPolicy?.limitPercent || 10).toFixed(2)),
-    reason: normalizeText(sessionPolicy?.reason || reason),
+    reason: normalizeText(useLocalPolicy ? reason : sessionPolicy?.reason || reason),
     paymentMethods,
     invalidMethods,
     invalidMethodsLabel,
-    pendingPaymentMethod: Boolean(sessionPolicy?.pendingPaymentMethod ?? pendingPaymentMethod),
-    requiresAuthorization: Boolean(sessionPolicy?.requiresAuthorization ?? requiresAuthorization),
-    allowedWithoutAuthorization: Boolean(sessionPolicy?.allowedWithoutAuthorization ?? allowedWithoutAuthorization),
-    message: normalizeText(sessionPolicy?.message || message)
+    pendingPaymentMethod: Boolean(useLocalPolicy ? pendingPaymentMethod : sessionPolicy?.pendingPaymentMethod ?? pendingPaymentMethod),
+    requiresAuthorization: effectiveRequiresAuthorization,
+    allowedWithoutAuthorization: Boolean(useLocalPolicy ? allowedWithoutAuthorization : sessionPolicy?.allowedWithoutAuthorization ?? allowedWithoutAuthorization),
+    message: normalizeText(useLocalPolicy ? message : sessionPolicy?.message || message),
+    policyBase,
+    automaticLimitAmount,
+    generalDiscountPercent: percent,
+    generalWithinAutomaticPolicy,
+    generalRequiresAuthorization,
+    generalExceptionAmount,
+    authorizationAmount,
+    authorizationPercent
   };
 }
 
@@ -1181,11 +1656,18 @@ function getPdvSaleSessionDiscount(session = null) {
     ?? currentSession?.discount_amount
     ?? 0
   )).toFixed(2));
+  const itemDiscountAmount = getPdvSaleItemDiscountTotal(currentSession);
+  const totalDiscountAmount = Number((itemDiscountAmount + amount).toFixed(2));
+  const grossSubtotal = getPdvSaleItemsGrossSubtotal(currentSession);
+  const totalDiscountPercent = grossSubtotal > 0 ? Number(((totalDiscountAmount / grossSubtotal) * 100).toFixed(2)) : 0;
   const percent = Number(Math.max(0, toNumber(currentSession?.discount_percent || 0)).toFixed(2));
   const mode = normalizeText(currentSession?.discount_mode || "percent").toLowerCase() === "value" ? "value" : "percent";
-  const policy = getPdvSaleDiscountPolicy(currentSession, { amount, percent });
+  const policy = getPdvSaleDiscountPolicy(currentSession, { amount, percent: totalDiscountPercent });
   return {
     amount,
+    itemDiscountAmount,
+    totalDiscountAmount,
+    totalDiscountPercent,
     percent,
     mode,
     reason: normalizeText(currentSession?.discount_reason || ""),
@@ -1197,6 +1679,59 @@ function getPdvSaleSessionDiscount(session = null) {
     paymentMethods: toArray(policy.paymentMethods),
     policy,
     discountLabel: mode === "value" ? currency(amount) : `${percent.toFixed(2).replace(".", ",")}%`
+  };
+}
+
+function evaluateDiscountAuthorizationState(session = null, totals = null) {
+  const safeSession = session || state.pdvSale.session || null;
+  const safeTotals = totals || getPdvSaleCartTotals(safeSession);
+  const discount = getPdvSaleSessionDiscount(safeSession);
+  const policy = discount.policy || getPdvSaleDiscountPolicy(safeSession);
+  const authState = getCurrentPdvSaleDiscountAuthorization(safeSession);
+  const hasApprovedAuthorization = Boolean(normalizeText(authState.approvalId || ""));
+  const reasons = [];
+  if (discount.itemDiscountAmount > 0) {
+    reasons.push("item_discount_requires_manager_authorization");
+  }
+  if (discount.amount > 0 && policy.generalDiscountPercent > 10.001) {
+    reasons.push("discount_above_10_percent");
+  }
+  if (discount.amount > 0 && policy.generalRequiresAuthorization && toArray(policy.invalidMethods).length) {
+    reasons.push("payment_method_requires_manager_authorization");
+  }
+  if (policy.pendingPaymentMethod && discount.totalDiscountAmount > 0) {
+    reasons.push("payment_method_pending");
+  }
+  if (safeTotals.change > 0) {
+    reasons.push("payment_exceeds_total_after_discount");
+  }
+  const required = Boolean(policy.requiresAuthorization || discount.requiresAuthorization);
+  let status = "none";
+  if (safeTotals.change > 0 && discount.totalDiscountAmount > 0) {
+    status = "adjustment_required";
+  } else if (discount.totalDiscountAmount <= 0) {
+    status = "none";
+  } else if (required && !hasApprovedAuthorization) {
+    status = "authorization_required";
+  } else if (required && hasApprovedAuthorization) {
+    status = "authorized";
+  } else {
+    status = "within_policy";
+  }
+  return {
+    required,
+    status,
+    reasons,
+    totalItemDiscount: discount.itemDiscountAmount,
+    generalDiscount: discount.amount,
+    totalDiscount: discount.totalDiscountAmount,
+    totalDiscountPercent: discount.totalDiscountPercent,
+    allowedWithoutAuthorization: Boolean(policy.allowedWithoutAuthorization),
+    paymentPolicy: policy,
+    authorizationValid: !required || hasApprovedAuthorization,
+    authorizationId: normalizeText(authState.approvalId || ""),
+    hasApprovedAuthorization,
+    message: normalizeText(policy.message || "")
   };
 }
 
@@ -1224,8 +1759,102 @@ function resetPdvSaleDiscountAuthorization({ preserveAuthorizers = true } = {}) 
     approvedBy: "",
     approvedAt: "",
     expiresAt: "",
+    contextKey: "",
     error: ""
   };
+}
+
+function getPdvSaleDiscountAuthorizationStorageKey(sessionId = "") {
+  const resolvedSessionId = normalizeText(sessionId || getActivePdvSaleSessionId() || "");
+  return resolvedSessionId ? `aerostore_pdv_discount_authorization_${resolvedSessionId}` : "";
+}
+
+function getPdvSaleCachedDiscountAuthorization(session = null) {
+  const key = getPdvSaleDiscountAuthorizationStorageKey(session?.session_id || "");
+  if (!key) return null;
+  try {
+    const cached = JSON.parse(localStorage.getItem(key) || "null");
+    if (!cached?.approvalId || !cached?.contextKey) return null;
+    const currentContextKey = getPdvSaleDiscountPaymentContextKey(session || state.pdvSale.session);
+    if (cached.contextKey !== currentContextKey) return null;
+    return cached;
+  } catch (error) {
+    return null;
+  }
+}
+
+function persistPdvSaleDiscountAuthorization(auth = {}, session = null) {
+  const key = getPdvSaleDiscountAuthorizationStorageKey(session?.session_id || "");
+  if (!key || !auth?.approvalId || !auth?.contextKey) return;
+  try {
+    localStorage.setItem(key, JSON.stringify({
+      approvalId: normalizeText(auth.approvalId || ""),
+      approvedBy: normalizeText(auth.approvedBy || ""),
+      approvedAt: normalizeText(auth.approvedAt || ""),
+      expiresAt: normalizeText(auth.expiresAt || ""),
+      reason: normalizeText(auth.reason || ""),
+      contextKey: normalizeText(auth.contextKey || "")
+    }));
+  } catch (error) {
+    // Persistencia local da autorizacao nao deve travar a frente de caixa.
+  }
+}
+
+function getCurrentPdvSaleDiscountAuthorization(session = null) {
+  const safeSession = session || state.pdvSale.session || null;
+  const currentContextKey = getPdvSaleDiscountPaymentContextKey(safeSession);
+  const authState = state.pdvSale.discountAuthorization || {};
+  if (normalizeText(authState.approvalId || "") && normalizeText(authState.contextKey || "") === currentContextKey) {
+    return authState;
+  }
+  const cached = getPdvSaleCachedDiscountAuthorization(safeSession);
+  if (cached?.approvalId) {
+    state.pdvSale.discountAuthorization = {
+      ...(state.pdvSale.discountAuthorization || {}),
+      ...cached,
+      loading: false,
+      validating: false,
+      code: "",
+      error: ""
+    };
+    return state.pdvSale.discountAuthorization;
+  }
+  return {
+    ...(authState || {}),
+    approvalId: "",
+    contextKey: currentContextKey
+  };
+}
+
+function closePdvSaleDiscountDetailsPanel() {
+  state.pdvSale.discountDetailsOpen = false;
+  state.pdvSale.discountDetailsSyncing = true;
+  const details = document.getElementById("pdv-sale-discount-details");
+  if (details) {
+    details.open = false;
+    details.removeAttribute("open");
+  }
+  window.setTimeout(() => {
+    state.pdvSale.discountDetailsSyncing = false;
+  }, 120);
+}
+
+function bindPdvSaleDiscountDetails(container = null) {
+  const root = container || document;
+  const details = root.querySelector?.("[data-pdv-sale-discount-details='true']");
+  if (!details || details.dataset.boundDiscountDetails === "true") {
+    return;
+  }
+  details.dataset.boundDiscountDetails = "true";
+  if (!state.pdvSale.discountDetailsOpen && details.open) {
+    closePdvSaleDiscountDetailsPanel();
+  }
+  details.addEventListener("toggle", () => {
+    if (state.pdvSale.discountDetailsSyncing) {
+      return;
+    }
+    state.pdvSale.discountDetailsOpen = Boolean(details.open);
+  });
 }
 
 function normalizePdvSalePaymentMethodEntry(item = {}) {
@@ -1236,7 +1865,9 @@ function normalizePdvSalePaymentMethodEntry(item = {}) {
     method,
     amount,
     installments,
-    installment_amount: getInstallmentAmount(amount, installments)
+    installment_amount: getInstallmentAmount(amount, installments),
+    credit_id: normalizeText(item.credit_id || item.exchange_credit_id || ""),
+    customer_id: normalizeText(item.customer_id || "")
   };
 }
 
@@ -1248,6 +1879,30 @@ function getPdvSaleLaunchedPaymentMethods(session = null) {
 
 function getPdvSaleFinancialPaymentMethods(session = null) {
   return getPdvSaleLaunchedPaymentMethods(session).filter((item) => item.method !== "cashback");
+}
+
+function isPdvSaleRealPaymentMethod(method = "") {
+  const normalizedMethod = normalizeText(method || "");
+  return Boolean(normalizedMethod) && !["cashback", "credito_troca", "vale_presente", "permuta"].includes(normalizedMethod);
+}
+
+function getPdvSaleRealPaymentMethods(session = null) {
+  return getPdvSaleFinancialPaymentMethods(session).filter((item) => isPdvSaleRealPaymentMethod(item.method));
+}
+
+function isPdvSaleAutoAdjustablePaymentMethod(method = "") {
+  return PDV_SALE_AUTO_ADJUST_PAYMENT_METHODS.has(normalizePdvSaleDiscountMethod(method || ""));
+}
+
+function getPdvSaleExchangeCreditApplication(session = null) {
+  const method = getPdvSaleFinancialPaymentMethods(session).find((item) => item.method === "credito_troca") || null;
+  const direct = session?.exchange_credit_application || null;
+  const amount = Number(Math.max(0, toNumber(method?.amount || direct?.amount || 0)).toFixed(2));
+  return {
+    amount,
+    credit_id: normalizeText(method?.credit_id || direct?.credit_id || ""),
+    customer_id: normalizeText(method?.customer_id || direct?.customer_id || "")
+  };
 }
 
 function getPdvSaleLaunchedPaymentMethodMap(session = null) {
@@ -1277,6 +1932,68 @@ function getPdvSaleCashbackApplication(session = null) {
     customerPhone: normalizeText(session?.customer?.phone || ""),
     customerName: normalizeText(session?.customer?.name || ""),
     customerId: normalizeText(session?.customer?.master_customer_id || "")
+  };
+}
+
+function getPdvSaleGeneralDiscountPaymentPolicy(session = null) {
+  const currentSession = session || state.pdvSale.session || null;
+  const launched = getPdvSaleLaunchedPaymentMethods(currentSession)
+    .filter((item) => toNumber(item.amount || 0) > 0.01)
+    .map((item) => ({
+      method: normalizePdvSaleDiscountMethod(item.method || ""),
+      amount: toNumber(item.amount || 0)
+    }))
+    .filter((item) => item.method);
+  const directCashback = getPdvSaleCashbackApplication(currentSession).amount;
+  if (directCashback > 0.01 && !launched.some((item) => item.method === "cashback")) {
+    launched.push({ method: "cashback", amount: directCashback });
+  }
+  const directExchangeCredit = getPdvSaleExchangeCreditApplication(currentSession).amount;
+  if (directExchangeCredit > 0.01 && !launched.some((item) => item.method === "credito_troca")) {
+    launched.push({ method: "credito_troca", amount: directExchangeCredit });
+  }
+  const blockingMethods = launched.filter((item) => !isPdvSalePaymentMethodEligibleForGeneralDiscount(item.method));
+  const blockingLabels = uniqueStrings(blockingMethods.map((item) => formatPaymentMethodLabel(item.method)).filter(Boolean));
+  return {
+    hasLaunchedPayments: launched.length > 0,
+    eligible: blockingMethods.length === 0,
+    methods: launched,
+    blockingMethods,
+    blockingLabels
+  };
+}
+
+function getPdvSaleDiscountDraftAmount(draft = {}, session = null) {
+  const mode = normalizeText(draft.mode || "percent").toLowerCase() === "value" ? "value" : "percent";
+  const value = mode === "value" ? parseMoneyAmount(draft.value || 0) : toNumber(String(draft.value || "").replace(",", "."));
+  if (value <= 0) return 0;
+  const totals = getPdvSaleCartTotals(session || state.pdvSale.session);
+  return mode === "value"
+    ? Number(Math.max(0, value).toFixed(2))
+    : Number(((Math.max(0, toNumber(totals.itemsNetSubtotal || 0)) * value) / 100).toFixed(2));
+}
+
+function getPdvSaleGeneralDiscountBlockMessage(policy = {}) {
+  const methodsLabel = toArray(policy.blockingLabels).length
+    ? ` Esta venda possui pagamento em ${policy.blockingLabels.join(" + ")}.`
+    : "";
+  return `Desconto geral permitido somente para Pix ou Dinheiro.${methodsLabel} Remova ou ajuste os pagamentos lancados antes de aplicar este desconto.`;
+}
+
+function getPdvSaleVisibleGeneralDiscountBlock(session = null, draft = null) {
+  const safeDraft = draft || state.pdvSale.discountDraft || {};
+  const discount = getPdvSaleSessionDiscount(session || state.pdvSale.session);
+  const draftAmount = getPdvSaleDiscountDraftAmount(safeDraft, session || state.pdvSale.session);
+  const policy = getPdvSaleGeneralDiscountPaymentPolicy(session || state.pdvSale.session);
+  const hasGeneralDiscountIntent = discount.amount > 0.009 || draftAmount > 0.009 || Boolean(state.pdvSale.generalDiscountBlock);
+  if (!hasGeneralDiscountIntent || policy.eligible) {
+    return null;
+  }
+  return {
+    title: "Desconto bloqueado",
+    message: state.pdvSale.generalDiscountBlock?.message || getPdvSaleGeneralDiscountBlockMessage(policy),
+    labels: policy.blockingLabels,
+    policy
   };
 }
 
@@ -1463,13 +2180,19 @@ function persistPdvSaleCompletedSale(sale = null) {
 
 function getPdvSaleCartTotals(session = null) {
   const cartItems = toArray(session?.cart_items);
-  const subtotal = Number(cartItems.reduce((sum, item) => sum + (toNumber(item.preco_referencia || item.preco_venda || 0) * Math.max(1, Math.round(toNumber(item.quantidade || 1)))), 0).toFixed(2));
+  const subtotal = getPdvSaleItemsGrossSubtotal(session);
+  const itemDiscountAmount = getPdvSaleItemDiscountTotal(session);
+  const itemsNetSubtotal = getPdvSaleItemsNetSubtotal(session);
   if (!cartItems.length || subtotal <= 0) {
     return {
       subtotal: 0,
+      itemDiscountAmount: 0,
+      itemsNetSubtotal: 0,
       discountAmount: 0,
+      totalDiscountAmount: 0,
       discountPercent: 0,
       discountMode: "percent",
+      cashbackLimitBase: 0,
       totalBeforeCashback: 0,
       total: 0,
       paid: 0,
@@ -1485,22 +2208,31 @@ function getPdvSaleCartTotals(session = null) {
       cashbackUsed: 0,
       cashbackApplied: 0,
       cashbackRawApplied: 0,
+      exchangeCreditApplied: 0,
       cashbackInvalid: false,
       cashbackMaxUsable: 0,
-      cashbackRevisionMessage: ""
+      cashbackRevisionMessage: "",
+      paymentMethods: [],
+      realPaymentMethods: [],
+      launchedCount: 0,
+      realPaymentCount: 0
     };
   }
   const paymentMethods = getPdvSaleFinancialPaymentMethods(session);
-  const paid = Number(paymentMethods.reduce((sum, item) => sum + toNumber(item.amount), 0).toFixed(2));
+  const exchangeCreditApplied = getPdvSaleExchangeCreditApplication(session).amount;
+  const realPaymentMethods = getPdvSaleRealPaymentMethods(session);
+  const paid = Number(realPaymentMethods.reduce((sum, item) => sum + toNumber(item.amount), 0).toFixed(2));
   const draftTotals = getPdvSaleDraftTotals(session);
   const discount = getPdvSaleSessionDiscount(session);
-  const totalBeforeCashback = Number(Math.max(0, subtotal - discount.amount).toFixed(2));
+  const cashbackLimitBase = Number(Math.max(0, itemsNetSubtotal - discount.amount).toFixed(2));
+  const totalBeforeCashback = Number(Math.max(0, cashbackLimitBase - exchangeCreditApplied).toFixed(2));
   const rawCashbackUsed = getPdvSaleCashbackApplication(session).amount;
   const cashbackInfo = getPdvSaleCashbackInfo(session);
+  const cashbackLimitByRule = Number((cashbackLimitBase * 0.5).toFixed(2));
   const cashbackMaxUsable = Number(Math.max(0, Math.min(
     toNumber(cashbackInfo.available || rawCashbackUsed || 0),
     totalBeforeCashback,
-    totalBeforeCashback * 0.5
+    cashbackLimitByRule
   )).toFixed(2));
   const cashbackInvalid = rawCashbackUsed > cashbackMaxUsable + 0.009;
   const cashbackUsed = cashbackInvalid ? 0 : rawCashbackUsed;
@@ -1512,9 +2244,13 @@ function getPdvSaleCartTotals(session = null) {
   const predictedChange = Number(Math.max(0, predictedPaid - total).toFixed(2));
   return {
     subtotal,
+    itemDiscountAmount,
+    itemsNetSubtotal,
     discountAmount: discount.amount,
+    totalDiscountAmount: discount.totalDiscountAmount,
     discountPercent: discount.percent,
     discountMode: discount.mode,
+    cashbackLimitBase,
     totalBeforeCashback,
     total,
     paid,
@@ -1530,13 +2266,16 @@ function getPdvSaleCartTotals(session = null) {
     cashbackUsed,
     cashbackApplied: cashbackUsed,
     cashbackRawApplied: rawCashbackUsed,
+    exchangeCreditApplied,
     cashbackInvalid,
     cashbackMaxUsable,
     cashbackRevisionMessage: cashbackInvalid
       ? "O cashback aplicado ficou acima do limite depois da mudanca da venda e precisa ser revisado."
       : "",
     paymentMethods,
-    launchedCount: paymentMethods.length
+    realPaymentMethods,
+    launchedCount: paymentMethods.length,
+    realPaymentCount: realPaymentMethods.length
   };
 }
 
@@ -1544,12 +2283,14 @@ function getPdvSaleFinalizeState(session = null) {
   const totals = getPdvSaleCartTotals(session);
   const cartItems = toArray(session?.cart_items);
   const discount = getPdvSaleSessionDiscount(session);
-  const discountPolicy = discount.policy || getPdvSaleDiscountPolicy(session);
+  const discountAuthorizationState = evaluateDiscountAuthorizationState(session, totals);
+  const discountPolicy = discountAuthorizationState.paymentPolicy || discount.policy || getPdvSaleDiscountPolicy(session);
   const hasDraftsToLaunch = totals.drafted > 0;
   const hasEnoughDraftsOnly = totals.pending > 0 && totals.predictedPending <= 0 && hasDraftsToLaunch;
   const hasLogisticsReview = cartItems.some((item) => Boolean(item?.requires_logistics_review) || normalizeText(item?.fulfillment_type || "") === "LOGISTICS_REVIEW");
   const hasUndefinedOrigin = cartItems.some((item) => !normalizeText(item?.loja_origem_estoque || item?.stock_source_store_id || ""));
-  const missingDiscountAuthorization = discount.requiresAuthorization && !normalizeText(state.pdvSale.discountAuthorization?.approvalId || "");
+  const missingDiscountAuthorization = discountAuthorizationState.status === "authorization_required";
+  const discountAdjustmentRequired = discountAuthorizationState.status === "adjustment_required";
   if (state.pdvSale.drawerSubmitting) {
     return {
       key: "submitting",
@@ -1561,6 +2302,13 @@ function getPdvSaleFinalizeState(session = null) {
     return {
       key: "excess",
       label: "Revise o excedente",
+      disabled: true
+    };
+  }
+  if (discountAdjustmentRequired) {
+    return {
+      key: "discount_adjustment_required",
+      label: "Ajuste o desconto",
       disabled: true
     };
   }
@@ -1602,7 +2350,7 @@ function getPdvSaleFinalizeState(session = null) {
   if (missingDiscountAuthorization) {
     return {
       key: "discount_authorization",
-      label: discountPolicy.invalidMethods?.length ? "Autorizar desconto para este metodo" : "Validar autorizacao do desconto",
+      label: discount.itemDiscountAmount > 0 ? "Autorizar desconto no item" : discountPolicy.invalidMethods?.length ? "Autorizar desconto para este metodo" : "Validar autorizacao do desconto",
       disabled: true
     };
   }
@@ -1626,11 +2374,12 @@ function getPdvSaleFinalizeHint(finalizeState = {}) {
     submitting: "Aguarde, estamos concluindo a venda.",
     excess: "Revise o excedente nos pagamentos lancados.",
     cashback_invalid: "Revise o cashback aplicado antes de finalizar.",
+    discount_adjustment_required: "O desconto alterou o total. Ajuste os pagamentos antes de finalizar.",
     drafts_pending: "Lance ou remova os valores digitados antes de finalizar.",
     missing_payment: "Lance o valor restante para fechar a venda.",
     origin_pending: "Defina a origem dos itens antes de finalizar.",
     logistics_review: "Resolva a analise logistica do item.",
-    discount_authorization: "Valide a autorizacao Google Authenticator para este desconto."
+    discount_authorization: "Esta venda possui desconto que exige autorizacao gerencial."
   };
   return {
     tone: finalizeState.key === "excess" || finalizeState.key === "cashback_invalid" ? "danger" : "warning",
@@ -1648,7 +2397,13 @@ function resetPdvSaleCashbackState() {
   state.pdvSale.cashbackInfo = null;
   state.pdvSale.cashbackInfoCustomerKey = "";
   state.pdvSale.cashbackInput = "";
-  resetPdvSaleDiscountAuthorization();
+}
+
+function resetPdvSaleExchangeCreditState() {
+  state.pdvSale.exchangeCreditInfo = null;
+  state.pdvSale.exchangeCreditCustomerKey = "";
+  state.pdvSale.exchangeCreditInput = "";
+  state.pdvSale.exchangeCreditSelectedId = "";
 }
 
 function buildPdvSaleCustomerCreateDraft(seedValue = "") {
@@ -1805,6 +2560,32 @@ async function syncPdvSaleCashbackInfo(session = null, { force = false } = {}) {
   }
 }
 
+async function syncPdvSaleExchangeCreditInfo(session = null, { force = false } = {}) {
+  const currentSession = session || state.pdvSale.session || null;
+  const customer = currentSession?.customer || null;
+  const customerKey = normalizeText(customer?.master_customer_id || customer?.customer_id || customer?.id || customer?.phone || "");
+  const customerPhone = normalizeText(customer?.phone || "");
+  if (!customerKey || !customerPhone) {
+    resetPdvSaleExchangeCreditState();
+    return null;
+  }
+  if (!force && state.pdvSale.exchangeCreditInfo && state.pdvSale.exchangeCreditCustomerKey === customerKey) {
+    return state.pdvSale.exchangeCreditInfo;
+  }
+  state.pdvSale.exchangeCreditLoading = true;
+  try {
+    const response = await api(`/api/pdv/sales/customer/${encodeURIComponent(customer?.master_customer_id || customer?.customer_id || customerKey)}/exchange-credits?phone=${encodeURIComponent(customerPhone)}&name=${encodeURIComponent(customer?.name || "")}`);
+    state.pdvSale.exchangeCreditInfo = response || { items: [], total: 0 };
+    state.pdvSale.exchangeCreditCustomerKey = customerKey;
+    const applied = getPdvSaleExchangeCreditApplication(currentSession);
+    state.pdvSale.exchangeCreditSelectedId = applied.credit_id || toArray(response?.items)[0]?.credit_id || "";
+    state.pdvSale.exchangeCreditInput = applied.amount > 0 ? formatMoneyAmountInput(applied.amount) : state.pdvSale.exchangeCreditInput;
+    return state.pdvSale.exchangeCreditInfo;
+  } finally {
+    state.pdvSale.exchangeCreditLoading = false;
+  }
+}
+
 async function ensurePdvSaleSession({ forceNew = false } = {}) {
   restorePdvSaleCompletedSaleFromStorage();
   const storeId = getCurrentPdvStoreId();
@@ -1836,10 +2617,12 @@ async function ensurePdvSaleSession({ forceNew = false } = {}) {
       resetPdvSaleDiscountAuthorization();
       if (!existingSession?.customer?.phone) {
         resetPdvSaleCashbackState();
+        resetPdvSaleExchangeCreditState();
       }
       persistPdvSaleSessionId(state.pdvSale.sessionId);
       if (existingSession?.customer?.phone) {
         await syncPdvSaleCashbackInfo(existingSession, { force: true });
+        await syncPdvSaleExchangeCreditInfo(existingSession, { force: true });
       }
       return existingSession;
     } catch (error) {
@@ -1863,6 +2646,7 @@ async function ensurePdvSaleSession({ forceNew = false } = {}) {
   state.pdvSale.discountDraft = buildPdvSaleDiscountDraftFromSession(openedSession);
   resetPdvSaleDiscountAuthorization({ preserveAuthorizers: false });
   resetPdvSaleCashbackState();
+  resetPdvSaleExchangeCreditState();
   persistPdvSaleSessionId(state.pdvSale.sessionId);
   return openedSession;
 }
@@ -1878,9 +2662,11 @@ async function refreshPdvSaleSession() {
   if (session?.customer?.phone) {
     state.pdvSale.customerQuery = normalizeText(session.customer?.name || state.pdvSale.customerQuery || "");
     await syncPdvSaleCashbackInfo(session, { force: true });
+    await syncPdvSaleExchangeCreditInfo(session, { force: true });
   } else {
     state.pdvSale.customerQuery = normalizeText(state.pdvSale.customerQuery || "");
     resetPdvSaleCashbackState();
+    resetPdvSaleExchangeCreditState();
   }
   return session;
 }
@@ -2116,9 +2902,9 @@ function buildPdvSaleCustomerCard(customer = null) {
         <div class="pdv-customer-profile-stat"><span>Ultima compra</span><strong>${formatDateBR(behavior.ultima_compra || customer.ultima_compra || "-") || "-"}</strong></div>
       </div>
       ${categories ? `<div class="pdv-sale-action-chips">${categories}</div>` : ""}
-      <div class="action-row pdv-sale-customer-card-actions">
-        <button class="ghost-button small" type="button" data-pdv-sale-customer-focus="true">Trocar cliente</button>
-        <button class="ghost-button small" type="button" data-pdv-sale-customer-detach="true"${state.pdvSale.customerRemoving ? " disabled" : ""}>${state.pdvSale.customerRemoving ? "Removendo..." : "Remover cliente"}</button>
+      <div class="action-row pdv-sale-customer-card-actions" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
+        <button class="secondary-button small" type="button" onclick="window.open('https://wa.me/55${(customer.phone || "").replace(/\\D/g, "")}', '_blank')">WhatsApp</button>
+        <button class="secondary-button small" type="button" data-pdv-sale-customer-detach="true"${state.pdvSale.customerRemoving ? " disabled" : ""}>${state.pdvSale.customerRemoving ? "..." : "Trocar Cliente"}</button>
       </div>
     </article>
   `;
@@ -2331,7 +3117,7 @@ function buildPdvSaleProductResults() {
       </div>
     `;
   }
-  return rows.map((item, index) => {
+  const resultsHtml = rows.map((item, index) => {
     const presentation = getPdvSaleProductOperationalPresentation(item);
     const disabled = Boolean(presentation.disabled);
     const rawLookup = item.product_id || item.sku || item.codigo || `${index}`;
@@ -2350,10 +3136,10 @@ function buildPdvSaleProductResults() {
             <div class="pdv-product-card-identifiers">
               <span class="pdv-product-card-sku">${escapeHtml(item.sku || item.codigo || item.codigo_tiny || "-")}</span>
             </div>
-          </div>
-          <div class="pdv-product-card-tags">
-            ${item.marca ? `<span class="pdv-product-card-tag">${escapeHtml(item.marca)}</span>` : ""}
-            ${item.categoria ? `<span class="pdv-product-card-tag">${escapeHtml(item.categoria)}</span>` : ""}
+            <div class="pdv-product-card-tags">
+              ${item.marca ? `<span class="pdv-product-card-tag">${escapeHtml(item.marca)}</span>` : ""}
+              ${item.categoria ? `<span class="pdv-product-card-tag">${escapeHtml(item.categoria)}</span>` : ""}
+            </div>
           </div>
         </div>
         <div class="pdv-product-card-action">
@@ -2367,6 +3153,33 @@ function buildPdvSaleProductResults() {
       </article>
     `;
   }).join("");
+  return `
+    <div class="pdv-sale-product-results-head">
+      <span>Resultados da busca</span>
+      <button class="pdv-product-results-close" type="button" data-pdv-sale-product-results-close="true" aria-label="Fechar resultados da busca">×</button>
+    </div>
+    ${resultsHtml}
+  `;
+}
+
+function getPdvSaleItemDiscountDraft(item = {}) {
+  const itemId = normalizeText(item.item_id || "");
+  const saved = getPdvSaleCartItemDiscount(item);
+  const draft = itemId ? state.pdvSale.itemDiscountDrafts?.[itemId] : null;
+  if (draft) {
+    return {
+      mode: normalizeText(draft.mode || saved.mode || "amount").toLowerCase() === "percent" ? "percent" : "amount",
+      value: normalizeText(draft.value || ""),
+      reason: normalizeText(draft.reason || "")
+    };
+  }
+  return {
+    mode: saved.mode || "amount",
+    value: saved.amount > 0
+      ? (saved.mode === "percent" ? String(saved.value).replace(".", ",") : formatMoneyAmountInput(saved.amount))
+      : "",
+    reason: saved.reason || ""
+  };
 }
 
 function buildPdvSaleCartItems(session = null) {
@@ -2380,10 +3193,16 @@ function buildPdvSaleCartItems(session = null) {
     `;
   }
   return rows.map((item) => {
-    const quantity = Math.max(1, Math.round(toNumber(item.quantidade || 1)));
-    const unitPrice = toNumber(item.preco_referencia || item.preco_venda || 0);
-    const total = unitPrice * quantity;
+    const itemId = normalizeText(item.item_id || "");
+    const quantity = getPdvSaleCartItemQuantity(item);
+    const unitPrice = getPdvSaleCartItemUnitPrice(item);
+    const grossTotal = getPdvSaleCartItemGross(item);
+    const itemDiscount = getPdvSaleCartItemDiscount(item);
+    const netTotal = Number(Math.max(0, grossTotal - itemDiscount.amount).toFixed(2));
+    const isDiscountOpen = normalizeText(state.pdvSale.itemDiscountOpenItemId || "") === itemId;
+    const discountDraft = getPdvSaleItemDiscountDraft(item);
     const isBusy = normalizeText(state.pdvSale.cartBusyItemId || "") === normalizeText(item.item_id || "");
+    const isDiscountBusy = normalizeText(state.pdvSale.itemDiscountApplyingId || "") === itemId;
     return `
       <article class="pdv-cart-item-card">
         <div class="pdv-cart-item-left">
@@ -2402,15 +3221,38 @@ function buildPdvSaleCartItems(session = null) {
         <div class="pdv-cart-item-right">
           <div class="pdv-cart-item-pricing">
             <span class="pdv-cart-item-unit">${currency(unitPrice)} un.</span>
-            <strong class="pdv-cart-item-total">${currency(total)}</strong>
+            ${itemDiscount.amount > 0 ? `<span class="pdv-cart-item-discount-line">Desconto item: -${currency(itemDiscount.amount)}</span>` : ""}
+            <strong class="pdv-cart-item-total">${currency(netTotal)}</strong>
+            ${itemDiscount.amount > 0 ? `<small class="pdv-cart-item-net-note">Original ${currency(grossTotal)}</small>` : ""}
           </div>
           <div class="pdv-cart-item-actions">
             ${toArray(item.fulfillment_options).length ? `<button class="pdv-cart-action-btn" type="button" data-pdv-sale-cart-fulfillment="${escapeHtml(item.item_id)}"${isBusy ? " disabled" : ""}>Origem</button>` : ""}
+            <button class="pdv-cart-action-btn" type="button" data-pdv-sale-item-discount-toggle="${escapeHtml(item.item_id)}"${isBusy || isDiscountBusy ? " disabled" : ""}>Desconto</button>
             <button class="pdv-cart-action-btn" type="button" data-pdv-sale-cart-qty="${escapeHtml(item.item_id)}" data-qty-delta="-1"${isBusy ? " disabled" : ""}>-</button>
             <button class="pdv-cart-action-btn" type="button" data-pdv-sale-cart-qty="${escapeHtml(item.item_id)}" data-qty-delta="1"${isBusy ? " disabled" : ""}>+</button>
             <button class="pdv-cart-action-btn danger" type="button" data-pdv-sale-cart-remove="${escapeHtml(item.item_id)}"${isBusy ? " disabled" : ""}>${isBusy ? "..." : "x"}</button>
           </div>
         </div>
+        ${isDiscountOpen ? `
+          <div class="pdv-cart-item-discount-editor">
+            <label>Modo
+              <select data-pdv-sale-item-discount-mode="${escapeHtml(item.item_id)}"${isDiscountBusy ? " disabled" : ""}>
+                <option value="amount"${discountDraft.mode === "amount" ? " selected" : ""}>R$</option>
+                <option value="percent"${discountDraft.mode === "percent" ? " selected" : ""}>%</option>
+              </select>
+            </label>
+            <label>Desconto no item
+              <input type="text" inputmode="decimal" data-pdv-sale-item-discount-value="${escapeHtml(item.item_id)}" value="${escapeHtml(discountDraft.value || "")}" placeholder="0,00"${isDiscountBusy ? " disabled" : ""} />
+            </label>
+            <label class="pdv-sale-finalize-form-hidden">Motivo
+              <input type="text" data-pdv-sale-item-discount-reason="${escapeHtml(item.item_id)}" value="${escapeHtml(discountDraft.reason || "")}" placeholder="PeÃ§a antiga, sortida ou negociaÃ§Ã£o"${isDiscountBusy ? " disabled" : ""} />
+            </label>
+            <div class="pdv-cart-item-discount-actions">
+              <button class="secondary-button small" type="button" data-pdv-sale-item-discount-apply="${escapeHtml(item.item_id)}"${isDiscountBusy ? " disabled" : ""}>${isDiscountBusy ? "Aplicando..." : "Aplicar"}</button>
+              <button class="ghost-button small" type="button" data-pdv-sale-item-discount-remove="${escapeHtml(item.item_id)}"${itemDiscount.amount > 0 && !isDiscountBusy ? "" : " disabled"}>Remover</button>
+            </div>
+          </div>
+        ` : ""}
       </article>
     `;
   }).join("");
@@ -2426,22 +3268,27 @@ function getPdvSaleCashbackRuleSummary(totals = null, cashbackInfo = null) {
   const safeCashback = cashbackInfo || getPdvSaleCashbackInfo(state.pdvSale.session);
   const eligibleBase = Number(Math.max(
     0,
-    toNumber(safeTotals.totalBeforeCashback ?? 0)
-      || (toNumber(safeTotals.subtotal || 0) - toNumber(safeTotals.discountAmount || 0))
+    toNumber(safeTotals.cashbackLimitBase ?? 0)
+      || (toNumber((safeTotals.itemsNetSubtotal ?? safeTotals.subtotal) || 0) - toNumber(safeTotals.discountAmount || 0))
+  ).toFixed(2));
+  const remainingBeforeCashback = Number(Math.max(
+    0,
+    toNumber(safeTotals.totalBeforeCashback ?? eligibleBase)
   ).toFixed(2));
   const limitByRule = Number((eligibleBase * 0.5).toFixed(2));
   const maxUsableNow = Number(Math.max(0, Math.min(
     toNumber(safeCashback.available || 0),
-    eligibleBase,
-    limitByRule
+    limitByRule,
+    remainingBeforeCashback
   )).toFixed(2));
   const requestedApplied = Number(Math.max(0, toNumber(safeCashback.applied || 0)).toFixed(2));
   const validApplied = requestedApplied > maxUsableNow + 0.009 ? 0 : requestedApplied;
   const idealPurchase = Number(Math.max(0, toNumber(safeCashback.available || 0) * 2).toFixed(2));
   const notUsedNow = Number(Math.max(0, toNumber(safeCashback.available || 0) - maxUsableNow).toFixed(2));
-  const customerPays = Number(Math.max(0, eligibleBase - validApplied).toFixed(2));
+  const customerPays = Number(Math.max(0, remainingBeforeCashback - validApplied).toFixed(2));
   return {
     eligibleBase,
+    remainingBeforeCashback,
     limitByRule,
     maxUsableNow,
     requestedApplied,
@@ -2456,12 +3303,7 @@ function getPdvSaleCashbackRuleSummary(totals = null, cashbackInfo = null) {
 
 function getPdvSaleProjectedCashback(totals = null) {
   const safeTotals = totals || getPdvSaleCartTotals(state.pdvSale.session);
-  const projectedBase = Number(Math.max(
-    0,
-    toNumber(safeTotals.subtotal || 0)
-      - toNumber(safeTotals.discountAmount || 0)
-      - toNumber(safeTotals.cashbackApplied || 0)
-  ).toFixed(2));
+  const projectedBase = Number(Math.max(0, toNumber(safeTotals.total || 0)).toFixed(2));
   return Number((projectedBase * 0.12).toFixed(2));
 }
 
@@ -2476,20 +3318,17 @@ function pdvSaleUsesPaymentMethod(method = "", session = null) {
 }
 
 function buildPdvSaleFinalizeSupportFields(session = null) {
-  const discount = getPdvSaleSessionDiscount(session);
-  const discountPolicy = discount.policy || getPdvSaleDiscountPolicy(session);
-  const requiresDiscountAuthorization = discount.requiresAuthorization;
   const usesGiftCard = pdvSaleUsesPaymentMethod("vale_presente", session);
   const usesPermuta = pdvSaleUsesPaymentMethod("permuta", session);
-  const hasVisibleFields = requiresDiscountAuthorization || usesGiftCard || usesPermuta;
-  const authState = state.pdvSale.discountAuthorization;
+  const hasVisibleFields = usesGiftCard || usesPermuta;
+  const authState = getCurrentPdvSaleDiscountAuthorization(session);
   const authorizers = toArray(authState.authorizers);
-  const approvalMeta = authState.approvalId
-    ? `<div class="pdv-authorization-success"><strong>Autorizacao aprovada por ${escapeHtml(authState.approvedBy || "autorizador")}.</strong><span>Valida ate ${escapeHtml(formatDateTimeBR(authState.expiresAt || ""))}.</span></div>`
-    : "";
   const authorizerOptions = authorizers.map((item) => `
     <option value="${escapeHtml(item.authorizer_id || "")}"${normalizeText(authState.authorizerId || "") === normalizeText(item.authorizer_id || "") ? " selected" : ""}>${escapeHtml(item.name || "Autorizador")}</option>
   `).join("");
+  const approvalMeta = authState.approvalId
+    ? `<div class="pdv-authorization-success pdv-authorization-success-compact"><strong>Autorizacao aprovada por ${escapeHtml(authState.approvedBy || "autorizador")}.</strong><span>Valida ate ${escapeHtml(formatDateTimeBR(authState.expiresAt || ""))}.</span></div>`
+    : "";
 
   return `
     <div class="pdv-sale-finalize-support${hasVisibleFields ? "" : " pdv-sale-finalize-form-hidden"}">
@@ -2502,20 +3341,7 @@ function buildPdvSaleFinalizeSupportFields(session = null) {
         <label class="${usesPermuta ? "" : "pdv-sale-finalize-form-hidden"}">PIN permuta<input type="text" name="permuta_pin" placeholder="PIN da permuta" /></label>
         <label class="${usesPermuta ? "" : "pdv-sale-finalize-form-hidden"}">Motivo permuta<input type="text" name="permuta_reason" placeholder="Motivo da permuta" /></label>
       </div>
-      <div class="pdv-sale-authorization-box${requiresDiscountAuthorization ? "" : " pdv-sale-finalize-form-hidden"}">
-        <div class="pdv-sale-authorization-copy">
-          <strong>Autorizacao Google Authenticator</strong>
-          <span>${escapeHtml(
-            discountPolicy.invalidMethods?.length
-              ? `Desconto automatico e permitido apenas para PIX ou Dinheiro. Para ${discountPolicy.invalidMethodsLabel || "este metodo"}, valide com um autorizador ativo.`
-              : "Descontos acima de 10% exigem um codigo de 6 digitos de um autorizador ativo."
-          )}</span>
-        </div>
-        <div class="pdv-sale-authorization-steps">
-          <span>1. Selecione o autorizador ativo.</span>
-          <span>2. Peça o código atual no app Google Authenticator.</span>
-          <span>3. Informe o motivo e valide novamente se a forma de pagamento mudar.</span>
-        </div>
+      <div class="pdv-sale-finalize-form-hidden">
         ${authState.loading ? `
           <div class="pdv-sale-discount-helper">
             <strong>Carregando autorizadores ativos...</strong>
@@ -2529,21 +3355,18 @@ function buildPdvSaleFinalizeSupportFields(session = null) {
                 ${authorizerOptions}
               </select>
             </label>
-            <label>Codigo do Google Authenticator
+            <label>Token de 6 digitos
               <input type="text" inputmode="numeric" maxlength="6" data-pdv-sale-discount-code="true" value="${escapeHtml(authState.code || "")}" placeholder="000000"${authState.validating ? " disabled" : ""} />
-            </label>
-            <label class="pdv-sale-authorization-reason">Motivo da autorizacao
-              <input type="text" data-pdv-sale-discount-reason="true" value="${escapeHtml(authState.reason || "")}" placeholder="Motivo da excecao comercial"${authState.validating ? " disabled" : ""} />
             </label>
           </div>
         ` : `
           <div class="pdv-payment-alert warning">
             <strong>Nenhum autorizador ativo encontrado</strong>
-            <span>Abra <strong>Caixa &gt; Autorizadores Google Authenticator</strong>, gere o QR Code e ative ao menos um autorizador antes de liberar descontos acima de 10%.</span>
+            <span>Abra <strong>Caixa &gt; Autorizadores</strong> e ative ao menos um autorizador antes de liberar descontos acima de 10%.</span>
           </div>
         `}
         <div class="pdv-sale-authorization-actions">
-          <button class="secondary-button small" type="button" data-pdv-sale-discount-validate="true"${authState.validating || authState.loading || !authorizers.length ? " disabled" : ""}>${authState.validating ? "Validando..." : "Validar autorizacao"}</button>
+          <button class="primary-button small" type="button" data-pdv-sale-discount-validate="true"${authState.validating || authState.loading || !authorizers.length ? " disabled" : ""}>${authState.validating ? "Validando..." : "Validar autorizacao"}</button>
           <button class="ghost-button small" type="button" data-pdv-sale-discount-cancel-authorization="true"${authState.validating ? " disabled" : ""}>Cancelar desconto extra</button>
         </div>
         ${approvalMeta}
@@ -2558,50 +3381,62 @@ function buildPdvSaleDiscountPanel(session = null, totals = null) {
   const safeTotals = totals || getPdvSaleCartTotals(safeSession);
   const draft = state.pdvSale.discountDraft || buildPdvSaleDiscountDraftFromSession(safeSession);
   const discount = getPdvSaleSessionDiscount(safeSession);
-  const discountPolicy = discount.policy || getPdvSaleDiscountPolicy(safeSession);
-  const requiresAuthorization = discount.requiresAuthorization;
-  const hasApprovedAuthorization = Boolean(state.pdvSale.discountAuthorization?.approvalId);
-  const helperClass = hasApprovedAuthorization || discountPolicy.allowedWithoutAuthorization
+  const discountAuthorizationState = evaluateDiscountAuthorizationState(safeSession, safeTotals);
+  const discountPolicy = discountAuthorizationState.paymentPolicy || discount.policy || getPdvSaleDiscountPolicy(safeSession);
+  const generalDiscountBlock = getPdvSaleVisibleGeneralDiscountBlock(safeSession, draft);
+  const requiresAuthorization = discountAuthorizationState.required;
+  const hasAnyDiscount = discount.totalDiscountAmount > 0;
+  const hasApprovedAuthorization = discountAuthorizationState.hasApprovedAuthorization;
+  const authState = getCurrentPdvSaleDiscountAuthorization(safeSession);
+  const authorizers = toArray(authState.authorizers);
+  const authorizerOptions = authorizers.map((item) => `
+    <option value="${escapeHtml(item.authorizer_id || "")}"${normalizeText(authState.authorizerId || "") === normalizeText(item.authorizer_id || "") ? " selected" : ""}>${escapeHtml(item.name || "Autorizador")}</option>
+  `).join("");
+  const helperClass = generalDiscountBlock
+    ? " is-warning"
+    : discountAuthorizationState.status === "adjustment_required"
+    ? " is-warning"
+    : hasApprovedAuthorization || discountPolicy.allowedWithoutAuthorization
     ? " is-ok"
     : discountPolicy.pendingPaymentMethod
       ? ""
       : " is-warning";
-  const helperTitle = hasApprovedAuthorization
+  const helperTitle = generalDiscountBlock
+    ? "Desconto bloqueado"
+    : discountAuthorizationState.status === "adjustment_required"
+    ? "Ajuste necessario nos pagamentos."
+    : hasApprovedAuthorization
     ? "Autorizacao aprovada."
-    : discount.amount > 0
-      ? discountPolicy.pendingPaymentMethod
+    : hasAnyDiscount
+      ? discount.itemDiscountAmount > 0
+        ? "Autorizacao gerencial necessaria para desconto especial."
+        : discountPolicy.pendingPaymentMethod
         ? "Desconto aguardando forma de pagamento."
         : discountPolicy.allowedWithoutAuthorization
-          ? "Desconto permitido para PIX/Dinheiro."
+          ? "Desconto de PIX/dinheiro dentro da politica."
           : discountPolicy.invalidMethods?.length
-            ? "Autorizacao necessaria para este metodo."
-            : "Autorizacao necessaria para seguir."
+            ? "Este desconto e permitido apenas para PIX ou dinheiro."
+            : "Autorizacao gerencial necessaria para desconto especial."
       : "Sem autorizacao gerencial no momento.";
-  const helperDetail = hasApprovedAuthorization
-    ? `Finalize a venda antes de ${formatDateTimeBR(state.pdvSale.discountAuthorization?.expiresAt || "") || "a autorização expirar"}.`
-    : discount.amount > 0
-      ? discountPolicy.pendingPaymentMethod
+  const helperDetail = generalDiscountBlock
+    ? generalDiscountBlock.message
+    : discountAuthorizationState.status === "adjustment_required"
+    ? "O desconto alterou o total abaixo dos pagamentos ja lancados. Ajuste os pagamentos antes de finalizar."
+    : hasApprovedAuthorization
+    ? "Composicao de desconto autorizada."
+    : hasAnyDiscount
+      ? discount.itemDiscountAmount > 0
+        ? "Valide uma vez o desconto especial dos itens."
+        : discountPolicy.pendingPaymentMethod
         ? discountPolicy.message
         : discountPolicy.allowedWithoutAuthorization
           ? discountPolicy.message
           : discountPolicy.invalidMethods?.length
             ? discountPolicy.message
-            : "Valide o codigo no bloco de Finalizacao antes de concluir a venda."
-      : "Descontos de até 10% seguem livres. Acima disso, a venda pede Google Authenticator.";
+            : "Solicite a liberacao do gestor para continuar."
+      : "Sem desconto aplicado.";
   return `
-    <div class="pdv-sale-discount-panel">
-      <div class="pdv-sale-discount-head">
-        <div>
-          <strong>Desconto supervisionado</strong>
-          <span>Pix e Dinheiro podem aplicar ate 10% sem autorizacao. Outros meios exigem validacao gerencial para qualquer desconto.</span>
-        </div>
-      </div>
-      <div class="pdv-sale-discount-grid">
-        <div><span>Subtotal</span><strong>${currency(safeTotals.subtotal)}</strong></div>
-        <div><span>Desconto geral</span><strong>${currency(discount.amount)}</strong></div>
-        <div><span>Total liquido</span><strong>${currency(safeTotals.totalBeforeCashback)}</strong></div>
-        <div><span>Politica sem autorizacao</span><strong>10%</strong></div>
-      </div>
+    <div class="pdv-sale-discount-panel is-simplified">
       <div class="pdv-sale-discount-form">
         <label>Modo
           <select data-pdv-sale-discount-mode="true"${state.pdvSale.discountApplying ? " disabled" : ""}>
@@ -2612,23 +3447,44 @@ function buildPdvSaleDiscountPanel(session = null, totals = null) {
         <label>${draft.mode === "value" ? "Desconto em valor" : "Desconto em percentual"}
           <input type="text" inputmode="decimal" data-pdv-sale-discount-value="true" value="${escapeHtml(draft.value || "")}" placeholder="${draft.mode === "value" ? "0,00" : "0,00"}"${state.pdvSale.discountApplying ? " disabled" : ""} />
         </label>
-        <label>Motivo comercial
-          <input type="text" data-pdv-sale-discount-note="true" value="${escapeHtml(draft.reason || "")}" placeholder="Opcional ate o limite; obrigatorio na autorizacao"${state.pdvSale.discountApplying ? " disabled" : ""} />
-        </label>
       </div>
       <div class="pdv-sale-discount-actions">
         <button class="secondary-button small" type="button" data-pdv-sale-discount-apply="true"${state.pdvSale.discountApplying ? " disabled" : ""}>${state.pdvSale.discountApplying ? "Aplicando..." : "Aplicar desconto"}</button>
         <button class="ghost-button small" type="button" data-pdv-sale-discount-remove="true"${(discount.amount > 0 && !state.pdvSale.discountApplying) ? "" : "disabled"}>Remover desconto</button>
       </div>
       <div class="pdv-sale-discount-helper${helperClass}">
-        <strong>${helperTitle}</strong>
-        <span>${helperDetail}</span>
-        ${discount.paymentMethods?.length ? `<small>Metodos lancados: ${escapeHtml(discount.paymentMethods.map((method) => formatPaymentMethodLabel(method)).join(" + "))}</small>` : ""}
-        ${discount.amount > 0 ? `<small>O desconto reduz a venda antes do cashback e afeta a base do benefício previsto.</small>` : ""}
+        <span>${requiresAuthorization && !hasApprovedAuthorization ? "Selecione o autorizador, informe o token e valide." : helperDetail}</span>
       </div>
-      ${requiresAuthorization
-        ? `<div class="pdv-sale-discount-authorization-flag">${state.pdvSale.discountAuthorization.loading ? "Carregando autorizadores ativos..." : hasApprovedAuthorization ? "Autorizacao TOTP validada. Lance os pagamentos e finalize a venda." : discountPolicy.invalidMethods?.length ? "Este meio de pagamento exige autorizacao TOTP para manter o desconto." : "Aguardando autorizacao TOTP para concluir este desconto."}</div>`
-        : ""}
+      ${requiresAuthorization && !hasApprovedAuthorization ? `
+        <div class="pdv-sale-discount-auth-compact">
+          ${authState.loading ? `
+            <div class="pdv-sale-discount-helper">
+              <span>Carregando autorizadores ativos...</span>
+            </div>
+          ` : authorizers.length ? `
+            <label>Autorizador
+              <select data-pdv-sale-discount-authorizer="true"${authState.validating ? " disabled" : ""}>
+                <option value="">Selecione</option>
+                ${authorizerOptions}
+              </select>
+            </label>
+            <label>Token de 6 digitos
+              <input type="text" inputmode="numeric" maxlength="6" data-pdv-sale-discount-code="true" value="${escapeHtml(authState.code || "")}" placeholder="000000"${authState.validating ? " disabled" : ""} />
+            </label>
+            <div class="pdv-sale-authorization-actions">
+              <button class="primary-button small" type="button" data-pdv-sale-discount-validate="true"${authState.validating || authState.loading || !authorizers.length ? " disabled" : ""}>${authState.validating ? "Validando..." : "Validar autorizacao"}</button>
+              <button class="ghost-button small" type="button" data-pdv-sale-discount-cancel-authorization="true"${authState.validating ? " disabled" : ""}>Cancelar desconto extra</button>
+            </div>
+          ` : `
+            <div class="pdv-payment-alert warning">
+              <strong>Nenhum autorizador ativo encontrado</strong>
+              <span>Abra Caixa &gt; Autorizadores e ative ao menos um autorizador.</span>
+            </div>
+          `}
+          ${authState.error ? `<div class="pdv-payment-alert warning"><strong>Autorizacao recusada</strong><span>${escapeHtml(authState.error)}</span></div>` : ""}
+        </div>
+      ` : ""}
+      ${requiresAuthorization && hasApprovedAuthorization ? `<div class="pdv-sale-discount-helper is-ok"><span>Desconto autorizado.</span></div>` : ""}
     </div>
   `;
 }
@@ -2648,11 +3504,10 @@ function buildPdvSaleCashbackPanel(session = null, totals = null) {
   const cashbackRule = getPdvSaleCashbackRuleSummary(totals, cashbackInfo);
   const applyCeiling = cashbackRule.maxUsableNow;
   const projectedCashback = getPdvSaleProjectedCashback(totals);
+  const hasCartItems = toArray(session?.cart_items).length > 0;
   const canApply = !state.pdvSale.lastCompletedSale
     && !state.pdvSale.cashbackApplying
-    && toNumber(cashbackInfo.available || 0) > 0
-    && applyCeiling > 0
-    && toArray(session?.cart_items).length > 0;
+    && hasCartItems;
   const currentInput = normalizeText(state.pdvSale.cashbackInput || "")
     || (applied > 0 ? formatMoneyAmountInput(applied) : "");
   const pendingReleaseAt = getPdvSaleCashbackPendingReleaseAt(cashbackInfo);
@@ -2722,6 +3577,217 @@ function buildPdvSaleCashbackPanel(session = null, totals = null) {
           </span>
         ` : ""}
       </div>
+    </div>
+  `;
+}
+
+function buildPdvSaleExchangeCreditPanel(session = null, totals = null) {
+  const selectedCustomer = session?.customer || null;
+  if (!selectedCustomer) {
+    return `
+      <div class="pdv-sale-empty-state compact">
+        <strong>Credito de Troca</strong>
+        <span>Selecione um cliente para consultar creditos de troca ativos.</span>
+      </div>
+    `;
+  }
+  const credits = state.pdvSale.exchangeCreditInfo || { items: [], total: 0 };
+  const rows = toArray(credits.items);
+  const applied = getPdvSaleExchangeCreditApplication(session);
+  const availableTotal = toNumber(credits.total || 0);
+  const saleTotals = totals || getPdvSaleCartTotals(session);
+  const maxUsable = Number(Math.max(0, Math.min(
+    availableTotal,
+    toNumber(saleTotals.subtotal || 0) - toNumber(saleTotals.discountAmount || 0)
+  )).toFixed(2));
+  const selectedCreditId = normalizeText(state.pdvSale.exchangeCreditSelectedId || applied.credit_id || rows[0]?.credit_id || "");
+  const selectedCredit = rows.find((item) => normalizeText(item.credit_id || "") === selectedCreditId) || rows[0] || null;
+  const currentInput = normalizeText(state.pdvSale.exchangeCreditInput || "")
+    || (applied.amount > 0 ? formatMoneyAmountInput(applied.amount) : "");
+  const canApply = !state.pdvSale.lastCompletedSale
+    && !state.pdvSale.exchangeCreditApplying
+    && rows.length > 0
+    && toArray(session?.cart_items).length > 0;
+  return `
+    <div class="pdv-cashback-checkout-card${applied.amount > 0 ? " has-applied" : ""}">
+      <div class="pdv-cashback-checkout-head">
+        <div>
+          <strong>Credito de Troca disponivel</strong>
+          <span>${escapeHtml(selectedCustomer.name || "Cliente")}</span>
+        </div>
+        ${state.pdvSale.exchangeCreditLoading ? '<span class="pdv-cashback-inline-status">Atualizando credito...</span>' : ""}
+      </div>
+      <div class="pdv-cashback-checkout-grid">
+        <div><span>Saldo disponivel</span><strong>${currency(availableTotal)}</strong></div>
+        <div><span>Maximo nesta venda</span><strong>${currency(maxUsable)}</strong></div>
+        <div class="${applied.amount > 0 ? "is-balanced" : ""}"><span>Credito aplicado</span><strong>${applied.amount > 0 ? `-${currency(applied.amount)}` : currency(0)}</strong></div>
+        <div><span>Saldo restante previsto</span><strong>${currency(Math.max(0, availableTotal - applied.amount))}</strong></div>
+      </div>
+      ${rows.length ? `
+        <form class="pdv-cashback-checkout-actions" data-pdv-sale-exchange-credit-form="true">
+          <label class="pdv-cashback-checkout-field">
+            <span>Credito</span>
+            <select data-pdv-sale-exchange-credit-select="true" ${state.pdvSale.lastCompletedSale ? "disabled" : ""}>
+              ${rows.map((credit) => `<option value="${escapeHtml(credit.credit_id || "")}"${normalizeText(credit.credit_id || "") === selectedCreditId ? " selected" : ""}>${escapeHtml(credit.credit_id || "")} - ${currency(credit.remaining_amount || 0)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="pdv-cashback-checkout-field">
+            <span>Valor a usar nesta venda</span>
+            <input type="text" inputmode="decimal" data-pdv-sale-exchange-credit-input="true" value="${escapeHtml(currentInput)}" placeholder="0,00" ${state.pdvSale.lastCompletedSale ? "disabled" : ""} />
+          </label>
+          <div class="pdv-cashback-checkout-buttons">
+            <button class="secondary-button small" type="button" data-pdv-sale-exchange-credit-fill="true" ${canApply ? "" : "disabled"}>Usar saldo</button>
+            <button class="primary-button small" type="submit" ${canApply ? "" : "disabled"}>${state.pdvSale.exchangeCreditApplying ? "Aplicando..." : "Aplicar credito"}</button>
+            <button class="ghost-button small" type="button" data-pdv-sale-exchange-credit-remove="true" ${(applied.amount > 0 && !state.pdvSale.lastCompletedSale && !state.pdvSale.exchangeCreditApplying) ? "" : "disabled"}>Remover credito</button>
+          </div>
+        </form>
+        <div class="pdv-cashback-checkout-helper">
+          <span class="pdv-cashback-helper-pill">Credito de Troca nao expira e pode abater ate 100% da venda.</span>
+          <span class="pdv-cashback-helper-stack">
+            <strong>${selectedCredit ? `Credito selecionado: ${currency(selectedCredit.remaining_amount || 0)}` : "Selecione um credito para usar."}</strong>
+            <small>Saldo restante continua vinculado ao cliente.</small>
+          </span>
+        </div>
+      ` : `
+        <div class="pdv-cashback-checkout-helper">
+          <span class="pdv-cashback-helper-pill">Sem credito ativo</span>
+          <span class="pdv-cashback-helper-stack"><strong>Este cliente ainda nao possui Credito de Troca disponivel.</strong></span>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function getPdvSaleCheckoutStepMeta(step = "", session = null, totals = null) {
+  const safeSession = session || state.pdvSale.session || null;
+  const safeTotals = totals || getPdvSaleCartTotals(safeSession);
+  const discount = getPdvSaleSessionDiscount(safeSession);
+  const discountAuthorizationState = evaluateDiscountAuthorizationState(safeSession, safeTotals);
+  const generalDiscountBlock = getPdvSaleVisibleGeneralDiscountBlock(safeSession);
+  const exchangeCredit = getPdvSaleExchangeCreditApplication(safeSession);
+  const exchangeInfo = state.pdvSale.exchangeCreditInfo || { items: [], total: 0 };
+  const cashbackInfo = getPdvSaleCashbackInfo(safeSession);
+  const selectedCustomer = safeSession?.customer || null;
+  const hasCartItems = toArray(safeSession?.cart_items).length > 0;
+  if (step === "discount") {
+    if (generalDiscountBlock) {
+      return { label: "Bloqueado", tone: "pending", detail: "Somente Pix ou Dinheiro" };
+    }
+    if (discountAuthorizationState.status === "adjustment_required") {
+      return { label: "Ajuste necessario", tone: "danger", detail: "Pagamentos ficaram acima do novo total" };
+    }
+    if (discountAuthorizationState.status === "authorization_required") {
+      return { label: "Autorizacao necessaria", tone: "pending", detail: discount.itemDiscountAmount > 0 ? "Desconto no item exige token" : "Aguardando autorizacao gerencial" };
+    }
+    if (discountAuthorizationState.status === "authorized") {
+      return { label: "Feito", tone: "done", detail: `Autorizado: ${currency(discount.totalDiscountAmount)}` };
+    }
+    if (discountAuthorizationState.status === "within_policy") {
+      return { label: "Dentro da politica", tone: "done", detail: `Aplicado: ${currency(discount.totalDiscountAmount)}` };
+    }
+    return { label: "Não aplicado", tone: "neutral", detail: "Sem desconto nesta venda" };
+  }
+  if (step === "exchange_credit") {
+    if (!selectedCustomer) return { label: "Não disponível", tone: "muted", detail: "Selecione cliente" };
+    if (exchangeCredit.amount > 0) return { label: "Feito", tone: "done", detail: `Aplicado: ${currency(exchangeCredit.amount)}` };
+    if (toNumber(exchangeInfo.total || 0) > 0 && toArray(exchangeInfo.items).length) return { label: "Pendente", tone: "pending", detail: `Disponível: ${currency(exchangeInfo.total)}` };
+    return { label: "Não disponível", tone: "muted", detail: "Sem crédito ativo" };
+  }
+  if (step === "cashback") {
+    if (!selectedCustomer) return { label: "Não disponível", tone: "muted", detail: "Selecione cliente" };
+    if (toNumber(cashbackInfo.applied || 0) > 0) return { label: "Feito", tone: "done", detail: `Aplicado: ${currency(cashbackInfo.applied)}` };
+    if (toNumber(cashbackInfo.available || 0) > 0) return { label: "Pendente", tone: "pending", detail: `Disponível: ${currency(cashbackInfo.available)}` };
+    return { label: "Não disponível", tone: "muted", detail: "Sem saldo utilizável" };
+  }
+  if (step === "payments") {
+    if (!hasCartItems) {
+      return { label: "Pendente", tone: "pending", detail: "Adicione produtos ao carrinho" };
+    }
+    if (safeTotals.change > 0) {
+      return { label: "Ajuste necessário", tone: "danger", detail: `Excedente: ${currency(safeTotals.change)}` };
+    }
+    if (safeTotals.total <= 0 && safeTotals.pending <= 0 && safeTotals.drafted <= 0) {
+      return { label: "Feito", tone: "done", detail: "Venda zerada por abatimentos" };
+    }
+    if (safeTotals.pending <= 0 && safeTotals.change <= 0 && safeTotals.drafted <= 0 && safeTotals.launchedCount > 0) {
+      return { label: "Feito", tone: "done", detail: "Pagamento concluído" };
+    }
+    if (safeTotals.drafted > 0) return { label: "Pendente", tone: "pending", detail: "Valor digitado não lançado" };
+    return { label: "Pendente", tone: "pending", detail: `Restante: ${currency(safeTotals.pending)}` };
+  }
+  return { label: "Pendente", tone: "pending", detail: "" };
+}
+
+function buildPdvSaleCheckoutAccordion({ step = "", title = "", subtitle = "", meta = null, content = "" } = {}) {
+  const status = meta || getPdvSaleCheckoutStepMeta(step);
+  const rawOpenStep = state.pdvSale.checkoutOpenStep;
+  const currentOpenStep = normalizeText(rawOpenStep || "");
+  const isOpen = currentOpenStep === normalizeText(step);
+  return `
+    <section class="pdv-checkout-step${isOpen ? " is-open" : ""}" data-checkout-step="${escapeHtml(step)}">
+      <button class="pdv-checkout-step-header" type="button" data-pdv-sale-checkout-step="${escapeHtml(step)}" aria-expanded="${isOpen ? "true" : "false"}">
+        <span class="pdv-checkout-step-copy">
+          <strong>${escapeHtml(title)}</strong>
+          <small>${escapeHtml(subtitle)}</small>
+        </span>
+        <span class="pdv-checkout-step-status is-${escapeHtml(status.tone || "pending")}" title="${escapeHtml(status.detail || "")}">${escapeHtml(status.label || "Pendente")}</span>
+        <span class="pdv-checkout-step-chevron">${isOpen ? "▴" : "▾"}</span>
+      </button>
+      <div class="pdv-checkout-step-body${isOpen ? "" : " is-collapsed"}">
+        ${content}
+      </div>
+    </section>
+  `;
+}
+
+function buildPdvSaleCheckoutSteps(session = null, totals = null) {
+  const safeSession = session || state.pdvSale.session || null;
+  const safeTotals = totals || getPdvSaleCartTotals(safeSession);
+  return `
+    <div class="pdv-checkout-steps">
+      ${buildPdvSaleCheckoutAccordion({
+        step: "discount",
+        title: "Desconto",
+        subtitle: "Ajuste comercial supervisionado",
+        meta: getPdvSaleCheckoutStepMeta("discount", safeSession, safeTotals),
+        content: `<div class="pdv-payment-discount-zone">${buildPdvSaleDiscountPanel(safeSession, safeTotals)}</div>`
+      })}
+      ${buildPdvSaleCheckoutAccordion({
+        step: "exchange_credit",
+        title: "Crédito de Troca",
+        subtitle: "Saldo gerado por troca anterior",
+        meta: getPdvSaleCheckoutStepMeta("exchange_credit", safeSession, safeTotals),
+        content: `<div class="pdv-payment-exchange-credit-zone">${buildPdvSaleExchangeCreditPanel(safeSession, safeTotals)}</div>`
+      })}
+      ${buildPdvSaleCheckoutAccordion({
+        step: "cashback",
+        title: "Cashback",
+        subtitle: "Abatimento do cliente com limite de uso",
+        meta: getPdvSaleCheckoutStepMeta("cashback", safeSession, safeTotals),
+        content: `<div class="pdv-payment-cashback-zone">${buildPdvSaleCashbackPanel(safeSession, safeTotals)}</div>`
+      })}
+      ${buildPdvSaleCheckoutAccordion({
+        step: "payments",
+        title: "Formas de Pagamento",
+        subtitle: "Pagamentos reais lançados no caixa",
+        meta: getPdvSaleCheckoutStepMeta("payments", safeSession, safeTotals),
+        content: `
+          ${safeTotals.change > 0 ? `
+            <div class="pdv-payment-alert warning">
+              <strong>Ajuste necessario:</strong> pagamentos reais excedem o total atual em ${currency(safeTotals.change)}.
+              Remova ou ajuste os pagamentos antes de finalizar.
+            </div>
+          ` : ""}
+          <div class="pdv-payment-panel-v4 pdv-payment-panel-v4--checkout">
+            <div class="pdv-payment-scroller-v4">
+              <div class="pdv-payment-method-list-v4">${buildPdvSalePaymentRows()}</div>
+            </div>
+            <div class="pdv-payment-launched-panel">
+              <div class="pdv-payment-launched-list">${buildPdvSaleLaunchedPayments()}</div>
+            </div>
+          </div>
+        `
+      })}
     </div>
   `;
 }
@@ -3008,12 +4074,92 @@ function clearPdvSaleOperationalOverlaysForCompletedState() {
 }
 
 function buildPdvSaleCompletedContent() {
-  const completedSale = state.pdvSale.lastCompletedSale;
+  const sale = state.pdvSale.lastCompletedSale;
+  const saleId = sale?.sale_id || "";
+  const whatsappSending = normalizeText(state.pdvSale.postSaleWhatsAppSaleId || "") === saleId && !!state.pdvSale.postSaleWhatsAppSending;
+  const whatsappStatus = normalizeText(state.pdvSale.postSaleWhatsAppSaleId || "") === saleId ? normalizeText(state.pdvSale.postSaleWhatsAppStatus || "") : "";
+  const whatsappButtonLabel = whatsappSending ? "Enviando..." : whatsappStatus === "sent" ? "Enviado no WhatsApp" : "Enviar Cupom no WhatsApp";
+    
   return `
-    <div class="pdv-sale-shell pdv-sale-shell--completed">
-      ${buildPdvSaleSuccessState(completedSale)}
+    <div class="empty-state pdv-sale-success-state">
+      <h3>Venda concluída com sucesso!</h3>
+      <p>A venda <strong>${escapeHtml(saleId)}</strong> foi registrada e o caixa já está livre.</p>
+      <div class="action-row" style="margin-top: 24px;">
+        <button class="primary-button" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(saleId)}" ${whatsappSending ? "disabled" : ""}>
+          ${whatsappButtonLabel}
+        </button>
+        <button class="secondary-button" type="button" data-pdv-sale-print-coupon="${escapeHtml(saleId)}">Imprimir Cupom</button>
+        <button class="ghost-button" type="button" data-pdv-sale-new-session="true">Nova Venda</button>
+      </div>
     </div>
   `;
+}
+
+function bindPdvSalePostSaleActions(container = document) {
+  const root = container || document;
+  const bindButton = (selector, handler) => {
+    Array.from(root.querySelectorAll(selector)).forEach((button) => {
+      if (button.dataset.boundPostSaleAction === "true") {
+        return;
+      }
+      button.dataset.boundPostSaleAction = "true";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        handler(button, event);
+      });
+    });
+  };
+
+  bindButton("[data-pdv-sale-new-session]", (button) => {
+    button.setAttribute("disabled", "disabled");
+    button.textContent = "Abrindo...";
+    startNewPdvSaleSession().catch((error) => {
+      handleUiError("Erro ao iniciar uma nova venda", error);
+      forcePdvSalePostSaleExitFallback();
+    });
+  });
+
+  bindButton("[data-pdv-sale-print-coupon]", (button) => {
+    const saleId = button.dataset.pdvSalePrintCoupon || state.pdvSale.lastCompletedSale?.sale_id || "";
+    if (!saleId) {
+      showFeedback("Cupom indisponivel para impressao nesta venda.", "warning");
+      return;
+    }
+    try {
+      printPdvSaleReceipt(saleId);
+    } catch (error) {
+      handleUiError("Erro ao imprimir o cupom", error);
+    }
+  });
+
+  bindButton("[data-pdv-sale-send-whatsapp]", (button) => {
+    const saleId = button.dataset.pdvSaleSendWhatsapp || state.pdvSale.lastCompletedSale?.sale_id || "";
+    if (!saleId) {
+      showFeedback("Venda indisponivel para envio pelo WhatsApp.", "warning");
+      return;
+    }
+    sendPdvSaleSummaryWhatsapp(saleId).catch((error) => {
+      handleUiError("Erro ao enviar o cupom pelo WhatsApp do CRM", error);
+    });
+  });
+}
+
+function buildPdvSaleHeaderActions() {
+  const isManagerProfile = isCurrentUserManagerProfile();
+  const actions = [];
+  if (canViewPdvOrdersFrontend()) {
+    actions.push(`<button class="ghost-button" type="button" data-route="/pdv/vendas">Pedidos</button>`);
+  }
+  if (isManagerProfile || canViewPdvCashFrontend()) {
+    actions.push(`<button class="ghost-button" type="button" data-route="/pdv/caixa">Caixa</button>`);
+  }
+  if (canViewPdvExchangesFrontend()) {
+    actions.push(`<button class="ghost-button" type="button" data-route="/pdv/trocas">Troca</button>`);
+  }
+  actions.push(`<button class="secondary-button" type="button" data-pdv-sale-save-draft="true"${state.pdvSale.draftSaving ? " disabled" : ""}>${state.pdvSale.draftSaving ? "Salvando..." : "Salvar rascunho"}</button>`);
+  actions.push(`<button class="primary-button" type="button" data-pdv-sale-new-session="true">+ Nova Venda</button>`);
+  return actions.join("");
 }
 
 function buildPdvSaleActiveContent() {
@@ -3021,39 +4167,37 @@ function buildPdvSaleActiveContent() {
   const storeId = getCurrentPdvStoreId();
   const storeContext = getPdvStorePublicContext(storeId, getCurrentUserStoreLabel());
   const totals = getPdvSaleCartTotals(session);
+  const projectedCashback = getPdvSaleProjectedCashback(totals);
   const finalizeState = getPdvSaleFinalizeState(session);
   const finalizeHint = getPdvSaleFinalizeHint(finalizeState);
   const selectedCustomer = session?.customer || null;
   return `
     <div class="pdv-sale-shell">
-      <div class="pdv-sale-top-metrics">
-        <article class="stat-card"><span>Loja ativa</span><strong>${escapeHtml(storeContext.display_name || formatStoreIdLabel(storeId || getCurrentUserStoreLabel()))}</strong>${normalizeText(storeContext?.terminal?.default_terminal_label || "") ? `<span>${escapeHtml(storeContext.terminal.default_terminal_label)}</span>` : ""}</article>
-        <article class="stat-card"><span>Itens no carrinho</span><strong>${toArray(session?.cart_items).length}</strong></article>
-        <article class="stat-card pdv-sale-summary-total"><span>Total previsto</span><strong>${currency(totals.total)}</strong></article>
+      <!-- TOPBAR COMPACTA — BARRA ÚNICA OPERACIONAL -->
+      <div class="pdv-sale-compact-header">
+        <div class="pdv-sale-header-left">
+          <img src="/img/icon-gold.png" alt="AEROSTORE" class="pdv-header-icon" />
+          <span class="store-label">AEROSTORE PDV &nbsp;|&nbsp; <strong>Venda</strong></span>
+        </div>
+        <div class="pdv-sale-header-center">
+          <span class="store-label">Loja: <strong>${escapeHtml(storeContext.display_name || formatStoreIdLabel(storeId || getCurrentUserStoreLabel()))}</strong></span>
+          <span class="seller-label">Vendedor: <strong>${escapeHtml(getCurrentPdvSellerName())}</strong></span>
+        </div>
+        <div class="pdv-sale-header-right">
+          ${buildPdvSaleHeaderActions()}
+        </div>
       </div>
+
       <div class="pdv-sale-layout">
-        <div class="pdv-sale-main">
-          <article class="panel pdv-sale-zone pdv-sale-product-zone">
-            <div class="panel-header"><h3>Produtos</h3></div>
-            <form class="pdv-sale-search-shell" data-pdv-sale-product-search-form="true">
-              <div class="pdv-sale-search-legend">SKU, etiqueta, nome ou código interno</div>
-              <label class="pdv-sale-search-label">
-                <input name="productQuery" type="search" value="${escapeHtml(state.pdvSale.productQuery || "")}" placeholder="Buscar produto operacional da loja ativa" />
-              </label>
-              <div class="action-row">
-                <button class="secondary-button" type="submit"${state.pdvSale.productSearching ? " disabled" : ""}>${state.pdvSale.productSearching ? "Buscando..." : "Buscar produto"}</button>
-              </div>
-            </form>
-            <div class="pdv-sale-search-results">${buildPdvSaleProductResults()}</div>
-          </article>
+        <!-- COLUNA 1: CLIENTE -->
+        <aside class="pdv-sale-sidebar pdv-sale-sidebar-left">
           <article class="panel pdv-sale-zone pdv-sale-customer-zone">
             <div class="panel-header"><h3>Cliente</h3></div>
             <form class="pdv-sale-search-shell" data-pdv-sale-customer-search-form="true">
-              <div class="pdv-sale-search-legend">Busque por nome, telefone ou CPF</div>
               <label class="pdv-sale-search-label">
-                <input id="pdv-sale-customer-search" name="customerQuery" type="search" value="${escapeHtml(state.pdvSale.customerQuery || "")}" placeholder="Ex.: Maristela ou 11999999999" />
+                <input id="pdv-sale-customer-search" name="customerQuery" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(state.pdvSale.customerQuery || "")}" placeholder="Busque por nome, telefone ou CPF" />
               </label>
-              <div class="action-row pdv-sale-customer-toolbar">
+              <div class="action-row pdv-sale-customer-toolbar" style="display:none;">
                 <button class="secondary-button" type="submit"${state.pdvSale.customerSearching ? " disabled" : ""}>${state.pdvSale.customerSearching ? "Buscando..." : "Buscar cliente"}</button>
                 ${canCreatePdvCustomers() ? `<button class="ghost-button" type="button" data-pdv-sale-customer-create-open="true">Novo cadastro</button>` : ""}
               </div>
@@ -3061,135 +4205,116 @@ function buildPdvSaleActiveContent() {
             <div class="pdv-customer-selection-state">${buildPdvSaleCustomerCard(selectedCustomer)}</div>
             <div class="pdv-sale-customer-results">${buildPdvSaleCustomerResults()}</div>
           </article>
-        </div>
-        <aside class="pdv-sale-sidebar">
+        </aside>
+
+        <!-- COLUNA 2: PRODUTOS E CARRINHO -->
+        <div class="pdv-sale-main pdv-sale-main-center">
+          <article class="panel pdv-sale-zone pdv-sale-product-zone">
+            <div class="panel-header" style="display:none;"><h3>Produtos</h3></div>
+            <form class="pdv-sale-search-shell" data-pdv-sale-product-search-form="true">
+              <label class="pdv-sale-search-label">
+                <input name="pdv_query_search_product_v2" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(state.pdvSale.productQuery || "")}" placeholder="Buscar produto por SKU, etiqueta, nome ou código" autofocus />
+              </label>
+              <div class="action-row" style="display:none;">
+                <button class="secondary-button" type="submit"${state.pdvSale.productSearching ? " disabled" : ""}>${state.pdvSale.productSearching ? "Buscando..." : "Buscar produto"}</button>
+              </div>
+            </form>
+            <div class="pdv-sale-search-results">${buildPdvSaleProductResults()}</div>
+          </article>
+
           <article class="panel pdv-sale-zone pdv-sale-cart-zone">
-            <div class="panel-header"><h3>Carrinho</h3></div>
+            <div class="panel-header"><h3>Carrinho (${toArray(session?.cart_items).length} itens)</h3></div>
             <div class="pdv-sale-cart-list">${buildPdvSaleCartItems(session)}</div>
           </article>
-          <article class="panel pdv-sale-zone pdv-sale-checkout-zone">
-            <div class="panel-header"><h3>Totais</h3></div>
-            <div class="pdv-sale-summary-grid">
-              <article class="stat-card pdv-sale-summary-card"><span>Total da venda</span><strong>${currency(totals.subtotal)}</strong></article>
-              ${totals.discountAmount > 0
-                ? `<article class="stat-card pdv-sale-summary-card"><span>Desconto geral</span><strong>-${currency(totals.discountAmount)}</strong></article>`
-                : ""}
-              ${totals.cashbackApplied > 0
-                ? `<article class="stat-card pdv-sale-summary-card pdv-sale-summary-cashback"><span>Cashback aplicado</span><strong>-${currency(totals.cashbackApplied)}</strong></article>`
-                : ""}
-              <article class="stat-card pdv-sale-summary-total"><span>${totals.cashbackApplied > 0 ? "Cliente vai pagar" : "Total a pagar"}</span><strong>${currency(totals.total)}</strong></article>
-            </div>
-            <div class="pdv-sale-footer-bar">
-              <div class="pdv-sale-footer-totals">
-                <span>Loja ativa</span>
-                <strong>${escapeHtml(formatStoreIdLabel(storeId || getCurrentUserStoreLabel()))}</strong>
-                <small>${escapeHtml(getCurrentPdvSellerName())}</small>
+        </div>
+        
+        <!-- COLUNA 3: RESUMO FINANCEIRO E PAGAMENTO -->
+        <aside class="pdv-sale-sidebar pdv-sale-sidebar-right" id="pdv-drawer-section-payment">
+          <article class="panel pdv-sale-zone pdv-sale-checkout-zone" style="display: flex; flex-direction: column; gap: 16px;">
+            <div class="panel-header"><h3>Resumo financeiro</h3></div>
+            
+            <div class="pdv-payment-summary-sticky pdv-sale-financial-summary">
+              <div class="pdv-sale-financial-lines">
+                <div class="pdv-sale-financial-row">
+                  <span>Subtotal bruto</span>
+                  <strong>${currency(totals.subtotal)}</strong>
+                </div>
+                ${totals.itemDiscountAmount > 0 ? `
+                  <div class="pdv-sale-financial-row is-discount">
+                    <span>Desconto nos itens</span>
+                    <strong class="is-discount">-${currency(totals.itemDiscountAmount)}</strong>
+                  </div>
+                  <div class="pdv-sale-financial-row">
+                    <span>Subtotal liquido</span>
+                    <strong>${currency(totals.itemsNetSubtotal)}</strong>
+                  </div>
+                ` : ""}
+                <div class="pdv-sale-financial-row">
+                  <span>Desconto geral</span>
+                  <strong class="${totals.discountAmount > 0 ? "is-discount" : ""}">${totals.discountAmount > 0 ? `-${currency(totals.discountAmount)}` : currency(0)}</strong>
+                </div>
+                <div class="pdv-sale-financial-row">
+                  <span>Cashback aplicado</span>
+                  <strong class="${totals.cashbackApplied > 0 ? "is-discount" : ""}">${totals.cashbackApplied > 0 ? `-${currency(totals.cashbackApplied)}` : currency(0)}</strong>
+                </div>
+                ${totals.exchangeCreditApplied > 0 ? `
+                  <div class="pdv-sale-financial-row">
+                    <span>Credito de Troca aplicado</span>
+                    <strong class="is-discount">-${currency(totals.exchangeCreditApplied)}</strong>
+                  </div>
+                ` : ""}
+                <div class="pdv-sale-financial-row pdv-sale-financial-total">
+                  <span>Total a pagar</span>
+                  <strong>${currency(totals.total)}</strong>
+                </div>
+                <div class="pdv-sale-financial-row">
+                  <span>Recebido</span>
+                  <strong>${currency(totals.paid)}</strong>
+                </div>
+                <div class="pdv-sale-financial-row pdv-sale-financial-pending ${totals.pending > 0 ? "is-pending" : "is-balanced"}">
+                  <span>Restante</span>
+                  <strong>${currency(totals.pending)}</strong>
+                </div>
+                ${projectedCashback > 0 ? `
+                  <div class="pdv-sale-financial-row pdv-sale-financial-projected">
+                    <span>Cashback previsto nesta venda</span>
+                    <strong>${currency(projectedCashback)}</strong>
+                  </div>
+                ` : ""}
               </div>
-              <div class="pdv-sale-footer-actions">
-                <button class="ghost-button" type="button" data-pdv-sale-save-draft="true"${state.pdvSale.draftSaving ? " disabled" : ""}>${state.pdvSale.draftSaving ? "Salvando..." : "Salvar rascunho"}</button>
-                <button class="primary-button pdv-sale-final-button" type="button" data-pdv-sale-open-drawer="true" ${(toArray(session?.cart_items).length && !state.pdvSale.draftSaving && !state.pdvSale.sessionStarting) ? "" : "disabled"}>${state.pdvSale.sessionStarting ? "Abrindo..." : "Recebimento / Finalizar"}</button>
-              </div>
             </div>
+
+            ${buildPdvSaleCheckoutSteps(session, totals)}
+
+            <form class="pdv-sale-finalize-form" data-pdv-sale-finalize-form="true">
+              ${buildPdvSaleFinalizeSupportFields(session)}
+              
+              <div class="pdv-payment-checkout-footer${finalizeState.key === "ready" ? " is-ready" : ""}" data-finalize-state="${escapeHtml(finalizeState.key || "unknown")}" style="margin-top:auto; padding-top:16px;">
+                <div class="pdv-payment-footer-actions" style="display:flex; flex-direction:column; gap:12px;">
+                  <button class="primary-button pdv-payment-finalize-btn${finalizeState.key === "ready" ? " is-ready" : ""}" type="submit"${finalizeState.disabled ? " disabled" : ""} style="width:100%; min-height:54px; font-size:1.1rem;">
+                    ${finalizeState.key === "ready" ? "FINALIZAR VENDA" : "🔒 FINALIZAR VENDA"}
+                  </button>
+                </div>
+                ${totals.change > 0 ? `<div class="pdv-payment-alert warning" style="margin-top:12px;"><strong>Excesso detectado:</strong> ${currency(totals.change)}</div>` : ""}
+                ${totals.cashbackInvalid ? `<div class="pdv-payment-alert warning" style="margin-top:12px;">Cashback excede o limite. Remova e aplique novamente.</div>` : ""}
+              </div>
+            </form>
           </article>
         </aside>
+
       </div>
-      <article class="panel pdv-sale-zone pdv-sale-drafts-zone">
-        <div class="panel-header">
-          <h3>Rascunhos salvos</h3>
-        </div>
-        <div class="pdv-sale-drafts-list">${buildPdvSaleDraftsPanel()}</div>
-      </article>
       ${buildPdvSaleResolutionModal()}
       ${buildPdvSaleCustomerRegistrationDrawer()}
-      <div class="pdv-drawer-overlay${state.pdvSale.drawerOpen ? "" : " hidden"}" id="pdv-sale-drawer-overlay" data-drawer-type="payment">
-        <aside class="pdv-drawer${state.pdvSale.drawerOpen ? " open" : ""}" id="pdv-sale-drawer" data-drawer-type="payment">
-          <div class="pdv-drawer-header">
-            <div>
-              <h3>Recebimento e finalização</h3>
-              <p class="helper-text">Monte os meios de pagamento e finalize a venda sem sair da frente de caixa.</p>
-            </div>
-            <button class="pdv-drawer-close" type="button" data-pdv-sale-close-drawer="true">Fechar</button>
-          </div>
-          <div class="pdv-drawer-body" id="pdv-drawer-section-payment">
-            <div class="split-grid">
-              <article class="panel">
-                <div class="panel-header"><h3>Resumo da venda</h3></div>
-                <div class="pdv-payment-summary-sticky">
-                  <div class="pdv-payment-summary-grid">
-                    <div><span>Cliente</span><strong>${escapeHtml(selectedCustomer?.name || "Venda balcão")}</strong></div>
-                    <div><span>Total da venda</span><strong>${currency(totals.subtotal)}</strong></div>
-                    ${totals.discountAmount > 0 ? `<div><span>Desconto geral</span><strong>-${currency(totals.discountAmount)}</strong></div>` : ""}
-                    ${totals.cashbackApplied > 0 ? `<div class="is-cashback"><span>Cashback aplicado</span><strong>-${currency(totals.cashbackApplied)}</strong></div>` : ""}
-                    <div><span>Total liquido</span><strong>${currency(totals.totalBeforeCashback)}</strong></div>
-                    <div><span>${totals.cashbackApplied > 0 ? "Cliente vai pagar" : "Total a pagar"}</span><strong>${currency(totals.total)}</strong></div>
-                    <div><span>Pago</span><strong>${currency(totals.paid)}</strong></div>
-                    <div class="${totals.pending > 0 ? "is-pending" : "is-balanced"}"><span>Falta pagar</span><strong>${currency(totals.pending)}</strong></div>
-                    ${totals.change > 0 ? `<div class="is-troco"><span>Excedente / Revisar</span><strong>${currency(totals.change)}</strong></div>` : ""}
-                  </div>
-                  ${totals.drafted > 0 || totals.predictedChange > 0 ? `
-                    <div class="pdv-payment-summary-preview">
-                      <div class="${totals.drafted > 0 ? "is-draft" : ""}"><span>Digitado agora</span><strong>${currency(totals.drafted)}</strong></div>
-                      <div class="${totals.predictedPending > 0 ? "is-pending" : "is-balanced"}"><span>Faltará após lançar</span><strong>${currency(totals.predictedPending)}</strong></div>
-                      ${totals.predictedChange > 0 ? `<div class="is-troco"><span>Excedente previsto</span><strong>${currency(totals.predictedChange)}</strong></div>` : ""}
-                    </div>
-                  ` : ""}
-                  ${totals.drafted > 0 ? `<div class="pdv-payment-summary-helper">Valores digitados ainda não contam como pagamento. Clique em + Lançar para confirmar.</div>` : ""}
-                </div>
-                <div class="pdv-payment-discount-zone">
-                  ${buildPdvSaleDiscountPanel(session, totals)}
-                </div>
-                <div class="pdv-payment-cashback-zone">
-                  ${buildPdvSaleCashbackPanel(session, totals)}
-                </div>
-              </article>
-              <article class="panel">
-                <div class="panel-header"><h3>Finalização</h3></div>
-                <form class="pdv-sale-finalize-form" data-pdv-sale-finalize-form="true">
-                  <label class="pdv-sale-notes-field">Observações<input type="text" name="observacoes" value="${escapeHtml(session?.cart_notes || "")}" placeholder="Observação opcional para o caixa" /></label>
-                  ${buildPdvSaleFinalizeSupportFields(session)}
-                  ${totals.cashbackInvalid ? `<div class="pdv-payment-alert warning strong"><strong>Cashback precisa ser revisado</strong><span>O desconto alterou a base da venda. O cashback de ${currency(totals.cashbackRawApplied)} nao sera usado ate ser reaplicado dentro do limite atual.</span></div>` : ""}
-                  ${totals.change > 0 ? `<div class="pdv-payment-alert warning strong"><strong>Excesso detectado</strong><span>O total lançado excede a venda em ${currency(totals.change)}. Revise os pagamentos antes de finalizar.</span></div>` : ""}
-                  ${totals.predictedChange > 0 && totals.change <= 0 ? `<div class="pdv-payment-alert draft"><strong>Excedente previsto</strong><span>Se os rascunhos forem lançados, a venda ficará acima do subtotal em ${currency(totals.predictedChange)}.</span></div>` : ""}
-                  ${totals.drafted > 0 ? `<div class="pdv-payment-alert draft"><strong>Pagamentos ainda não confirmados</strong><span>Existem ${currency(totals.drafted)} digitados agora. Clique em + Lançar em cada forma de pagamento antes de finalizar.</span></div>` : ""}
-                  <div class="pdv-payment-footer-v4 pdv-payment-checkout-footer${finalizeState.key === "ready" ? " is-ready" : ""}" data-finalize-state="${escapeHtml(finalizeState.key || "unknown")}">
-                    <div class="pdv-payment-footer-summary">
-                      <div><span>Total liquido</span><strong>${currency(totals.totalBeforeCashback)}</strong></div>
-                      <div><span>Cliente paga</span><strong>${currency(totals.total)}</strong></div>
-                      <div><span>Pago</span><strong>${currency(totals.paid)}</strong></div>
-                      <div class="${totals.change > 0 ? "is-troco" : totals.pending > 0 ? "is-pending" : "is-balanced"}"><span>${totals.change > 0 ? "Excedente" : "Restante"}</span><strong>${currency(totals.change > 0 ? totals.change : totals.pending)}</strong></div>
-                    </div>
-                    <div class="pdv-payment-footer-decision is-${escapeHtml(finalizeHint.tone)}">
-                      <span>${escapeHtml(finalizeHint.title)}</span>
-                      <strong>${escapeHtml(finalizeHint.text)}</strong>
-                    </div>
-                    <div class="pdv-payment-footer-actions">
-                      <button class="ghost-button pdv-payment-cancel-btn" type="button" data-pdv-sale-close-drawer="true"${state.pdvSale.drawerSubmitting ? " disabled" : ""}>Cancelar</button>
-                      <button class="primary-button pdv-payment-finalize-btn${finalizeState.key === "ready" ? " is-ready" : ""}" type="submit"${finalizeState.disabled ? " disabled" : ""}>${escapeHtml(finalizeHint.actionLabel)}</button>
-                    </div>
-                  </div>
-                </form>
-                <div class="pdv-payment-panel-v4 pdv-payment-panel-v4--checkout">
-                  <div class="pdv-payment-launched-panel">
-                    <div class="pdv-payment-launched-header">
-                      <strong>Pagamentos lancados</strong>
-                      <span>Pago ${currency(totals.paid)}</span>
-                    </div>
-                    <div class="pdv-payment-launched-list">${buildPdvSaleLaunchedPayments()}</div>
-                  </div>
-                  <div class="pdv-payment-scroller-v4">
-                    <div class="pdv-payment-method-list-v4">${buildPdvSalePaymentRows()}</div>
-                  </div>
-                </div>
-              </article>
-            </div>
-          </div>
-        </aside>
-      </div>
     </div>
   `;
 }
-
 function renderPdvSaleOfficialFront(container) {
+  const perfToken = startAeroStorePerfMeasure("pdv.sale.render", {
+    drawer_open: Boolean(state.pdvSale.drawerOpen),
+    completed: Boolean(state.pdvSale.lastCompletedSale),
+    cart_items: toArray(state.pdvSale.session?.cart_items).length
+  });
+  const renderCount = incrementAeroStorePerfCounter("pdv.sale.render.count");
   const hasCompletedSale = Boolean(state.pdvSale.lastCompletedSale);
   if (hasCompletedSale) {
     clearPdvSaleOperationalOverlaysForCompletedState();
@@ -3201,6 +4326,8 @@ function renderPdvSaleOfficialFront(container) {
     compactTabs: true,
     contentHtml: hasCompletedSale ? buildPdvSaleCompletedContent() : buildPdvSaleActiveContent()
   });
+  bindPdvSalePostSaleActions(container);
+  bindPdvSaleDiscountDetails(container);
   Array.from(container.querySelectorAll("[data-pdv-payment-remove]")).forEach((button) => {
     if (button.dataset.boundClick === "true") {
       return;
@@ -3246,13 +4373,27 @@ function renderPdvSaleOfficialFront(container) {
       }
     });
   });
+  endAeroStorePerfMeasure(perfToken, { render_count: renderCount });
 }
 
 async function loadPdvSaleFront({ forceNewSession = false, preserveResults = false } = {}) {
+  const perfToken = startAeroStorePerfMeasure("pdv.sale.open", { force_new_session: Boolean(forceNewSession) });
+  if (state.pdvSale.loading && !forceNewSession) {
+    const currentContainer = document.getElementById("pdv-sale-content");
+    if (currentContainer) {
+      renderPdvSaleOfficialFront(currentContainer);
+    }
+    endAeroStorePerfMeasure(perfToken, { skipped: "already_loading" });
+    return;
+  }
   state.pdvSale.loading = true;
   if (!preserveResults) {
     state.pdvSale.customerResults = [];
     state.pdvSale.productResults = [];
+  }
+  const initialContainer = document.getElementById("pdv-sale-content");
+  if (initialContainer && !state.pdvSale.session && !state.pdvSale.lastCompletedSale) {
+    renderPdvSaleOfficialFront(initialContainer);
   }
   try {
     await ensurePdvSaleSession({ forceNew: forceNewSession });
@@ -3264,9 +4405,14 @@ async function loadPdvSaleFront({ forceNewSession = false, preserveResults = fal
   if (container) {
     renderPdvSaleOfficialFront(container);
   }
+  endAeroStorePerfMeasure(perfToken, {
+    session_id: state.pdvSale.sessionId || "",
+    cart_items: toArray(state.pdvSale.session?.cart_items).length
+  });
 }
 
 function renderPdvSaleSurface() {
+  incrementAeroStorePerfCounter("pdv.sale.surface.request.count");
   const container = document.getElementById("pdv-sale-content");
   if (container) {
     renderPdvSaleOfficialFront(container);
@@ -3274,7 +4420,11 @@ function renderPdvSaleSurface() {
 }
 
 async function searchPdvSaleCustomers() {
+  const perfToken = startAeroStorePerfMeasure("pdv.sale.customer_search", {
+    query_length: normalizeText(state.pdvSale.customerQuery).length
+  });
   if (state.pdvSale.customerSearching) {
+    endAeroStorePerfMeasure(perfToken, { skipped: "already_searching" });
     return;
   }
   const query = normalizeText(state.pdvSale.customerQuery);
@@ -3283,6 +4433,7 @@ async function searchPdvSaleCustomers() {
   if (query.length < 2) {
     state.pdvSale.customerResults = [];
     renderPdvSaleSurface();
+    endAeroStorePerfMeasure(perfToken, { skipped: "query_too_short" });
     return;
   }
   state.pdvSale.customerSearching = true;
@@ -3351,17 +4502,27 @@ async function searchPdvSaleCustomers() {
   } finally {
     state.pdvSale.customerSearching = false;
     renderPdvSaleSurface();
+    endAeroStorePerfMeasure(perfToken, {
+      results: toArray(state.pdvSale.customerResults).length,
+      cashback_enriched: toArray(state.pdvSale.customerResults).filter((item) => toNumber(item.cashback_available || 0) > 0).length
+    });
   }
 }
 
 async function searchPdvSaleProducts() {
+  const perfToken = startAeroStorePerfMeasure("pdv.sale.product_search", {
+    query_length: normalizeText(state.pdvSale.productQuery).length,
+    store_id: getCurrentPdvStoreId()
+  });
   if (state.pdvSale.productSearching) {
+    endAeroStorePerfMeasure(perfToken, { skipped: "already_searching" });
     return;
   }
   const query = normalizeText(state.pdvSale.productQuery);
   if (query.length < 2) {
     state.pdvSale.productResults = [];
     renderPdvSaleSurface();
+    endAeroStorePerfMeasure(perfToken, { skipped: "query_too_short" });
     return;
   }
   state.pdvSale.productSearching = true;
@@ -3373,6 +4534,7 @@ async function searchPdvSaleProducts() {
   } finally {
     state.pdvSale.productSearching = false;
     renderPdvSaleSurface();
+    endAeroStorePerfMeasure(perfToken, { results: toArray(state.pdvSale.productResults).length });
   }
 }
 
@@ -3388,13 +4550,22 @@ async function attachPdvSaleCustomerByLookup(lookupValue = "") {
 }
 
 async function addPdvSaleProductByLookup(lookupValue = "") {
+  const perfToken = startAeroStorePerfMeasure("pdv.sale.add_product", {
+    lookup: normalizeText(lookupValue || ""),
+    cart_items_before: toArray(state.pdvSale.session?.cart_items).length
+  });
   if (state.pdvSale.productAddingKey) {
+    endAeroStorePerfMeasure(perfToken, { skipped: "already_adding" });
     return;
   }
   const selected = toArray(state.pdvSale.productResults).find((item) => [item.product_id, item.sku, item.codigo].map((value) => String(value || "")).includes(String(lookupValue || "")));
-  if (!selected || !state.pdvSale.sessionId) return;
+  if (!selected || !state.pdvSale.sessionId) {
+    endAeroStorePerfMeasure(perfToken, { skipped: "missing_selection_or_session" });
+    return;
+  }
   if (selected.is_unavailable) {
     showFeedback("Produto indisponivel em todas as lojas.", "error");
+    endAeroStorePerfMeasure(perfToken, { skipped: "unavailable" });
     return;
   }
   if (selected.requires_resolution || selected.requires_logistics_review) {
@@ -3403,6 +4574,7 @@ async function addPdvSaleProductByLookup(lookupValue = "") {
     state.pdvSale.productResolutionSubmitting = false;
     state.pdvSale.productResolutionItemId = "";
     renderPdvSaleSurface();
+    endAeroStorePerfMeasure(perfToken, { skipped: "requires_resolution" });
     return;
   }
   state.pdvSale.productAddingKey = normalizeText(lookupValue || "");
@@ -3429,6 +4601,9 @@ async function addPdvSaleProductByLookup(lookupValue = "") {
   } finally {
     state.pdvSale.productAddingKey = "";
     renderPdvSaleSurface();
+    endAeroStorePerfMeasure(perfToken, {
+      cart_items_after: toArray(state.pdvSale.session?.cart_items).length
+    });
   }
 }
 
@@ -3555,19 +4730,29 @@ function resetPdvSaleCheckoutResidue() {
     session.discount_percent = 0;
     session.discount_policy = null;
     session.cashback_application = null;
+    session.exchange_credit_application = null;
     session.payment_plan = { methods: [] };
   }
   state.pdvSale.paymentInputDrafts = {};
   state.pdvSale.discountDraft = buildPdvSaleDiscountDraftFromSession(null);
+  state.pdvSale.itemDiscountOpenItemId = "";
+  state.pdvSale.itemDiscountDrafts = {};
+  state.pdvSale.itemDiscountApplyingId = "";
+  state.pdvSale.checkoutOpenStep = "";
   resetPdvSaleDiscountAuthorization();
   resetPdvSaleCashbackState();
+  resetPdvSaleExchangeCreditState();
   state.pdvSale.drawerOpen = false;
   document.body.classList.remove("pdv-drawer-open");
 }
 
 function openPdvSaleDrawer() {
+  const perfToken = startAeroStorePerfMeasure("pdv.sale.open_payment_drawer", {
+    cart_items: toArray(state.pdvSale.session?.cart_items).length
+  });
   if (!toArray(state.pdvSale.session?.cart_items).length) {
     showFeedback("Adicione itens no carrinho antes de abrir o recebimento.", "error");
+    endAeroStorePerfMeasure(perfToken, { skipped: "empty_cart" });
     return;
   }
   state.pdvSale.drawerOpen = true;
@@ -3576,6 +4761,9 @@ function openPdvSaleDrawer() {
   if (getPdvSaleSessionDiscount(state.pdvSale.session).requiresAuthorization) {
     ensurePdvSaleDiscountAuthorizers();
   }
+  endAeroStorePerfMeasure(perfToken, {
+    requires_authorization: Boolean(getPdvSaleSessionDiscount(state.pdvSale.session).requiresAuthorization)
+  });
 }
 
 function closePdvSaleDrawer() {
@@ -3618,9 +4806,28 @@ async function applyPdvSaleDiscount() {
     showFeedback("Informe um desconto valido para aplicar.", "error");
     return;
   }
+  const paymentPolicy = getPdvSaleGeneralDiscountPaymentPolicy(state.pdvSale.session);
+  if (!paymentPolicy.eligible) {
+    const message = getPdvSaleGeneralDiscountBlockMessage(paymentPolicy);
+    state.pdvSale.generalDiscountBlock = {
+      message,
+      labels: paymentPolicy.blockingLabels,
+      createdAt: new Date().toISOString()
+    };
+    state.pdvSale.discountDraft = {
+      ...(state.pdvSale.discountDraft || {}),
+      value: ""
+    };
+    state.pdvSale.checkoutOpenStep = "discount";
+    showFeedback(`Desconto bloqueado. ${message}`, "warning");
+    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    return;
+  }
+  state.pdvSale.generalDiscountBlock = null;
   state.pdvSale.discountApplying = true;
   renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
   try {
+    const previousSession = state.pdvSale.session;
     const session = await api(`/api/pdv/operational/cart/${encodeURIComponent(sessionId)}/discount`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -3632,21 +4839,27 @@ async function applyPdvSaleDiscount() {
     });
     state.pdvSale.session = session;
     state.pdvSale.discountDraft = buildPdvSaleDiscountDraftFromSession(session);
-    resetPdvSaleDiscountAuthorization();
-    const cashbackWasRevised = await reconcilePdvSaleCashbackAfterCheckoutChange("discount_changed");
+    state.pdvSale.generalDiscountBlock = null;
+    handlePdvSaleDiscountPolicyAfterPaymentChange(previousSession, session);
+    const checkoutReconciliation = await reconcilePdvSaleCheckoutAfterMutation("discount_changed");
     const activeSession = state.pdvSale.session || session;
-    const updatedDiscount = getPdvSaleSessionDiscount(session);
+    const updatedDiscount = getPdvSaleSessionDiscount(activeSession);
+    const reconciliationAlreadyNotified = Boolean(
+      checkoutReconciliation.cashbackWasRevised
+        || checkoutReconciliation.draftAdjustment?.adjusted
+        || checkoutReconciliation.totals?.change > 0
+    );
     if (updatedDiscount.requiresAuthorization) {
       await ensurePdvSaleDiscountAuthorizers();
-      if (!cashbackWasRevised) {
+      if (!reconciliationAlreadyNotified) {
         showFeedback(updatedDiscount.policy?.message || "Desconto aplicado. Esta venda agora exige autorizacao.");
       }
     } else if (updatedDiscount.pendingPaymentMethod) {
-      if (!cashbackWasRevised) {
+      if (!reconciliationAlreadyNotified) {
         showFeedback(updatedDiscount.policy?.message || "Escolha a forma de pagamento para validar este desconto.");
       }
     } else {
-      if (!cashbackWasRevised) {
+      if (!reconciliationAlreadyNotified) {
         showFeedback("Desconto aplicado ao checkout.");
       }
     }
@@ -3665,6 +4878,7 @@ async function removePdvSaleDiscount() {
   state.pdvSale.discountApplying = true;
   renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
   try {
+    const previousSession = state.pdvSale.session;
     const session = await api(`/api/pdv/operational/cart/${encodeURIComponent(sessionId)}/discount`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -3672,10 +4886,89 @@ async function removePdvSaleDiscount() {
     });
     state.pdvSale.session = session;
     state.pdvSale.discountDraft = buildPdvSaleDiscountDraftFromSession(session);
-    resetPdvSaleDiscountAuthorization();
+    state.pdvSale.generalDiscountBlock = null;
+    handlePdvSaleDiscountPolicyAfterPaymentChange(previousSession, session);
+    await reconcilePdvSaleCheckoutAfterMutation("discount_removed", { silentExcessWarning: true });
     showFeedback("Desconto removido da venda.");
   } finally {
     state.pdvSale.discountApplying = false;
+    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+  }
+}
+
+async function applyPdvSaleItemDiscount(itemId = "") {
+  const sessionId = getActivePdvSaleSessionId();
+  const normalizedItemId = normalizeText(itemId || "");
+  if (!sessionId || !normalizedItemId || !state.pdvSale.session) {
+    return;
+  }
+  const draft = state.pdvSale.itemDiscountDrafts?.[normalizedItemId] || {};
+  const modeInput = document.querySelector(`[data-pdv-sale-item-discount-mode="${CSS.escape(normalizedItemId)}"]`);
+  const valueInput = document.querySelector(`[data-pdv-sale-item-discount-value="${CSS.escape(normalizedItemId)}"]`);
+  const mode = normalizeText(modeInput?.value || draft.mode || "amount").toLowerCase() === "percent" ? "percent" : "amount";
+  const rawValue = valueInput?.value ?? draft.value ?? "";
+  const value = mode === "percent" ? toNumber(String(rawValue || "").replace(",", ".")) : parseMoneyAmount(rawValue || 0);
+  const reason = "";
+  if (value <= 0) {
+    showFeedback("Informe um desconto valido para o item.", "error");
+    return;
+  }
+  state.pdvSale.itemDiscountApplyingId = normalizedItemId;
+  renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+  try {
+    const session = await api(`/api/pdv/operational/cart/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(normalizedItemId)}/discount`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, value, reason })
+    });
+    state.pdvSale.session = session;
+    state.pdvSale.itemDiscountDrafts = {
+      ...(state.pdvSale.itemDiscountDrafts || {}),
+      [normalizedItemId]: {
+        mode,
+        value: mode === "percent" ? String(value).replace(".", ",") : formatMoneyAmountInput(value),
+        reason
+      }
+    };
+    state.pdvSale.itemDiscountOpenItemId = "";
+    resetPdvSaleDiscountAuthorization();
+    await reconcilePdvSaleCheckoutAfterMutation("item_discount_changed");
+    const updatedDiscount = getPdvSaleSessionDiscount(state.pdvSale.session || session);
+    if (updatedDiscount.requiresAuthorization) {
+      await ensurePdvSaleDiscountAuthorizers();
+      showFeedback("Desconto no item aplicado. Esta venda agora exige autorizacao gerencial.");
+    } else {
+      showFeedback("Desconto aplicado ao item.");
+    }
+  } finally {
+    state.pdvSale.itemDiscountApplyingId = "";
+    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+  }
+}
+
+async function removePdvSaleItemDiscount(itemId = "") {
+  const sessionId = getActivePdvSaleSessionId();
+  const normalizedItemId = normalizeText(itemId || "");
+  if (!sessionId || !normalizedItemId || !state.pdvSale.session) {
+    return;
+  }
+  state.pdvSale.itemDiscountApplyingId = normalizedItemId;
+  renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+  try {
+    const session = await api(`/api/pdv/operational/cart/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(normalizedItemId)}/discount`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remove: true })
+    });
+    state.pdvSale.session = session;
+    if (state.pdvSale.itemDiscountDrafts) {
+      delete state.pdvSale.itemDiscountDrafts[normalizedItemId];
+    }
+    resetPdvSaleDiscountAuthorization();
+    await reconcilePdvSaleCheckoutAfterMutation("item_discount_removed", { silentExcessWarning: true });
+    showFeedback("Desconto removido do item.");
+  } finally {
+    state.pdvSale.itemDiscountApplyingId = "";
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
   }
 }
@@ -3687,7 +4980,10 @@ async function validatePdvSaleDiscountAuthorization() {
     return;
   }
   const discount = getPdvSaleSessionDiscount(session);
-  if (!discount.requiresAuthorization || discount.amount <= 0) {
+  const discountAuthorizationState = evaluateDiscountAuthorizationState(session);
+  const policy = discountAuthorizationState.paymentPolicy || discount.policy || getPdvSaleDiscountPolicy(session);
+  const authorizationAmount = toNumber(policy.authorizationAmount || discount.totalDiscountAmount || 0);
+  if (!discountAuthorizationState.required || authorizationAmount <= 0) {
     showFeedback("Esta venda nao exige autorizacao para desconto.", "error");
     return;
   }
@@ -3697,14 +4993,11 @@ async function validatePdvSaleDiscountAuthorization() {
     showFeedback("Selecione um autorizador.", "error");
     return;
   }
-  if (!normalizeText(authState.reason || "")) {
-    showFeedback("Informe o motivo da autorizacao.", "error");
-    return;
-  }
   if (!/^\d{6}$/.test(normalizeText(authState.code || "").replace(/\D/g, ""))) {
     showFeedback("Informe um codigo valido de 6 digitos.", "error");
     return;
   }
+  const authorizationReason = normalizeText(authState.reason || "") || "Autorizacao gerencial de desconto no PDV";
   authState.validating = true;
   authState.error = "";
   renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
@@ -3717,22 +5010,18 @@ async function validatePdvSaleDiscountAuthorization() {
         code: normalizeText(authState.code || "").replace(/\D/g, ""),
         operation_type: "DISCOUNT_ABOVE_LIMIT",
         sale_session_id: sessionId,
-        amount: discount.amount,
-        percent: discount.percent,
-        reason: normalizeText(authState.reason || ""),
+        amount: authorizationAmount,
+        percent: policy.authorizationPercent || discount.totalDiscountPercent,
+        reason: authorizationReason,
         context: {
           loja: getCurrentPdvStoreId(),
           subtotal: totals.subtotal,
-          discount_amount: discount.amount,
-          discount_percent: discount.percent,
-          cashback_applied: totals.cashbackApplied,
-          amount_to_pay: totals.total,
-          paid_amount: totals.paid,
-          payment_methods: toArray(totals.paymentMethods).map((item) => item.method),
-          payment_amounts: toArray(totals.paymentMethods).map((item) => ({
-            method: item.method,
-            amount: toNumber(item.amount)
-          }))
+          item_discount_amount: discount.itemDiscountAmount,
+          general_exception_amount: policy.generalExceptionAmount || 0,
+          discount_amount: policy.authorizationAmount || discount.totalDiscountAmount,
+          discount_percent: policy.authorizationPercent || discount.totalDiscountPercent,
+          pix_money_policy_base: policy.policyBase || 0,
+          pix_money_policy_limit: policy.automaticLimitAmount || 0
         }
       })
     });
@@ -3740,44 +5029,55 @@ async function validatePdvSaleDiscountAuthorization() {
     authState.approvedBy = normalizeText(approval.authorized_by_name || "");
     authState.approvedAt = normalizeText(approval.created_at || "");
     authState.expiresAt = normalizeText(approval.expires_at || "");
+    authState.contextKey = getPdvSaleDiscountPaymentContextKey(session);
     authState.code = "";
     authState.error = "";
+    state.pdvSale.discountAuthorization = {
+      ...(state.pdvSale.discountAuthorization || {}),
+      ...authState
+    };
+    if (state.pdvSale.session && typeof state.pdvSale.session === "object") {
+      state.pdvSale.session.discount_authorization_id = authState.approvalId;
+      state.pdvSale.session.discount_authorization_context_key = authState.contextKey;
+    }
+    persistPdvSaleDiscountAuthorization(authState, state.pdvSale.session || session);
+    state.pdvSale.checkoutOpenStep = "payments";
+    closePdvSaleDiscountDetailsPanel();
     showFeedback(`Autorizacao aprovada por ${authState.approvedBy || "autorizador"}.`);
   } catch (error) {
     authState.approvalId = "";
     authState.approvedBy = "";
     authState.approvedAt = "";
     authState.expiresAt = "";
+    authState.contextKey = "";
     authState.error = error.message || "Codigo invalido ou expirado.";
     throw error;
   } finally {
     authState.validating = false;
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    if (authState.approvalId) {
+      closePdvSaleDiscountDetailsPanel();
+    }
   }
 }
 
 function getPdvSaleDiscountPaymentContextKey(session = null) {
   const totals = getPdvSaleCartTotals(session);
   const discount = getPdvSaleSessionDiscount(session);
-  const methods = toArray(totals.paymentMethods)
-    .map((item) => `${normalizePdvSaleDiscountMethod(item.method || "")}:${toNumber(item.amount).toFixed(2)}`)
-    .sort()
-    .join("|");
+  const policy = discount.policy || getPdvSaleDiscountPolicy(session);
   return [
     `subtotal:${toNumber(totals.subtotal).toFixed(2)}`,
-    `discount:${toNumber(discount.amount).toFixed(2)}`,
-    `percent:${toNumber(discount.percent).toFixed(2)}`,
-    `cashback:${toNumber(totals.cashbackApplied).toFixed(2)}`,
-    `pay:${toNumber(totals.total).toFixed(2)}`,
-    `paid:${toNumber(totals.paid).toFixed(2)}`,
-    `methods:${methods}`
+    `itemDiscount:${toNumber(discount.itemDiscountAmount).toFixed(2)}`,
+    `generalException:${toNumber(policy.generalExceptionAmount || 0).toFixed(2)}`,
+    `authorizationAmount:${toNumber(policy.authorizationAmount || discount.itemDiscountAmount).toFixed(2)}`,
+    `authorizationPercent:${toNumber(policy.authorizationPercent || 0).toFixed(2)}`
   ].join(";");
 }
 
 function handlePdvSaleDiscountPolicyAfterPaymentChange(previousSession = null, nextSession = null) {
   const previousDiscount = getPdvSaleSessionDiscount(previousSession);
   const nextDiscount = getPdvSaleSessionDiscount(nextSession);
-  if (Math.max(previousDiscount.amount, nextDiscount.amount) <= 0) {
+  if (Math.max(previousDiscount.totalDiscountAmount, nextDiscount.totalDiscountAmount) <= 0) {
     return;
   }
   if (getPdvSaleDiscountPaymentContextKey(previousSession) === getPdvSaleDiscountPaymentContextKey(nextSession)) {
@@ -3786,7 +5086,7 @@ function handlePdvSaleDiscountPolicyAfterPaymentChange(previousSession = null, n
   const hadApproval = Boolean(state.pdvSale.discountAuthorization?.approvalId);
   resetPdvSaleDiscountAuthorization();
   if (hadApproval) {
-    showFeedback("Forma de pagamento alterada. A autorizacao anterior do desconto foi invalidada.", "error");
+    showFeedback("Composicao do desconto alterada. A autorizacao anterior foi invalidada.", "error");
   }
 }
 
@@ -3850,10 +5150,128 @@ async function reconcilePdvSaleCashbackAfterCheckoutChange(reason = "") {
   });
   state.pdvSale.session = updatedSession;
   state.pdvSale.cashbackInput = "";
-  resetPdvSaleDiscountAuthorization();
   await syncPdvSaleCashbackInfo(updatedSession, { force: true });
   showFeedback(`O desconto alterou a base da venda. O cashback de ${currency(previousAmount)} foi removido para manter o total correto.`, "warning");
   return true;
+}
+
+function reconcilePdvSalePaymentDraftsAfterCheckoutChange(reason = "") {
+  const session = state.pdvSale.session;
+  if (!session || state.pdvSale.lastCompletedSale) {
+    return { adjusted: false, method: "", previousAmount: 0, nextAmount: 0 };
+  }
+  const totals = getPdvSaleCartTotals(session);
+  if (totals.predictedChange <= 0 || totals.drafted <= 0) {
+    return { adjusted: false, method: "", previousAmount: 0, nextAmount: 0 };
+  }
+  const candidates = [...PDV_SALE_CHECKOUT_PAYMENT_METHODS]
+    .reverse()
+    .map((item) => {
+      const method = normalizeText(item.method || "");
+      const draftState = getPdvSaleDraftState(method, session);
+      return { method, draftState };
+    })
+    .filter((item) => item.method && item.draftState.hasPendingDraft);
+  const target = candidates[0] || null;
+  if (!target) {
+    return { adjusted: false, method: "", previousAmount: 0, nextAmount: 0 };
+  }
+  const previousAmount = target.draftState.draftAmount;
+  const nextAmount = Number(Math.max(0, previousAmount - totals.predictedChange).toFixed(2));
+  setPdvSalePaymentAmount(target.method, nextAmount, target.draftState.draftInstallments, {
+    forceDisplayZero: nextAmount === 0
+  });
+  return {
+    adjusted: true,
+    method: target.method,
+    previousAmount,
+    nextAmount,
+    reason: normalizeText(reason || "")
+  };
+}
+
+async function normalizePdvSaleLaunchedPaymentsAfterTotalChange(reason = "") {
+  const session = state.pdvSale.session;
+  const sessionId = getActivePdvSaleSessionId();
+  const normalizedReason = normalizeText(reason || "");
+  const autoAdjustReason = /discount|cashback|exchange_credit|checkout_revalidated/.test(normalizedReason);
+  if (!session || !sessionId || state.pdvSale.lastCompletedSale) {
+    return { adjusted: false, method: "", previousAmount: 0, nextAmount: 0, excess: 0, reason: normalizedReason };
+  }
+  if (!autoAdjustReason) {
+    return { adjusted: false, method: "", previousAmount: 0, nextAmount: 0, excess: 0, reason: normalizedReason };
+  }
+  const totals = getPdvSaleCartTotals(session);
+  const excess = Number(Math.max(0, toNumber(totals.change || 0)).toFixed(2));
+  if (excess <= 0.01) {
+    return { adjusted: false, method: "", previousAmount: 0, nextAmount: 0, excess: 0, reason: normalizedReason };
+  }
+  const methods = getPdvSaleFinancialPaymentMethods(session);
+  const candidates = methods
+    .map((item, index) => ({ item, index, method: normalizeText(item.method || "") }))
+    .filter(({ item, method }) => isPdvSaleAutoAdjustablePaymentMethod(method) && toNumber(item.amount || 0) > 0);
+  const target = candidates[candidates.length - 1] || null;
+  if (!target || toNumber(target.item.amount || 0) + 0.01 < excess) {
+    return { adjusted: false, method: "", previousAmount: 0, nextAmount: 0, excess, reason: normalizedReason };
+  }
+  const previousAmount = Number(toNumber(target.item.amount || 0).toFixed(2));
+  const nextAmount = Number(Math.max(0, previousAmount - excess).toFixed(2));
+  const nextMethods = methods
+    .map((item, index) => {
+      if (index !== target.index) {
+        return item;
+      }
+      return {
+        ...item,
+        amount: nextAmount,
+        installment_amount: getInstallmentAmount(nextAmount, item.installments || 1)
+      };
+    })
+    .filter((item) => toNumber(item.amount || 0) > 0.01 || !isPdvSaleAutoAdjustablePaymentMethod(item.method));
+  state.pdvSale.session = {
+    ...(state.pdvSale.session || {}),
+    payment_plan: { methods: nextMethods }
+  };
+  const syncedSession = await syncPdvSalePaymentPlan();
+  setPdvSalePaymentAmount(target.method, nextAmount, target.item.installments || 1, {
+    forceDisplayZero: nextAmount === 0
+  });
+  return {
+    adjusted: true,
+    method: target.method,
+    previousAmount,
+    nextAmount,
+    excess,
+    reason: normalizedReason,
+    session: syncedSession
+  };
+}
+
+async function reconcilePdvSaleCheckoutAfterMutation(reason = "", options = {}) {
+  const cashbackWasRevised = await reconcilePdvSaleCashbackAfterCheckoutChange(reason || "checkout_changed");
+  const draftAdjustment = reconcilePdvSalePaymentDraftsAfterCheckoutChange(reason || "checkout_changed");
+  const launchedPaymentAdjustment = await normalizePdvSaleLaunchedPaymentsAfterTotalChange(reason || "checkout_changed");
+  const totals = getPdvSaleCartTotals(state.pdvSale.session);
+  if (totals.change > 0) {
+    state.pdvSale.checkoutOpenStep = "payments";
+    if (!options?.silentExcessWarning) {
+      showFeedback(`O desconto reduziu o total abaixo dos pagamentos ja lancados. Remova ou ajuste ${currency(totals.change)} antes de finalizar.`, "warning");
+    }
+  } else if (totals.pending > 0 || totals.drafted > 0 || draftAdjustment.adjusted) {
+    state.pdvSale.checkoutOpenStep = "payments";
+  }
+  if (draftAdjustment.adjusted && !options?.silentDraftAdjustment) {
+    showFeedback(`Valor digitado em pagamento ajustado para ${currency(draftAdjustment.nextAmount)} apos recalculo do checkout.`, "warning");
+  }
+  if (launchedPaymentAdjustment.adjusted && !options?.silentLaunchedPaymentAdjustment) {
+    showFeedback(`${formatPaymentMethodLabel(launchedPaymentAdjustment.method)} ajustado para ${currency(launchedPaymentAdjustment.nextAmount)} apos o desconto.`, "warning");
+  }
+  return {
+    cashbackWasRevised,
+    draftAdjustment,
+    launchedPaymentAdjustment,
+    totals
+  };
 }
 
 async function syncPdvSalePaymentPlan() {
@@ -3892,7 +5310,7 @@ async function commitPdvSalePaymentMethod(method = "", amount = 0, installments 
   };
   const syncedSession = await syncPdvSalePaymentPlan();
   handlePdvSaleDiscountPolicyAfterPaymentChange(previousSession, syncedSession);
-  await reconcilePdvSaleCashbackAfterCheckoutChange("payment_method_changed");
+  await reconcilePdvSaleCheckoutAfterMutation("payment_method_changed", { silentDraftAdjustment: true });
   setPdvSalePaymentAmount(normalizedMethod, normalizedEntry.amount, normalizedEntry.installments);
   return state.pdvSale.session || syncedSession;
 }
@@ -3913,7 +5331,7 @@ async function removePdvSalePaymentMethod(method = "") {
   };
   const syncedSession = await syncPdvSalePaymentPlan();
   handlePdvSaleDiscountPolicyAfterPaymentChange(previousSession, syncedSession);
-  await reconcilePdvSaleCashbackAfterCheckoutChange("payment_method_changed");
+  await reconcilePdvSaleCheckoutAfterMutation("payment_method_changed", { silentExcessWarning: true, silentDraftAdjustment: true });
   setPdvSalePaymentAmount(normalizedMethod, 0, getPdvPaymentDraftEntry(normalizedMethod).installments || 1, { forceDisplayZero: true });
   return state.pdvSale.session || syncedSession;
 }
@@ -3955,6 +5373,10 @@ async function applyPdvSaleCashback() {
   const cashbackInfo = getPdvSaleCashbackInfo(session);
   const cashbackRule = getPdvSaleCashbackRuleSummary(getPdvSaleCartTotals(session), cashbackInfo);
   let amount = Number(Math.max(0, parseMoneyAmount(state.pdvSale.cashbackInput || 0)).toFixed(2));
+  if (amount <= 0 && cashbackRule.maxUsableNow > 0) {
+    amount = cashbackRule.maxUsableNow;
+    state.pdvSale.cashbackInput = formatMoneyAmountInput(amount);
+  }
   if (amount <= 0) {
     showFeedback("Informe um valor de cashback para aplicar.", "error");
     return;
@@ -3976,11 +5398,15 @@ async function applyPdvSaleCashback() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ amount })
     });
-    state.pdvSale.session = response.session || state.pdvSale.session;
+    const nextSession = response.session || state.pdvSale.session || {};
+    if (!nextSession.cashback_application && response.applied?.amount) {
+      nextSession.cashback_application = response.applied;
+    }
+    state.pdvSale.session = nextSession;
     state.pdvSale.cashbackInfo = response.cashback || state.pdvSale.cashbackInfo;
     state.pdvSale.cashbackInfoCustomerKey = normalizeText(session.customer?.master_customer_id || session.customer?.phone || "");
     state.pdvSale.cashbackInput = formatMoneyAmountInput(toNumber(response.applied?.amount || amount));
-    resetPdvSaleDiscountAuthorization();
+    await reconcilePdvSaleCheckoutAfterMutation("cashback_changed", { silentDraftAdjustment: true });
     if (requestedAmount > amount) {
       showFeedback(`O cashback foi limitado a 50% da venda: ${currency(amount)}.`);
     } else {
@@ -4007,11 +5433,76 @@ async function removePdvSaleCashback() {
     });
     state.pdvSale.session = session;
     state.pdvSale.cashbackInput = "";
-    resetPdvSaleDiscountAuthorization();
     await syncPdvSaleCashbackInfo(session, { force: true });
+    await reconcilePdvSaleCheckoutAfterMutation("cashback_removed", { silentExcessWarning: true });
     showFeedback("Cashback removido da venda.");
   } finally {
     state.pdvSale.cashbackApplying = false;
+    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+  }
+}
+
+async function applyPdvSaleExchangeCredit() {
+  const sessionId = getActivePdvSaleSessionId();
+  const session = state.pdvSale.session;
+  if (!sessionId || !session) return;
+  if (state.pdvSale.lastCompletedSale) {
+    showFeedback("Nao e possivel aplicar Credito de Troca em uma venda ja finalizada.", "error");
+    return;
+  }
+  if (!session.customer?.phone) {
+    showFeedback("Selecione um cliente antes de aplicar Credito de Troca.", "error");
+    return;
+  }
+  const creditId = normalizeText(state.pdvSale.exchangeCreditSelectedId || toArray(state.pdvSale.exchangeCreditInfo?.items)[0]?.credit_id || "");
+  const amount = Number(Math.max(0, parseMoneyAmount(state.pdvSale.exchangeCreditInput || 0)).toFixed(2));
+  if (!creditId) {
+    showFeedback("Selecione o Credito de Troca que sera usado.", "error");
+    return;
+  }
+  if (amount <= 0) {
+    showFeedback("Informe o valor de Credito de Troca para aplicar.", "error");
+    return;
+  }
+  state.pdvSale.exchangeCreditApplying = true;
+  renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+  try {
+    const response = await api(`/api/pdv/sales/session/${encodeURIComponent(sessionId)}/apply-exchange-credit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credit_id: creditId, amount })
+    });
+    state.pdvSale.session = response.session || state.pdvSale.session;
+    state.pdvSale.exchangeCreditInfo = response.credits || state.pdvSale.exchangeCreditInfo;
+    state.pdvSale.exchangeCreditInput = formatMoneyAmountInput(response.applied?.amount || amount);
+    state.pdvSale.exchangeCreditSelectedId = response.applied?.credit_id || creditId;
+    await reconcilePdvSaleCheckoutAfterMutation("exchange_credit_changed");
+    showFeedback("Credito de Troca aplicado a venda.");
+  } finally {
+    state.pdvSale.exchangeCreditApplying = false;
+    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+  }
+}
+
+async function removePdvSaleExchangeCredit() {
+  const sessionId = getActivePdvSaleSessionId();
+  if (!sessionId || state.pdvSale.lastCompletedSale) return;
+  state.pdvSale.exchangeCreditApplying = true;
+  renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+  try {
+    const session = await api(`/api/pdv/sales/session/${encodeURIComponent(sessionId)}/remove-exchange-credit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    state.pdvSale.session = session;
+    state.pdvSale.exchangeCreditInput = "";
+    state.pdvSale.exchangeCreditSelectedId = "";
+    await syncPdvSaleExchangeCreditInfo(session, { force: true });
+    await reconcilePdvSaleCheckoutAfterMutation("exchange_credit_removed", { silentExcessWarning: true });
+    showFeedback("Credito de Troca removido da venda.");
+  } finally {
+    state.pdvSale.exchangeCreditApplying = false;
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
   }
 }
@@ -4052,6 +5543,7 @@ async function detachPdvSaleCustomer() {
     state.pdvSale.customerResults = [];
     state.pdvSale.customerSearching = false;
     resetPdvSaleCashbackState();
+    resetPdvSaleExchangeCreditState();
     closePdvSaleCustomerRegistration();
     showFeedback("Cliente removido da venda.");
   } finally {
@@ -4182,8 +5674,10 @@ async function restorePdvSaleDraft(draftId = "") {
       persistPdvSaleSessionId(session.session_id);
       if (session?.customer?.phone) {
         await syncPdvSaleCashbackInfo(session, { force: true });
+        await syncPdvSaleExchangeCreditInfo(session, { force: true });
       } else {
         resetPdvSaleCashbackState();
+        resetPdvSaleExchangeCreditState();
       }
       await loadPdvSaleDrafts({ silent: true });
       showFeedback("Rascunho retomado na frente de caixa.");
@@ -4213,6 +5707,16 @@ async function deletePdvSaleDraft(draftId = "") {
 }
 
 async function finalizePdvSale(form) {
+  const perfToken = startAeroStorePerfMeasure("pdv.sale.finalize", {
+    cart_items: toArray(state.pdvSale.session?.cart_items).length
+  });
+  let perfFinalizeOutcome = "started";
+  const finishFinalizePerf = (extra = {}) => {
+    endAeroStorePerfMeasure(perfToken, {
+      outcome: perfFinalizeOutcome,
+      ...(extra && typeof extra === "object" ? extra : {})
+    });
+  };
   let totals = getPdvSaleCartTotals(state.pdvSale.session);
   const cashbackInfo = getPdvSaleCashbackInfo(state.pdvSale.session);
   const sessionId = getActivePdvSaleSessionId();
@@ -4241,23 +5745,39 @@ async function finalizePdvSale(form) {
     return;
   }
   if (totals.drafted > 0) {
+    perfFinalizeOutcome = "drafted_payment_pending";
+    finishFinalizePerf({ drafted: totals.drafted });
     showFeedback("Existem valores digitados que ainda nao foram lancados. Clique em + Lancar em cada forma de pagamento antes de finalizar.", "error");
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
   }
   if (totals.pending > 0) {
+    perfFinalizeOutcome = "payment_pending";
+    finishFinalizePerf({ pending: totals.pending });
     showFeedback(`Ainda faltam ${currency(totals.pending)} para concluir o pagamento da venda.`, "error");
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
   }
   if (totals.change > 0) {
+    perfFinalizeOutcome = "payment_excess";
+    finishFinalizePerf({ change: totals.change });
     showFeedback(`O total lançado excede o valor da venda em ${currency(totals.change)}. Revise os pagamentos antes de finalizar.`, "error");
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
   }
   const currentDiscount = getPdvSaleSessionDiscount(state.pdvSale.session);
-  if (currentDiscount.requiresAuthorization && !normalizeText(state.pdvSale.discountAuthorization?.approvalId || "")) {
-    showFeedback(currentDiscount.policy?.message || "Este desconto exige autorizacao valida antes da finalizacao.", "error");
+  const currentDiscountAuthorization = evaluateDiscountAuthorizationState(state.pdvSale.session, totals);
+  if (currentDiscountAuthorization.status === "adjustment_required") {
+    perfFinalizeOutcome = "discount_adjustment_required";
+    finishFinalizePerf();
+    showFeedback("O desconto alterou o total. Ajuste os pagamentos antes de finalizar.", "error");
+    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    return;
+  }
+  if (currentDiscountAuthorization.status === "authorization_required") {
+    perfFinalizeOutcome = "authorization_required";
+    finishFinalizePerf();
+    showFeedback(currentDiscountAuthorization.message || currentDiscount.policy?.message || "Esta venda possui desconto que exige autorizacao gerencial.", "error");
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
   }
@@ -4271,7 +5791,7 @@ async function finalizePdvSale(form) {
       observacoes: normalizeText(formData.get("observacoes") || ""),
       gift_card_code: normalizeText(formData.get("gift_card_code") || ""),
       desconto_extra: currentDiscount.amount,
-      discount_authorization_id: normalizeText(state.pdvSale.discountAuthorization?.approvalId || ""),
+      discount_authorization_id: normalizeText(getCurrentPdvSaleDiscountAuthorization(state.pdvSale.session)?.approvalId || ""),
       permuta_pin: normalizeText(formData.get("permuta_pin") || ""),
       permuta_reason: normalizeText(formData.get("permuta_reason") || ""),
       cashback_application: state.pdvSale.session?.cashback_application || null
@@ -4294,8 +5814,12 @@ async function finalizePdvSale(form) {
     state.pdvSale.cartBusyItemId = "";
     state.pdvSale.paymentDraft = {};
     state.pdvSale.discountDraft = buildPdvSaleDiscountDraftFromSession(null);
+    state.pdvSale.itemDiscountOpenItemId = "";
+    state.pdvSale.itemDiscountDrafts = {};
+    state.pdvSale.itemDiscountApplyingId = "";
     resetPdvSaleDiscountAuthorization({ preserveAuthorizers: false });
     resetPdvSaleCashbackState();
+    resetPdvSaleExchangeCreditState();
     state.pdvSale.drawerOpen = false;
     document.body.classList.remove("pdv-drawer-open");
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
@@ -4310,8 +5834,10 @@ async function finalizePdvSale(form) {
     if (storeSettings.autoPrintReceipt && normalizeText(state.pdvSale.postSaleAutoPrintedSaleId || "") !== normalizeText(sale.sale_id || "")) {
       printPdvSaleReceipt(sale.sale_id || "", { autoPrint: true });
     }
+    perfFinalizeOutcome = "success";
     showFeedback(`Venda ${sale.sale_id || ""} concluida com sucesso.`);
   } catch (error) {
+    perfFinalizeOutcome = "error";
     console.error("[AEROSTORE PDV] Falha ao finalizar venda", {
       ...diagnostics,
       backendError: error?.message || "Erro inesperado."
@@ -4320,6 +5846,10 @@ async function finalizePdvSale(form) {
   } finally {
     state.pdvSale.drawerSubmitting = false;
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    finishFinalizePerf({
+      sale_id: state.pdvSale.lastCompletedSale?.sale_id || "",
+      total: diagnostics.totalAPagar
+    });
   }
 }
 
@@ -4576,13 +6106,40 @@ async function startNewPdvSaleSession() {
     return;
   }
   state.pdvSale.sessionStarting = true;
+  const shouldHardReload = true;
   persistPdvSaleCompletedSale(null);
+  persistPdvSaleSessionId("");
   resetPdvSalePostSaleState();
   state.pdvSale.session = null;
   state.pdvSale.sessionId = "";
   state.pdvSale.paymentDraft = {};
   state.pdvSale.discountDraft = buildPdvSaleDiscountDraftFromSession(null);
+  state.pdvSale.generalDiscountBlock = null;
+  state.pdvSale.itemDiscountOpenItemId = "";
+  state.pdvSale.itemDiscountDrafts = {};
+  state.pdvSale.itemDiscountApplyingId = "";
+  state.pdvSale.checkoutOpenStep = "";
   resetPdvSaleDiscountAuthorization({ preserveAuthorizers: false });
+  resetPdvSaleCashbackState();
+  resetPdvSaleExchangeCreditState();
+  state.pdvSale.customerQuery = "";
+  state.pdvSale.productQuery = "";
+  state.pdvSale.customerResults = [];
+  state.pdvSale.productResults = [];
+  state.pdvSale.customerAttachingKey = "";
+  state.pdvSale.productAddingKey = "";
+  state.pdvSale.cartBusyItemId = "";
+  state.pdvSale.drawerOpen = false;
+  document.body.classList.remove("pdv-drawer-open");
+  if (shouldHardReload) {
+    const target = "/pdv/venda";
+    if (normalizePathname(window.location.pathname || "") === target) {
+      window.location.reload();
+    } else {
+      window.location.assign(target);
+    }
+    return;
+  }
   renderPdvSaleSurface();
   try {
     state.pdvSale.customerQuery = "";
@@ -4590,6 +6147,7 @@ async function startNewPdvSaleSession() {
     state.pdvSale.customerResults = [];
     state.pdvSale.productResults = [];
     resetPdvSaleCashbackState();
+    resetPdvSaleExchangeCreditState();
     state.pdvSale.drawerOpen = false;
     document.body.classList.remove("pdv-drawer-open");
     await loadPdvSaleFront({ forceNewSession: true });
@@ -4598,6 +6156,59 @@ async function startNewPdvSaleSession() {
     renderPdvSaleSurface();
   }
 }
+
+function forcePdvSalePostSaleExitFallback() {
+  persistPdvSaleCompletedSale(null);
+  persistPdvSaleSessionId("");
+  resetPdvSalePostSaleState();
+  state.pdvSale.session = null;
+  state.pdvSale.sessionId = "";
+  state.pdvSale.customerQuery = "";
+  state.pdvSale.productQuery = "";
+  state.pdvSale.customerResults = [];
+  state.pdvSale.productResults = [];
+  state.pdvSale.paymentDraft = {};
+  state.pdvSale.checkoutOpenStep = "";
+  state.pdvSale.drawerOpen = false;
+  state.pdvSale.sessionStarting = false;
+  resetPdvSaleCashbackState();
+  resetPdvSaleExchangeCreditState();
+  resetPdvSaleDiscountAuthorization({ preserveAuthorizers: false });
+  document.body.classList.remove("pdv-drawer-open");
+  if (normalizePathname(window.location.pathname || "") !== "/pdv/venda") {
+    window.location.assign("/pdv/venda");
+    return;
+  }
+  renderPdvSaleSurface();
+  showFeedback("Nao foi possivel abrir uma nova venda automaticamente. Recarregue a pagina ou tente novamente.", "error");
+}
+
+window.handlePdvPostSaleNewSaleClick = function handlePdvPostSaleNewSaleClick() {
+  startNewPdvSaleSession().catch((error) => {
+    handleUiError("Erro ao iniciar uma nova venda", error);
+    forcePdvSalePostSaleExitFallback();
+  });
+};
+
+window.handlePdvPostSalePrintClick = function handlePdvPostSalePrintClick(saleId = "") {
+  const normalizedSaleId = normalizeText(saleId || state.pdvSale.lastCompletedSale?.sale_id || "");
+  if (!normalizedSaleId) {
+    showFeedback("Cupom indisponivel para impressao nesta venda.", "warning");
+    return;
+  }
+  printPdvSaleReceipt(normalizedSaleId);
+};
+
+window.handlePdvPostSaleWhatsAppClick = function handlePdvPostSaleWhatsAppClick(saleId = "") {
+  const normalizedSaleId = normalizeText(saleId || state.pdvSale.lastCompletedSale?.sale_id || "");
+  if (!normalizedSaleId) {
+    showFeedback("Venda indisponivel para envio pelo WhatsApp.", "warning");
+    return;
+  }
+  sendPdvSaleSummaryWhatsapp(normalizedSaleId).catch((error) => {
+    handleUiError("Erro ao enviar o cupom pelo WhatsApp do CRM", error);
+  });
+};
 
 function normalizeStoreScope(value = "") {
   return normalizeText(value)
@@ -6120,7 +7731,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
   const summary = state.pdvProducts.summary || {};
   const filters = state.pdvProducts.filters || {};
   const storeOptions = getPdvProductsStoreOptions();
-  const canManageProducts = hasPermission("can_manage_products") || getCurrentRole() === "admin" || getCurrentRole() === "manager" || getCurrentRole() === "gerente";
+  const canManageProducts = hasPermission("can_manage_products") || isCurrentUserManagerProfile();
   const selectedProduct = items.find((item) => normalizeText(item.id || item.product_id || "") === normalizeText(state.pdvProducts.selectedProductId || "")) || items[0] || null;
 
   if (selectedProduct && normalizeText(state.pdvProducts.selectedProductId || "") !== normalizeText(selectedProduct.id || selectedProduct.product_id || "")) {
@@ -6961,7 +8572,7 @@ const PDV_CUSTOMER_BOTTOM_SIZE_OPTIONS = ["34", "36", "38", "40", "42", "44", "4
 const PDV_CUSTOMER_SHOE_SIZE_OPTIONS = ["34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45"];
 
 function canManageManualProductsFront() {
-  return hasPermission("can_manage_products") || ["admin", "manager", "gerente"].includes(getCurrentRole());
+  return hasPermission("can_manage_products") || isCurrentUserManagerProfile();
 }
 
 function getManualProductStatusLabel(status = "") {
@@ -8211,7 +9822,7 @@ async function loadPdvProductsFront(options = {}) {
     Object.entries(state.pdvProducts.filters || {}).forEach(([key, value]) => {
       if (normalizeText(value || "") && value !== "0") params.set(key, value);
     });
-    params.set("limit", "80");
+    params.set("limit", "500");
     const response = await api(`/api/products?${params.toString()}`);
     state.pdvProducts.items = toArray(response.items);
     state.pdvProducts.summary = response.summary || null;
@@ -8735,6 +10346,28 @@ function applyPdvStockFiltersFromForm(formElement) {
   state.pdvStock.filters.status = normalizeText(formData.get("statusFilter") || "").toLowerCase();
   state.pdvStock.filters.alert = normalizeText(formData.get("alertFilter") || "").toLowerCase();
   state.pdvStock.selectedInventoryId = "";
+  state.pdvStock.pagination = { ...(state.pdvStock.pagination || {}), page: 1 };
+}
+
+const PDV_STOCK_PAGE_SIZE_OPTIONS = [25, 50, 100];
+
+function ensurePdvStockPagination(totalItems = 0) {
+  const pagination = state.pdvStock.pagination && typeof state.pdvStock.pagination === "object"
+    ? state.pdvStock.pagination
+    : {};
+  const requestedPageSize = Number(pagination.pageSize || 25);
+  const pageSize = PDV_STOCK_PAGE_SIZE_OPTIONS.includes(requestedPageSize) ? requestedPageSize : 25;
+  const totalPages = Math.max(1, Math.ceil(Number(totalItems || 0) / pageSize));
+  const requestedPage = Number(pagination.page || 1);
+  const page = Math.min(totalPages, Math.max(1, Number.isFinite(requestedPage) ? requestedPage : 1));
+  state.pdvStock.pagination = { page, pageSize };
+  return {
+    page,
+    pageSize,
+    totalPages,
+    startIndex: totalItems ? (page - 1) * pageSize : 0,
+    endIndex: totalItems ? Math.min(totalItems, page * pageSize) : 0
+  };
 }
 
 function renderPdvStockOfficialFront(container = document.getElementById("pdv-stock-content")) {
@@ -8745,13 +10378,15 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
   const metrics = summary.metrics || {};
   const filters = state.pdvStock.filters || {};
   const storeOptions = getPdvStockStoreOptions();
+  const pagination = ensurePdvStockPagination(items.length);
+  const visibleItems = items.slice(pagination.startIndex, pagination.endIndex);
   const selectedItem = items.find((item) => normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "") === normalizeText(state.pdvStock.selectedInventoryId || "")) || items[0] || null;
 
   if (selectedItem && normalizeText(state.pdvStock.selectedInventoryId || "") !== normalizeText(selectedItem.inventory_id || selectedItem.product_id || selectedItem.sku || selectedItem.codigo || "")) {
     state.pdvStock.selectedInventoryId = normalizeText(selectedItem.inventory_id || selectedItem.product_id || selectedItem.sku || selectedItem.codigo || "");
   }
 
-  const rowsHtml = items.length ? items.map((item) => {
+  const rowsHtml = visibleItems.length ? visibleItems.map((item) => {
     const itemId = normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "");
     const isSelected = normalizeText(state.pdvStock.selectedInventoryId || "") === itemId;
     const variantText = [item.cor, item.tamanho, item.tipo].map((value) => normalizeText(value)).filter(Boolean).join(" • ");
@@ -8799,6 +10434,28 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
         </div>
       </td>
     </tr>
+  `;
+  const paginationStart = items.length ? pagination.startIndex + 1 : 0;
+  const paginationEnd = pagination.endIndex;
+  const paginationHtml = `
+    <div class="pdv-stock-results-toolbar">
+      <div class="pdv-stock-results-count">
+        <strong>${escapeHtml(String(items.length || 0))}</strong>
+        <span>${items.length === 1 ? "produto encontrado" : "produtos encontrados"}</span>
+        <small>Mostrando ${escapeHtml(String(paginationStart))}-${escapeHtml(String(paginationEnd))} de ${escapeHtml(String(items.length || 0))}</small>
+      </div>
+      <div class="pdv-stock-results-controls">
+        <label>
+          <span>Visualizar</span>
+          <select data-pdv-stock-page-size="true">
+            ${PDV_STOCK_PAGE_SIZE_OPTIONS.map((option) => `<option value="${option}"${pagination.pageSize === option ? " selected" : ""}>${option} por pagina</option>`).join("")}
+          </select>
+        </label>
+        <span class="pdv-stock-page-indicator">Pagina ${escapeHtml(String(pagination.page))} de ${escapeHtml(String(pagination.totalPages))}</span>
+        <button class="ghost-button small" type="button" data-pdv-stock-page-prev="true"${pagination.page <= 1 ? " disabled" : ""}>Anterior</button>
+        <button class="secondary-button small" type="button" data-pdv-stock-page-next="true"${pagination.page >= pagination.totalPages ? " disabled" : ""}>Proximo</button>
+      </div>
+    </div>
   `;
 
   const alertMessages = toArray(summary.alerts || summary.items).slice(0, 4).map((alert) => normalizeText(alert.message || "")).filter(Boolean);
@@ -8874,8 +10531,9 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
         </div>
       ` : ""}
       <div class="split-grid">
-        <article class="panel">
-          <div class="table-wrap">
+        <article class="panel pdv-stock-results-panel">
+          ${paginationHtml}
+          <div class="table-wrap pdv-stock-results-scroll">
             <table class="pdv-products-table">
               <thead>
                 <tr>
@@ -11103,8 +12761,20 @@ async function loadPdvReportsFront() {
 
 function renderPdvFront(sectionId = "") {
   if (sectionId === "pdv-sale") {
+    const container = document.getElementById("pdv-sale-content");
+    if (container && !container.dataset.fastFirstPaintDone) {
+      container.dataset.fastFirstPaintDone = "true";
+      renderPdvSaleOfficialFront(container);
+    }
     loadPdvSaleFront({ preserveResults: true }).catch((error) => {
       handleUiError("Erro ao carregar a frente de venda do PDV", error);
+    });
+    return;
+  }
+
+  if (sectionId === "pdv-sales-orders") {
+    loadPdvSalesOrdersFront().catch((error) => {
+      handleUiError("Erro ao carregar os pedidos de venda do PDV", error);
     });
     return;
   }
@@ -11161,7 +12831,7 @@ function renderPdvFront(sectionId = "") {
     "pdv-dashboard": {
       title: "PDV AEROSTORE",
       subtitle: "Visao operacional da loja ativa com acesso rapido as frentes oficiais do PDV.",
-      contentHtml: buildDashboardRolePanel(state.dashboard || {}, { officialPdv: true })
+      contentHtml: buildPdvDashboardPremiumPanel(state.dashboard || {})
     },
     "pdv-sale": {
       title: "Venda",
@@ -11185,6 +12855,7 @@ function renderPdvFront(sectionId = "") {
         </div>
       `
     },
+    "pdv-sales-orders": { title: "Pedidos de venda", subtitle: "Consulta operacional de vendas, pagamentos e liberacao de mercadoria.", contentHtml: buildPdvFallbackPanel("Pedidos de venda", commonDetail) },
     "pdv-cash-register": { title: "Caixa", subtitle: "Frente oficial do caixa da loja ativa.", contentHtml: buildPdvFallbackPanel("Caixa", commonDetail) },
     "pdv-products": { title: "Produtos", subtitle: "Frente oficial de consulta operacional de produtos.", contentHtml: buildPdvFallbackPanel("Produtos", commonDetail) },
     "pdv-customers": { title: "Clientes", subtitle: "Frente oficial de clientes do PDV e da loja ativa.", contentHtml: buildPdvFallbackPanel("Clientes", commonDetail) },
@@ -11200,7 +12871,7 @@ function renderPdvFront(sectionId = "") {
       contentHtml: `<div class="pdv-reports-shell"><article class="panel pdv-report-section"><div class="panel-header"><h3>Consolidação</h3></div><div class="pdv-report-empty-state"><strong>Consolidação isolada por pathname</strong><span>${commonDetail}</span></div></article></div>`
     },
     "pdv-reservations": { title: "Reservas", subtitle: "Frente oficial de reservas da loja ativa.", contentHtml: buildPdvFallbackPanel("Reservas", commonDetail) },
-    "pdv-exchanges": { title: "Trocas", subtitle: "Frente oficial de trocas da loja ativa.", contentHtml: buildPdvFallbackPanel("Trocas", commonDetail) },
+    "pdv-exchanges": { title: "Central de Trocas", subtitle: "Trocas vinculadas a vendas originais.", contentHtml: buildPdvExchangesContent() },
     "pdv-quotes": { title: "Orcamentos", subtitle: "Frente oficial de orcamentos.", contentHtml: buildPdvFallbackPanel("Orcamentos", commonDetail) },
     "pdv-imports": { title: "Importações", subtitle: "Frente oficial de importações e diagnóstico operacional.", contentHtml: buildPdvFallbackPanel("Importações", commonDetail) }
   };
@@ -11209,13 +12880,15 @@ function renderPdvFront(sectionId = "") {
   if (!view) {
     return;
   }
-  container.innerHTML = buildPdvFrontShell({
-    sectionId,
-    title: view.title,
-    subtitle: view.subtitle,
-    contentHtml: view.contentHtml,
-    compactTabs: sectionId !== "pdv-dashboard"
-  });
+  container.innerHTML = sectionId === "pdv-dashboard"
+    ? view.contentHtml
+    : buildPdvFrontShell({
+      sectionId,
+      title: view.title,
+      subtitle: view.subtitle,
+      contentHtml: view.contentHtml,
+      compactTabs: true
+    });
 }
 
 function canReconnectWhatsappCrm() {
@@ -11252,6 +12925,13 @@ function getWhatsappCrmStatusMeta(statusData = state.whatsappCrm.statusData || {
       tone: "warning",
       label: "Aguardando QR",
       detail: "Escaneie o QR Code da loja para restaurar a sessao."
+    };
+  }
+  if (normalizedStatus === "qr_pendente") {
+    return {
+      tone: "warning",
+      label: "QR protegido",
+      detail: statusData.sessionStateLabel || "Clique em Atualizar QR para liberar um QR Code valido por tempo limitado."
     };
   }
   if (normalizedStatus === "autenticando") {
@@ -12557,12 +14237,12 @@ function renderWhatsAppRouteFront() {
             </div>
             <div class="whatsapp-crm-qr-wrap${hasQr ? " is-visible" : ""}">
               ${hasQr ? `
-                <p>Escaneie o QR Code abaixo com o WhatsApp do celular da loja.</p>
+                <p>Escaneie o QR Code abaixo com o WhatsApp do celular da loja. Ele so e renovado quando voce clicar em Atualizar QR.</p>
                 <img class="whatsapp-crm-qr-image" src="${escapeHtml(state.whatsappCrm.qrData?.qrBase64 || statusData.qrBase64 || "")}" alt="QR Code WhatsApp CRM" />
               ` : `
                 <div class="empty-state compact">
-                  <strong>${escapeHtml(connectedNumber ? "Motor conectado" : "QR nao disponivel no momento")}</strong>
-                  <span>${escapeHtml(connectedNumber ? `Motor conectado ao numero ${connectedNumber}.` : "Quando a sessao exigir autenticacao, o QR aparecera nesta frente.")}</span>
+                  <strong>${escapeHtml(connectedNumber ? "Motor conectado" : (statusData.qrManualMode ? "QR Code protegido" : "QR nao disponivel no momento"))}</strong>
+                  <span>${escapeHtml(connectedNumber ? `Motor conectado ao numero ${connectedNumber}.` : (statusData.qrManualMode ? "Para conectar, clique em Atualizar QR. O sistema nao fica renovando QR sozinho." : "Quando a sessao exigir autenticacao, o QR aparecera nesta frente."))}</span>
                 </div>
               `}
             </div>
@@ -13176,15 +14856,29 @@ async function saveWhatsAppCrmCampaignDraft(formElement) {
   }
 }
 
-async function loadWhatsAppQrData() {
+async function loadWhatsAppQrData(options = {}) {
+  const { requestFresh = false } = options || {};
   if (!canReconnectWhatsappCrm()) {
     state.whatsappCrm.qrData = null;
     return null;
   }
   state.whatsappCrm.qrLoading = true;
   try {
-    const response = await api("/api/whatsapp/qr");
-    state.whatsappCrm.qrData = response;
+    if (requestFresh) {
+      await api("/api/whatsapp/qr/refresh", { method: "POST" });
+    }
+    let response = null;
+    const maxAttempts = requestFresh ? 6 : 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      response = await api("/api/whatsapp/qr");
+      state.whatsappCrm.qrData = response;
+      if (!requestFresh || response?.qrBase64 || response?.status === "conectado") {
+        return response;
+      }
+    }
     return response;
   } catch (error) {
     state.whatsappCrm.qrData = null;
@@ -13295,6 +14989,272 @@ async function sendWhatsAppCrmTest(formElement) {
   }
 }
 
+function getUsersAdminMeta() {
+  const meta = state.usersAdmin.meta || {};
+  return {
+    profiles: toArray(meta.profiles).length ? toArray(meta.profiles) : [
+      { key: "admin", label: "Administrador" },
+      { key: "manager", label: "Gestor" },
+      { key: "seller", label: "Vendedor" },
+      { key: "cashier", label: "Caixa" },
+      { key: "consult", label: "Consulta" }
+    ],
+    permission_catalog: toArray(meta.permission_catalog),
+    store_options: toArray(meta.store_options).length ? toArray(meta.store_options) : [
+      { id: "vila_masc", label: "Vila Masc." },
+      { id: "vila_fem", label: "Vila Fem/Infant." },
+      { id: "botanico", label: "Botanico" },
+      { id: "sul", label: "Sul" }
+    ]
+  };
+}
+
+function getUsersAdminSelectedUser() {
+  const selectedId = Number(state.usersAdmin.selectedId || 0);
+  return toArray(state.usersAdmin.rows).find((user) => Number(user.id) === selectedId) || null;
+}
+
+function createUsersAdminDraft(user = null) {
+  const meta = getUsersAdminMeta();
+  const role = user?.role || "seller";
+  const profile = meta.profiles.find((item) => item.key === role) || null;
+  const storeId = user?.store_id || meta.store_options?.[0]?.id || "vila_masc";
+  return {
+    id: user?.id || "",
+    name: user?.name || "",
+    email: user?.email || "",
+    username: user?.username || "",
+    phone: user?.phone || "",
+    role,
+    status: user?.status || "ativo",
+    store_id: storeId,
+    allowed_stores: toArray(user?.allowed_stores).length ? toArray(user.allowed_stores) : [storeId],
+    permissions: user?.permissions || profile?.default_permissions || {},
+    password: ""
+  };
+}
+
+async function loadUsersAdmin() {
+  if (!canManageUsersPanel()) {
+    return;
+  }
+  state.usersAdmin.loading = true;
+  state.usersAdmin.error = "";
+  renderUsersAdminFront();
+  try {
+    const params = new URLSearchParams();
+    if (state.usersAdmin.query) params.set("q", state.usersAdmin.query);
+    if (state.usersAdmin.status) params.set("status", state.usersAdmin.status);
+    const response = await api(`/api/admin/users${params.toString() ? `?${params.toString()}` : ""}`);
+    state.usersAdmin.rows = toArray(response.users);
+    state.usersAdmin.meta = response.meta || state.usersAdmin.meta;
+    if (state.usersAdmin.selectedId && !getUsersAdminSelectedUser()) {
+      state.usersAdmin.selectedId = "";
+      state.usersAdmin.draft = null;
+    }
+  } catch (error) {
+    state.usersAdmin.error = error.message || "Falha ao carregar usuarios.";
+    throw error;
+  } finally {
+    state.usersAdmin.loading = false;
+    renderUsersAdminFront();
+  }
+}
+
+function renderUsersAdminFront() {
+  const container = document.getElementById("users-admin-content");
+  if (!container) {
+    return;
+  }
+  if (!canManageUsersPanel()) {
+    container.innerHTML = `
+      <article class="hero-card">
+        <p class="eyebrow">Acesso restrito</p>
+        <h3>Usuários e Permissões</h3>
+        <p>Somente administrador ou perfil com permissão pode gerenciar acessos.</p>
+      </article>
+    `;
+    return;
+  }
+  const meta = getUsersAdminMeta();
+  const users = toArray(state.usersAdmin.rows).filter((user) => !state.usersAdmin.role || user.role === state.usersAdmin.role);
+  const selected = getUsersAdminSelectedUser();
+  const draft = state.usersAdmin.draft || createUsersAdminDraft(selected);
+  const activeCount = users.filter((user) => String(user.status || "") === "ativo").length;
+  const profileOptions = meta.profiles.map((profile) => `<option value="${escapeHtml(profile.key)}"${profile.key === draft.role ? " selected" : ""}>${escapeHtml(profile.label)}</option>`).join("");
+  const filterProfileOptions = meta.profiles.map((profile) => `<option value="${escapeHtml(profile.key)}"${profile.key === state.usersAdmin.role ? " selected" : ""}>${escapeHtml(profile.label)}</option>`).join("");
+  const storeOptions = meta.store_options.map((store) => `<option value="${escapeHtml(store.id)}"${store.id === draft.store_id ? " selected" : ""}>${escapeHtml(store.label)}</option>`).join("");
+  const allowedStores = meta.store_options.map((store) => `
+    <label class="users-admin-check"><input type="checkbox" name="allowed_stores" value="${escapeHtml(store.id)}"${toArray(draft.allowed_stores).includes(store.id) ? " checked" : ""} /><span>${escapeHtml(store.label)}</span></label>
+  `).join("");
+  const permissionCatalog = meta.permission_catalog.map((group) => {
+    const items = toArray(group.items);
+    const activePermissions = items.filter((permission) => draft.permissions?.[permission.key]).length;
+    return `
+    <section class="users-admin-permission-group">
+      <div class="users-admin-permission-head">
+        <h4>${escapeHtml(group.group || "Permissões")}</h4>
+        <span>${escapeHtml(String(activePermissions))} de ${escapeHtml(String(items.length))} ativas</span>
+      </div>
+      <div class="users-admin-permissions">
+        ${items.map((permission) => `
+          <label class="users-admin-check"><input type="checkbox" name="permissions" value="${escapeHtml(permission.key)}"${draft.permissions?.[permission.key] ? " checked" : ""} /><span>${escapeHtml(permission.label || permission.key)}</span></label>
+        `).join("")}
+      </div>
+    </section>
+  `;
+  }).join("");
+  container.innerHTML = `
+    <section class="users-admin-shell">
+      <div class="users-admin-hero">
+        <div>
+          <p class="eyebrow">ACESSOS AEROSTORE</p>
+          <h3>Usuários e Permissões</h3>
+          <p>Gerencie quem acessa o CRM/PDV, lojas permitidas e permissões por módulo.</p>
+        </div>
+        <div class="users-admin-kpis">
+          <span><strong>${users.length}</strong> usuários</span>
+          <span><strong>${activeCount}</strong> ativos</span>
+          <span><strong>${escapeHtml(getRoleLabel(getCurrentUserRole()))}</strong> seu perfil</span>
+        </div>
+      </div>
+      <div class="users-admin-toolbar">
+        <input data-users-admin-filter="query" value="${escapeHtml(state.usersAdmin.query || "")}" placeholder="Buscar por nome, e-mail, perfil ou loja" />
+        <select data-users-admin-filter="role"><option value="">Todos os perfis</option>${filterProfileOptions}</select>
+        <select data-users-admin-filter="status">
+          <option value="">Todos os status</option>
+          <option value="ativo"${state.usersAdmin.status === "ativo" ? " selected" : ""}>Ativos</option>
+          <option value="inativo"${state.usersAdmin.status === "inativo" ? " selected" : ""}>Inativos</option>
+        </select>
+        <button class="secondary-button" type="button" data-users-admin-refresh>Atualizar</button>
+        <button class="primary-button" type="button" data-users-admin-new>Novo usuário</button>
+      </div>
+      ${state.usersAdmin.error ? `<div class="users-admin-alert">${escapeHtml(state.usersAdmin.error)}</div>` : ""}
+      <div class="users-admin-grid">
+        <article class="users-admin-card users-admin-list">
+          <div class="users-admin-list-head"><strong>${state.usersAdmin.loading ? "Carregando..." : "Equipe cadastrada"}</strong><small>Selecione um usuário para editar.</small></div>
+          <div class="users-admin-rows">
+            ${users.length ? users.map((user) => `
+              <button class="users-admin-row${Number(user.id) === Number(draft.id || 0) ? " active" : ""}" type="button" data-users-admin-select="${escapeHtml(user.id)}">
+                <span><strong>${escapeHtml(user.name || user.email)}</strong><small>${escapeHtml(user.email)}${user.username ? ` / ${escapeHtml(user.username)}` : ""}</small></span>
+                <span class="users-admin-row-meta"><em>${escapeHtml(user.role_label || getRoleLabel(user.role))}</em><small>${escapeHtml(user.store_label || "-")}</small></span>
+                <span class="users-admin-status ${escapeHtml(user.status || "ativo")}">${escapeHtml(user.status || "ativo")}</span>
+              </button>
+            `).join("") : `<div class="users-admin-empty">Nenhum usuário encontrado para os filtros atuais.</div>`}
+          </div>
+        </article>
+        <article class="users-admin-card users-admin-editor">
+          <form data-users-admin-form>
+            <input type="hidden" name="id" value="${escapeHtml(draft.id || "")}" />
+            <div class="users-admin-editor-head">
+              <div><p class="eyebrow">${draft.id ? "Editar acesso" : "Novo acesso"}</p><h3>${escapeHtml(draft.name || "Usuário AEROSTORE")}</h3></div>
+              <span class="users-admin-status ${escapeHtml(draft.status || "ativo")}">${escapeHtml(draft.status || "ativo")}</span>
+            </div>
+            <div class="users-admin-section users-admin-data-section"><h4>Dados do usuário</h4><div class="users-admin-form-grid">
+              <label>Nome<input name="name" value="${escapeHtml(draft.name)}" required /></label>
+              <label>E-mail/login<input name="email" type="email" value="${escapeHtml(draft.email)}" required /></label>
+              <label>Usuário curto<input name="username" value="${escapeHtml(draft.username)}" /></label>
+              <label>WhatsApp<input name="phone" value="${escapeHtml(draft.phone)}" /></label>
+              <label>Perfil<select name="role">${profileOptions}</select></label>
+              <label>Status<select name="status"><option value="ativo"${draft.status === "ativo" ? " selected" : ""}>ativo</option><option value="inativo"${draft.status === "inativo" ? " selected" : ""}>inativo</option></select></label>
+              <label>Loja principal<select name="store_id">${storeOptions}</select></label>
+              <label>Senha ${draft.id ? "<small>preencha apenas para redefinir</small>" : ""}<input name="password" type="password" value="" placeholder="${draft.id ? "manter senha atual" : "123456"}" /></label>
+            </div></div>
+            <div class="users-admin-section"><h4>Lojas permitidas</h4><div class="users-admin-check-grid">${allowedStores}</div></div>
+            <div class="users-admin-section users-admin-permissions-section"><h4>Permissões por módulo</h4>${permissionCatalog || `<p class="helper-text">Catálogo de permissões indisponível.</p>`}</div>
+            <div class="users-admin-actions">
+              <button class="primary-button" type="submit">${state.usersAdmin.saving ? "Salvando..." : "Salvar usuário"}</button>
+              ${draft.id ? `<button class="secondary-button" type="button" data-users-admin-reset-password="${escapeHtml(draft.id)}">Redefinir senha</button>` : ""}
+              ${draft.id ? `<button class="secondary-button" type="button" data-users-admin-toggle-status="${escapeHtml(draft.id)}" data-status="${draft.status === "ativo" ? "inativo" : "ativo"}">${draft.status === "ativo" ? "Desativar" : "Reativar"}</button>` : ""}
+              ${draft.id ? `<button class="danger-button" type="button" data-users-admin-delete="${escapeHtml(draft.id)}">Excluir teste</button>` : ""}
+            </div>
+          </form>
+        </article>
+      </div>
+    </section>
+  `;
+}
+
+function readUsersAdminForm(form) {
+  const data = new FormData(form);
+  const permissions = {};
+  Array.from(form.querySelectorAll('input[name="permissions"]')).forEach((input) => {
+    permissions[input.value] = Boolean(input.checked);
+  });
+  const allowedStores = Array.from(form.querySelectorAll('input[name="allowed_stores"]:checked')).map((input) => input.value);
+  return {
+    id: normalizeText(data.get("id") || ""),
+    name: normalizeText(data.get("name") || ""),
+    email: normalizeText(data.get("email") || "").toLowerCase(),
+    username: normalizeText(data.get("username") || "").toLowerCase(),
+    phone: normalizeText(data.get("phone") || ""),
+    role: normalizeText(data.get("role") || "seller"),
+    status: normalizeText(data.get("status") || "ativo"),
+    store_id: normalizeText(data.get("store_id") || "vila_masc"),
+    allowed_stores: allowedStores.length ? allowedStores : [normalizeText(data.get("store_id") || "vila_masc")],
+    permissions,
+    password: String(data.get("password") || "").trim()
+  };
+}
+
+async function saveUsersAdminForm(form) {
+  const payload = readUsersAdminForm(form);
+  state.usersAdmin.saving = true;
+  renderUsersAdminFront();
+  try {
+    const isEdit = Boolean(payload.id);
+    const response = await api(isEdit ? `/api/admin/users/${encodeURIComponent(payload.id)}` : "/api/admin/users", {
+      method: isEdit ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const saved = response.user || null;
+    if (saved?.id) {
+      state.usersAdmin.selectedId = String(saved.id);
+      state.usersAdmin.draft = createUsersAdminDraft(saved);
+    }
+    showFeedback("Usuario salvo com sucesso.");
+    await loadUsersAdmin();
+  } finally {
+    state.usersAdmin.saving = false;
+    renderUsersAdminFront();
+  }
+}
+
+async function setUsersAdminStatus(userId, status) {
+  await api(`/api/admin/users/${encodeURIComponent(userId)}/status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status })
+  });
+  showFeedback(status === "ativo" ? "Usuario reativado." : "Usuario desativado.");
+  await loadUsersAdmin();
+}
+
+async function resetUsersAdminPassword(userId) {
+  const password = window.prompt("Nova senha para este usuario:", "123456");
+  if (!password) {
+    return;
+  }
+  await api(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password })
+  });
+  showFeedback("Senha redefinida com sucesso.");
+}
+
+async function deleteUsersAdminUser(userId) {
+  if (!window.confirm("Excluir este usuario de teste? Usuarios reais devem ser desativados para preservar historico.")) {
+    return;
+  }
+  await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+  state.usersAdmin.selectedId = "";
+  state.usersAdmin.draft = null;
+  showFeedback("Usuario excluido.");
+  await loadUsersAdmin();
+}
+
 function renderOfficialRouteSection(sectionId = "") {
   if (OFFICIAL_PDV_SECTIONS.has(sectionId)) {
     renderPdvFront(sectionId);
@@ -13314,6 +15274,20 @@ function renderOfficialRouteSection(sectionId = "") {
     });
     return;
   }
+  if (sectionId === "users-admin") {
+    renderUsersAdminFront();
+    loadUsersAdmin().catch((error) => {
+      handleUiError("Erro ao carregar usuarios e permissoes", error);
+    });
+    return;
+  }
+  if (sectionId === "audit-logs") {
+    renderAuditLogsFront();
+    loadAuditLogs().catch((error) => {
+      handleUiError("Erro ao carregar auditoria operacional", error);
+    });
+    return;
+  }
   if (sectionId === "ai") {
     renderAiStrategicProductsPanel();
     if (canManageAiStrategicImport() && !state.aiStrategicProducts.length) {
@@ -13322,6 +15296,226 @@ function renderOfficialRouteSection(sectionId = "") {
       });
     }
   }
+}
+
+function getAuditLogsContainer() {
+  return document.getElementById("audit-logs-content");
+}
+
+function formatAuditJsonPreview(value = "") {
+  if (!value) return "-";
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch (error) {
+    return String(value || "-");
+  }
+}
+
+function safeParseAuditJson(value = "") {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return value;
+  }
+}
+
+function buildAuditDetailPayload(row = {}) {
+  return {
+    message: row.message || "",
+    reason: row.reason || "",
+    sale_id: row.sale_id || "",
+    customer_id: row.customer_id || "",
+    product_id: row.product_id || "",
+    amount: row.amount,
+    before: safeParseAuditJson(row.before_json || ""),
+    after: safeParseAuditJson(row.after_json || ""),
+    metadata: safeParseAuditJson(row.metadata_json || "")
+  };
+}
+
+function buildAuditLogsFilters() {
+  const filters = state.auditLogs.filters || {};
+  return `
+    <form class="audit-toolbar" data-audit-logs-filters>
+      <input name="user" value="${escapeHtml(filters.user || "")}" placeholder="Usuário/e-mail" />
+      <input name="module" value="${escapeHtml(filters.module || "")}" placeholder="Módulo" />
+      <input name="action" value="${escapeHtml(filters.action || "")}" placeholder="Ação" />
+      <input name="sale_id" value="${escapeHtml(filters.sale_id || "")}" placeholder="Venda" />
+      <select name="result">
+        <option value="">Todos os resultados</option>
+        <option value="success"${filters.result === "success" ? " selected" : ""}>Sucesso</option>
+        <option value="blocked"${filters.result === "blocked" ? " selected" : ""}>Bloqueado</option>
+        <option value="failed"${filters.result === "failed" ? " selected" : ""}>Falha</option>
+      </select>
+      <button class="secondary-button" type="submit">Filtrar</button>
+      <button class="ghost-button" type="button" data-audit-logs-reset>Limpar</button>
+    </form>
+  `;
+}
+
+function buildAuditLogsList() {
+  const rows = toArray(state.auditLogs.rows);
+  if (state.auditLogs.loading) {
+    return `<div class="empty-state compact"><strong>Carregando auditoria...</strong><span>Buscando eventos operacionais sensíveis.</span></div>`;
+  }
+  if (state.auditLogs.error) {
+    return `<div class="empty-state compact error"><strong>Não foi possível carregar auditoria.</strong><span>${escapeHtml(state.auditLogs.error)}</span></div>`;
+  }
+  if (!rows.length) {
+    return `<div class="empty-state compact"><strong>Nenhum evento encontrado.</strong><span>Ajuste os filtros ou execute uma ação sensível para gerar histórico.</span></div>`;
+  }
+  return `
+    <div class="audit-table-wrap">
+      <table class="audit-table">
+        <thead>
+          <tr><th>Data/hora</th><th>Usuário</th><th>Perfil</th><th>Loja</th><th>Módulo</th><th>Ação</th><th>Entidade</th><th>Resultado</th><th>Detalhes</th></tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => `
+            <tr>
+              <td>${escapeHtml(formatDateTimeBR(row.created_at || ""))}</td>
+              <td><strong>${escapeHtml(row.user_name || "-")}</strong><span>${escapeHtml(row.user_email || "")}</span></td>
+              <td>${escapeHtml(getRoleLabel(row.user_role || "") || row.user_role || "-")}</td>
+              <td>${escapeHtml(row.store_name || row.store_id || "-")}</td>
+              <td>${escapeHtml(row.module || "-")}</td>
+              <td>${escapeHtml(row.action || "-")}</td>
+              <td><strong>${escapeHtml(row.entity_label || row.entity_id || row.sale_id || row.customer_id || row.product_id || "-")}</strong><span>${escapeHtml(row.entity_type || "")}</span></td>
+              <td><span class="audit-result is-${escapeHtml(row.result || "neutral")}">${escapeHtml(row.result || "-")}</span></td>
+              <td>
+                <details class="audit-details">
+                  <summary>Ver</summary>
+                  <pre>${escapeHtml(formatAuditJsonPreview(JSON.stringify(buildAuditDetailPayload(row))))}</pre>
+                </details>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAuditLogsFront() {
+  const container = getAuditLogsContainer();
+  if (!container) return;
+  if (!canViewAuditLogsPanel()) {
+    container.innerHTML = `<article class="hero-card"><p class="eyebrow">Acesso restrito</p><h3>Auditoria operacional</h3><p>Seu perfil não tem permissão para acessar esta frente.</p></article>`;
+    return;
+  }
+  container.innerHTML = `
+    <section class="audit-shell">
+      <div class="users-admin-hero">
+        <div>
+          <p class="eyebrow">Segurança AEROSTORE OS</p>
+          <h3>Auditoria operacional</h3>
+          <p>Histórico de ações sensíveis por usuário, loja, módulo e entidade afetada.</p>
+        </div>
+        <div class="users-admin-kpis">
+          <span><strong>${toArray(state.auditLogs.rows).length}</strong> eventos</span>
+          <span><strong>${escapeHtml(getRoleLabel(getCurrentUserRole()))}</strong> seu perfil</span>
+        </div>
+      </div>
+      ${buildAuditLogsFilters()}
+      <article class="panel">
+        <div class="panel-header">
+          <div><h3>Eventos recentes</h3><p class="panel-helper">Senhas, PINs e tokens são mascarados antes de gravar.</p></div>
+          <button class="ghost-button small" type="button" data-audit-logs-refresh>${state.auditLogs.loading ? "Atualizando..." : "Atualizar"}</button>
+        </div>
+        ${buildAuditLogsList()}
+      </article>
+    </section>
+  `;
+}
+
+async function loadAuditLogs() {
+  if (!canViewAuditLogsPanel()) return;
+  state.auditLogs.loading = true;
+  state.auditLogs.error = "";
+  renderAuditLogsFront();
+  try {
+    const params = new URLSearchParams();
+    Object.entries(state.auditLogs.filters || {}).forEach(([key, value]) => {
+      const normalized = normalizeText(value || "");
+      if (normalized) params.set(key, normalized);
+    });
+    const result = await api(`/api/admin/audit-logs${params.toString() ? `?${params.toString()}` : ""}`);
+    state.auditLogs.rows = toArray(result?.rows);
+  } catch (error) {
+    state.auditLogs.error = normalizeVisibleText(error?.message || "Falha ao carregar auditoria.");
+    throw error;
+  } finally {
+    state.auditLogs.loading = false;
+    renderAuditLogsFront();
+  }
+}
+
+function applyAuditLogsFilters(form = null) {
+  const data = new FormData(form);
+  state.auditLogs.filters = {
+    user: normalizeText(data.get("user") || ""),
+    module: normalizeText(data.get("module") || ""),
+    action: normalizeText(data.get("action") || ""),
+    result: normalizeText(data.get("result") || ""),
+    sale_id: normalizeText(data.get("sale_id") || "")
+  };
+  loadAuditLogs().catch((error) => handleUiError("Erro ao filtrar auditoria", error));
+}
+
+function getSidebarMenuIcon(label = "") {
+  const normalized = normalizeText(label || "").toLowerCase();
+  const iconMap = [
+    ["painel", "PD"],
+    ["venda", "VD"],
+    ["pedido", "PE"],
+    ["caixa", "CX"],
+    ["produto", "PR"],
+    ["cliente", "CL"],
+    ["estoque", "ES"],
+    ["reserva", "RS"],
+    ["troca", "TR"],
+    ["whatsapp", "WA"],
+    ["campanha", "CP"],
+    ["cashback", "CB"],
+    ["relatorio", "RL"],
+    ["consolidacao", "CO"],
+    ["aerointel", "AI"],
+    ["usuario", "US"],
+    ["auditoria", "AU"],
+    ["config", "CF"],
+    ["import", "IM"],
+    ["automatico", "AT"],
+    ["execucao", "EX"]
+  ];
+  const match = iconMap.find(([key]) => normalized.includes(key));
+  return match ? match[1] : normalizeText(label || "AE").slice(0, 2).toUpperCase();
+}
+
+function renderGlobalSidebarIdentity() {
+  const brandText = document.querySelector("#sidebar-brand p");
+  const userName = document.getElementById("sidebar-user-name");
+  const userMeta = document.getElementById("sidebar-user-meta");
+  const userStore = document.getElementById("sidebar-user-store");
+  const userAvatar = document.getElementById("sidebar-user-avatar");
+  const logoutButton = document.getElementById("sidebar-logout-button");
+  if (brandText) {
+    brandText.textContent = "PDV/CRM operacional da loja.";
+  }
+  if (!state.currentUser) {
+    if (userName) userName.textContent = "Sessao nao iniciada";
+    if (userMeta) userMeta.textContent = "Faca login para continuar";
+    if (userStore) userStore.textContent = "AEROSTORE OS";
+    if (userAvatar) userAvatar.textContent = "AE";
+    if (logoutButton) logoutButton.style.display = "none";
+    return;
+  }
+  const roleLabel = getRoleLabel(getCurrentRole());
+  const storeLabel = getCurrentUserStoreLabel();
+  if (userName) userName.textContent = getCurrentUserDisplayName();
+  if (userMeta) userMeta.textContent = `Perfil: ${roleLabel}`;
+  if (userStore) userStore.textContent = `Loja: ${storeLabel || "-"}`;
+  if (userAvatar) userAvatar.textContent = getCurrentUserInitials();
+  if (logoutButton) logoutButton.style.display = "";
 }
 
 function getSidebarMenuGroups() {
@@ -13339,6 +15533,7 @@ function getSidebarMenuGroups() {
           { label: "Painel", section: "dashboard" },
           { label: "PDV AEROSTORE", route: "/pdv" },
           { label: "Venda", route: "/pdv/venda" },
+          { label: "Pedidos de venda", route: "/pdv/vendas" },
           { label: "Caixa", route: "/pdv/caixa" },
           { label: "Produtos", route: "/pdv/produtos" },
           { label: "Clientes", route: "/pdv/clientes" },
@@ -13382,6 +15577,7 @@ function getSidebarMenuGroups() {
         items: [
           { label: "PDV AEROSTORE", route: "/pdv" },
           { label: "Venda", route: "/pdv/venda" },
+          { label: "Pedidos de venda", route: "/pdv/vendas" },
           { label: "Caixa", route: "/pdv/caixa", visible: hasPermission("can_view_cash_register") || hasPermission("can_open_close_register") },
           { label: "Produtos", route: "/pdv/produtos" },
           { label: "Clientes", route: "/pdv/clientes" },
@@ -13412,7 +15608,9 @@ function getSidebarMenuGroups() {
       {
         title: "Operação",
         items: [
+          { label: "Painel PDV", route: "/pdv", visible: hasPermission("can_sell") },
           { label: "Venda", route: "/pdv/venda", visible: hasPermission("can_sell") },
+          { label: "Pedidos de venda", route: "/pdv/vendas", visible: hasPermission("can_sell") || hasPermission("can_view_cash_register") },
           { label: "Clientes", route: "/pdv/clientes", visible: hasPermission("can_view_customers") },
           { label: "Produtos", route: "/pdv/produtos", visible: hasPermission("can_view_products") },
           { label: "Reservas", route: "/pdv/reservas", visible: hasPermission("can_sell") },
@@ -13427,6 +15625,23 @@ function getSidebarMenuGroups() {
         ]
       }
     );
+  }
+
+  if (canManageUsersPanel()) {
+    groups.push({
+      title: "Acessos",
+      items: [
+        { label: "Usuarios e permissoes", route: "/usuarios" }
+      ]
+    });
+  }
+  if (canViewAuditLogsPanel()) {
+    groups.push({
+      title: "Seguranca",
+      items: [
+        { label: "Auditoria operacional", route: "/auditoria" }
+      ]
+    });
   }
 
   return groups
@@ -13452,8 +15667,11 @@ function isMenuItemActive(item) {
     return effectiveHash === item.section;
   }
   if (item.route) {
+    if (item.route === "/pdv/vendas" || item.route === "/pdv/pedidos") {
+      return currentPath === "/pdv/vendas" || currentPath === "/pdv/pedidos";
+    }
     if (item.route === "/pdv") {
-      return currentPath === "/pdv" || currentPath.startsWith("/pdv/");
+      return currentPath === "/pdv" || currentPath === "/pdv/dashboard";
     }
     return currentPath === item.route;
   }
@@ -13461,6 +15679,7 @@ function isMenuItemActive(item) {
 }
 
 function renderSidebarMenu() {
+  renderGlobalSidebarIdentity();
   const menu = document.getElementById("sidebar-menu");
   if (!menu) {
     return;
@@ -13474,9 +15693,13 @@ function renderSidebarMenu() {
           <button
             class="menu-link${isMenuItemActive(item) ? " active" : ""}"
             type="button"
+            title="${escapeHtml(item.label)}"
             ${item.section ? `data-section="${item.section}"` : ""}
             ${item.route ? `data-route="${item.route}"` : ""}
-          >${item.label}</button>
+          >
+            <span class="menu-link-icon" aria-hidden="true">${escapeHtml(getSidebarMenuIcon(item.label))}</span>
+            <span class="menu-link-text">${escapeHtml(item.label)}</span>
+          </button>
         `).join("")}
       </div>
     `)
@@ -13492,8 +15715,13 @@ function api(path, options = {}) {
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
+  const method = normalizeText(options.method || "GET").toUpperCase();
+  const perfToken = startAeroStorePerfMeasure("api.request", { method, path });
+  let perfRequestCompleted = false;
   return fetch(path, { ...options, headers, credentials: "include" }).then(async (response) => {
     const data = await response.json().catch(() => ({}));
+    perfRequestCompleted = true;
+    endAeroStorePerfMeasure(perfToken, { status: response.status });
     if (!response.ok) {
       if (response.status === 401) {
         clearAuthSession();
@@ -13506,6 +15734,11 @@ function api(path, options = {}) {
       throw requestError;
     }
     return data;
+  }).catch((error) => {
+    if (!perfRequestCompleted) {
+      endAeroStorePerfMeasure(perfToken, { error: error?.message || "request_failed" });
+    }
+    throw error;
   });
 }
 
@@ -13598,6 +15831,11 @@ function showFeedback(message, type = "success") {
 
 function handleUiError(context, error) {
   const safeContext = normalizeVisibleText(context);
+  if (error?.status === 403) {
+    console.error(`[AEROSTORE CRM] ${safeContext}`, error);
+    showFeedback("Voce nao tem permissao para executar esta acao.", "error");
+    return;
+  }
   const safeMessage = normalizeVisibleText(error?.message || "Ocorreu um erro inesperado.");
   console.error(`[AEROSTORE CRM] ${safeContext}`, error);
   showFeedback(safeMessage, "error");
@@ -13822,15 +16060,93 @@ function getPdvSalePostSaleCustomerPhone(sale = null) {
   return normalizePhone(rawPhone);
 }
 
+function roundPdvReceiptMoney(value = 0) {
+  return Number(toNumber(value).toFixed(2));
+}
+
+function getFirstPositiveNumber(...values) {
+  for (const value of values) {
+    const numberValue = toNumber(value);
+    if (numberValue > 0) {
+      return numberValue;
+    }
+  }
+  return 0;
+}
+
+function getPdvSaleReceiptItemDiscount(item = {}, grossTotal = 0) {
+  const source = item?.item_discount && typeof item.item_discount === "object" ? item.item_discount : {};
+  const explicitAmount = getFirstPositiveNumber(
+    source.amount,
+    source.discount_amount,
+    item.item_discount_amount,
+    item.discount_amount,
+    item.desconto_item,
+    item.desconto
+  );
+  if (explicitAmount > 0) {
+    return roundPdvReceiptMoney(Math.min(grossTotal, explicitAmount));
+  }
+  const percent = getFirstPositiveNumber(source.percent, item.item_discount_percent, item.discount_percent);
+  return percent > 0 && grossTotal > 0 ? roundPdvReceiptMoney(Math.min(grossTotal, (grossTotal * percent) / 100)) : 0;
+}
+
 function getPdvSalePostSaleItems(sale = null) {
-  return toArray(sale?.itens || sale?.items || sale?.cart_items || sale?.produtos || sale?.products).map((item, index) => {
+  const rawItems = toArray(sale?.itens || sale?.items || sale?.cart_items || sale?.produtos || sale?.products);
+  const knownGrossTotal = rawItems.reduce((sum, item) => {
     const quantity = Math.max(1, Math.round(toNumber(item.quantidade || item.quantity || item.qty || 1)));
-    const unitPrice = toNumber(item.preco_unitario || item.unit_price || item.preco_venda || item.price || item.valor_unitario || 0);
-    const total = toNumber(item.total || item.line_total || item.total_price || item.valor_total || (unitPrice * quantity));
+    const unitPrice = getFirstPositiveNumber(
+      item.preco_referencia,
+      item.preco_unitario,
+      item.unit_price,
+      item.unitPrice,
+      item.preco_venda,
+      item.price,
+      item.original_price,
+      item.originalPrice,
+      item.sale_price,
+      item.valor_unitario,
+      quantity > 0 ? toNumber(item.item_total || item.itemTotal || item.line_total || item.lineTotal || item.total_price || item.valor_total) / quantity : 0
+    );
+    return sum + (unitPrice * quantity);
+  }, 0);
+  const saleGrossTotal = getFirstPositiveNumber(sale?.subtotal, sale?.gross_amount, sale?.subtotal_bruto, sale?.total_bruto);
+  const missingGrossAmount = Math.max(0, saleGrossTotal - knownGrossTotal);
+  const missingQuantity = rawItems.reduce((sum, item) => {
+    const quantity = Math.max(1, Math.round(toNumber(item.quantidade || item.quantity || item.qty || 1)));
+    const unitPrice = getFirstPositiveNumber(item.preco_referencia, item.preco_unitario, item.unit_price, item.unitPrice, item.preco_venda, item.price, item.original_price, item.originalPrice, item.sale_price, item.valor_unitario);
+    return sum + (unitPrice > 0 ? 0 : quantity);
+  }, 0);
+  const fallbackUnitPrice = missingQuantity > 0 ? roundPdvReceiptMoney(missingGrossAmount / missingQuantity) : 0;
+  return rawItems.map((item, index) => {
+    const quantity = Math.max(1, Math.round(toNumber(item.quantidade || item.quantity || item.qty || 1)));
+    const unitPrice = roundPdvReceiptMoney(getFirstPositiveNumber(
+      item.preco_referencia,
+      item.preco_unitario,
+      item.unit_price,
+      item.unitPrice,
+      item.preco_venda,
+      item.price,
+      item.original_price,
+      item.originalPrice,
+      item.sale_price,
+      item.valor_unitario,
+      quantity > 0 ? toNumber(item.item_total || item.itemTotal || item.line_total || item.lineTotal || item.total_price || item.valor_total) / quantity : 0,
+      fallbackUnitPrice
+    ));
+    const grossTotal = roundPdvReceiptMoney(unitPrice * quantity);
+    const itemDiscount = getPdvSaleReceiptItemDiscount(item, grossTotal);
+    const explicitNetTotal = getFirstPositiveNumber(item.final_price, item.finalPrice, item.net_total, item.netTotal, item.total_liquido, item.paid_price, item.valor_pago);
+    const total = roundPdvReceiptMoney(explicitNetTotal > 0 ? explicitNetTotal : Math.max(0, grossTotal - itemDiscount));
+    if (unitPrice <= 0 && saleGrossTotal > 0) {
+      console.warn("[AEROSTORE PDV] Valor de item nao localizado para cupom", { sale_id: sale?.sale_id, item });
+    }
     return {
       key: normalizeText(item.item_id || item.sku || item.id || `${index}`) || `${index}`,
       quantity,
       unitPrice,
+      grossTotal,
+      itemDiscount,
       total,
       name: normalizeText(item.nome || item.name || item.product_name || item.titulo || item.descricao || "") || `Item ${index + 1}`,
       sku: normalizeText(item.sku || item.codigo || item.codigo_interno || "")
@@ -13840,6 +16156,23 @@ function getPdvSalePostSaleItems(sale = null) {
 
 function getPdvSalePostSaleCashbackUsed(sale = null) {
   return toNumber(sale?.cashback_usado || sale?.cashback_used_amount || sale?.cashback_application?.amount || 0);
+}
+
+function getPdvSalePostSaleItemDiscount(sale = null) {
+  const fromSale = getFirstPositiveNumber(sale?.item_discount_amount, sale?.desconto_itens, sale?.items_discount_amount);
+  return roundPdvReceiptMoney(fromSale || getPdvSalePostSaleItems(sale).reduce((sum, item) => sum + toNumber(item.itemDiscount), 0));
+}
+
+function getPdvSalePostSaleGeneralDiscount(sale = null) {
+  return roundPdvReceiptMoney(getFirstPositiveNumber(sale?.general_discount_amount, sale?.discount_general_amount, sale?.desconto_geral));
+}
+
+function getPdvSalePostSaleExchangeCreditUsed(sale = null) {
+  return roundPdvReceiptMoney(getFirstPositiveNumber(sale?.credito_troca_usado, sale?.exchange_credit_amount, sale?.exchange_credit_application?.amount, sale?.exchange_credit_usage?.amount));
+}
+
+function getPdvSalePostSaleProjectedCashback(sale = null) {
+  return roundPdvReceiptMoney(getFirstPositiveNumber(sale?.cashback_generated?.amount, sale?.coupon_payload?.summary?.cashback_generated));
 }
 
 function getPdvSalePostSaleSubtotal(sale = null) {
@@ -14113,7 +16446,7 @@ function buildPdvCashPendingPaymentPanel(items = []) {
       <div class="panel-header">
         <h3>Vendas aguardando pagamento <span class="pdv-cash-pending-count">${pendingCount}</span></h3>
       </div>
-      <p class="panel-helper">Vendas em Link pagamento continuam nesta fila ate o PagBank confirmar o pagamento. ACTIVE nao libera mercadoria.</p>
+      <p class="panel-helper">Vendas em Link pagamento continuam nesta fila ate o PagBank confirmar o pagamento. Link ativo nao libera mercadoria.</p>
       ${state.pdvCash.pendingPaymentLinksError ? `
         <div class="pdv-register-inline-warning warning">
           <strong>Fila com leitura parcial</strong>
@@ -14264,6 +16597,1792 @@ async function fetchPdvSaleById(saleId = "", { silent = false } = {}) {
   }
 }
 
+const PDV_SALES_ORDERS_STATUS_TABS = [
+  { key: "all", label: "Todos", status: "all" },
+  { key: "today", label: "Hoje", status: "all", period: "today" },
+  { key: "awaiting_payment", label: "Aguardando pagamento", status: "awaiting_payment" },
+  { key: "payment_confirmed", label: "Pago/confirmado", status: "payment_confirmed" },
+  { key: "link_payment", label: "Link pagamento", status: "link_payment" },
+  { key: "with_cashback", label: "Com cashback", status: "with_cashback" },
+  { key: "with_discount", label: "Com desconto", status: "with_discount" },
+  { key: "with_authorization", label: "Com autorizacao", status: "with_authorization" },
+  { key: "cancelled", label: "Canceladas", status: "cancelled" }
+];
+
+function getPdvSalesOrdersContainer() {
+  return document.getElementById("pdv-sales-orders-content");
+}
+
+function getPdvSalesOrdersQueryString() {
+  const filters = state.pdvSalesOrders.filters || {};
+  const pagination = state.pdvSalesOrders.pagination || {};
+  const params = new URLSearchParams();
+  Object.entries({
+    search: filters.search,
+    period: filters.period,
+    date_from: filters.date_from,
+    date_to: filters.date_to,
+    store_id: filters.store_id,
+    seller_id: filters.seller_id,
+    payment_method: filters.payment_method,
+    status: filters.status,
+    page: pagination.page || 1,
+    page_size: pagination.page_size || 25
+  }).forEach(([key, value]) => {
+    const normalized = normalizeText(value || "");
+    if (normalized) params.set(key, normalized);
+  });
+  return params.toString();
+}
+
+function getPdvSalesOrderStatusMeta(row = {}) {
+  const status = normalizeText(row.operational_status || row.status || "").toLowerCase();
+  if (status === "awaiting_payment") {
+    return { label: "Aguardando pagamento", tone: "warning", note: "Nao liberar mercadoria", releaseLabel: "Nao liberar mercadoria", releaseTone: "danger" };
+  }
+  if (status === "payment_confirmed" || row.can_release_goods) {
+    return { label: "Pagamento confirmado", tone: "success", note: "Liberar mercadoria", releaseLabel: "Liberar mercadoria", releaseTone: "success" };
+  }
+  if (status === "cancelled" || status === "canceled") {
+    return { label: "Cancelada", tone: "danger", note: "Venda cancelada", releaseLabel: "Nao liberar mercadoria", releaseTone: "danger" };
+  }
+  return { label: "Finalizada", tone: "neutral", note: "Venda concluida", releaseLabel: "Consulta", releaseTone: "neutral" };
+}
+
+function isPdvSalesOrderCancelled(row = {}) {
+  const status = normalizeText(row.operational_status || row.status || row.fulfillment_status || "").toLowerCase();
+  return ["cancelled", "canceled", "cancelada"].includes(status);
+}
+
+function getPdvSalesOrderPaymentLabel(row = {}) {
+  const methods = toArray(row.payment_methods);
+  if (!methods.length) {
+    return row.uses_payment_link ? "Link pagamento" : "-";
+  }
+  return uniqueStrings(methods.map((item) => formatPaymentMethodLabel(item.method || item.label || ""))).join(" + ");
+}
+
+function getPdvSalesOrderLinkLabel(row = {}, paymentLink = null, paymentMeta = null) {
+  if (!row?.uses_payment_link) {
+    return "Pagamento PDV";
+  }
+  const linkLabel = paymentMeta?.link?.label || (paymentLink?.sentAt ? "Link enviado" : "Link gerado");
+  const paymentLabel = paymentMeta?.payment?.label || "Aguardando pagamento";
+  return `${linkLabel} / ${paymentLabel}`;
+}
+
+function getPdvSalesOrderProviderStatusLabel(providerStatus = "") {
+  const raw = normalizeText(providerStatus || "").toUpperCase();
+  const labels = {
+    ACTIVE: "Link ativo",
+    PAID: "Pagamento confirmado",
+    AUTHORIZED: "Pagamento confirmado",
+    COMPLETED: "Pagamento confirmado",
+    DECLINED: "Pagamento recusado",
+    DENIED: "Pagamento recusado",
+    FAILED: "Pagamento recusado",
+    CANCELED: "Pagamento cancelado",
+    CANCELLED: "Pagamento cancelado",
+    EXPIRED: "Link expirado"
+  };
+  if (!raw) return "-";
+  return labels[raw] || raw.replace(/_/g, " ");
+}
+
+function buildPdvSalesOrderBadges(row = {}) {
+  const paymentLink = getPdvSalePaymentLinkData(row);
+  const badges = [];
+  if (row.uses_payment_link) {
+    if (paymentLink.sentAt || normalizeText(row.payment_link_status || "") === "sent") {
+      badges.push({ label: "Link enviado", tone: "neutral" });
+    }
+    if (normalizeText(row.payment_link_provider_status || paymentLink.providerStatus || "").toUpperCase() === "ACTIVE") {
+      badges.push({ label: "Link ativo", tone: "warning" });
+    }
+  }
+  if (toNumber(row.cashback_applied || 0) > 0) badges.push({ label: "Usou cashback", tone: "cashback" });
+  if (toNumber(row.cashback_generated || 0) > 0) badges.push({ label: "Gerou cashback", tone: "cashback" });
+  if (toNumber(row.discount_amount || 0) > 0) badges.push({ label: "Com desconto", tone: "discount" });
+  if (row.has_authorization) {
+    badges.push({ label: "Autorizado por gestor", tone: "authorization" });
+    badges.push({ label: "TOTP validado", tone: "authorization" });
+  }
+  return badges.length ? `
+    <div class="pdv-orders-badges">
+      ${badges.map((badge) => `<span class="pdv-order-mini-badge is-${escapeHtml(badge.tone)}">${escapeHtml(badge.label)}</span>`).join("")}
+    </div>
+  ` : "";
+}
+
+function getPdvSalesOrderPrimaryAction(row = {}) {
+  if (row.uses_payment_link && !row.can_release_goods) {
+    return {
+      label: "Atualizar PagBank",
+      attr: `data-pdv-sale-refresh-payment-link="${escapeHtml(row.sale_id || "")}"`,
+      disabled: !getPdvSalePaymentLinkData(row).checkoutId,
+      title: getPdvSalePaymentLinkData(row).checkoutId ? "Consultar status atual no PagBank." : "Sem checkout PagBank para consultar."
+    };
+  }
+  if (row.can_release_goods || row.operational_status === "payment_confirmed") {
+    return {
+      label: "Ver cupom",
+      attr: `data-pdv-sale-generate-coupon="${escapeHtml(row.sale_id || "")}"`,
+      disabled: false,
+      title: "Abrir cupom/comprovante da venda."
+    };
+  }
+  return {
+    label: "Ver detalhe",
+    attr: `data-pdv-sales-order-detail="${escapeHtml(row.sale_id || "")}"`,
+    disabled: false,
+    title: "Abrir resumo operacional da venda."
+  };
+}
+
+function buildPdvSalesOrderActionButtons(row = {}) {
+  const saleId = normalizeText(row.sale_id || "");
+  const paymentLink = getPdvSalePaymentLinkData(row);
+  const busy = normalizeText(state.pdvSale.paymentLinkBusySaleId || state.pdvSale.whatsappSendingSaleId || state.pdvSale.couponLoadingSaleId || state.pdvSalesOrders.actionBusySaleId || "") === saleId;
+  const primaryAction = getPdvSalesOrderPrimaryAction(row);
+  const canCancel = canCancelPdvSaleFrontend() && saleId && !isPdvSalesOrderCancelled(row);
+  return `
+    <button class="primary-button small pdv-orders-primary-action" type="button" ${primaryAction.attr}${busy || primaryAction.disabled ? " disabled" : ""} title="${escapeHtml(primaryAction.title || "")}">${busy ? "Aguarde..." : escapeHtml(primaryAction.label)}</button>
+    <button class="ghost-button small" type="button" data-pdv-sales-order-detail="${escapeHtml(saleId)}">Detalhe</button>
+    ${canCancel ? `<button class="ghost-button small pdv-orders-cancel-action" type="button" data-pdv-sales-order-cancel="${escapeHtml(saleId)}"${busy ? " disabled" : ""}>Cancelar venda</button>` : ""}
+    ${row.uses_payment_link && paymentLink.url ? `<button class="ghost-button small" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(saleId)}"${busy ? " disabled" : ""}>Reenviar link</button>` : `<button class="ghost-button small" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(saleId)}"${busy ? " disabled" : ""}>WhatsApp</button>`}
+    ${paymentLink.url ? `<button class="ghost-button small" type="button" data-pdv-sale-copy-payment-link="${escapeHtml(saleId)}">Copiar link</button><button class="ghost-button small" type="button" data-pdv-sale-open-payment-link="${escapeHtml(saleId)}">Abrir link</button>` : ""}
+  `;
+}
+
+function getPdvSalesOrdersSelectedIds() {
+  return uniqueStrings(toArray(state.pdvSalesOrders.selectedSaleIds).map((value) => normalizeText(value || "")).filter(Boolean));
+}
+
+function setPdvSalesOrdersSelectedIds(ids = []) {
+  state.pdvSalesOrders.selectedSaleIds = uniqueStrings(toArray(ids).map((value) => normalizeText(value || "")).filter(Boolean));
+}
+
+function clearPdvSalesOrdersSelection(message = "") {
+  setPdvSalesOrdersSelectedIds([]);
+  state.pdvSalesOrders.bulkActionMessage = normalizeText(message || "");
+}
+
+function getPdvSalesOrdersVisibleRows() {
+  return toArray(state.pdvSalesOrders.rows);
+}
+
+function getPdvSalesOrdersSelectedRows() {
+  const selectedIds = new Set(getPdvSalesOrdersSelectedIds());
+  return getPdvSalesOrdersVisibleRows().filter((row) => selectedIds.has(normalizeText(row.sale_id || "")));
+}
+
+function getPdvSalesOrderRowById(saleId = "") {
+  const normalizedSaleId = normalizeText(saleId || "");
+  if (!normalizedSaleId) return null;
+  const detail = state.pdvSalesOrders.detail || {};
+  if (normalizeText(detail?.row?.sale_id || "") === normalizedSaleId) {
+    return detail.row;
+  }
+  if (normalizeText(detail?.sale?.sale_id || "") === normalizedSaleId) {
+    return detail.sale;
+  }
+  return getPdvSalesOrdersVisibleRows().find((row) => normalizeText(row.sale_id || "") === normalizedSaleId) || null;
+}
+
+function isPdvSalesOrderSelected(saleId = "") {
+  return getPdvSalesOrdersSelectedIds().includes(normalizeText(saleId || ""));
+}
+
+function areAllVisiblePdvSalesOrdersSelected() {
+  const visibleRows = getPdvSalesOrdersVisibleRows();
+  if (!visibleRows.length) return false;
+  const selectedIds = new Set(getPdvSalesOrdersSelectedIds());
+  return visibleRows.every((row) => selectedIds.has(normalizeText(row.sale_id || "")));
+}
+
+function togglePdvSalesOrderSelection(saleId = "", checked = false) {
+  const normalizedSaleId = normalizeText(saleId || "");
+  if (!normalizedSaleId) return;
+  const selectedIds = new Set(getPdvSalesOrdersSelectedIds());
+  if (checked) {
+    selectedIds.add(normalizedSaleId);
+  } else {
+    selectedIds.delete(normalizedSaleId);
+  }
+  setPdvSalesOrdersSelectedIds([...selectedIds]);
+  state.pdvSalesOrders.bulkActionMessage = "";
+  renderPdvSalesOrdersFront();
+}
+
+function togglePdvSalesOrdersCurrentPageSelection(checked = false) {
+  if (checked) {
+    setPdvSalesOrdersSelectedIds(getPdvSalesOrdersVisibleRows().map((row) => row.sale_id));
+  } else {
+    clearPdvSalesOrdersSelection();
+  }
+  renderPdvSalesOrdersFront();
+}
+
+function getPdvSalesOrdersExportRows(rows = []) {
+  return toArray(rows).map((row) => {
+    const paymentMeta = row.uses_payment_link ? getPdvSalePaymentLinkStatusMeta(row) : null;
+    const statusMeta = getPdvSalesOrderStatusMeta(row);
+    return {
+      sale_id: normalizeText(row.sale_id || ""),
+      data: formatDateTimeBR(row.created_at || ""),
+      loja: row.store_label || formatStoreIdLabel(row.store_id || ""),
+      vendedor: row.seller_name || "-",
+      cliente: row.customer_name || "Venda balcao",
+      telefone: row.customer_phone || "",
+      total: currency(row.total || 0),
+      pagamento: getPdvSalesOrderPaymentLabel(row),
+      status_pagamento: row.uses_payment_link ? paymentMeta?.payment?.label || statusMeta.label : statusMeta.label,
+      liberacao_mercadoria: statusMeta.releaseLabel,
+      cashback_usado: currency(row.cashback_applied || 0),
+      desconto: currency(row.discount_amount || 0),
+      link_pagamento_status: row.uses_payment_link ? getPdvSalesOrderLinkLabel(row, getPdvSalePaymentLinkData(row), paymentMeta) : ""
+    };
+  });
+}
+
+function escapePdvSalesOrdersCsvValue(value = "") {
+  const text = normalizeText(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function downloadPdvSalesOrdersCsv(rows = [], filename = "pedidos-venda.csv") {
+  const exportRows = getPdvSalesOrdersExportRows(rows);
+  if (!exportRows.length) {
+    showFeedback("Nao ha pedidos para exportar.", "error");
+    return false;
+  }
+  const headers = Object.keys(exportRows[0]);
+  const csv = [
+    headers.join(";"),
+    ...exportRows.map((row) => headers.map((header) => escapePdvSalesOrdersCsvValue(row[header])).join(";"))
+  ].join("\r\n");
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  return true;
+}
+
+function getPdvSalesOrdersCsvFilename(prefix = "pedidos-venda") {
+  const today = new Date().toISOString().slice(0, 10);
+  return `${prefix}-${today}.csv`;
+}
+
+function exportSelectedPdvSalesOrders() {
+  const rows = getPdvSalesOrdersSelectedRows();
+  if (downloadPdvSalesOrdersCsv(rows, getPdvSalesOrdersCsvFilename("pedidos-venda-selecionados"))) {
+    showFeedback(`${rows.length} pedido(s) selecionado(s) exportado(s).`);
+  }
+}
+
+function exportCurrentPagePdvSalesOrders() {
+  const rows = getPdvSalesOrdersVisibleRows();
+  if (downloadPdvSalesOrdersCsv(rows, getPdvSalesOrdersCsvFilename("pedidos-venda-pagina-atual"))) {
+    showFeedback(`${rows.length} pedido(s) da pagina atual exportado(s).`);
+  }
+}
+
+function printSelectedPdvSalesOrdersSummary() {
+  const rows = getPdvSalesOrdersSelectedRows();
+  if (!rows.length) {
+    showFeedback("Selecione pelo menos uma venda para imprimir o resumo.", "error");
+    return;
+  }
+  const total = rows.reduce((sum, row) => sum + toNumber(row.total || 0), 0);
+  const awaitingRows = rows.filter((row) => getPdvSalesOrderStatusMeta(row).label === "Aguardando pagamento");
+  const rowsHtml = rows.map((row) => {
+    const statusMeta = getPdvSalesOrderStatusMeta(row);
+    return `
+      <tr>
+        <td>${escapeHtml(row.sale_id || "-")}</td>
+        <td>${escapeHtml(formatDateTimeBR(row.created_at || ""))}</td>
+        <td>${escapeHtml(row.customer_name || "Venda balcao")}</td>
+        <td>${escapeHtml(row.store_label || formatStoreIdLabel(row.store_id || ""))}</td>
+        <td>${escapeHtml(row.seller_name || "-")}</td>
+        <td>${currency(row.total || 0)}</td>
+        <td>${escapeHtml(statusMeta.label)}</td>
+        <td>${escapeHtml(statusMeta.releaseLabel)}</td>
+      </tr>
+    `;
+  }).join("");
+  const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1100,height=760");
+  if (!printWindow) {
+    showFeedback("O navegador bloqueou a janela de impressao.", "error");
+    return;
+  }
+  printWindow.document.write(`
+    <html>
+      <head>
+        <title>Pedidos de venda selecionados</title>
+        <style>
+          body { font-family: Arial, sans-serif; color: #101614; margin: 0; padding: 24px; }
+          h1, h2, p { margin: 0; }
+          .header { display: grid; gap: 6px; margin-bottom: 22px; }
+          .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px; }
+          .summary div { border: 1px solid #d7ddd9; border-radius: 10px; padding: 10px; }
+          .summary span { display: block; color: #66736e; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+          .summary strong { display: block; margin-top: 4px; font-size: 16px; }
+          table { width: 100%; border-collapse: collapse; font-size: 12px; }
+          th, td { border-bottom: 1px solid #d7ddd9; padding: 8px 6px; text-align: left; vertical-align: top; }
+          th { background: #eef3f1; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>AEROSTORE</h1>
+          <h2>Pedidos de venda selecionados</h2>
+          <p>Impresso em ${escapeHtml(formatDateTimeBR(new Date().toISOString()))} por ${escapeHtml(getCurrentPdvSellerName() || getCurrentRole() || "-")}</p>
+        </div>
+        <div class="summary">
+          <div><span>Quantidade</span><strong>${rows.length}</strong></div>
+          <div><span>Total vendido</span><strong>${currency(total)}</strong></div>
+          <div><span>Aguardando pagamento</span><strong>${awaitingRows.length}</strong></div>
+          <div><span>Total aguardando</span><strong>${currency(awaitingRows.reduce((sum, row) => sum + toNumber(row.total || 0), 0))}</strong></div>
+        </div>
+        <table>
+          <thead><tr><th>Venda</th><th>Data</th><th>Cliente</th><th>Loja</th><th>Vendedor</th><th>Total</th><th>Status</th><th>Liberacao</th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => printWindow.print(), 150);
+}
+
+function openPdvSalesOrderCancelModal(saleId = "") {
+  const normalizedSaleId = normalizeText(saleId || "");
+  if (!normalizedSaleId) return;
+  if (!canCancelPdvSaleFrontend()) {
+    showFeedback("Você não tem permissão para cancelar esta venda.", "error");
+    return;
+  }
+  const row = getPdvSalesOrderRowById(normalizedSaleId);
+  if (row && isPdvSalesOrderCancelled(row)) {
+    showFeedback("Esta venda já está cancelada.", "warning");
+    return;
+  }
+  state.pdvSalesOrders.cancelModal = {
+    open: true,
+    saleId: normalizedSaleId,
+    reason: "",
+    error: ""
+  };
+  renderPdvSalesOrdersFront();
+}
+
+function closePdvSalesOrderCancelModal() {
+  state.pdvSalesOrders.cancelModal = {
+    open: false,
+    saleId: "",
+    reason: "",
+    error: ""
+  };
+  renderPdvSalesOrdersFront();
+}
+
+async function submitPdvSalesOrderCancel(form = null) {
+  const modal = state.pdvSalesOrders.cancelModal || {};
+  const saleId = normalizeText(modal.saleId || "");
+  const reason = normalizeText(form?.querySelector?.('[name="reason"]')?.value || modal.reason || "");
+  if (!saleId) return;
+  if (!reason) {
+    state.pdvSalesOrders.cancelModal = { ...modal, error: "Informe o motivo do cancelamento." };
+    renderPdvSalesOrdersFront();
+    return;
+  }
+  state.pdvSalesOrders.actionBusySaleId = saleId;
+  state.pdvSalesOrders.cancelModal = { ...modal, reason, error: "" };
+  renderPdvSalesOrdersFront();
+  try {
+    const result = await api(`/api/pdv/sales/cancel/${encodeURIComponent(saleId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason })
+    });
+    persistPdvSaleRecordUpdate(result || {});
+    showFeedback("Venda cancelada com sucesso.");
+    state.pdvSalesOrders.cancelModal = { open: false, saleId: "", reason: "", error: "" };
+    if (normalizeText(state.pdvSalesOrders.selectedSaleId || "") === saleId) {
+      state.pdvSalesOrders.selectedSaleId = "";
+      state.pdvSalesOrders.detail = null;
+      state.pdvSalesOrders.detailError = "";
+      state.pdvSalesOrders.detailLoading = false;
+    }
+    await loadPdvSalesOrdersFront({ preservePage: true });
+  } catch (error) {
+    if (error?.status === 403) {
+      showFeedback("Você não tem permissão para cancelar esta venda.", "error");
+      state.pdvSalesOrders.cancelModal = { ...state.pdvSalesOrders.cancelModal, error: "Você não tem permissão para cancelar esta venda." };
+      renderPdvSalesOrdersFront();
+      return;
+    }
+    state.pdvSalesOrders.cancelModal = { ...state.pdvSalesOrders.cancelModal, error: normalizeVisibleText(error?.message || "Falha ao cancelar venda.") };
+    renderPdvSalesOrdersFront();
+  } finally {
+    state.pdvSalesOrders.actionBusySaleId = "";
+    renderPdvSalesOrdersFront();
+  }
+}
+
+function buildPdvSalesOrderCancelModal() {
+  const modal = state.pdvSalesOrders.cancelModal || {};
+  if (!modal.open) return "";
+  const saleId = normalizeText(modal.saleId || "");
+  const row = getPdvSalesOrderRowById(saleId) || {};
+  const busy = normalizeText(state.pdvSalesOrders.actionBusySaleId || "") === saleId;
+  return `
+    <div class="modal-overlay pdv-orders-cancel-modal" role="dialog" aria-modal="true" aria-labelledby="pdv-order-cancel-title">
+      <form class="modal-card pdv-orders-cancel-card" data-pdv-sales-order-cancel-form>
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Cancelamento de venda</p>
+            <h3 id="pdv-order-cancel-title">Cancelar venda ${escapeHtml(saleId)}</h3>
+          </div>
+          <button class="modal-close" type="button" data-pdv-sales-order-cancel-close aria-label="Fechar">×</button>
+        </div>
+        <div class="pdv-orders-cancel-summary">
+          <article><span>Cliente</span><strong>${escapeHtml(row.customer_name || "Venda balcão")}</strong></article>
+          <article><span>Total</span><strong>${currency(row.total || row.total_final || 0)}</strong></article>
+          <article><span>Data</span><strong>${escapeHtml(formatDateTimeBR(row.created_at || ""))}</strong></article>
+          <article><span>Loja</span><strong>${escapeHtml(row.store_label || formatStoreIdLabel(row.store_id || row.loja || ""))}</strong></article>
+        </div>
+        <div class="pdv-orders-cancel-warning">
+          <strong>Ação sensível</strong>
+          <span>O cancelamento registra o motivo e pode impactar estoque, benefícios e caixa conforme as regras atuais do PDV.</span>
+        </div>
+        <label class="form-field">
+          <span>Motivo do cancelamento</span>
+          <textarea name="reason" rows="4" placeholder="Descreva o motivo para auditoria operacional." required>${escapeHtml(modal.reason || "")}</textarea>
+        </label>
+        ${modal.error ? `<div class="empty-state compact error"><strong>Não foi possível cancelar</strong><span>${escapeHtml(modal.error)}</span></div>` : ""}
+        <div class="action-row">
+          <button class="ghost-button" type="button" data-pdv-sales-order-cancel-close${busy ? " disabled" : ""}>Voltar</button>
+          <button class="danger-button" type="submit"${busy ? " disabled" : ""}>${busy ? "Cancelando..." : "Confirmar cancelamento"}</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+async function refreshSelectedPdvSalesOrdersPagBank() {
+  const selectedRows = getPdvSalesOrdersSelectedRows();
+  if (!selectedRows.length) {
+    showFeedback("Selecione pelo menos uma venda para atualizar o PagBank.", "error");
+    return;
+  }
+  const linkRows = selectedRows.filter((row) => row.uses_payment_link && (row.payment_link_checkout_id || row.payment_link_url));
+  if (!linkRows.length) {
+    showFeedback("Nenhuma venda selecionada possui Link pagamento para atualizar.", "error");
+    return;
+  }
+  if (!window.confirm(`Atualizar status PagBank de ${linkRows.length} venda(s) selecionada(s)?`)) {
+    return;
+  }
+  state.pdvSalesOrders.bulkActionBusy = "pagbank";
+  state.pdvSalesOrders.bulkActionMessage = `Atualizando ${linkRows.length} venda(s)...`;
+  renderPdvSalesOrdersFront();
+  try {
+    const result = await api("/api/pdv/sales/orders/bulk/payment-link-refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sale_ids: linkRows.map((row) => row.sale_id) })
+    });
+    toArray(result?.updated).forEach((item) => {
+      if (item?.sale) persistPdvSaleRecordUpdate(item.sale);
+    });
+    const updatedCount = toNumber(result?.updated?.length || 0);
+    const skippedCount = toNumber(result?.skipped?.length || 0) + Math.max(0, selectedRows.length - linkRows.length);
+    const errorCount = toNumber(result?.errors?.length || 0);
+    state.pdvSalesOrders.bulkActionMessage = `${updatedCount} atualizada(s), ${skippedCount} ignorada(s), ${errorCount} erro(s).`;
+    showFeedback(state.pdvSalesOrders.bulkActionMessage, errorCount ? "warning" : "success");
+    await loadPdvSalesOrdersFront({ preservePage: true });
+  } catch (error) {
+    showFeedback(error?.message || "Falha ao atualizar PagBank em lote.", "error");
+  } finally {
+    state.pdvSalesOrders.bulkActionBusy = "";
+    renderPdvSalesOrdersFront();
+  }
+}
+
+function buildPdvSalesOrdersBulkToolbar() {
+  const selectedRows = getPdvSalesOrdersSelectedRows();
+  const selectedCount = selectedRows.length;
+  const linkCount = selectedRows.filter((row) => row.uses_payment_link && (row.payment_link_checkout_id || row.payment_link_url)).length;
+  const busy = normalizeText(state.pdvSalesOrders.bulkActionBusy || "");
+  if (!selectedCount && !state.pdvSalesOrders.bulkActionMessage) {
+    return `
+      <div class="pdv-orders-export-strip">
+        <button class="ghost-button small" type="button" data-pdv-sales-orders-select-visible>Selecionar pagina atual</button>
+        <button class="ghost-button small" type="button" data-pdv-sales-orders-export-page>Exportar pagina atual</button>
+      </div>
+    `;
+  }
+  return `
+    <div class="pdv-orders-bulk-toolbar">
+      <div>
+        <strong>${selectedCount} venda(s) selecionada(s)</strong>
+        <span>${state.pdvSalesOrders.bulkActionMessage ? escapeHtml(state.pdvSalesOrders.bulkActionMessage) : `${linkCount} com Link pagamento para consultar no PagBank.`}</span>
+      </div>
+      <div class="pdv-orders-bulk-actions">
+        <button class="secondary-button small" type="button" data-pdv-sales-orders-bulk-pagbank${!linkCount || busy ? " disabled" : ""} title="${linkCount ? "Atualizar status PagBank das vendas com link." : "Nenhuma venda selecionada possui Link pagamento."}">${busy === "pagbank" ? "Atualizando..." : "Atualizar PagBank"}</button>
+        <button class="ghost-button small" type="button" data-pdv-sales-orders-export-selected${!selectedCount || busy ? " disabled" : ""}>Exportar CSV</button>
+        <button class="ghost-button small" type="button" data-pdv-sales-orders-print-selected${!selectedCount || busy ? " disabled" : ""}>Imprimir resumo</button>
+        <button class="ghost-button small" type="button" data-pdv-sales-orders-select-visible${busy ? " disabled" : ""}>Selecionar pagina</button>
+        <button class="ghost-button small" type="button" data-pdv-sales-orders-export-page${busy ? " disabled" : ""}>Exportar pagina atual</button>
+        <button class="ghost-button small" type="button" data-pdv-sales-orders-clear-selection${!selectedCount || busy ? " disabled" : ""}>Limpar selecao</button>
+      </div>
+    </div>
+  `;
+}
+
+function buildPdvSalesOrdersSummaryCards() {
+  const summary = state.pdvSalesOrders.summary || {};
+  return `
+    <div class="pdv-orders-summary-grid">
+      <article class="stat-card"><span>Vendas</span><strong>${toNumber(summary.total_orders || 0)}</strong><small>Pedidos no filtro atual</small></article>
+      <article class="stat-card"><span>Total vendido</span><strong>${currency(summary.total_sold || 0)}</strong><small>Sem vendas canceladas</small></article>
+      <article class="stat-card"><span>Ticket medio</span><strong>${currency(summary.average_ticket || 0)}</strong><small>Media por pedido</small></article>
+      <article class="stat-card"><span>Aguardando pagamento</span><strong>${toNumber(summary.awaiting_payment_count || 0)} / ${currency(summary.awaiting_payment_amount || 0)}</strong><small>Mercadoria bloqueada</small></article>
+      <article class="stat-card"><span>Cashback usado</span><strong>${currency(summary.cashback_used || 0)}</strong><small>Abatimento nas vendas</small></article>
+      <article class="stat-card"><span>Cashback gerado</span><strong>${currency(summary.cashback_generated || 0)}</strong><small>Beneficio futuro</small></article>
+      <article class="stat-card"><span>Descontos</span><strong>${currency(summary.discounts_total || 0)}</strong><small>${toNumber(summary.discounts_average_percent || 0)}% medio</small></article>
+      <article class="stat-card"><span>Links pendentes</span><strong>${toNumber(summary.payment_link_pending_count || 0)}</strong><small>PagBank ainda nao confirmou</small></article>
+    </div>
+  `;
+}
+
+function getPdvExchangeTotals(exchange = null) {
+  const draft = exchange || state.pdvExchanges.draft || {};
+  const returnedItems = getPdvExchangeReturnedItems(draft);
+  const originalValue = toNumber(draft.original_value || returnedItems.reduce((sum, item) => sum + toNumber(item.exchange_value || 0), 0));
+  const newItems = getPdvExchangeNewItems(draft);
+  const newValue = newItems.reduce((sum, item) => sum + toNumber(item.exchange_value || item.total || 0), 0);
+  return {
+    originalValue,
+    newValue,
+    differenceDue: 0,
+    creditGenerated: originalValue
+  };
+}
+
+function getPdvExchangeReturnedItems(exchange = null) {
+  const draft = exchange || state.pdvExchanges.draft || {};
+  if (Array.isArray(draft.returned_items)) {
+    return draft.returned_items.filter(Boolean);
+  }
+  return draft.returned_item ? [draft.returned_item] : [];
+}
+
+function getPdvExchangeReturnedItemSelectionKey(item = {}) {
+  const availableIndex = normalizeText(item.available_index ?? item.selection_index ?? "");
+  if (availableIndex) return `available:${availableIndex}`;
+  const lineIndex = normalizeText(item.sale_line_index ?? item.line_index ?? "");
+  if (lineIndex) return `line:${lineIndex}`;
+  const sourceKey = normalizeText(item.source_item_key || "");
+  if (sourceKey) return `source:${sourceKey}`;
+  return `item:${normalizeText(item.item_id || item.original_item_id || item.cart_item_id || item.id || "")}`;
+}
+
+function getPdvExchangeNewItems(exchange = null) {
+  const draft = exchange || state.pdvExchanges.draft || {};
+  if (Array.isArray(draft.new_items)) {
+    return draft.new_items.filter(Boolean);
+  }
+  return draft.new_item ? [draft.new_item] : [];
+}
+
+function renderPdvExchangesFront() {
+  if (getSectionFromPathname(window.location.pathname || "") === "pdv-exchanges") {
+    renderOfficialRouteSection("pdv-exchanges");
+  }
+}
+
+function buildPdvExchangeOriginResults() {
+  const exchangeState = state.pdvExchanges;
+  if (exchangeState.originLoading) {
+    return `<div class="empty-state compact"><strong>Buscando venda original...</strong><span>Localizando vendas por cliente, telefone, SKU ou numero.</span></div>`;
+  }
+  if (exchangeState.originError) {
+    return `<div class="empty-state compact error"><strong>Nao foi possivel buscar</strong><span>${escapeHtml(exchangeState.originError)}</span></div>`;
+  }
+  const rows = toArray(exchangeState.originResults);
+  if (!exchangeState.originQuery) {
+    return `<div class="empty-state compact"><strong>Busque a venda original</strong><span>Digite cliente, telefone, numero da venda, SKU, etiqueta ou produto.</span></div>`;
+  }
+  if (!rows.length) {
+    return `<div class="empty-state compact"><strong>Nenhuma venda encontrada</strong><span>Tente outro termo ou confira o numero do cupom.</span></div>`;
+  }
+  return rows.map((row) => {
+    const summary = row.exchange_summary || {};
+    const hasHistory = Boolean(summary.has_exchange_history);
+    const exchangeState = normalizeText(summary.exchange_state || "none");
+    const exchangedCount = toNumber(summary.exchanged_items_count || 0);
+    const remainingCount = toNumber(summary.remaining_items_count || 0);
+    const historyLabel = exchangeState === "full" ? "Troca total" : hasHistory ? "Troca parcial" : "";
+    const historyDetail = exchangeState === "full"
+      ? "Todos os itens desta venda ja foram trocados - credito gerado anteriormente"
+      : hasHistory
+        ? `Ja houve troca nesta venda - ${exchangedCount || 1} item(ns) ja trocado(s)${remainingCount > 0 ? " - ainda ha item disponivel" : ""}`
+        : "";
+    return `
+    <button class="pdv-exchange-origin-card${hasHistory ? ` has-exchange-history is-${escapeHtml(exchangeState || "partial")}` : ""}" type="button" data-pdv-exchange-select-origin="${escapeHtml(row.sale_id || "")}">
+      <span>Venda ${escapeHtml(row.sale_id || "-")}</span>
+      <strong>${escapeHtml(row.customer_name || "Cliente sem nome")}</strong>
+      <small>${escapeHtml(formatDateTimeBR(row.created_at || ""))} • ${escapeHtml(row.store_label || formatStoreIdLabel(row.store_id || ""))}</small>
+      ${hasHistory ? `<small class="pdv-exchange-origin-alert">${escapeHtml(historyLabel)} • ${escapeHtml(historyDetail)}</small>` : ""}
+      <em>${currency(row.total || 0)} • ${toNumber(row.item_count || 0)} item(ns)</em>
+    </button>
+  `;
+  }).join("");
+}
+
+function buildPdvExchangeReturnedItems() {
+  const draft = state.pdvExchanges.draft;
+  if (!draft) {
+    return `<div class="empty-state compact"><strong>Nenhuma venda selecionada</strong><span>Escolha uma venda original para listar os itens elegiveis.</span></div>`;
+  }
+  const selectedKeys = new Set(getPdvExchangeReturnedItems(draft).map((item) => getPdvExchangeReturnedItemSelectionKey(item)));
+  const items = toArray(draft.available_items);
+  if (!items.length) {
+    return `<div class="empty-state compact"><strong>Venda sem itens elegiveis</strong><span>Esta venda nao possui itens para troca no MVP.</span></div>`;
+  }
+  return items.map((item, index) => {
+    const itemWithIndex = { ...item, available_index: item.available_index ?? index };
+    const selectionKey = getPdvExchangeReturnedItemSelectionKey(itemWithIndex);
+    const itemId = normalizeText(item.item_id || item.original_item_id || "");
+    const active = selectionKey && selectedKeys.has(selectionKey);
+    const quantityPurchased = toNumber(item.quantity_purchased || item.quantity || 1);
+    const quantityAvailable = toNumber(item.quantity_available ?? item.quantity ?? 1);
+    const quantityExchanged = toNumber(item.quantity_exchanged || Math.max(0, quantityPurchased - quantityAvailable));
+    const blocked = item.status === "ja_trocado" || quantityAvailable <= 0;
+    const previousExchange = toArray(item.previous_exchanges)[0] || {};
+    const previousLabel = previousExchange.exchange_id
+      ? `Troca anterior: ${previousExchange.exchange_id}${previousExchange.credit_generated ? ` - Credito: ${currency(previousExchange.credit_generated)}` : ""}`
+      : "Este item ja gerou Credito de Troca.";
+    return `
+      <button class="pdv-exchange-item-card${active ? " active" : ""}${blocked ? " is-blocked" : ""}" type="button" data-pdv-exchange-select-returned="${escapeHtml(itemId)}" data-pdv-exchange-source-key="${escapeHtml(item.source_item_key || "")}" data-pdv-exchange-line-index="${escapeHtml(item.sale_line_index ?? item.line_index ?? "")}" data-pdv-exchange-available-index="${escapeHtml(item.available_index ?? index)}"${blocked ? " disabled" : ""}>
+        <div>
+          <strong>${escapeHtml(item.nome || item.sku || "Produto")}</strong>
+          <span>${escapeHtml([item.sku || item.codigo || "", item.marca || "", item.cor || "", item.tamanho || ""].filter(Boolean).join(" • ") || "Sem SKU")}</span>
+          <small>Comprado: ${quantityPurchased}x - Disponivel para troca: ${quantityAvailable}x - Valor disponivel: ${currency(item.exchange_value || 0)}</small>
+          ${blocked || quantityExchanged > 0 ? `<small class="pdv-exchange-item-warning">${quantityExchanged > 0 ? `Ja trocado: ${quantityExchanged}x. ` : ""}${escapeHtml(previousLabel)}</small>` : ""}
+        </div>
+        <em>${blocked ? "Bloqueado" : active ? "Selecionado" : "Selecionar"}</em>
+      </button>
+    `;
+  }).join("");
+}
+
+function getPdvExchangeCustomer(draft = null) {
+  const exchange = draft || state.pdvExchanges.draft || {};
+  return exchange.exchange_customer || null;
+}
+
+function buildPdvExchangeCustomerPanel() {
+  const draft = state.pdvExchanges.draft;
+  if (!draft) return "";
+  const customer = getPdvExchangeCustomer(draft);
+  const results = toArray(state.pdvExchanges.customerResults);
+  return `
+    <div class="pdv-exchange-customer-panel">
+      <div class="pdv-exchange-panel-head compact">
+        <span>Cliente favorecido</span>
+        <strong>${customer?.name ? escapeHtml(customer.name) : "Selecione para vincular credito"}</strong>
+        ${customer?.phone ? `<small>${escapeHtml(customer.phone)}${customer.document ? ` • ${escapeHtml(customer.document)}` : ""}</small>` : `<small>Este cliente recebera o Credito de Troca.</small>`}
+      </div>
+      <form class="pdv-exchange-search" data-pdv-exchange-customer-search-form>
+        <input name="q" type="search" value="${escapeHtml(state.pdvExchanges.customerQuery || "")}" placeholder="Buscar cliente por nome, telefone ou CPF" />
+        <button class="secondary-button small" type="submit">${state.pdvExchanges.customerLoading ? "Buscando..." : "Buscar"}</button>
+      </form>
+      ${state.pdvExchanges.customerError ? `<div class="pdv-payment-alert warning">${escapeHtml(state.pdvExchanges.customerError)}</div>` : ""}
+      ${results.length ? `<div class="pdv-exchange-customer-results">${results.map((item, index) => `
+        <button type="button" class="pdv-exchange-customer-result" data-pdv-exchange-customer-pick="${index}">
+          <strong>${escapeHtml(item.name || item.nome || "Cliente")}</strong>
+          <span>${escapeHtml(item.phone || item.telefone || "")}</span>
+        </button>
+      `).join("")}</div>` : ""}
+      <form class="pdv-exchange-quick-customer" data-pdv-exchange-customer-create-form>
+        <label>Nome<input name="name" value="${escapeHtml(state.pdvExchanges.customerCreateName || "")}" placeholder="Nome do cliente favorecido" /></label>
+        <label>Telefone<input name="phone" value="${escapeHtml(state.pdvExchanges.customerCreatePhone || "")}" placeholder="WhatsApp com DDD" /></label>
+        <label>CPF opcional<input name="document" value="${escapeHtml(state.pdvExchanges.customerCreateDocument || "")}" placeholder="CPF opcional" /></label>
+        <button class="ghost-button small" type="submit">Cadastrar rapido e usar</button>
+      </form>
+    </div>
+  `;
+}
+
+function buildPdvExchangeReasonForm() {
+  const draft = state.pdvExchanges.draft || {};
+  const reasons = ["Tamanho", "Cor", "Defeito", "Presente", "Arrependimento", "Troca por outro produto", "Outro"];
+  const conditions = [
+    ["disponivel", "Disponivel para venda"],
+    ["aguardando_conferencia", "Aguardando conferencia"],
+    ["com_avaria", "Com avaria"],
+    ["defeito", "Defeito"],
+    ["sem_etiqueta", "Sem etiqueta"],
+    ["perda_nao_retornar", "Perda / nao retornar ao estoque"]
+  ];
+  return `
+    <div class="pdv-exchange-form-grid">
+      <label>Motivo
+        <select data-pdv-exchange-reason>
+          <option value="">Selecione</option>
+          ${reasons.map((reason) => `<option value="${escapeHtml(reason)}"${draft.reason === reason ? " selected" : ""}>${escapeHtml(reason)}</option>`).join("")}
+        </select>
+      </label>
+      <label>Condicao do devolvido
+        <select data-pdv-exchange-condition>
+          ${conditions.map(([value, label]) => `<option value="${escapeHtml(value)}"${(draft.returned_condition || "aguardando_conferencia") === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="pdv-exchange-wide">Observacao
+        <textarea data-pdv-exchange-notes rows="2" placeholder="Obrigatorio para defeito ou outro.">${escapeHtml(draft.reason_notes || "")}</textarea>
+      </label>
+    </div>
+  `;
+}
+
+function getPdvExchangeDisplayStatus(status = "") {
+  const normalized = normalizeText(status || "").toLowerCase();
+  const labels = {
+    aguardando_origem: "Aguardando origem",
+    aguardando_produto_devolvido: "Aguardando item devolvido",
+    aguardando_item_devolvido: "Aguardando item devolvido",
+    aguardando_novo_produto: "Aguardando motivo/condicao",
+    aguardando_motivo: "Aguardando motivo/condicao",
+    aguardando_motivo_condicao: "Aguardando motivo/condicao",
+    aguardando_cliente_credito: "Aguardando cliente favorecido",
+    aguardando_cliente_favorecido: "Aguardando cliente favorecido",
+    pronta_para_finalizar: "Pronta para gerar credito",
+    pronta_para_gerar_credito: "Pronta para gerar credito",
+    finalizada: "Finalizada"
+  };
+  return labels[normalized] || (status ? normalizeVisibleText(status) : "Aguardando origem");
+}
+
+function getPdvExchangeComputedStatus(draft = null) {
+  const exchange = draft || state.pdvExchanges.draft || {};
+  if (!exchange?.original_sale_id) return "aguardando_origem";
+  if (!getPdvExchangeReturnedItems(exchange).length || toNumber(exchange.original_value || 0) <= 0) {
+    return "aguardando_item_devolvido";
+  }
+  if (!exchange.exchange_customer?.name || !exchange.exchange_customer?.phone) {
+    return "aguardando_cliente_favorecido";
+  }
+  if (!exchange.reason || !exchange.returned_condition) {
+    return "aguardando_motivo_condicao";
+  }
+  if (exchange.status === "finalizada") return "finalizada";
+  return "pronta_para_gerar_credito";
+}
+
+function buildPdvExchangeNewProductResults() {
+  const exchangeState = state.pdvExchanges;
+  if (exchangeState.newProductLoading) {
+    return `<div class="empty-state compact"><strong>Buscando novo produto...</strong><span>Consultando estoque operacional da loja.</span></div>`;
+  }
+  if (exchangeState.newProductError) {
+    return `<div class="empty-state compact error"><strong>Erro na busca</strong><span>${escapeHtml(exchangeState.newProductError)}</span></div>`;
+  }
+  const rows = toArray(exchangeState.newProductResults);
+  if (!exchangeState.draft) {
+    return `<div class="empty-state compact"><strong>Selecione a origem primeiro</strong><span>Depois busque o novo produto por nome, SKU ou codigo.</span></div>`;
+  }
+  if (!exchangeState.newProductQuery) {
+    return `<div class="empty-state compact"><strong>Busque o novo produto</strong><span>Use SKU, etiqueta, nome ou codigo interno.</span></div>`;
+  }
+  if (!rows.length) {
+    return `<div class="empty-state compact"><strong>Nenhum produto encontrado</strong><span>Tente outro termo ou confira o estoque.</span></div>`;
+  }
+  const cartItems = getPdvExchangeNewItems(state.pdvExchanges.draft);
+  return rows.map((item, index) => {
+    const price = item.preco_venda || item.price || item.preco || item.sale_price || 0;
+    const stock = toNumber(item.available_qty ?? item.estoque ?? item.stock ?? item.quantity ?? 0);
+    const disabled = stock <= 0;
+    const selected = cartItems.some((cartItem) => (cartItem.inventory_id && cartItem.inventory_id === item.inventory_id) || (cartItem.sku && cartItem.sku === (item.sku || item.codigo)));
+    return `
+      <article class="pdv-exchange-product-card${selected ? " active" : ""}">
+        <div class="pdv-exchange-product-thumb">${item.preview_url || item.image_url || item.photo_preview_url || item.media_url || item.foto || item.image ? `<img src="${escapeHtml(item.preview_url || item.image_url || item.photo_preview_url || item.media_url || item.foto || item.image)}" alt="">` : `<span>${escapeHtml((item.nome || item.name || "PR").slice(0, 2).toUpperCase())}</span>`}</div>
+        <div>
+          <strong>${escapeHtml(item.nome || item.name || item.sku || "Produto")}</strong>
+          <span>${escapeHtml([item.sku || item.codigo || "", item.marca || item.brand || "", item.categoria || item.category || ""].filter(Boolean).join(" • ") || "Sem codigo")}</span>
+          <small>${escapeHtml([item.cor || item.color || "", item.tamanho || item.size || "", item.store_label || formatStoreIdLabel(item.store_id || item.loja || "")].filter(Boolean).join(" • "))}</small>
+        </div>
+        <div class="pdv-exchange-product-side">
+          <strong>${price > 0 ? currency(price) : "Sem preco"}</strong>
+          <span class="${disabled ? "is-danger" : "is-balanced"}">${disabled ? "Sem estoque" : `Estoque ${stock}`}</span>
+          <button class="secondary-button small" type="button" data-pdv-exchange-select-new-product="${index}"${disabled ? " disabled" : ""}>${selected ? "Adicionar mais" : "Adicionar"}</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+function buildPdvExchangeMiniCart() {
+  const draft = state.pdvExchanges.draft;
+  const items = getPdvExchangeNewItems(draft);
+  if (!draft) {
+    return "";
+  }
+  if (!items.length) {
+    return `<div class="pdv-exchange-mini-cart empty"><strong>Carrinho da troca vazio</strong><span>Adicione um ou mais produtos de saida para calcular a diferenca.</span></div>`;
+  }
+  return `
+    <div class="pdv-exchange-mini-cart">
+      <div class="pdv-exchange-mini-cart-head">
+        <strong>Carrinho da troca</strong>
+        <span>${items.length} produto(s) • ${currency(items.reduce((sum, item) => sum + toNumber(item.exchange_value || item.total || 0), 0))}</span>
+      </div>
+      ${items.map((item) => {
+        const lineId = item.line_id || item.item_id || item.sku || "";
+        const quantity = Math.max(1, toNumber(item.quantity || item.quantidade || 1));
+        return `
+          <div class="pdv-exchange-cart-line">
+            <div>
+              <strong>${escapeHtml(item.nome || item.sku || "Produto")}</strong>
+              <span>${escapeHtml([item.sku || item.codigo || "", item.cor || "", item.tamanho || ""].filter(Boolean).join(" • ") || "Sem SKU")}</span>
+            </div>
+            <div class="pdv-exchange-cart-line-actions">
+              <button class="ghost-button tiny" type="button" data-pdv-exchange-new-item-qty="${escapeHtml(lineId)}" data-qty-delta="-1"${quantity <= 1 ? " disabled" : ""}>-</button>
+              <strong>${quantity}x</strong>
+              <button class="ghost-button tiny" type="button" data-pdv-exchange-new-item-qty="${escapeHtml(lineId)}" data-qty-delta="1">+</button>
+              <span>${currency(item.exchange_value || item.total || 0)}</span>
+              <button class="ghost-button tiny danger" type="button" data-pdv-exchange-new-item-remove="${escapeHtml(lineId)}">Remover</button>
+            </div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+async function setPdvExchangeCustomer(customer = {}) {
+  const draft = state.pdvExchanges.draft;
+  if (!draft?.exchange_id) return;
+  const payload = {
+    exchange_customer_id: customer.master_customer_id || customer.customer_id || customer.id || customer.exchange_customer_id || "",
+    name: customer.name || customer.nome || "",
+    phone: customer.phone || customer.telefone || "",
+    document: customer.document || customer.cpf || ""
+  };
+  const response = await api(`/api/pdv/exchanges/${encodeURIComponent(draft.exchange_id)}/customer`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  state.pdvExchanges.draft = response.exchange || response;
+  state.pdvExchanges.customerResults = [];
+  state.pdvExchanges.customerQuery = "";
+  renderPdvExchangesFront();
+}
+
+async function searchPdvExchangeCustomers(form) {
+  const query = normalizeText(new FormData(form).get("q") || "");
+  state.pdvExchanges.customerQuery = query;
+  state.pdvExchanges.customerError = "";
+  if (query.length < 2) {
+    state.pdvExchanges.customerResults = [];
+    renderPdvExchangesFront();
+    return;
+  }
+  state.pdvExchanges.customerLoading = true;
+  renderPdvExchangesFront();
+  try {
+    const response = await api(`/api/pdv/operational/search/customers?q=${encodeURIComponent(query)}&limit=8`);
+    state.pdvExchanges.customerResults = toArray(response);
+  } catch (error) {
+    state.pdvExchanges.customerError = error.message || "Falha ao buscar cliente.";
+    state.pdvExchanges.customerResults = [];
+  } finally {
+    state.pdvExchanges.customerLoading = false;
+    renderPdvExchangesFront();
+  }
+}
+
+async function createPdvExchangeQuickCustomer(form) {
+  const data = new FormData(form);
+  const payload = {
+    name: normalizeText(data.get("name") || ""),
+    phone: normalizeText(data.get("phone") || ""),
+    document: normalizeText(data.get("document") || ""),
+    store_id: getCurrentPdvStoreId()
+  };
+  if (!payload.name || !payload.phone) {
+    state.pdvExchanges.customerError = "Informe nome e telefone para cadastrar quem esta efetuando a troca.";
+    renderPdvExchangesFront();
+    return;
+  }
+  state.pdvExchanges.customerError = "";
+  try {
+    const customer = await api("/api/pdv/operational/customers/quick-register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    await setPdvExchangeCustomer(customer);
+    showFeedback("Cliente da troca vinculado.", "success");
+  } catch (error) {
+    state.pdvExchanges.customerError = error.message || "Falha ao cadastrar cliente da troca.";
+    renderPdvExchangesFront();
+  }
+}
+
+function getPdvExchangeReasonLabel(reason = "") {
+  const key = normalizeText(reason || "").toLowerCase();
+  const labels = {
+    tamanho: "Tamanho",
+    cor: "Cor",
+    defeito: "Defeito",
+    presente: "Presente",
+    arrependimento: "Arrependimento",
+    troca_por_outro_produto: "Troca por outro produto",
+    outro: "Outro"
+  };
+  return labels[key] || normalizeVisibleText(reason || "-");
+}
+
+function getPdvExchangeConditionLabel(condition = "") {
+  const key = normalizeText(condition || "").toLowerCase();
+  const labels = {
+    disponivel: "Disponivel para venda",
+    aguardando_conferencia: "Aguardando conferencia",
+    defeito: "Defeito",
+    avaria: "Com avaria",
+    perda: "Perda / nao retornar ao estoque",
+    sem_etiqueta: "Sem etiqueta"
+  };
+  return labels[key] || normalizeVisibleText(condition || "-");
+}
+
+function buildPdvExchangeReceiptPrint(receipt = {}) {
+  const returnedItems = getPdvExchangeReturnedItems(receipt);
+  const returnedItem = returnedItems[0] || receipt.returned_item || {};
+  const exchangeCustomer = receipt.exchange_customer || {};
+  const variation = [
+    returnedItem.sku || returnedItem.codigo,
+    returnedItem.marca,
+    returnedItem.categoria,
+    returnedItem.cor,
+    returnedItem.tamanho
+  ].map((item) => normalizeVisibleText(item || "")).filter(Boolean).join(" | ");
+  const customerName = exchangeCustomer.name || receipt.credit_owner_customer_id || "-";
+  const customerPhone = exchangeCustomer.phone || exchangeCustomer.telefone || "-";
+  return `
+    <article class="exchange-receipt-print" data-pdv-exchange-receipt-print>
+      <header>
+        <strong>AEROSTORE</strong>
+        <span>Comprovante de Cr&eacute;dito de Troca</span>
+      </header>
+      <section class="exchange-receipt-print-block">
+        <div><span>Troca</span><strong>${escapeHtml(receipt.exchange_id || "-")}</strong></div>
+        <div><span>Venda original</span><strong>${escapeHtml(receipt.original_sale_id || "-")}</strong></div>
+        <div><span>Data/hora</span><strong>${escapeHtml(formatDateTimeBR(receipt.finalized_at || ""))}</strong></div>
+        <div><span>Loja</span><strong>${escapeHtml(receipt.store_id || "-")}</strong></div>
+        <div><span>Vendedor</span><strong>${escapeHtml(receipt.seller_name || "-")}</strong></div>
+      </section>
+      <section class="exchange-receipt-print-block">
+        <h3>Cliente favorecido</h3>
+        <div><span>Nome</span><strong>${escapeHtml(customerName)}</strong></div>
+        <div><span>Telefone</span><strong>${escapeHtml(customerPhone)}</strong></div>
+        <div><span>Cr&eacute;dito vinculado a</span><strong>${escapeHtml(customerName)}</strong></div>
+      </section>
+      <section class="exchange-receipt-print-block">
+        <h3>${returnedItems.length > 1 ? "Produtos devolvidos" : "Produto devolvido"}</h3>
+        ${returnedItems.map((item) => {
+          const itemVariation = [
+            item.sku || item.codigo,
+            item.marca,
+            item.categoria,
+            item.cor,
+            item.tamanho
+          ].map((entry) => normalizeVisibleText(entry || "")).filter(Boolean).join(" | ");
+          return `
+            <p class="exchange-receipt-product">${escapeHtml(item.nome || "-")}</p>
+            ${itemVariation ? `<p class="exchange-receipt-muted">${escapeHtml(itemVariation)}</p>` : ""}
+            <div><span>Quantidade</span><strong>${escapeHtml(String(item.quantity || item.quantidade || 1))}</strong></div>
+          `;
+        }).join("") || `
+          <p class="exchange-receipt-product">${escapeHtml(returnedItem.nome || "-")}</p>
+          ${variation ? `<p class="exchange-receipt-muted">${escapeHtml(variation)}</p>` : ""}
+          <div><span>Quantidade</span><strong>${escapeHtml(String(returnedItem.quantity || returnedItem.quantidade || 1))}</strong></div>
+        `}
+        <div><span>Motivo</span><strong>${escapeHtml(getPdvExchangeReasonLabel(receipt.reason || ""))}</strong></div>
+        <div><span>Condi&ccedil;&atilde;o</span><strong>${escapeHtml(getPdvExchangeConditionLabel(receipt.returned_condition || ""))}</strong></div>
+      </section>
+      <section class="exchange-receipt-print-total">
+        <span>Cr&eacute;dito gerado</span>
+        <strong>${escapeHtml(currency(receipt.credit_generated || 0))}</strong>
+      </section>
+      <section class="exchange-receipt-policy">
+        <p>Este cr&eacute;dito poder&aacute; ser usado em venda futura no PDV da AEROSTORE. N&atilde;o h&aacute; devolu&ccedil;&atilde;o autom&aacute;tica em dinheiro.</p>
+        <p>Cr&eacute;dito sem expira&ccedil;&atilde;o autom&aacute;tica, salvo pol&iacute;tica interna da loja.</p>
+      </section>
+      <footer>AEROSTORE &bull; Operacao de troca registrada no PDV</footer>
+    </article>
+  `;
+}
+
+function printPdvExchangeReceipt() {
+  const receipt = state.pdvExchanges.receipt;
+  if (!receipt?.exchange_id) {
+    showFeedback("Finalize a troca antes de imprimir o comprovante.", "error");
+    return;
+  }
+  if (!document.querySelector("[data-pdv-exchange-receipt-print]")) {
+    renderPdvExchangesFront();
+  }
+  document.body.classList.add("is-printing-exchange-receipt");
+  const cleanup = () => document.body.classList.remove("is-printing-exchange-receipt");
+  window.addEventListener("afterprint", cleanup, { once: true });
+  setTimeout(() => {
+    window.print();
+    setTimeout(cleanup, 1500);
+  }, 80);
+}
+
+function buildPdvExchangeSummary() {
+  const draft = state.pdvExchanges.draft;
+  const receipt = state.pdvExchanges.receipt;
+  if (receipt) {
+    const returnedItems = getPdvExchangeReturnedItems(receipt);
+    return `
+      <div class="pdv-exchange-receipt">
+        <span>Troca finalizada</span>
+        <strong>${escapeHtml(receipt.exchange_id || "")}</strong>
+        <p>${escapeHtml(receipt.customer?.name || "Cliente")} • ${escapeHtml(formatDateTimeBR(receipt.finalized_at || ""))}</p>
+        <div><span>${returnedItems.length > 1 ? "Produtos devolvidos" : "Produto devolvido"}</span><strong>${escapeHtml(returnedItems.length > 1 ? `${returnedItems.length} itens selecionados` : (receipt.returned_item?.nome || "-"))}</strong></div>
+        <div><span>Cliente favorecido</span><strong>${escapeHtml(receipt.exchange_customer?.name || receipt.credit_owner_customer_id || "-")}</strong></div>
+        <div><span>Credito gerado</span><strong>${currency(receipt.credit_generated || 0)}</strong></div>
+        ${receipt.credit_generated > 0 ? `<div><span>Credito vinculado a</span><strong>${escapeHtml(receipt.exchange_customer?.name || receipt.credit_owner_customer_id || "-")}</strong></div>` : ""}
+        ${buildPdvExchangeReceiptPrint(receipt)}
+        <button class="secondary-button" type="button" data-pdv-exchange-print-receipt>Imprimir comprovante</button>
+        <button class="ghost-button" type="button" data-pdv-exchange-new>Nova troca</button>
+      </div>
+    `;
+  }
+  if (!draft) {
+    return `<div class="empty-state compact"><strong>Resumo da troca</strong><span>Selecione uma venda original para iniciar.</span></div>`;
+  }
+  const totals = getPdvExchangeTotals(draft);
+  const returnedItems = getPdvExchangeReturnedItems(draft);
+  const creditNeedsCustomer = !draft.exchange_customer?.name || !draft.exchange_customer?.phone;
+  const computedStatus = getPdvExchangeComputedStatus(draft);
+  const canFinalize = Boolean(
+    draft.original_sale_id
+    && returnedItems.length
+    && totals.creditGenerated > 0
+    && !creditNeedsCustomer
+    && draft.reason
+    && draft.returned_condition
+    && !state.pdvExchanges.finalizing
+  );
+  return `
+    <div class="pdv-exchange-summary-card">
+      <span>Status</span>
+      <strong>${escapeHtml(getPdvExchangeDisplayStatus(computedStatus))}</strong>
+      <div><span>Valor devolvido</span><strong>${currency(totals.originalValue)}</strong></div>
+      <div><span>Itens devolvidos</span><strong>${returnedItems.length || 0}</strong></div>
+      <div class="${totals.creditGenerated > 0 ? "is-balanced" : ""}"><span>Credito gerado</span><strong>${currency(totals.creditGenerated)}</strong></div>
+      <div><span>Credito para</span><strong>${escapeHtml(draft.exchange_customer?.name || "Selecione o cliente")}</strong></div>
+      <div><span>Condicao do devolvido</span><strong>${escapeHtml(normalizeVisibleText(draft.returned_condition || "-"))}</strong></div>
+      ${creditNeedsCustomer ? `<div class="pdv-payment-alert warning">Selecione ou cadastre o cliente que recebera o Credito de Troca antes de finalizar.</div>` : ""}
+      <p class="panel-helper">A Central gera credito e devolve o item ao estoque. A escolha dos novos produtos acontece depois em uma venda normal.</p>
+      ${state.pdvExchanges.error ? `<div class="pdv-payment-alert warning">${escapeHtml(state.pdvExchanges.error)}</div>` : ""}
+      <button class="primary-button" type="button" data-pdv-exchange-finalize${canFinalize ? "" : " disabled"}>${state.pdvExchanges.finalizing ? "Finalizando..." : "Finalizar troca"}</button>
+      <button class="ghost-button" type="button" data-pdv-exchange-new>Limpar troca</button>
+    </div>
+  `;
+}
+
+function buildPdvExchangesContent() {
+  const draft = state.pdvExchanges.draft;
+  const saleSummary = draft?.original_sale_summary;
+  return `
+    <section class="pdv-exchanges-shell" id="pdv-exchanges-content">
+      <div class="pdv-exchanges-hero">
+        <div>
+          <span>Central de Trocas</span>
+          <h2>Troca com venda original localizada</h2>
+          <p>Receba o produto devolvido, retorne ao estoque e gere Credito de Troca para o cliente favorecido.</p>
+        </div>
+        <strong>MVP seguro</strong>
+      </div>
+      <div class="pdv-exchange-layout">
+        <aside class="pdv-exchange-panel">
+          <div class="pdv-exchange-panel-head">
+            <span>1. Origem</span>
+            <strong>Venda original</strong>
+          </div>
+          <form data-pdv-exchange-origin-form class="pdv-exchange-search">
+            <input type="search" name="q" value="${escapeHtml(state.pdvExchanges.originQuery || "")}" placeholder="Cliente, telefone, venda, SKU ou QR Code" />
+            <button class="secondary-button small" type="submit">Buscar</button>
+          </form>
+          <div class="pdv-exchange-origin-list">${buildPdvExchangeOriginResults()}</div>
+          ${saleSummary ? `
+            <div class="pdv-exchange-selected-sale">
+              <span>Venda selecionada</span>
+              <strong>${escapeHtml(saleSummary.sale_id || "")}</strong>
+              <small>${escapeHtml(saleSummary.customer_name || "")} • ${currency(saleSummary.total || 0)}</small>
+            </div>
+          ` : ""}
+        </aside>
+        <main class="pdv-exchange-panel pdv-exchange-main">
+          <div class="pdv-exchange-panel-head">
+            <span>2. Produto devolvido</span>
+            <strong>Itens selecionados para devolucao</strong>
+          </div>
+          <div class="pdv-exchange-items">${buildPdvExchangeReturnedItems()}</div>
+          ${buildPdvExchangeReasonForm()}
+          <div class="pdv-exchange-panel-head">
+            <span>3. Cliente favorecido</span>
+            <strong>Cliente favorecido</strong>
+            <small>Cliente que recebera o Credito de Troca.</small>
+          </div>
+          ${buildPdvExchangeCustomerPanel()}
+          <div class="pdv-exchange-mini-cart empty"><strong>Credito usado depois no PDV Venda</strong><span>A escolha dos novos produtos acontece depois no PDV Venda, usando o Credito de Troca no checkout.</span></div>
+        </main>
+        <aside class="pdv-exchange-panel pdv-exchange-summary">
+          <div class="pdv-exchange-panel-head">
+            <span>4. Fechamento</span>
+            <strong>Credito e finalizacao</strong>
+          </div>
+          ${buildPdvExchangeSummary()}
+        </aside>
+      </div>
+    </section>
+  `;
+}
+
+async function searchPdvExchangeOrigins(form) {
+  const query = normalizeText(new FormData(form).get("q") || "");
+  state.pdvExchanges.originQuery = query;
+  state.pdvExchanges.originError = "";
+  state.pdvExchanges.receipt = null;
+  if (query.length < 2) {
+    state.pdvExchanges.originResults = [];
+    renderPdvExchangesFront();
+    return;
+  }
+  state.pdvExchanges.originLoading = true;
+  renderPdvExchangesFront();
+  try {
+    const response = await api(`/api/pdv/exchanges/search-origin?q=${encodeURIComponent(query)}`);
+    state.pdvExchanges.originResults = toArray(response);
+  } catch (error) {
+    state.pdvExchanges.originError = error.message || "Falha ao buscar venda original.";
+    state.pdvExchanges.originResults = [];
+  } finally {
+    state.pdvExchanges.originLoading = false;
+    renderPdvExchangesFront();
+  }
+}
+
+async function createPdvExchangeDraftFromSale(saleId = "") {
+  state.pdvExchanges.error = "";
+  const response = await api("/api/pdv/exchanges/draft", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      exchange_type: "venda_original",
+      original_sale_id: saleId,
+      store_id: getCurrentPdvStoreId()
+    })
+  });
+  state.pdvExchanges.draft = response.exchange || response;
+  state.pdvExchanges.receipt = null;
+  state.pdvExchanges.newProductResults = [];
+  state.pdvExchanges.newProductQuery = "";
+  showFeedback("Venda original carregada para troca.", "success");
+  renderPdvExchangesFront();
+}
+
+async function selectPdvExchangeReturnedItem(itemId = "", options = {}) {
+  const draft = state.pdvExchanges.draft;
+  if (!draft?.exchange_id) return;
+  const sourceItemKey = normalizeText(options.sourceItemKey || "");
+  const lineIndex = normalizeText(options.lineIndex ?? "");
+  const availableIndex = normalizeText(options.availableIndex ?? "");
+  const selected = toArray(draft.available_items).find((item, index) => {
+    const itemSourceKey = normalizeText(item.source_item_key || "");
+    const itemLineIndex = normalizeText(item.sale_line_index ?? item.line_index ?? "");
+    if (availableIndex && normalizeText(item.available_index ?? index) === availableIndex) return true;
+    if (lineIndex && itemLineIndex) return itemLineIndex === lineIndex;
+    if (sourceItemKey && itemSourceKey) return itemSourceKey === sourceItemKey;
+    return String(item.item_id || item.original_item_id || "") === String(itemId);
+  });
+  if (selected && (selected.status === "ja_trocado" || toNumber(selected.quantity_available ?? 0) <= 0)) {
+    showFeedback("Este item ja gerou Credito de Troca e nao esta disponivel para nova troca.", "warning");
+    return;
+  }
+  const response = await api(`/api/pdv/exchanges/${encodeURIComponent(draft.exchange_id)}/returned-item`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item_id: itemId, source_item_key: sourceItemKey, sale_line_index: lineIndex, line_index: lineIndex, available_index: availableIndex, selection_index: availableIndex, quantity: 1 })
+  });
+  state.pdvExchanges.draft = response.exchange || response;
+  renderPdvExchangesFront();
+}
+
+async function searchPdvExchangeNewProducts(form) {
+  const query = normalizeText(new FormData(form).get("q") || "");
+  state.pdvExchanges.newProductQuery = query;
+  state.pdvExchanges.newProductError = "";
+  if (query.length < 2) {
+    state.pdvExchanges.newProductResults = [];
+    renderPdvExchangesFront();
+    return;
+  }
+  state.pdvExchanges.newProductLoading = true;
+  renderPdvExchangesFront();
+  try {
+    const storeId = getCurrentPdvStoreId();
+    const response = await api(`/api/pdv/operational/search/products?q=${encodeURIComponent(query)}&store=${encodeURIComponent(storeId)}&limit=10`);
+    state.pdvExchanges.newProductResults = toArray(response);
+  } catch (error) {
+    state.pdvExchanges.newProductError = error.message || "Falha ao buscar novo produto.";
+    state.pdvExchanges.newProductResults = [];
+  } finally {
+    state.pdvExchanges.newProductLoading = false;
+    renderPdvExchangesFront();
+  }
+}
+
+async function selectPdvExchangeNewProduct(index = -1) {
+  const draft = state.pdvExchanges.draft;
+  const product = toArray(state.pdvExchanges.newProductResults)[Number(index)];
+  if (!draft?.exchange_id || !product) return;
+  const response = await api(`/api/pdv/exchanges/${encodeURIComponent(draft.exchange_id)}/new-item`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...product, quantity: 1 })
+  });
+  state.pdvExchanges.draft = response.exchange || response;
+  renderPdvExchangesFront();
+}
+
+async function updatePdvExchangeNewItemQuantity(lineId = "", delta = 0) {
+  const draft = state.pdvExchanges.draft;
+  if (!draft?.exchange_id || !lineId) return;
+  const item = getPdvExchangeNewItems(draft).find((entry) => String(entry.line_id || entry.item_id || entry.sku || "") === String(lineId));
+  if (!item) return;
+  const quantity = Math.max(1, toNumber(item.quantity || item.quantidade || 1) + toNumber(delta));
+  const response = await api(`/api/pdv/exchanges/${encodeURIComponent(draft.exchange_id)}/new-items/${encodeURIComponent(lineId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ quantity })
+  });
+  state.pdvExchanges.draft = response.exchange || response;
+  renderPdvExchangesFront();
+}
+
+async function removePdvExchangeNewItem(lineId = "") {
+  const draft = state.pdvExchanges.draft;
+  if (!draft?.exchange_id || !lineId) return;
+  const response = await api(`/api/pdv/exchanges/${encodeURIComponent(draft.exchange_id)}/new-items/${encodeURIComponent(lineId)}`, {
+    method: "DELETE"
+  });
+  state.pdvExchanges.draft = response.exchange || response;
+  renderPdvExchangesFront();
+}
+
+async function finalizePdvExchange() {
+  const draft = state.pdvExchanges.draft;
+  if (!draft?.exchange_id) return;
+  const reason = document.querySelector("[data-pdv-exchange-reason]")?.value || "";
+  const returnedCondition = document.querySelector("[data-pdv-exchange-condition]")?.value || "";
+  const notes = document.querySelector("[data-pdv-exchange-notes]")?.value || "";
+  state.pdvExchanges.finalizing = true;
+  state.pdvExchanges.error = "";
+  renderPdvExchangesFront();
+  try {
+    let response = await api(`/api/pdv/exchanges/${encodeURIComponent(draft.exchange_id)}/reason`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason, returned_condition: returnedCondition, reason_notes: notes })
+    });
+    state.pdvExchanges.draft = response.exchange || response;
+    response = await api(`/api/pdv/exchanges/${encodeURIComponent(draft.exchange_id)}/finalize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    state.pdvExchanges.draft = response.exchange || response;
+    state.pdvExchanges.receipt = response.receipt || null;
+    showFeedback("Troca finalizada com sucesso.", "success");
+  } catch (error) {
+    state.pdvExchanges.error = error.message || "Falha ao finalizar troca.";
+  } finally {
+    state.pdvExchanges.finalizing = false;
+    renderPdvExchangesFront();
+  }
+}
+
+function resetPdvExchangeFlow() {
+  state.pdvExchanges.originQuery = "";
+  state.pdvExchanges.originResults = [];
+  state.pdvExchanges.originError = "";
+  state.pdvExchanges.draft = null;
+  state.pdvExchanges.newProductQuery = "";
+  state.pdvExchanges.newProductResults = [];
+  state.pdvExchanges.newProductError = "";
+  state.pdvExchanges.customerQuery = "";
+  state.pdvExchanges.customerResults = [];
+  state.pdvExchanges.customerError = "";
+  state.pdvExchanges.error = "";
+  state.pdvExchanges.receipt = null;
+  renderPdvExchangesFront();
+}
+
+function buildPdvSalesOrdersFilters() {
+  const filters = state.pdvSalesOrders.filters || {};
+  const canChooseStore = canViewAllStores();
+  const rows = toArray(state.pdvSalesOrders.rows);
+  const storeOptions = uniqueStrings([
+    ...rows.map((row) => row.store_id || row.store_label),
+    getCurrentPdvStoreId()
+  ].filter(Boolean));
+  const sellerOptions = uniqueStrings(rows.map((row) => row.seller_name).filter(Boolean));
+  return `
+    <form class="pdv-orders-filters" data-pdv-sales-orders-filters="true">
+      <label class="pdv-orders-search">
+        <span>Busca</span>
+        <input name="search" type="search" value="${escapeHtml(filters.search || "")}" placeholder="Pesquise por cliente, telefone, venda, CPF/CNPJ, SKU ou vendedor" />
+      </label>
+      <label>
+        <span>Periodo</span>
+        <select name="period">
+          <option value=""${!filters.period ? " selected" : ""}>Todos</option>
+          <option value="today"${filters.period === "today" ? " selected" : ""}>Hoje</option>
+          <option value="7d"${filters.period === "7d" ? " selected" : ""}>7 dias</option>
+          <option value="30d"${filters.period === "30d" ? " selected" : ""}>30 dias</option>
+          <option value="custom"${filters.period === "custom" ? " selected" : ""}>Personalizado</option>
+        </select>
+      </label>
+      <label>
+        <span>De</span>
+        <input name="date_from" type="date" value="${escapeHtml(filters.date_from || "")}" />
+      </label>
+      <label>
+        <span>Ate</span>
+        <input name="date_to" type="date" value="${escapeHtml(filters.date_to || "")}" />
+      </label>
+      <label>
+        <span>Loja</span>
+        <select name="store_id"${canChooseStore ? "" : " disabled"}>
+          <option value="">${canChooseStore ? "Todas" : escapeHtml(getCurrentUserStoreLabel())}</option>
+          ${storeOptions.map((value) => `<option value="${escapeHtml(value)}"${filters.store_id === value ? " selected" : ""}>${escapeHtml(formatStoreIdLabel(value))}</option>`).join("")}
+        </select>
+      </label>
+      <label>
+        <span>Vendedor</span>
+        <select name="seller_id">
+          <option value="">Todos</option>
+          ${sellerOptions.map((value) => `<option value="${escapeHtml(value)}"${filters.seller_id === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}
+        </select>
+      </label>
+      <label>
+        <span>Pagamento</span>
+        <select name="payment_method">
+          <option value="">Todos</option>
+          ${PDV_SALE_PAYMENT_METHODS.map((item) => `<option value="${escapeHtml(item.method)}"${filters.payment_method === item.method ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+        </select>
+      </label>
+      <label>
+        <span>Status</span>
+        <select name="status">
+          <option value="all"${filters.status === "all" ? " selected" : ""}>Todos</option>
+          <option value="completed"${filters.status === "completed" ? " selected" : ""}>Finalizada</option>
+          <option value="awaiting_payment"${filters.status === "awaiting_payment" ? " selected" : ""}>Aguardando pagamento</option>
+          <option value="payment_confirmed"${filters.status === "payment_confirmed" ? " selected" : ""}>Pagamento confirmado</option>
+          <option value="do_not_release"${filters.status === "do_not_release" ? " selected" : ""}>Nao liberar mercadoria</option>
+          <option value="release_goods"${filters.status === "release_goods" ? " selected" : ""}>Liberar mercadoria</option>
+          <option value="cancelled"${filters.status === "cancelled" ? " selected" : ""}>Cancelada</option>
+        </select>
+      </label>
+      <div class="pdv-orders-filter-actions">
+        <button class="secondary-button" type="submit">Aplicar filtros</button>
+        <button class="ghost-button" type="button" data-pdv-sales-orders-reset>Limpar</button>
+      </div>
+    </form>
+  `;
+}
+
+function buildPdvSalesOrdersTabs() {
+  const filters = state.pdvSalesOrders.filters || {};
+  const counters = state.pdvSalesOrders.tabs || {};
+  return `
+    <div class="pdv-orders-tabs" role="tablist" aria-label="Filtros rapidos de pedidos">
+      ${PDV_SALES_ORDERS_STATUS_TABS.map((tab) => {
+        const active = tab.period
+          ? filters.period === tab.period
+          : normalizeText(filters.status || "all") === tab.status && !tab.period;
+        return `
+          <button class="pdv-orders-tab${active ? " active" : ""}" type="button" data-pdv-sales-orders-tab="${escapeHtml(tab.key)}">
+            <span>${escapeHtml(tab.label)}</span>
+            <strong>${toNumber(counters[tab.key] || 0)}</strong>
+          </button>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function buildPdvSalesOrdersList() {
+  const rows = toArray(state.pdvSalesOrders.rows);
+  if (state.pdvSalesOrders.loading) {
+    return `<div class="empty-state compact"><strong>Carregando pedidos de venda...</strong><span>Buscando vendas reais dentro do seu escopo.</span></div>`;
+  }
+  if (state.pdvSalesOrders.error) {
+    return `<div class="empty-state compact error"><strong>Nao foi possivel carregar os pedidos de venda.</strong><span>${escapeHtml(state.pdvSalesOrders.error)}</span></div>`;
+  }
+  if (!rows.length) {
+    return `<div class="empty-state compact"><strong>Nenhum pedido encontrado para os filtros selecionados.</strong><span>Ajuste a busca, periodo ou status para consultar outras vendas.</span></div>`;
+  }
+  return `
+    <div class="pdv-orders-table-wrap">
+      <table class="pdv-orders-table">
+        <thead>
+          <tr>
+            <th class="pdv-orders-select-col">
+              <label class="pdv-orders-checkbox">
+                <input type="checkbox" data-pdv-sales-orders-select-page ${areAllVisiblePdvSalesOrdersSelected() ? " checked" : ""} aria-label="Selecionar pagina atual" />
+              </label>
+            </th>
+            <th>Venda</th>
+            <th>Data/hora</th>
+            <th>Cliente</th>
+            <th>Loja</th>
+            <th>Vendedor</th>
+            <th>Pagamento</th>
+            <th>Total</th>
+            <th>Status operacional</th>
+            <th>Acoes</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => {
+            const saleId = normalizeText(row.sale_id || "");
+            const statusMeta = getPdvSalesOrderStatusMeta(row);
+            const paymentLink = getPdvSalePaymentLinkData(row);
+            const paymentMeta = row.uses_payment_link ? getPdvSalePaymentLinkStatusMeta(row) : null;
+            const selected = isPdvSalesOrderSelected(saleId);
+            return `
+              <tr class="pdv-order-row is-${escapeHtml(statusMeta.releaseTone)}${row.uses_payment_link ? " has-payment-link" : ""}${selected ? " is-selected" : ""}">
+                <td class="pdv-orders-select-col">
+                  <label class="pdv-orders-checkbox">
+                    <input type="checkbox" data-pdv-sales-order-select="${escapeHtml(saleId)}"${selected ? " checked" : ""} aria-label="Selecionar venda ${escapeHtml(saleId)}" />
+                  </label>
+                </td>
+                <td><div class="pdv-orders-main-cell"><strong>${escapeHtml(saleId)}</strong><span>${row.coupon_available ? "Cupom disponivel" : "Cupom sob demanda"}</span>${buildPdvSalesOrderBadges(row)}</div></td>
+                <td>${escapeHtml(formatDateTimeBR(row.created_at || ""))}</td>
+                <td><div class="pdv-orders-main-cell"><strong>${escapeHtml(row.customer_name || "Venda balcao")}</strong><span>${escapeHtml(row.customer_phone || "-")}</span></div></td>
+                <td>${escapeHtml(row.store_label || formatStoreIdLabel(row.store_id || ""))}</td>
+                <td>${escapeHtml(row.seller_name || "-")}</td>
+                <td>
+                  <div class="pdv-orders-main-cell">
+                    <strong>${escapeHtml(getPdvSalesOrderPaymentLabel(row))}</strong>
+                    <span>${escapeHtml(getPdvSalesOrderLinkLabel(row, paymentLink, paymentMeta))}</span>
+                  </div>
+                </td>
+                <td>
+                  <div class="pdv-orders-main-cell">
+                    <strong>${currency(row.total || 0)}</strong>
+                    <span>${[
+                      row.discount_amount > 0 ? `Desc. ${currency(row.discount_amount)}` : "",
+                      row.cashback_applied > 0 ? `Cashback ${currency(row.cashback_applied)}` : ""
+                    ].filter(Boolean).join(" • ") || "Sem abatimentos"}</span>
+                  </div>
+                </td>
+                <td>
+                  <div class="pdv-orders-status">
+                    <span class="pdv-status-badge is-${escapeHtml(statusMeta.tone)}">${escapeHtml(statusMeta.label)}</span>
+                    <span class="pdv-release-badge is-${escapeHtml(statusMeta.releaseTone)}">${escapeHtml(statusMeta.releaseLabel)}</span>
+                  </div>
+                </td>
+                <td>
+                  <div class="pdv-orders-actions">
+                    ${buildPdvSalesOrderActionButtons(row)}
+                  </div>
+                </td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function buildPdvSalesOrdersPagination() {
+  const pagination = state.pdvSalesOrders.pagination || {};
+  return `
+    <div class="pdv-orders-pagination">
+      <span>Pagina ${toNumber(pagination.page || 1)} de ${toNumber(pagination.page_count || 1)} • ${toNumber(pagination.total || 0)} pedidos</span>
+      <div class="action-row">
+        <button class="ghost-button small" type="button" data-pdv-sales-orders-page="${Math.max(1, toNumber(pagination.page || 1) - 1)}"${toNumber(pagination.page || 1) <= 1 ? " disabled" : ""}>Anterior</button>
+        <button class="ghost-button small" type="button" data-pdv-sales-orders-page="${Math.min(toNumber(pagination.page_count || 1), toNumber(pagination.page || 1) + 1)}"${toNumber(pagination.page || 1) >= toNumber(pagination.page_count || 1) ? " disabled" : ""}>Proxima</button>
+      </div>
+    </div>
+  `;
+}
+
+function buildPdvSalesOrderDetailDrawer() {
+  const detail = state.pdvSalesOrders.detail;
+  const sale = detail?.sale || null;
+  const row = detail?.row || {};
+  const saleId = normalizeText(row.sale_id || sale?.sale_id || "");
+  if (!state.pdvSalesOrders.selectedSaleId) {
+    return "";
+  }
+  if (state.pdvSalesOrders.detailLoading) {
+    return `<div class="pdv-orders-drawer active"><div class="pdv-orders-drawer-card"><button class="ghost-button small" type="button" data-pdv-sales-order-close>Fechar</button><div class="empty-state compact"><strong>Carregando detalhe da venda...</strong></div></div></div>`;
+  }
+  if (state.pdvSalesOrders.detailError) {
+    return `<div class="pdv-orders-drawer active"><div class="pdv-orders-drawer-card"><button class="ghost-button small" type="button" data-pdv-sales-order-close>Fechar</button><div class="empty-state compact error"><strong>Erro no detalhe</strong><span>${escapeHtml(state.pdvSalesOrders.detailError)}</span></div></div></div>`;
+  }
+  if (!sale) {
+    return "";
+  }
+  const statusMeta = getPdvSalesOrderStatusMeta(row);
+  const paymentLink = getPdvSalePaymentLinkData(sale);
+  const paymentMeta = getPdvSalePaymentLinkStatusMeta(sale);
+  const items = toArray(sale.items || sale.cart_items);
+  const payments = getPdvSalePostSalePayments(sale);
+  const paymentMethodLabel = getPdvSalesOrderPaymentLabel(row);
+  const lastPagBankUpdate = paymentLink.updatedAt || paymentLink.checkedAt || paymentLink.paidAt || "";
+  return `
+    <div class="pdv-orders-drawer active">
+      <div class="pdv-orders-drawer-card">
+        <div class="pdv-orders-drawer-head">
+          <div>
+            <p class="eyebrow">Pedido de venda</p>
+            <h3>${escapeHtml(saleId)}</h3>
+            <span>${escapeHtml(formatDateTimeBR(row.created_at || sale.created_at || ""))} • ${escapeHtml(row.store_label || formatStoreIdLabel(sale.loja || ""))}</span>
+          </div>
+          <button class="ghost-button small" type="button" data-pdv-sales-order-close>Fechar</button>
+        </div>
+        <section class="pdv-orders-operational-summary">
+          <div class="pdv-orders-operational-head">
+            <div>
+              <p class="eyebrow">Resumo operacional</p>
+              <h4>Decisao da venda</h4>
+            </div>
+            <div class="pdv-orders-status">
+              <span class="pdv-status-badge is-${escapeHtml(statusMeta.tone)}">${escapeHtml(statusMeta.label)}</span>
+              <span class="pdv-release-badge is-${escapeHtml(statusMeta.releaseTone)}">${escapeHtml(statusMeta.releaseLabel)}</span>
+            </div>
+          </div>
+          <div class="pdv-orders-detail-grid">
+            <article><span>Status do pagamento</span><strong>${escapeHtml(row.uses_payment_link ? paymentMeta?.payment?.label || statusMeta.label : statusMeta.label)}</strong><small>${escapeHtml(row.uses_payment_link ? getPdvSalesOrderLinkLabel(row, paymentLink, paymentMeta) : "Pagamento registrado no PDV")}</small></article>
+            <article><span>Liberacao de mercadoria</span><strong>${escapeHtml(statusMeta.releaseLabel)}</strong><small>${escapeHtml(statusMeta.note)}</small></article>
+            <article><span>Total</span><strong>${currency(row.total || sale.total_final || 0)}</strong><small>Desconto ${currency(row.discount_amount || 0)} - Cashback usado ${currency(row.cashback_applied || 0)}</small></article>
+            <article><span>Loja</span><strong>${escapeHtml(row.store_label || formatStoreIdLabel(sale.loja || ""))}</strong><small>${escapeHtml(row.store_id || sale.loja || "-")}</small></article>
+            <article><span>Vendedor</span><strong>${escapeHtml(row.seller_name || sale.vendedor || "-")}</strong><small>${escapeHtml(sale.created_by || "")}</small></article>
+            <article><span>Cliente</span><strong>${escapeHtml(row.customer_name || sale.customer?.name || "Venda balcao")}</strong><small>${escapeHtml(row.customer_phone || sale.customer?.phone || "-")}</small></article>
+            <article><span>Metodo principal</span><strong>${escapeHtml(paymentMethodLabel)}</strong><small>${row.uses_payment_link ? "Venda por link de pagamento" : "Venda operacional PDV"}</small></article>
+            ${row.uses_payment_link ? `<article><span>Link pagamento</span><strong>${escapeHtml(paymentMeta?.link?.label || "Link gerado")}</strong><small>${escapeHtml(maskPdvExternalUrl(paymentLink.url || ""))}</small></article>` : ""}
+            ${row.uses_payment_link ? `<article><span>Ultima atualizacao PagBank</span><strong>${escapeHtml(lastPagBankUpdate ? formatDateTimeBR(lastPagBankUpdate) : "-")}</strong><small>${escapeHtml(getPdvSalesOrderProviderStatusLabel(paymentLink.providerStatus || ""))}</small></article>` : ""}
+          </div>
+          ${buildPdvSalesOrderBadges(row)}
+        </section>
+        ${row.uses_payment_link ? `
+          <div class="pdv-orders-payment-link-panel">
+            <strong>Link pagamento / PagBank</strong>
+            <div class="pdv-orders-detail-grid">
+              <article><span>Status do link</span><strong>${escapeHtml(paymentMeta?.link?.label || paymentLink.status || "-")}</strong><small>${escapeHtml(maskPdvExternalUrl(paymentLink.url || ""))}</small></article>
+              <article><span>Status PagBank</span><strong>${escapeHtml(getPdvSalesOrderProviderStatusLabel(paymentLink.providerStatus || ""))}</strong><small>${escapeHtml(paymentMeta?.payment?.label || "-")}</small></article>
+              <article><span>Decisao</span><strong>${escapeHtml(paymentMeta?.release?.label || statusMeta.note)}</strong><small>${escapeHtml(paymentMeta?.note || "Link ativo nao libera mercadoria sem confirmacao de pagamento.")}</small></article>
+            </div>
+          </div>
+        ` : ""}
+        <div class="pdv-orders-detail-section">
+          <h4>Itens</h4>
+          ${items.length ? items.map((item) => `
+            <div class="pdv-orders-detail-row">
+              <strong>${escapeHtml(item.nome || item.name || "Produto")}</strong>
+              <span>${escapeHtml([item.sku || item.codigo || "-", item.tamanho || item.size || "", item.cor || item.color || ""].filter(Boolean).join(" • "))}</span>
+              <em>${toNumber(item.quantidade || item.quantity || 1)}x ${currency(item.preco_referencia || item.unit_price || item.price || 0)}</em>
+            </div>
+          `).join("") : `<div class="empty-state compact"><strong>Sem itens registrados.</strong></div>`}
+        </div>
+        <div class="pdv-orders-detail-section">
+          <h4>Pagamentos</h4>
+          ${payments.length ? payments.map((item) => `
+            <div class="pdv-orders-detail-row">
+              <strong>${escapeHtml(item.label || item.method || "-")}</strong>
+              <span>${escapeHtml(item.method || "")}</span>
+              <em>${currency(item.amount || 0)}</em>
+            </div>
+          `).join("") : `<div class="empty-state compact"><strong>Sem pagamentos registrados.</strong></div>`}
+        </div>
+        <div class="pdv-orders-detail-section">
+          <h4>Cashback</h4>
+          <div class="pdv-orders-detail-grid">
+            <article><span>Usado</span><strong>${currency(row.cashback_applied || 0)}</strong><small>Abatimento na venda</small></article>
+            <article><span>Gerado</span><strong>${currency(row.cashback_generated || 0)}</strong><small>${escapeHtml(sale.cashback_generated?.expires_at ? `Validade ${formatDateTimeBR(sale.cashback_generated.expires_at)}` : "-")}</small></article>
+          </div>
+        </div>
+        <div class="pdv-orders-detail-section">
+          <h4>Desconto e autorizacao</h4>
+          <div class="pdv-orders-detail-grid">
+            <article><span>Desconto</span><strong>${currency(row.discount_amount || 0)}</strong><small>${toNumber(row.discount_percent || 0)}% registrado</small></article>
+            <article><span>Autorizacao</span><strong>${row.has_authorization ? "Autorizado por gestor" : "Sem autorizacao registrada"}</strong><small>${escapeHtml(row.discount_authorization_id || "-")}</small></article>
+          </div>
+        </div>
+        <div class="pdv-orders-detail-section">
+          <h4>Cupom e WhatsApp</h4>
+          <div class="pdv-orders-detail-grid">
+            <article><span>Cupom</span><strong>${row.coupon_available ? "Disponivel" : "Sob demanda"}</strong><small>${escapeHtml(row.coupon_id || "-")}</small></article>
+            <article><span>WhatsApp</span><strong>${row.whatsapp_sent ? "Enviado" : "Disponivel para envio"}</strong><small>${escapeHtml(row.whatsapp_last_attempt_at ? formatDateTimeBR(row.whatsapp_last_attempt_at) : "-")}</small></article>
+          </div>
+        </div>
+        <div class="pdv-orders-drawer-actions">
+          <button class="secondary-button" type="button" data-pdv-sale-generate-coupon="${escapeHtml(saleId)}">Abrir / imprimir cupom</button>
+          <button class="ghost-button" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(saleId)}">Enviar WhatsApp</button>
+          ${canCancelPdvSaleFrontend() && !isPdvSalesOrderCancelled(row) ? `<button class="danger-button" type="button" data-pdv-sales-order-cancel="${escapeHtml(saleId)}">Cancelar venda</button>` : ""}
+          ${row.uses_payment_link ? `<button class="ghost-button" type="button" data-pdv-sale-refresh-payment-link="${escapeHtml(saleId)}"${paymentLink.checkoutId ? "" : " disabled"}>Atualizar PagBank</button>` : ""}
+          ${paymentLink.url ? `<button class="ghost-button" type="button" data-pdv-sale-copy-payment-link="${escapeHtml(saleId)}">Copiar link</button><button class="ghost-button" type="button" data-pdv-sale-open-payment-link="${escapeHtml(saleId)}">Abrir link</button>` : ""}
+          <button class="ghost-button" type="button" data-pdv-sale-view-cash="${escapeHtml(saleId)}">Ver no caixa</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderPdvSalesOrdersFront(container = getPdvSalesOrdersContainer()) {
+  if (!container) return;
+  container.innerHTML = buildPdvFrontShell({
+    sectionId: "pdv-sales-orders",
+    title: "Pedidos de venda",
+    subtitle: "Consulta operacional de vendas, pagamentos, cashback, cupom e liberacao de mercadoria.",
+    contentHtml: `
+      <div class="pdv-orders-shell">
+        ${buildPdvSalesOrdersFilters()}
+        ${buildPdvSalesOrdersTabs()}
+        ${buildPdvSalesOrdersSummaryCards()}
+        <article class="panel pdv-orders-panel">
+          <div class="panel-header">
+            <div>
+              <h3>Lista de pedidos</h3>
+              <p class="panel-helper">Link ativo no PagBank e apenas status do checkout; a liberacao depende de pagamento confirmado.</p>
+            </div>
+            <button class="ghost-button small" type="button" data-pdv-sales-orders-refresh>${state.pdvSalesOrders.loading ? "Atualizando..." : "Atualizar"}</button>
+          </div>
+          ${buildPdvSalesOrdersBulkToolbar()}
+          ${buildPdvSalesOrdersList()}
+          ${buildPdvSalesOrdersPagination()}
+        </article>
+        ${buildPdvSalesOrderDetailDrawer()}
+        ${buildPdvSalesOrderCancelModal()}
+      </div>
+    `,
+    compactTabs: true
+  });
+}
+
+async function loadPdvSalesOrdersFront({ preservePage = false } = {}) {
+  const container = getPdvSalesOrdersContainer();
+  if (!container) return;
+  if (!preservePage) {
+    state.pdvSalesOrders.pagination.page = 1;
+  }
+  state.pdvSalesOrders.loading = true;
+  state.pdvSalesOrders.error = "";
+  renderPdvSalesOrdersFront(container);
+  try {
+    const queryString = getPdvSalesOrdersQueryString();
+    const result = await api(`/api/pdv/sales/orders${queryString ? `?${queryString}` : ""}`);
+    state.pdvSalesOrders.rows = toArray(result?.rows);
+    state.pdvSalesOrders.summary = result?.summary || null;
+    state.pdvSalesOrders.tabs = result?.tabs || {};
+    state.pdvSalesOrders.pagination = result?.pagination || state.pdvSalesOrders.pagination;
+    state.pdvSalesOrders.filters = {
+      ...state.pdvSalesOrders.filters,
+      ...(result?.filters || {})
+    };
+  } catch (error) {
+    state.pdvSalesOrders.error = normalizeVisibleText(error?.message || "Falha ao carregar os pedidos de venda.");
+  } finally {
+    state.pdvSalesOrders.loading = false;
+    renderPdvSalesOrdersFront(container);
+  }
+}
+
+async function openPdvSalesOrderDetail(saleId = "") {
+  const normalizedSaleId = normalizeText(saleId || "");
+  if (!normalizedSaleId) return;
+  state.pdvSalesOrders.selectedSaleId = normalizedSaleId;
+  state.pdvSalesOrders.detailLoading = true;
+  state.pdvSalesOrders.detailError = "";
+  state.pdvSalesOrders.detail = null;
+  renderPdvSalesOrdersFront();
+  try {
+    const detail = await api(`/api/pdv/sales/orders/${encodeURIComponent(normalizedSaleId)}`);
+    state.pdvSalesOrders.detail = detail || null;
+    if (detail?.sale) {
+      persistPdvSaleRecordUpdate(detail.sale);
+    }
+  } catch (error) {
+    state.pdvSalesOrders.detailError = normalizeVisibleText(error?.message || "Nao foi possivel carregar esta venda.");
+  } finally {
+    state.pdvSalesOrders.detailLoading = false;
+    renderPdvSalesOrdersFront();
+  }
+}
+
+function closePdvSalesOrderDetail() {
+  state.pdvSalesOrders.selectedSaleId = "";
+  state.pdvSalesOrders.detail = null;
+  state.pdvSalesOrders.detailError = "";
+  state.pdvSalesOrders.detailLoading = false;
+  renderPdvSalesOrdersFront();
+}
+
+function applyPdvSalesOrdersFilters(form) {
+  if (!form) return;
+  const formData = new FormData(form);
+  state.pdvSalesOrders.filters = {
+    ...state.pdvSalesOrders.filters,
+    search: normalizeText(formData.get("search") || ""),
+    period: normalizeText(formData.get("period") || ""),
+    date_from: normalizeText(formData.get("date_from") || ""),
+    date_to: normalizeText(formData.get("date_to") || ""),
+    store_id: canViewAllStores() ? normalizeText(formData.get("store_id") || "") : "",
+    seller_id: normalizeText(formData.get("seller_id") || ""),
+    payment_method: normalizeText(formData.get("payment_method") || ""),
+    status: normalizeText(formData.get("status") || "all") || "all"
+  };
+  state.pdvSalesOrders.pagination.page = 1;
+  clearPdvSalesOrdersSelection("Selecao limpa ao aplicar novos filtros.");
+  loadPdvSalesOrdersFront({ preservePage: true }).catch((error) => handleUiError("Erro ao filtrar pedidos de venda", error));
+}
+
+function applyPdvSalesOrdersTab(tabKey = "") {
+  const tab = PDV_SALES_ORDERS_STATUS_TABS.find((item) => item.key === tabKey);
+  if (!tab) return;
+  state.pdvSalesOrders.filters.status = tab.status || "all";
+  if (tab.period) {
+    state.pdvSalesOrders.filters.period = tab.period;
+  } else if (tab.key !== "today") {
+    state.pdvSalesOrders.filters.period = state.pdvSalesOrders.filters.period === "today" ? "30d" : state.pdvSalesOrders.filters.period;
+  }
+  state.pdvSalesOrders.pagination.page = 1;
+  clearPdvSalesOrdersSelection("Selecao limpa ao trocar a aba de status.");
+  loadPdvSalesOrdersFront({ preservePage: true }).catch((error) => handleUiError("Erro ao aplicar filtro rapido de pedidos", error));
+}
+
 function getPdvSalePostSaleSummaryText(sale = null) {
   return [
     `Venda: ${normalizeText(sale?.sale_id || "-") || "-"}`,
@@ -14292,11 +18411,15 @@ function openPdvSalePrintWindow(sale = null, options = {}) {
   const autoPrint = Boolean(options.autoPrint);
   const itemsHtml = getPdvSalePostSaleItems(sale).map((item) => `
     <tr>
-      <td>${escapeHtml(`${item.quantity}x ${item.name}`)}</td>
-      <td style="text-align:right;">${currency(item.total)}</td>
+      <td>
+        <strong>${escapeHtml(`${item.quantity}x ${item.name}`)}</strong>
+        <span>Unitario: ${currency(item.unitPrice)}</span>
+        ${item.itemDiscount > 0 ? `<span>Desconto: -${currency(item.itemDiscount)}</span>` : ""}
+      </td>
+      <td style="text-align:right;"><strong>${currency(item.total)}</strong></td>
     </tr>
   `).join("");
-  const paymentsHtml = getPdvSalePostSalePayments(sale).map((item) => `
+  const paymentsHtml = getPdvSalePostSalePayments(sale).filter((item) => toNumber(item.amount) > 0).map((item) => `
     <tr>
       <td>${escapeHtml(item.label)}</td>
       <td style="text-align:right;">${currency(item.amount)}</td>
@@ -14309,6 +18432,11 @@ function openPdvSalePrintWindow(sale = null, options = {}) {
   }
   const cashbackUsed = getPdvSalePostSaleCashbackUsed(sale);
   const subtotal = getPdvSalePostSaleSubtotal(sale);
+  const itemDiscount = getPdvSalePostSaleItemDiscount(sale);
+  const subtotalAfterItems = getFirstPositiveNumber(sale?.subtotal_after_item_discount, sale?.subtotal_liquido_itens) || Math.max(0, subtotal - itemDiscount);
+  const generalDiscount = getPdvSalePostSaleGeneralDiscount(sale);
+  const exchangeCreditUsed = getPdvSalePostSaleExchangeCreditUsed(sale);
+  const projectedCashback = getPdvSalePostSaleProjectedCashback(sale);
   const totalPaid = getPdvSalePostSaleTotalPaid(sale);
   printWindow.document.write(`
     <html>
@@ -14319,18 +18447,23 @@ function openPdvSalePrintWindow(sale = null, options = {}) {
           h1, h2, p { margin: 0; }
           .receipt { max-width: 340px; margin: 0 auto; display: grid; gap: 16px; }
           .head { text-align: center; display: grid; gap: 6px; }
+          .logo { display: block; max-width: 150px; max-height: 64px; width: auto; height: auto; object-fit: contain; margin: 0 auto 2px; }
           .muted { color: #54615d; font-size: 12px; }
           table { width: 100%; border-collapse: collapse; font-size: 13px; }
           td { padding: 4px 0; vertical-align: top; }
+          td span { display:block; color:#54615d; font-size:11px; margin-top:2px; }
           .section { border-top: 1px dashed #b8c1bc; padding-top: 12px; display: grid; gap: 8px; }
           .totals td { font-weight: 700; }
+          .totals tr:not(.grand) td { font-weight: 500; }
+          .grand td { font-size: 14px; padding-top: 7px; }
         </style>
       </head>
       <body>
         <div class="receipt">
           <div class="head">
-            <h1>AEROSTORE</h1>
+            <img class="logo" src="/assets/aerostore-receipt-logo.png" alt="AEROSTORE" />
             <p>Loja ${escapeHtml(formatStoreIdLabel(sale.loja || getCurrentPdvStoreId()))}</p>
+            <p class="muted">Cupom digital não fiscal</p>
           </div>
           <div class="section">
             <p><strong>Venda:</strong> ${escapeHtml(sale.sale_id || "-")}</p>
@@ -14344,9 +18477,14 @@ function openPdvSalePrintWindow(sale = null, options = {}) {
           </div>
           <div class="section">
             <table class="totals">
-              <tr><td>Subtotal</td><td style="text-align:right;">${currency(subtotal)}</td></tr>
-              <tr><td>Cashback usado</td><td style="text-align:right;">${currency(cashbackUsed)}</td></tr>
-              <tr><td>Total pago</td><td style="text-align:right;">${currency(totalPaid)}</td></tr>
+              <tr><td>Subtotal bruto</td><td style="text-align:right;">${currency(subtotal)}</td></tr>
+              ${itemDiscount > 0 ? `<tr><td>Desconto nos itens</td><td style="text-align:right;">-${currency(itemDiscount)}</td></tr>` : ""}
+              ${itemDiscount > 0 ? `<tr><td>Subtotal liquido</td><td style="text-align:right;">${currency(subtotalAfterItems)}</td></tr>` : ""}
+              ${generalDiscount > 0 ? `<tr><td>Desconto geral</td><td style="text-align:right;">-${currency(generalDiscount)}</td></tr>` : ""}
+              ${cashbackUsed > 0 ? `<tr><td>Cashback usado</td><td style="text-align:right;">-${currency(cashbackUsed)}</td></tr>` : `<tr><td>Cashback usado</td><td style="text-align:right;">${currency(0)}</td></tr>`}
+              ${exchangeCreditUsed > 0 ? `<tr><td>Credito de Troca</td><td style="text-align:right;">-${currency(exchangeCreditUsed)}</td></tr>` : ""}
+              <tr class="grand"><td>Total pago</td><td style="text-align:right;">${currency(totalPaid)}</td></tr>
+              ${projectedCashback > 0 ? `<tr><td>Cashback previsto</td><td style="text-align:right;">${currency(projectedCashback)}</td></tr>` : ""}
             </table>
           </div>
           <div class="section">
@@ -14389,6 +18527,12 @@ function getPdvSaleResolvedForPostSaleAction(saleId = "") {
   const normalizedSaleId = normalizeText(saleId || "");
   if (normalizedSaleId && normalizeText(state.pdvSale.lastCompletedSale?.sale_id || "") === normalizedSaleId) {
     return state.pdvSale.lastCompletedSale;
+  }
+  if (normalizedSaleId && normalizeText(state.pdvSalesOrders?.detail?.sale?.sale_id || "") === normalizedSaleId) {
+    return state.pdvSalesOrders.detail.sale;
+  }
+  if (normalizedSaleId && normalizeText(state.pdvSalesOrders?.detail?.row?.sale_id || "") === normalizedSaleId && state.pdvSalesOrders.detail?.sale) {
+    return state.pdvSalesOrders.detail.sale;
   }
   return null;
 }
@@ -14553,6 +18697,7 @@ function applyRolePermissions() {
         const terminalLabel = getCurrentUserStoreTerminalLabel();
         refreshedLabel.textContent = `${state.currentUser.name || state.currentUser.email || "Usuario"} - ${getRoleLabel(role)}${storeLabel && storeLabel !== "-" ? ` - ${storeLabel}` : ""}${terminalLabel ? ` / ${terminalLabel}` : ""}`;
       }
+      renderGlobalSidebarIdentity();
     }).catch(() => {});
   }
   document.getElementById("logout-button").style.display = state.currentUser ? "" : "none";
@@ -14623,7 +18768,7 @@ function setActiveSection(sectionId) {
   let effectiveSection = pathnameSection || sectionId;
   let accessDeniedDetail = "";
   if (!canAccessOfficialSection(effectiveSection)) {
-    accessDeniedDetail = "Seu perfil nao tem permissao para acessar esta frente.";
+    accessDeniedDetail = "Seu perfil não tem permissão para acessar esta frente.";
     effectiveSection = "access-denied";
   }
   const sectionMeta = getSectionMeta(effectiveSection);
@@ -14666,11 +18811,13 @@ function setActiveSection(sectionId) {
     ai: "IA de Mensagens",
     settings: "Configurações",
     "access-denied": "Acesso restrito",
+    "audit-logs": "Auditoria operacional",
     login: "Entrar",
     "whatsapp-crm": "WhatsApp CRM",
     aerointel: "AEROINTEL",
     "pdv-dashboard": "PDV AEROSTORE",
     "pdv-sale": "Venda",
+    "pdv-sales-orders": "Pedidos de venda",
     "pdv-cash-register": "Caixa",
     "pdv-products": "Produtos",
     "pdv-customers": "Clientes",
@@ -14693,6 +18840,10 @@ function setActiveSection(sectionId) {
   normalizeVisibleMojibake(document.querySelector(".page.active") || document.body);
 }
 function getInitialSection() {
+  if (normalizePathname(window.location.pathname || "/") === "/") {
+    window.history.replaceState({}, "", "/pdv");
+    return "pdv-dashboard";
+  }
   const pathnameSection = getSectionFromPathname(window.location.pathname || "/");
   if (pathnameSection) {
     return pathnameSection;
@@ -14904,7 +19055,7 @@ function getContactFilters(prefix) {
 
 function getDashboardShortcutItems() {
   const shortcuts = [
-    { route: "/pdv/venda", label: getCurrentRole() === "seller" ? "Nova venda" : "Venda", kicker: "Operacao", detail: "Abrir a frente de caixa da loja ativa.", visible: canAccessOfficialSection("pdv-sale") },
+    { route: "/pdv/venda", label: isCurrentUserSellerProfile() ? "Nova venda" : "Venda", kicker: "Operacao", detail: "Abrir a frente de caixa da loja ativa.", visible: canAccessOfficialSection("pdv-sale") },
     { route: "/pdv/caixa", label: "Caixa", kicker: "Auditoria", detail: "Consultar caixa, vendas e comprovantes do dia.", visible: canAccessOfficialSection("pdv-cash-register") },
     { route: "/pdv/produtos", label: "Produtos", kicker: "Catalogo", detail: "Buscar SKU, preco e disponibilidade operacional.", visible: canAccessOfficialSection("pdv-products") },
     { route: "/pdv/clientes", label: "Clientes", kicker: "Relacionamento", detail: "Consultar clientes e cadastro rapido da loja.", visible: canAccessOfficialSection("pdv-customers") },
@@ -14999,6 +19150,163 @@ function buildDashboardRolePanel(data = state.dashboard || {}, options = {}) {
         </div>
       </article>
     </div>
+  `;
+}
+
+function getPdvDashboardActionRoutes() {
+  const routeBySection = getVisiblePdvRouteItems().reduce((acc, item) => {
+    acc[item.section] = item.route;
+    return acc;
+  }, {});
+  return {
+    sale: routeBySection["pdv-sale"] || "/pdv/venda",
+    orders: routeBySection["pdv-sales-orders"] || "/pdv/vendas",
+    cash: routeBySection["pdv-cash-register"] || "/pdv/caixa",
+    products: routeBySection["pdv-products"] || "/pdv/produtos",
+    customers: routeBySection["pdv-customers"] || "/pdv/clientes",
+    stock: routeBySection["pdv-stock"] || "/pdv/estoque",
+    reports: routeBySection["pdv-reports"] || "/pdv/relatorios",
+    consolidation: routeBySection["pdv-consolidation"] || "/pdv/consolidacao",
+    reservations: routeBySection["pdv-reservations"] || "/pdv/reservas",
+    exchanges: routeBySection["pdv-exchanges"] || "/pdv/trocas",
+    whatsapp: "/whatsapp-crm"
+  };
+}
+
+function buildPdvDashboardMetricCard(icon = "", label = "", value = "", detail = "") {
+  return `
+    <article class="pdv-dashboard-metric-card">
+      <span class="pdv-dashboard-icon">${escapeHtml(icon)}</span>
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(String(value || "0"))}</strong>
+      ${detail ? `<small>${escapeHtml(detail)}</small>` : ""}
+    </article>
+  `;
+}
+
+function buildPdvDashboardActionItem(icon = "", title = "", detail = "", route = "") {
+  return `
+    <button class="pdv-dashboard-priority-item" type="button" data-route="${escapeHtml(route)}">
+      <span class="pdv-dashboard-icon">${escapeHtml(icon)}</span>
+      <span>
+        <strong>${escapeHtml(title)}</strong>
+        <small>${escapeHtml(detail)}</small>
+      </span>
+      <em>›</em>
+    </button>
+  `;
+}
+
+function buildPdvDashboardOperationCard({ icon = "", title = "", detail = "", button = "", route = "", featured = false } = {}) {
+  return `
+    <article class="pdv-dashboard-operation-card${featured ? " is-featured" : ""}">
+      <span class="pdv-dashboard-icon">${escapeHtml(icon)}</span>
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(detail)}</p>
+      <button class="${featured ? "primary-button" : "secondary-button"}" type="button" data-route="${escapeHtml(route)}">${escapeHtml(button)}</button>
+    </article>
+  `;
+}
+
+function buildPdvDashboardPremiumPanel(data = state.dashboard || {}) {
+  const routes = getPdvDashboardActionRoutes();
+  const storeContext = getPdvStorePublicContext(getCurrentPdvStoreId(), getCurrentUserStoreLabel());
+  const storeLabel = storeContext.display_name || getCurrentUserStoreLabel();
+  const roleLabel = getRoleLabel(getCurrentRole());
+  const whatsappMeta = getWhatsappCrmStatusMeta();
+  const whatsappLabel = normalizeText(whatsappMeta.label || state.whatsappStatus || "desconectado");
+  const whatsappDisconnected = normalizeText(whatsappLabel).toLowerCase().includes("desconect");
+  const visibleCampaigns = String(getVisibleWhatsappCampaigns(state.whatsappCrm?.campaigns || state.campaigns || []).length || toArray(state.campaigns).length || 0);
+  const contactsCount = String(toArray(state.contacts).length || 0);
+  const sellersCount = String(toArray(state.sellers).filter((item) => normalizeText(item.status || "active").toLowerCase() !== "inactive").length || 0);
+  const cashbackActive = String(Number(data.cashbackActiveClients || 0));
+  const responses = String(Number(data.responses || 0));
+  const operations = [
+    { icon: "CV", title: "Venda", detail: "Abrir a frente de caixa da loja ativa.", button: "Abrir Venda", route: routes.sale, featured: true },
+    { icon: "PD", title: "Pedidos", detail: "Consultar pedidos, links e liberacoes.", button: "Abrir Pedidos", route: routes.orders },
+    { icon: "CX", title: "Caixa", detail: "Consultar caixa, vendas e comprovantes do dia.", button: "Abrir Caixa", route: routes.cash },
+    { icon: "CL", title: "Clientes", detail: "Consultar clientes e cadastro rapido da loja.", button: "Abrir Clientes", route: routes.customers },
+    { icon: "ES", title: "Estoque", detail: "Ver saldo, alertas e disponibilidade por loja.", button: "Abrir Estoque", route: routes.stock },
+    { icon: "WA", title: "WhatsApp CRM", detail: "Ver status do motor, campanhas e operacao da loja.", button: "Abrir WhatsApp CRM", route: routes.whatsapp }
+  ];
+  return `
+    <section class="pdv-dashboard-premium">
+      <header class="pdv-dashboard-topbar">
+        <div class="pdv-dashboard-brand">
+          <span class="pdv-dashboard-logo">A</span>
+          <strong>AEROSTORE PDV</strong>
+          <i></i>
+          <span>Painel</span>
+        </div>
+        <div class="pdv-dashboard-top-status">
+          <span>Loja: <strong>${escapeHtml(storeLabel)}</strong></span>
+          <span>Perfil: <strong>${escapeHtml(roleLabel)}</strong></span>
+          <span>WhatsApp: <strong class="${whatsappDisconnected ? "is-danger" : "is-accent"}">${escapeHtml(whatsappLabel || "-")}</strong></span>
+        </div>
+        <nav class="pdv-dashboard-top-actions" aria-label="Atalhos principais do PDV">
+          <button class="primary-button" type="button" data-route="${escapeHtml(routes.sale)}">Venda</button>
+          <button class="secondary-button" type="button" data-route="${escapeHtml(routes.orders)}">Pedidos</button>
+          <button class="secondary-button" type="button" data-route="${escapeHtml(routes.cash)}">Caixa</button>
+          <button class="secondary-button" type="button" data-route="${escapeHtml(routes.exchanges)}">Trocas</button>
+          <button class="secondary-button" type="button" data-route="${escapeHtml(routes.whatsapp)}">WhatsApp CRM</button>
+          <button class="ghost-button" type="button" data-auth-logout="true">Trocar login</button>
+        </nav>
+      </header>
+
+      <div class="pdv-dashboard-hero-grid">
+        <article class="pdv-dashboard-hero">
+          <p class="eyebrow">PDV AEROSTORE</p>
+          <h2>Painel AEROSTORE</h2>
+          <p>Visao operacional da loja com acesso rapido as frentes oficiais do PDV.</p>
+          <div class="pdv-dashboard-hero-actions">
+            <button class="primary-button" type="button" data-route="${escapeHtml(routes.sale)}">Abrir Venda</button>
+            <button class="secondary-button" type="button" data-route="${escapeHtml(routes.orders)}">Ver Pedidos</button>
+            <button class="secondary-button" type="button" data-route="${escapeHtml(routes.cash)}">Abrir Caixa</button>
+          </div>
+        </article>
+        <aside class="pdv-dashboard-status-card">
+          <h3>Status operacional</h3>
+          <div class="pdv-dashboard-status-list">
+            <div><span>Loja ativa</span><strong>${escapeHtml(storeLabel)}</strong></div>
+            <div><span>Perfil</span><strong>${escapeHtml(roleLabel)}</strong></div>
+            <div><span>WhatsApp CRM</span><strong class="${whatsappDisconnected ? "is-danger" : "is-accent"}">${escapeHtml(whatsappLabel || "-")}</strong></div>
+            <div><span>Campanhas visiveis</span><strong>${escapeHtml(visibleCampaigns)}</strong></div>
+          </div>
+        </aside>
+      </div>
+
+      <article class="pdv-dashboard-route-strip">
+        <h3>Rotas operacionais do PDV</h3>
+        <div class="pdv-route-tabs">${buildPdvRouteTabs("pdv-dashboard")}</div>
+      </article>
+
+      <div class="pdv-dashboard-operation-grid">
+        ${operations.map((item) => buildPdvDashboardOperationCard(item)).join("")}
+      </div>
+
+      <div class="pdv-dashboard-bottom-grid">
+        <article class="pdv-dashboard-summary-card">
+          <h3>Resumo operacional</h3>
+          <div class="pdv-dashboard-metric-grid">
+            ${buildPdvDashboardMetricCard("CT", "Contatos carregados", contactsCount)}
+            ${buildPdvDashboardMetricCard("VD", "Vendedores ativos", sellersCount)}
+            ${buildPdvDashboardMetricCard("CB", "Cashback ativo", `${cashbackActive} cliente(s)`)}
+            ${buildPdvDashboardMetricCard("RP", "Respostas recentes", responses)}
+            ${buildPdvDashboardMetricCard("WA", "WhatsApp CRM", whatsappDisconnected ? "Sessao local ainda nao iniciada" : whatsappLabel)}
+          </div>
+        </article>
+        <article class="pdv-dashboard-priority-card">
+          <h3>Acoes prioritarias</h3>
+          <div class="pdv-dashboard-priority-list">
+            ${buildPdvDashboardActionItem("CV", "Abrir venda", "Abrir a frente de caixa da loja ativa.", routes.sale)}
+            ${buildPdvDashboardActionItem("PD", "Conferir pedidos pendentes", "Links, pagamentos e liberacoes.", routes.orders)}
+            ${buildPdvDashboardActionItem("CX", "Abrir caixa", "Consultar vendas e comprovantes do dia.", routes.cash)}
+            ${buildPdvDashboardActionItem("CL", "Ver clientes", "Consultar cadastro e historico.", routes.customers)}
+            ${buildPdvDashboardActionItem("ES", "Conferir estoque", "Consultar disponibilidade por loja.", routes.stock)}
+          </div>
+        </article>
+      </div>
+    </section>
   `;
 }
 
@@ -17345,7 +21653,7 @@ async function loginUser(event) {
   applyRolePermissions();
   hideLoginOverlay();
   if (window.location.pathname === "/login") {
-    window.history.replaceState({}, "", "/");
+    window.history.replaceState({}, "", getDefaultRouteForCurrentUser());
   }
   await bootstrap();
 }
@@ -17396,6 +21704,12 @@ async function logoutUser() {
     draftDeletingId: "",
     paymentDraft: {},
     discountDraft: { mode: "percent", value: "", reason: "" },
+    itemDiscountOpenItemId: "",
+    itemDiscountDrafts: {},
+    itemDiscountApplyingId: "",
+    discountDetailsOpen: false,
+    discountDetailsSyncing: false,
+    checkoutOpenStep: "",
     discountApplying: false,
     discountAuthorization: {
       loading: false,
@@ -17409,6 +21723,7 @@ async function logoutUser() {
       approvedBy: "",
       approvedAt: "",
       expiresAt: "",
+      contextKey: "",
       error: ""
     },
     lastCompletedSale: null,
@@ -18881,9 +23196,246 @@ function handleDocumentClick(event) {
     hideCashbackConsultSuggestions();
   }
 
+  const authLogoutButton = event.target.closest("[data-auth-logout]");
+  if (authLogoutButton) {
+    logoutUser().catch((error) => handleUiError("Erro ao trocar login", error));
+    return;
+  }
+
   const routeButton = event.target.closest("[data-route]");
   if (routeButton?.dataset.route) {
     window.location.assign(routeButton.dataset.route);
+    return;
+  }
+
+  const usersAdminSelect = event.target.closest("[data-users-admin-select]");
+  if (usersAdminSelect) {
+    state.usersAdmin.selectedId = usersAdminSelect.dataset.usersAdminSelect || "";
+    state.usersAdmin.draft = createUsersAdminDraft(getUsersAdminSelectedUser());
+    renderUsersAdminFront();
+    return;
+  }
+
+  if (event.target.closest("[data-users-admin-new]")) {
+    state.usersAdmin.selectedId = "";
+    state.usersAdmin.draft = createUsersAdminDraft();
+    renderUsersAdminFront();
+    return;
+  }
+
+  if (event.target.closest("[data-users-admin-refresh]")) {
+    loadUsersAdmin().catch((error) => handleUiError("Erro ao atualizar usuarios", error));
+    return;
+  }
+
+  const usersAdminToggleStatus = event.target.closest("[data-users-admin-toggle-status]");
+  if (usersAdminToggleStatus) {
+    setUsersAdminStatus(usersAdminToggleStatus.dataset.usersAdminToggleStatus || "", usersAdminToggleStatus.dataset.status || "ativo")
+      .catch((error) => handleUiError("Erro ao alterar status do usuario", error));
+    return;
+  }
+
+  const usersAdminResetPassword = event.target.closest("[data-users-admin-reset-password]");
+  if (usersAdminResetPassword) {
+    resetUsersAdminPassword(usersAdminResetPassword.dataset.usersAdminResetPassword || "")
+      .catch((error) => handleUiError("Erro ao redefinir senha", error));
+    return;
+  }
+
+  const usersAdminDelete = event.target.closest("[data-users-admin-delete]");
+  if (usersAdminDelete) {
+    deleteUsersAdminUser(usersAdminDelete.dataset.usersAdminDelete || "")
+      .catch((error) => handleUiError("Erro ao excluir usuario", error));
+    return;
+  }
+
+  const pdvExchangeSelectOrigin = event.target.closest("[data-pdv-exchange-select-origin]");
+  if (pdvExchangeSelectOrigin) {
+    createPdvExchangeDraftFromSale(pdvExchangeSelectOrigin.dataset.pdvExchangeSelectOrigin || "")
+      .catch((error) => handleUiError("Erro ao carregar venda original para troca", error));
+    return;
+  }
+
+  const pdvExchangeSelectReturned = event.target.closest("[data-pdv-exchange-select-returned]");
+  if (pdvExchangeSelectReturned) {
+    selectPdvExchangeReturnedItem(pdvExchangeSelectReturned.dataset.pdvExchangeSelectReturned || "", {
+      sourceItemKey: pdvExchangeSelectReturned.dataset.pdvExchangeSourceKey || "",
+      lineIndex: pdvExchangeSelectReturned.dataset.pdvExchangeLineIndex || "",
+      availableIndex: pdvExchangeSelectReturned.dataset.pdvExchangeAvailableIndex || ""
+    })
+      .catch((error) => handleUiError("Erro ao selecionar item devolvido", error));
+    return;
+  }
+
+  const pdvExchangeSelectNewProduct = event.target.closest("[data-pdv-exchange-select-new-product]");
+  if (pdvExchangeSelectNewProduct) {
+    selectPdvExchangeNewProduct(pdvExchangeSelectNewProduct.dataset.pdvExchangeSelectNewProduct || -1)
+      .catch((error) => handleUiError("Erro ao selecionar novo produto", error));
+    return;
+  }
+
+  const pdvExchangeNewItemQty = event.target.closest("[data-pdv-exchange-new-item-qty]");
+  if (pdvExchangeNewItemQty) {
+    updatePdvExchangeNewItemQuantity(
+      pdvExchangeNewItemQty.dataset.pdvExchangeNewItemQty || "",
+      pdvExchangeNewItemQty.dataset.qtyDelta || 0
+    ).catch((error) => handleUiError("Erro ao atualizar quantidade da troca", error));
+    return;
+  }
+
+  const pdvExchangeNewItemRemove = event.target.closest("[data-pdv-exchange-new-item-remove]");
+  if (pdvExchangeNewItemRemove) {
+    removePdvExchangeNewItem(pdvExchangeNewItemRemove.dataset.pdvExchangeNewItemRemove || "")
+      .catch((error) => handleUiError("Erro ao remover produto da troca", error));
+    return;
+  }
+
+  const pdvExchangeCustomerPick = event.target.closest("[data-pdv-exchange-customer-pick]");
+  if (pdvExchangeCustomerPick) {
+    const customer = toArray(state.pdvExchanges.customerResults)[Number(pdvExchangeCustomerPick.dataset.pdvExchangeCustomerPick || 0)];
+    setPdvExchangeCustomer(customer || {}).catch((error) => handleUiError("Erro ao vincular cliente da troca", error));
+    return;
+  }
+
+  const pdvExchangeFinalize = event.target.closest("[data-pdv-exchange-finalize]");
+  if (pdvExchangeFinalize) {
+    finalizePdvExchange().catch((error) => handleUiError("Erro ao finalizar troca", error));
+    return;
+  }
+
+  const pdvExchangePrintReceipt = event.target.closest("[data-pdv-exchange-print-receipt]");
+  if (pdvExchangePrintReceipt) {
+    printPdvExchangeReceipt();
+    return;
+  }
+
+  const pdvExchangeNew = event.target.closest("[data-pdv-exchange-new]");
+  if (pdvExchangeNew) {
+    resetPdvExchangeFlow();
+    return;
+  }
+
+  const pdvSalesOrdersRefresh = event.target.closest("[data-pdv-sales-orders-refresh]");
+  if (pdvSalesOrdersRefresh) {
+    loadPdvSalesOrdersFront({ preservePage: true }).catch((error) => handleUiError("Erro ao atualizar pedidos de venda", error));
+    return;
+  }
+
+  const auditLogsRefresh = event.target.closest("[data-audit-logs-refresh]");
+  if (auditLogsRefresh) {
+    loadAuditLogs().catch((error) => handleUiError("Erro ao atualizar auditoria", error));
+    return;
+  }
+
+  const auditLogsReset = event.target.closest("[data-audit-logs-reset]");
+  if (auditLogsReset) {
+    state.auditLogs.filters = { user: "", module: "", action: "", result: "", sale_id: "" };
+    loadAuditLogs().catch((error) => handleUiError("Erro ao limpar filtros de auditoria", error));
+    return;
+  }
+
+  const pdvSalesOrderSelect = event.target.closest("[data-pdv-sales-order-select]");
+  if (pdvSalesOrderSelect) {
+    togglePdvSalesOrderSelection(pdvSalesOrderSelect.dataset.pdvSalesOrderSelect || "", Boolean(pdvSalesOrderSelect.checked));
+    return;
+  }
+
+  const pdvSalesOrdersSelectPage = event.target.closest("[data-pdv-sales-orders-select-page]");
+  if (pdvSalesOrdersSelectPage) {
+    togglePdvSalesOrdersCurrentPageSelection(Boolean(pdvSalesOrdersSelectPage.checked));
+    return;
+  }
+
+  const pdvSalesOrdersSelectVisible = event.target.closest("[data-pdv-sales-orders-select-visible]");
+  if (pdvSalesOrdersSelectVisible) {
+    togglePdvSalesOrdersCurrentPageSelection(true);
+    return;
+  }
+
+  const pdvSalesOrdersClearSelection = event.target.closest("[data-pdv-sales-orders-clear-selection]");
+  if (pdvSalesOrdersClearSelection) {
+    clearPdvSalesOrdersSelection();
+    renderPdvSalesOrdersFront();
+    return;
+  }
+
+  const pdvSalesOrdersExportSelected = event.target.closest("[data-pdv-sales-orders-export-selected]");
+  if (pdvSalesOrdersExportSelected) {
+    exportSelectedPdvSalesOrders();
+    return;
+  }
+
+  const pdvSalesOrdersExportPage = event.target.closest("[data-pdv-sales-orders-export-page]");
+  if (pdvSalesOrdersExportPage) {
+    exportCurrentPagePdvSalesOrders();
+    return;
+  }
+
+  const pdvSalesOrdersPrintSelected = event.target.closest("[data-pdv-sales-orders-print-selected]");
+  if (pdvSalesOrdersPrintSelected) {
+    printSelectedPdvSalesOrdersSummary();
+    return;
+  }
+
+  const pdvSalesOrdersBulkPagBank = event.target.closest("[data-pdv-sales-orders-bulk-pagbank]");
+  if (pdvSalesOrdersBulkPagBank) {
+    refreshSelectedPdvSalesOrdersPagBank().catch((error) => handleUiError("Erro ao atualizar PagBank em lote", error));
+    return;
+  }
+
+  const pdvSalesOrderCancel = event.target.closest("[data-pdv-sales-order-cancel]");
+  if (pdvSalesOrderCancel) {
+    openPdvSalesOrderCancelModal(pdvSalesOrderCancel.dataset.pdvSalesOrderCancel || "");
+    return;
+  }
+
+  const pdvSalesOrderCancelClose = event.target.closest("[data-pdv-sales-order-cancel-close]");
+  if (pdvSalesOrderCancelClose) {
+    closePdvSalesOrderCancelModal();
+    return;
+  }
+
+  const pdvSalesOrdersReset = event.target.closest("[data-pdv-sales-orders-reset]");
+  if (pdvSalesOrdersReset) {
+    state.pdvSalesOrders.filters = {
+      search: "",
+      period: "30d",
+      date_from: "",
+      date_to: "",
+      store_id: "",
+      seller_id: "",
+      payment_method: "",
+      status: "all"
+    };
+    state.pdvSalesOrders.pagination.page = 1;
+    clearPdvSalesOrdersSelection("Selecao limpa porque os filtros foram redefinidos.");
+    loadPdvSalesOrdersFront({ preservePage: true }).catch((error) => handleUiError("Erro ao limpar filtros de pedidos", error));
+    return;
+  }
+
+  const pdvSalesOrdersTab = event.target.closest("[data-pdv-sales-orders-tab]");
+  if (pdvSalesOrdersTab) {
+    applyPdvSalesOrdersTab(pdvSalesOrdersTab.dataset.pdvSalesOrdersTab || "");
+    return;
+  }
+
+  const pdvSalesOrdersPage = event.target.closest("[data-pdv-sales-orders-page]");
+  if (pdvSalesOrdersPage) {
+    state.pdvSalesOrders.pagination.page = Math.max(1, Number(pdvSalesOrdersPage.dataset.pdvSalesOrdersPage || 1));
+    clearPdvSalesOrdersSelection("Selecao limpa ao trocar de pagina.");
+    loadPdvSalesOrdersFront({ preservePage: true }).catch((error) => handleUiError("Erro ao paginar pedidos de venda", error));
+    return;
+  }
+
+  const pdvSalesOrderDetail = event.target.closest("[data-pdv-sales-order-detail]");
+  if (pdvSalesOrderDetail) {
+    openPdvSalesOrderDetail(pdvSalesOrderDetail.dataset.pdvSalesOrderDetail || "").catch((error) => handleUiError("Erro ao abrir detalhe da venda", error));
+    return;
+  }
+
+  const pdvSalesOrderClose = event.target.closest("[data-pdv-sales-order-close]");
+  if (pdvSalesOrderClose) {
+    closePdvSalesOrderDetail();
     return;
   }
 
@@ -19040,6 +23592,16 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const closePdvSaleProductResultsButton = event.target.closest("[data-pdv-sale-product-results-close]");
+  if (closePdvSaleProductResultsButton) {
+    state.pdvSale.productQuery = "";
+    state.pdvSale.productResults = [];
+    state.pdvSale.productSearching = false;
+    state.pdvSale.productAddingKey = "";
+    renderPdvSaleSurface();
+    return;
+  }
+
   const resolvePdvSaleCartFulfillmentButton = event.target.closest("[data-pdv-sale-cart-fulfillment]");
   if (resolvePdvSaleCartFulfillmentButton) {
     const item = toArray(state.pdvSale.session?.cart_items).find((row) => String(row.item_id || "") === String(resolvePdvSaleCartFulfillmentButton.dataset.pdvSaleCartFulfillment || ""));
@@ -19085,6 +23647,37 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const togglePdvSaleItemDiscountButton = event.target.closest("[data-pdv-sale-item-discount-toggle]");
+  if (togglePdvSaleItemDiscountButton) {
+    const itemId = normalizeText(togglePdvSaleItemDiscountButton.dataset.pdvSaleItemDiscountToggle || "");
+    const item = toArray(state.pdvSale.session?.cart_items).find((row) => normalizeText(row.item_id || "") === itemId);
+    if (item && (!state.pdvSale.itemDiscountDrafts || !state.pdvSale.itemDiscountDrafts[itemId])) {
+      state.pdvSale.itemDiscountDrafts = {
+        ...(state.pdvSale.itemDiscountDrafts || {}),
+        [itemId]: getPdvSaleItemDiscountDraft(item)
+      };
+    }
+    state.pdvSale.itemDiscountOpenItemId = state.pdvSale.itemDiscountOpenItemId === itemId ? "" : itemId;
+    renderPdvSaleSurface();
+    return;
+  }
+
+  const applyPdvSaleItemDiscountButton = event.target.closest("[data-pdv-sale-item-discount-apply]");
+  if (applyPdvSaleItemDiscountButton) {
+    applyPdvSaleItemDiscount(applyPdvSaleItemDiscountButton.dataset.pdvSaleItemDiscountApply).catch((error) => {
+      handleUiError("Erro ao aplicar o desconto no item", error);
+    });
+    return;
+  }
+
+  const removePdvSaleItemDiscountButton = event.target.closest("[data-pdv-sale-item-discount-remove]");
+  if (removePdvSaleItemDiscountButton) {
+    removePdvSaleItemDiscount(removePdvSaleItemDiscountButton.dataset.pdvSaleItemDiscountRemove).catch((error) => {
+      handleUiError("Erro ao remover o desconto do item", error);
+    });
+    return;
+  }
+
   const applyPdvSaleDiscountButton = event.target.closest("[data-pdv-sale-discount-apply]");
   if (applyPdvSaleDiscountButton) {
     applyPdvSaleDiscount().catch((error) => handleUiError("Erro ao aplicar o desconto supervisionado", error));
@@ -19099,6 +23692,7 @@ function handleDocumentClick(event) {
 
   const validatePdvSaleDiscountButton = event.target.closest("[data-pdv-sale-discount-validate]");
   if (validatePdvSaleDiscountButton) {
+    event.preventDefault();
     validatePdvSaleDiscountAuthorization().catch((error) => handleUiError("Erro ao validar a autorizacao do desconto", error));
     return;
   }
@@ -19142,6 +23736,7 @@ function handleDocumentClick(event) {
 
   const sendPdvSaleWhatsappButton = event.target.closest("[data-pdv-sale-send-whatsapp]");
   if (sendPdvSaleWhatsappButton) {
+    event.preventDefault();
     sendPdvSaleSummaryWhatsapp(sendPdvSaleWhatsappButton.dataset.pdvSaleSendWhatsapp).catch((error) => {
       handleUiError("Erro ao enviar a mensagem do pós-venda pelo WhatsApp do CRM", error);
     });
@@ -19190,6 +23785,7 @@ function handleDocumentClick(event) {
 
   const printPdvSaleCouponButton = event.target.closest("[data-pdv-sale-print-coupon]");
   if (printPdvSaleCouponButton) {
+    event.preventDefault();
     printPdvSaleReceipt(printPdvSaleCouponButton.dataset.pdvSalePrintCoupon);
     return;
   }
@@ -19334,7 +23930,24 @@ function handleDocumentClick(event) {
     state.pdvStock.filters.status = "";
     state.pdvStock.filters.alert = "";
     state.pdvStock.selectedInventoryId = "";
+    state.pdvStock.pagination = { ...(state.pdvStock.pagination || {}), page: 1 };
     loadPdvStockFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao limpar a busca de estoque", error));
+    return;
+  }
+
+  const pdvStockPrevPageButton = event.target.closest("[data-pdv-stock-page-prev]");
+  if (pdvStockPrevPageButton) {
+    const pagination = ensurePdvStockPagination(toArray(state.pdvStock.items).length);
+    state.pdvStock.pagination.page = Math.max(1, pagination.page - 1);
+    renderPdvStockOfficialFront();
+    return;
+  }
+
+  const pdvStockNextPageButton = event.target.closest("[data-pdv-stock-page-next]");
+  if (pdvStockNextPageButton) {
+    const pagination = ensurePdvStockPagination(toArray(state.pdvStock.items).length);
+    state.pdvStock.pagination.page = Math.min(pagination.totalPages, pagination.page + 1);
+    renderPdvStockOfficialFront();
     return;
   }
 
@@ -19502,8 +24115,11 @@ function handleDocumentClick(event) {
   }
 
   if (event.target.closest("[data-whatsapp-crm-refresh-qr]")) {
-    loadWhatsAppQrData()
-      .then(() => renderWhatsAppRouteFront())
+    loadWhatsAppQrData({ requestFresh: true })
+      .then(async () => {
+        await loadWhatsAppCrmFront({ refreshQr: true, refreshLogs: false, refreshCampaigns: false });
+        renderWhatsAppRouteFront();
+      })
       .catch((error) => handleUiError("Erro ao atualizar o QR do WhatsApp CRM", error));
     return;
   }
@@ -19563,7 +24179,20 @@ function handleDocumentClick(event) {
 
   const newPdvSaleSessionButton = event.target.closest("[data-pdv-sale-new-session]");
   if (newPdvSaleSessionButton) {
-    startNewPdvSaleSession().catch((error) => handleUiError("Erro ao iniciar uma nova venda", error));
+    event.preventDefault();
+    startNewPdvSaleSession().catch((error) => {
+      handleUiError("Erro ao iniciar uma nova venda", error);
+      forcePdvSalePostSaleExitFallback();
+    });
+    return;
+  }
+
+  const pdvSaleCheckoutStepButton = event.target.closest("[data-pdv-sale-checkout-step]");
+  if (pdvSaleCheckoutStepButton) {
+    event.preventDefault();
+    const nextStep = normalizeText(pdvSaleCheckoutStepButton.dataset.pdvSaleCheckoutStep || "payments");
+    state.pdvSale.checkoutOpenStep = state.pdvSale.checkoutOpenStep === nextStep ? "" : nextStep;
+    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
   }
 
@@ -19587,18 +24216,36 @@ function handleDocumentClick(event) {
   if (fillPdvSaleCashbackButton) {
     const applyCeiling = getPdvSaleCashbackApplyCeiling(getPdvSaleCartTotals(state.pdvSale.session), getPdvSaleCashbackInfo(state.pdvSale.session));
     setPdvSaleCashbackInput(applyCeiling);
+    applyPdvSaleCashback().catch((error) => handleUiError("Erro ao aplicar cashback na venda", error));
+    return;
+  }
+
+  const fillPdvSaleExchangeCreditButton = event.target.closest("[data-pdv-sale-exchange-credit-fill]");
+  if (fillPdvSaleExchangeCreditButton) {
+    const totals = getPdvSaleCartTotals(state.pdvSale.session);
+    const credits = state.pdvSale.exchangeCreditInfo || { total: 0 };
+    const amount = Math.min(toNumber(credits.total || 0), Math.max(0, toNumber(totals.subtotal || 0) - toNumber(totals.discountAmount || 0)));
+    state.pdvSale.exchangeCreditInput = formatMoneyAmountInput(amount);
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
   }
 
   const applyPdvSaleCashbackButton = event.target.closest("[data-pdv-sale-cashback-apply]");
   if (applyPdvSaleCashbackButton) {
+    event.preventDefault();
+    applyPdvSaleCashback().catch((error) => handleUiError("Erro ao aplicar cashback na venda", error));
     return;
   }
 
   const removePdvSaleCashbackButton = event.target.closest("[data-pdv-sale-cashback-remove]");
   if (removePdvSaleCashbackButton) {
     removePdvSaleCashback().catch((error) => handleUiError("Erro ao remover cashback da venda", error));
+    return;
+  }
+
+  const removePdvSaleExchangeCreditButton = event.target.closest("[data-pdv-sale-exchange-credit-remove]");
+  if (removePdvSaleExchangeCreditButton) {
+    removePdvSaleExchangeCredit().catch((error) => handleUiError("Erro ao remover Credito de Troca da venda", error));
     return;
   }
 
@@ -20067,6 +24714,13 @@ function handleDocumentClick(event) {
 }
 
 function handleDocumentSubmit(event) {
+  const usersAdminForm = event.target.closest("[data-users-admin-form]");
+  if (usersAdminForm) {
+    event.preventDefault();
+    saveUsersAdminForm(usersAdminForm).catch((error) => handleUiError("Erro ao salvar usuario", error));
+    return;
+  }
+
   const pdvSaleCustomerCreateForm = event.target.closest("[data-pdv-sale-customer-create-form]");
   if (pdvSaleCustomerCreateForm) {
     event.preventDefault();
@@ -20087,7 +24741,7 @@ function handleDocumentSubmit(event) {
   if (productSearchForm) {
     event.preventDefault();
     const productFormData = new FormData(productSearchForm);
-    state.pdvSale.productQuery = normalizeText(productFormData.get("productQuery") || "");
+    state.pdvSale.productQuery = normalizeText(productFormData.get("pdv_query_search_product_v2") || productFormData.get("productQuery") || "");
     searchPdvSaleProducts().catch((error) => handleUiError("Erro ao buscar produtos da venda", error));
     return;
   }
@@ -20096,6 +24750,13 @@ function handleDocumentSubmit(event) {
   if (pdvSaleCashbackForm) {
     event.preventDefault();
     applyPdvSaleCashback().catch((error) => handleUiError("Erro ao aplicar cashback na venda", error));
+    return;
+  }
+
+  const pdvSaleExchangeCreditForm = event.target.closest("[data-pdv-sale-exchange-credit-form]");
+  if (pdvSaleExchangeCreditForm) {
+    event.preventDefault();
+    applyPdvSaleExchangeCredit().catch((error) => handleUiError("Erro ao aplicar Credito de Troca na venda", error));
     return;
   }
 
@@ -20127,6 +24788,55 @@ function handleDocumentSubmit(event) {
     event.preventDefault();
     applyPdvStockFiltersFromForm(pdvStockSearchForm);
     loadPdvStockFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar itens do estoque operacional", error));
+    return;
+  }
+
+  const pdvExchangeOriginForm = event.target.closest("[data-pdv-exchange-origin-form]");
+  if (pdvExchangeOriginForm) {
+    event.preventDefault();
+    searchPdvExchangeOrigins(pdvExchangeOriginForm).catch((error) => handleUiError("Erro ao buscar origem da troca", error));
+    return;
+  }
+
+  const pdvExchangeNewProductForm = event.target.closest("[data-pdv-exchange-new-product-form]");
+  if (pdvExchangeNewProductForm) {
+    event.preventDefault();
+    searchPdvExchangeNewProducts(pdvExchangeNewProductForm).catch((error) => handleUiError("Erro ao buscar novo produto da troca", error));
+    return;
+  }
+
+  const pdvExchangeCustomerSearchForm = event.target.closest("[data-pdv-exchange-customer-search-form]");
+  if (pdvExchangeCustomerSearchForm) {
+    event.preventDefault();
+    searchPdvExchangeCustomers(pdvExchangeCustomerSearchForm).catch((error) => handleUiError("Erro ao buscar cliente da troca", error));
+    return;
+  }
+
+  const pdvExchangeCustomerCreateForm = event.target.closest("[data-pdv-exchange-customer-create-form]");
+  if (pdvExchangeCustomerCreateForm) {
+    event.preventDefault();
+    createPdvExchangeQuickCustomer(pdvExchangeCustomerCreateForm).catch((error) => handleUiError("Erro ao cadastrar cliente da troca", error));
+    return;
+  }
+
+  const pdvSalesOrdersFiltersForm = event.target.closest("[data-pdv-sales-orders-filters]");
+  if (pdvSalesOrdersFiltersForm) {
+    event.preventDefault();
+    applyPdvSalesOrdersFilters(pdvSalesOrdersFiltersForm);
+    return;
+  }
+
+  const auditLogsFiltersForm = event.target.closest("[data-audit-logs-filters]");
+  if (auditLogsFiltersForm) {
+    event.preventDefault();
+    applyAuditLogsFilters(auditLogsFiltersForm);
+    return;
+  }
+
+  const pdvSalesOrderCancelForm = event.target.closest("[data-pdv-sales-order-cancel-form]");
+  if (pdvSalesOrderCancelForm) {
+    event.preventDefault();
+    submitPdvSalesOrderCancel(pdvSalesOrderCancelForm).catch((error) => handleUiError("Erro ao cancelar venda", error));
     return;
   }
 
@@ -20196,6 +24906,63 @@ function handleDocumentSubmit(event) {
 }
 
 function handleDocumentChange(event) {
+  const usersAdminRoleSelect = event.target.closest('[data-users-admin-form] select[name="role"]');
+  if (usersAdminRoleSelect) {
+    const form = usersAdminRoleSelect.closest("[data-users-admin-form]");
+    const payload = readUsersAdminForm(form);
+    const meta = getUsersAdminMeta();
+    const profile = meta.profiles.find((item) => item.key === payload.role);
+    state.usersAdmin.draft = {
+      ...payload,
+      permissions: profile?.default_permissions || payload.permissions
+    };
+    renderUsersAdminFront();
+    return;
+  }
+
+  const usersAdminFilter = event.target.closest("[data-users-admin-filter]");
+  if (usersAdminFilter) {
+    const key = usersAdminFilter.dataset.usersAdminFilter || "";
+    if (key === "role" || key === "status") {
+      state.usersAdmin[key] = normalizeText(usersAdminFilter.value || "");
+      if (key === "status") {
+        loadUsersAdmin().catch((error) => handleUiError("Erro ao filtrar usuarios", error));
+      } else {
+        renderUsersAdminFront();
+      }
+    }
+    return;
+  }
+
+  const pdvStockPageSize = event.target.closest("[data-pdv-stock-page-size]");
+  if (pdvStockPageSize) {
+    const nextPageSize = Number(pdvStockPageSize.value || 25);
+    state.pdvStock.pagination = {
+      page: 1,
+      pageSize: PDV_STOCK_PAGE_SIZE_OPTIONS.includes(nextPageSize) ? nextPageSize : 25
+    };
+    renderPdvStockOfficialFront();
+    return;
+  }
+
+  const pdvExchangeReason = event.target.closest("[data-pdv-exchange-reason]");
+  if (pdvExchangeReason) {
+    if (state.pdvExchanges.draft) {
+      state.pdvExchanges.draft.reason = normalizeText(pdvExchangeReason.value || "");
+    }
+    renderPdvExchangesFront();
+    return;
+  }
+
+  const pdvExchangeCondition = event.target.closest("[data-pdv-exchange-condition]");
+  if (pdvExchangeCondition) {
+    if (state.pdvExchanges.draft) {
+      state.pdvExchanges.draft.returned_condition = normalizeText(pdvExchangeCondition.value || "aguardando_conferencia");
+    }
+    renderPdvExchangesFront();
+    return;
+  }
+
   const pdvCockpitPeriod = event.target.closest("#pdv-cockpit-period");
   if (pdvCockpitPeriod) {
     state.pdvCockpit.filters.period = normalizeText(pdvCockpitPeriod.value || "30d").toLowerCase() || "30d";
@@ -20288,8 +25055,12 @@ function handleDocumentChange(event) {
 
   const paymentAmountInput = event.target.closest("[data-pdv-payment-amount]");
   if (paymentAmountInput) {
+    const perfToken = startAeroStorePerfMeasure("pdv.sale.payment_input_update", {
+      method: normalizeText(paymentAmountInput.dataset.pdvPaymentAmount || "")
+    });
     setPdvSalePaymentAmount(paymentAmountInput.dataset.pdvPaymentAmount, paymentAmountInput.value);
     updatePdvPaymentCardVisual(paymentAmountInput);
+    endAeroStorePerfMeasure(perfToken);
     return;
   }
 
@@ -20299,11 +25070,40 @@ function handleDocumentChange(event) {
     return;
   }
 
+  const exchangeCreditInput = event.target.closest("[data-pdv-sale-exchange-credit-input]");
+  if (exchangeCreditInput) {
+    state.pdvSale.exchangeCreditInput = exchangeCreditInput.value;
+    return;
+  }
+
+  const exchangeCreditSelect = event.target.closest("[data-pdv-sale-exchange-credit-select]");
+  if (exchangeCreditSelect) {
+    state.pdvSale.exchangeCreditSelectedId = normalizeText(exchangeCreditSelect.value || "");
+    return;
+  }
+
   const discountModeInput = event.target.closest("[data-pdv-sale-discount-mode]");
   if (discountModeInput) {
     state.pdvSale.discountDraft.mode = normalizeText(discountModeInput.value || "percent").toLowerCase() === "value" ? "value" : "percent";
     state.pdvSale.discountDraft.value = "";
     resetPdvSaleDiscountAuthorization();
+    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    return;
+  }
+
+  const itemDiscountModeInput = event.target.closest("[data-pdv-sale-item-discount-mode]");
+  if (itemDiscountModeInput) {
+    const itemId = normalizeText(itemDiscountModeInput.dataset.pdvSaleItemDiscountMode || "");
+    if (!itemId) return;
+    state.pdvSale.itemDiscountDrafts = {
+      ...(state.pdvSale.itemDiscountDrafts || {}),
+      [itemId]: {
+        ...(state.pdvSale.itemDiscountDrafts?.[itemId] || {}),
+        mode: normalizeText(itemDiscountModeInput.value || "amount").toLowerCase() === "percent" ? "percent" : "amount",
+        value: "",
+        reason: normalizeText(state.pdvSale.itemDiscountDrafts?.[itemId]?.reason || "")
+      }
+    };
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
   }
@@ -20415,6 +25215,16 @@ function handleDocumentChange(event) {
 }
 
 function handleDocumentInput(event) {
+  const usersAdminQuery = event.target.closest('[data-users-admin-filter="query"]');
+  if (usersAdminQuery) {
+    state.usersAdmin.query = normalizeText(usersAdminQuery.value || "");
+    clearTimeout(state.usersAdmin.searchTimer);
+    state.usersAdmin.searchTimer = setTimeout(() => {
+      loadUsersAdmin().catch((error) => handleUiError("Erro ao buscar usuarios", error));
+    }, 250);
+    return;
+  }
+
   const pdvCockpitCurveSearch = event.target.closest("#pdv-cockpit-curve-search");
   if (pdvCockpitCurveSearch) {
     state.pdvCockpit.curveSearch = String(pdvCockpitCurveSearch.value || "");
@@ -20474,6 +25284,7 @@ function handleDocumentInput(event) {
   const discountValueInput = event.target.closest("[data-pdv-sale-discount-value]");
   if (discountValueInput) {
     state.pdvSale.discountDraft.value = String(discountValueInput.value || "");
+    state.pdvSale.generalDiscountBlock = null;
     resetPdvSaleDiscountAuthorization();
     return;
   }
@@ -20484,6 +25295,35 @@ function handleDocumentInput(event) {
     return;
   }
 
+  const itemDiscountValueInput = event.target.closest("[data-pdv-sale-item-discount-value]");
+  if (itemDiscountValueInput) {
+    const itemId = normalizeText(itemDiscountValueInput.dataset.pdvSaleItemDiscountValue || "");
+    if (!itemId) return;
+    state.pdvSale.itemDiscountDrafts = {
+      ...(state.pdvSale.itemDiscountDrafts || {}),
+      [itemId]: {
+        ...(state.pdvSale.itemDiscountDrafts?.[itemId] || {}),
+        value: String(itemDiscountValueInput.value || "")
+      }
+    };
+    resetPdvSaleDiscountAuthorization();
+    return;
+  }
+
+  const itemDiscountReasonInput = event.target.closest("[data-pdv-sale-item-discount-reason]");
+  if (itemDiscountReasonInput) {
+    const itemId = normalizeText(itemDiscountReasonInput.dataset.pdvSaleItemDiscountReason || "");
+    if (!itemId) return;
+    state.pdvSale.itemDiscountDrafts = {
+      ...(state.pdvSale.itemDiscountDrafts || {}),
+      [itemId]: {
+        ...(state.pdvSale.itemDiscountDrafts?.[itemId] || {}),
+        reason: String(itemDiscountReasonInput.value || "")
+      }
+    };
+    return;
+  }
+
   const discountAuthorizationCodeInput = event.target.closest("[data-pdv-sale-discount-code]");
   if (discountAuthorizationCodeInput) {
     state.pdvSale.discountAuthorization.code = String(discountAuthorizationCodeInput.value || "").replace(/\D/g, "").slice(0, 6);
@@ -20491,10 +25331,9 @@ function handleDocumentInput(event) {
     return;
   }
 
-  const discountAuthorizationReasonInput = event.target.closest("[data-pdv-sale-discount-reason]");
-  if (discountAuthorizationReasonInput) {
-    state.pdvSale.discountAuthorization.reason = String(discountAuthorizationReasonInput.value || "");
-    state.pdvSale.discountAuthorization.error = "";
+  const pdvExchangeNotesInput = event.target.closest("[data-pdv-exchange-notes]");
+  if (pdvExchangeNotesInput && state.pdvExchanges.draft) {
+    state.pdvExchanges.draft.reason_notes = String(pdvExchangeNotesInput.value || "");
     return;
   }
 
@@ -20589,10 +25428,32 @@ function handleDocumentFocusout(event) {
     return;
   }
 
+  const itemDiscountValueInput = event.target.closest?.("[data-pdv-sale-item-discount-value]");
+  if (itemDiscountValueInput) {
+    const itemId = normalizeText(itemDiscountValueInput.dataset.pdvSaleItemDiscountValue || "");
+    const draft = state.pdvSale.itemDiscountDrafts?.[itemId] || {};
+    if (itemId && normalizeText(draft.mode || "amount").toLowerCase() !== "percent") {
+      const parsed = parseMoneyAmount(itemDiscountValueInput.value || 0);
+      state.pdvSale.itemDiscountDrafts = {
+        ...(state.pdvSale.itemDiscountDrafts || {}),
+        [itemId]: {
+          ...draft,
+          value: parsed > 0 ? formatMoneyAmountInput(parsed) : ""
+        }
+      };
+      renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    }
+    return;
+  }
+
   const paymentAmountInput = event.target.closest?.("[data-pdv-payment-amount]");
   if (paymentAmountInput) {
+    const perfToken = startAeroStorePerfMeasure("pdv.sale.payment_field_commit", {
+      method: normalizeText(paymentAmountInput.dataset.pdvPaymentAmount || "")
+    });
     formatPdvPaymentAmountField(paymentAmountInput);
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    endAeroStorePerfMeasure(perfToken);
     return;
   }
 
@@ -20652,7 +25513,35 @@ function handleDocumentKeydown(event) {
 
 async function bootstrap() {
   applyRolePermissions();
-  await loadSettings();
+  const activeRouteSection = document.body.dataset.routeSection || getInitialSection();
+  const fastFirstPaint = OFFICIAL_PDV_SECTIONS.has(activeRouteSection);
+  if (activeRouteSection === "cashback") {
+    renderCashbackSummary();
+    renderCashbackCustomerCard();
+    renderCashbackAssistantCard();
+    renderCashbackWizardSummary();
+    setTimeout(() => {
+      bootstrapBackgroundWork(null, { renderActiveRoute: false }).catch((error) => {
+        console.warn("[AEROSTORE CRM] Bootstrap cashback em segundo plano com pendencias", error);
+      });
+    }, 400);
+    return;
+  }
+  const settingsPromise = loadSettings();
+  settingsPromise.catch(() => {});
+  if (fastFirstPaint) {
+    const activePage = document.querySelector(".page.active");
+    if (!activePage || !normalizeText(activePage.textContent || "")) {
+      renderOfficialRouteSection(activeRouteSection);
+    }
+    setTimeout(() => {
+      bootstrapBackgroundWork(settingsPromise, { renderActiveRoute: false }).catch((error) => {
+        console.warn("[AEROSTORE CRM] Bootstrap em segundo plano com pendencias", error);
+      });
+    }, 800);
+    return;
+  }
+  await settingsPromise;
   applyCashbackReportPreset(state.cashbackReports.filters.preset || "today", { resetPage: false });
   const bootstrapTasks = [
     ["configuracao da loja", () => canViewRealStoreSettings() ? loadStoreSettingsCatalog() : Promise.resolve()],
@@ -20692,6 +25581,60 @@ async function bootstrap() {
     return;
   }
   showFeedback("Sistema carregado com sucesso.");
+}
+
+async function bootstrapBackgroundWork(settingsPromise = null, { renderActiveRoute = false } = {}) {
+  const failedTasks = [];
+  try {
+    if (settingsPromise) {
+      await settingsPromise;
+    } else {
+      await loadSettings();
+    }
+    applyCashbackReportPreset(state.cashbackReports.filters.preset || "today", { resetPage: false });
+  } catch (error) {
+    failedTasks.push({ label: "configuracoes", error });
+  }
+  const bootstrapTasks = [
+    ["configuracao da loja", () => canViewRealStoreSettings() ? loadStoreSettingsCatalog() : Promise.resolve()],
+    ["vendedores", () => canViewSettingsTeamPanel() ? loadSellers() : Promise.resolve()],
+    ["contatos", () => loadContacts()],
+    ["batches de importacao", () => loadImportBatches()],
+    ["publicos salvos", () => loadSavedAudiences()],
+    ["campanhas", () => loadCampaigns()],
+    ["execucao de campanhas", () => loadCampaignExecutionReport()],
+    ["templates de IA", () => loadAiTemplates()],
+    ["produtos estrategicos", () => canManageAiStrategicImport() ? loadAiStrategicProducts() : Promise.resolve()],
+    ["dashboard", () => loadDashboard()],
+    ["cashback", () => loadCashbackDashboard()],
+    ["recuperacao de cashback", () => loadCashbackRecoverySegments()],
+    ["eventos de cashback", () => loadCashbackEvents()],
+    ["relatorios", () => loadReports()],
+    ["perda de cashback", () => loadLostCashbackReport()],
+    ["status do WhatsApp", () => loadWhatsAppStatus()]
+  ];
+  const bootstrapResults = await Promise.allSettled(bootstrapTasks.map(([, task]) => task()));
+  failedTasks.push(...bootstrapResults
+    .map((result, index) => ({ result, label: bootstrapTasks[index][0] }))
+    .filter(({ result }) => result.status === "rejected"));
+  const expiresAtField = document.getElementById("cashback-expires-at");
+  if (expiresAtField) {
+    expiresAtField.value = formatDateBR(addDays(today(), state.settings.defaultValidityDays));
+  }
+  updateCashbackCustomerGender();
+  renderCashbackSummary();
+  renderCashbackCustomerCard();
+  renderCashbackAssistantCard();
+  renderCashbackWizardSummary();
+  renderContactImportPreview();
+  renderAudienceResults();
+  if (renderActiveRoute) {
+    renderOfficialRouteSection(document.body.dataset.routeSection || getInitialSection());
+  }
+  enhanceTableScrolls();
+  if (failedTasks.length) {
+    console.warn("[AEROSTORE CRM] Bootstrap parcial", failedTasks.map((item) => item.label));
+  }
 }
 
 function bindEvents() {
@@ -21180,10 +26123,85 @@ function bindEvents() {
   });
 }
 
+/* ---- Sidebar Toggle (ChatGPT-inspired) ---- */
+const SIDEBAR_COLLAPSED_KEY = "aerostore.sidebar.collapsed";
+const SIDEBAR_COLLAPSED_LEGACY_KEY = "aerostore_sidebar_collapsed";
+
+function isSidebarCollapsed() {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1" || localStorage.getItem(SIDEBAR_COLLAPSED_LEGACY_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function setSidebarCollapsed(collapsed) {
+  const isCollapsed = Boolean(collapsed);
+  document.body.classList.toggle("sidebar-collapsed", isCollapsed);
+
+  const collapseBtn = document.getElementById("sidebar-toggle-btn");
+  const expandBtn = document.getElementById("sidebar-expand-btn");
+
+  if (collapseBtn) {
+    collapseBtn.setAttribute("aria-label", isCollapsed ? "Expandir barra lateral" : "Recolher barra lateral");
+    collapseBtn.setAttribute("title", isCollapsed ? "Expandir barra lateral" : "Recolher barra lateral");
+  }
+  if (expandBtn) {
+    expandBtn.setAttribute("aria-label", isCollapsed ? "Expandir barra lateral" : "Recolher barra lateral");
+    expandBtn.setAttribute("title", isCollapsed ? "Expandir barra lateral" : "Recolher barra lateral");
+  }
+
+  try {
+    if (isCollapsed) {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "1");
+    } else {
+      localStorage.removeItem(SIDEBAR_COLLAPSED_KEY);
+    }
+    localStorage.removeItem(SIDEBAR_COLLAPSED_LEGACY_KEY);
+  } catch (_) {
+    /* localStorage may be unavailable */
+  }
+}
+
+function toggleSidebar() {
+  setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
+}
+
+let _sidebarToggleBound = false;
+
+function initSidebarToggle() {
+  // Restore persisted state
+  setSidebarCollapsed(isSidebarCollapsed());
+
+  // Bind listeners once (idempotent)
+  if (_sidebarToggleBound) {
+    return;
+  }
+  _sidebarToggleBound = true;
+
+  const collapseBtn = document.getElementById("sidebar-toggle-btn");
+  const expandBtn = document.getElementById("sidebar-expand-btn");
+
+  if (collapseBtn) {
+    collapseBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      toggleSidebar();
+    });
+  }
+
+  if (expandBtn) {
+    expandBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      toggleSidebar();
+    });
+  }
+}
+
 function initApp() {
   sectionTitle = document.getElementById("section-title");
   feedback = document.getElementById("feedback");
   loadSavedTheme();
+  initSidebarToggle();
   bindEvents();
   ensureMojibakeObserver();
   normalizeVisibleMojibake(document.body);
@@ -21208,7 +26226,7 @@ function initApp() {
       return;
     }
     if (normalizePathname(window.location.pathname || "/") === "/login") {
-      window.history.replaceState({}, "", "/");
+      window.history.replaceState({}, "", getDefaultRouteForCurrentUser());
     }
     const nextSection = getInitialSection();
     if (nextSection === "access-denied") {
@@ -21248,6 +26266,7 @@ function updateWhatsAppUI(data) {
   const qrSection = document.getElementById('whatsapp-qr-section');
   const qrImage = document.getElementById('whatsapp-qr-code');
   const waitingQr = data.status === 'aguardando qr' || data.status === 'aguardando_qr';
+  const qrPending = data.status === 'qr_pendente';
 
   if (statusIcon && statusText) {
     if (data.status === 'conectado') {
@@ -21259,6 +26278,10 @@ function updateWhatsAppUI(data) {
       statusText.textContent = 'Aguardando leitura do QR Code';
       startWhatsAppPolling();
       loadWhatsAppQr();
+    } else if (qrPending) {
+      statusIcon.textContent = '🟡';
+      statusText.textContent = 'QR protegido. Clique em Atualizar QR Code para conectar.';
+      stopWhatsAppPolling();
     } else if (data.status === 'erro') {
       statusIcon.textContent = '🔴';
       statusText.textContent = `Erro: ${data.lastError || 'Desconhecido'}`;
