@@ -13681,60 +13681,120 @@ async function findDuplicateManualProductBySku(sku = "", exceptId = null) {
 }
 
 async function listManualProducts(filters = {}) {
-  const products = await listAiProducts({ includeInactive: true });
-  const query = normalizeLookup(filters.q || "");
-  const filtered = products.filter((item) => {
-    if (query) {
-      const haystack = [
-        item.name,
-        item.commercial_name,
-        item.display_name,
-        item.sku,
-        item.codigo,
-        item.brand,
-        item.category,
-        item.color
-      ].map((value) => normalizeLookup(value || "")).join(" ");
-      if (!haystack.includes(query) && !sanitizePhone(filters.q || "").includes(sanitizePhone(item.sku || ""))) {
-        return false;
-      }
+  const catalogs = await getAiCatalogBundle({ includeInactive: true });
+  const page = Math.max(1, Number(filters.page || 1));
+  const limit = Math.max(1, Math.min(500, Number(filters.limit || filters.pageSize || filters.page_size || 60)));
+  const offset = Math.max(0, Number(filters.offset || ((page - 1) * limit)));
+  const clauses = ["COALESCE(p.deleted_at, '') = ''"];
+  const params = [];
+  const query = normalizeText(filters.q || filters.search || "");
+  if (query) {
+    const like = `%${query.toLowerCase()}%`;
+    const digits = sanitizePhone(query || "");
+    clauses.push(`(
+      LOWER(COALESCE(p.name, '')) LIKE ?
+      OR LOWER(COALESCE(p.commercial_name, '')) LIKE ?
+      OR LOWER(COALESCE(p.sku, '')) LIKE ?
+      OR LOWER(COALESCE(p.codigo, '')) LIKE ?
+      OR LOWER(COALESCE(p.marca, '')) LIKE ?
+      OR LOWER(COALESCE(p.category, '')) LIKE ?
+      OR LOWER(COALESCE(p.color, '')) LIKE ?
+      OR LOWER(COALESCE(ab.brand, '')) LIKE ?
+      ${digits ? "OR REPLACE(REPLACE(COALESCE(p.sku, ''), '-', ''), '.', '') LIKE ?" : ""}
+    )`);
+    params.push(like, like, like, like, like, like, like, like);
+    if (digits) params.push(`%${digits}%`);
+  }
+  const status = normalizeText(filters.status || "");
+  if (status && normalizeLookup(status) !== "all") {
+    clauses.push("p.status = ?");
+    params.push(normalizeAiProductVisibilityStatus(status));
+  }
+  if (normalizeText(filters.store || "") && normalizeLookup(filters.store || "") !== "all") {
+    clauses.push("LOWER(COALESCE(p.store, '')) = ?");
+    params.push(normalizeText(filters.store || "").toLowerCase());
+  }
+  if (normalizeText(filters.brand || "")) {
+    clauses.push("(LOWER(COALESCE(p.marca, '')) = ? OR LOWER(COALESCE(ab.brand, '')) = ?)");
+    params.push(normalizeText(filters.brand || "").toLowerCase(), normalizeText(filters.brand || "").toLowerCase());
+  }
+  if (normalizeText(filters.category || "")) {
+    clauses.push("LOWER(COALESCE(p.category, '')) = ?");
+    params.push(normalizeText(filters.category || "").toLowerCase());
+  }
+  if (normalizeText(filters.color || "")) {
+    clauses.push("LOWER(COALESCE(p.color, '')) = ?");
+    params.push(normalizeText(filters.color || "").toLowerCase());
+  }
+  if (normalizeText(filters.size || "")) {
+    clauses.push("LOWER(COALESCE(p.sizes, '')) LIKE ?");
+    params.push(`%${normalizeText(filters.size || "").toLowerCase()}%`);
+  }
+  if (String(filters.useInAi || "") === "1") clauses.push("COALESCE(p.use_in_ai, 0) = 1");
+  if (String(filters.useInPos || "") === "1") clauses.push("COALESCE(p.use_in_pos, 0) = 1");
+  if (String(filters.withoutPrice || "") === "1") clauses.push("COALESCE(p.price, 0) <= 0");
+  if (String(filters.withoutSku || "") === "1") clauses.push("COALESCE(p.sku, '') = '' AND COALESCE(p.codigo, '') = ''");
+  if (String(filters.withoutPhoto || "") === "1") clauses.push("(p.main_media_id IS NULL OR COALESCE(p.main_media_id, 0) = 0)");
+  if (String(filters.zeroStock || "") === "1") clauses.push("COALESCE(p.stock, p.estoque_total, 0) <= 0");
+
+  const whereClause = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const totalRow = await get(
+    `SELECT COUNT(*) AS total FROM ai_products p LEFT JOIN ai_product_brand_meta ab ON ab.product_id = p.id ${whereClause}`,
+    params
+  );
+  const summaryRow = await get(
+    `SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN p.status = 'ativo' THEN 1 ELSE 0 END) AS active,
+      SUM(CASE WHEN p.status = 'hidden' THEN 1 ELSE 0 END) AS hidden,
+      SUM(CASE WHEN p.status = 'deleted' THEN 1 ELSE 0 END) AS deleted,
+      SUM(CASE WHEN COALESCE(p.use_in_ai, 0) = 1 THEN 1 ELSE 0 END) AS use_in_ai,
+      SUM(CASE WHEN COALESCE(p.use_in_pos, 0) = 1 THEN 1 ELSE 0 END) AS use_in_pos,
+      SUM(CASE WHEN COALESCE(p.stock, p.estoque_total, 0) <= 0 THEN 1 ELSE 0 END) AS zero_stock,
+      SUM(CASE WHEN COALESCE(p.price, 0) <= 0 THEN 1 ELSE 0 END) AS without_price
+     FROM ai_products p
+     LEFT JOIN ai_product_brand_meta ab ON ab.product_id = p.id
+     ${whereClause}`,
+    params
+  );
+  const rows = await all(
+    `SELECT p.*, ab.brand AS brand_meta
+     FROM ai_products p
+     LEFT JOIN ai_product_brand_meta ab ON ab.product_id = p.id
+     ${whereClause}
+     ORDER BY CASE p.priority WHEN 'alta' THEN 0 WHEN 'media' THEN 1 ELSE 2 END, p.updated_at DESC, p.id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
+  const mediaRows = await listAiProductMediaRows(rows.map((row) => row.id));
+  const mediaByProductId = mediaRows.reduce((map, row) => {
+    const key = Number(row.product_id || 0);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(row);
+    return map;
+  }, new Map());
+  const items = rows.map((row) => serializeAiProduct(row, catalogs, mediaByProductId.get(Number(row.id || 0)) || []));
+  const total = Number(totalRow?.total || 0);
+  return {
+    items,
+    summary: {
+      total: Number(summaryRow?.total || total),
+      current_page_count: items.length,
+      active: Number(summaryRow?.active || 0),
+      hidden: Number(summaryRow?.hidden || 0),
+      deleted: Number(summaryRow?.deleted || 0),
+      use_in_ai: Number(summaryRow?.use_in_ai || 0),
+      use_in_pos: Number(summaryRow?.use_in_pos || 0),
+      zero_stock: Number(summaryRow?.zero_stock || 0),
+      without_price: Number(summaryRow?.without_price || 0)
+    },
+    pagination: {
+      page: Math.max(1, Math.floor(offset / limit) + 1),
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit))
     }
-    if (filters.status && normalizeAiProductVisibilityStatus(item.status || "") !== normalizeAiProductVisibilityStatus(filters.status || "")) {
-      return false;
-    }
-    if (filters.brand && normalizeLookup(item.brand || "") !== normalizeLookup(filters.brand || "")) {
-      return false;
-    }
-    if (filters.category && normalizeLookup(item.category || "") !== normalizeLookup(filters.category || "")) {
-      return false;
-    }
-    if (filters.color && normalizeLookup(item.color || "") !== normalizeLookup(filters.color || "")) {
-      return false;
-    }
-    if (filters.size && !item.sizes.some((size) => normalizeLookup(size) === normalizeLookup(filters.size || ""))) {
-      return false;
-    }
-    if (String(filters.useInAi || "") === "1" && !item.use_in_ai) {
-      return false;
-    }
-    if (String(filters.useInPos || "") === "1" && !item.use_in_pos) {
-      return false;
-    }
-    if (String(filters.withoutPrice || "") === "1" && Number(item.price || 0) > 0) {
-      return false;
-    }
-    if (String(filters.withoutSku || "") === "1" && normalizeText(item.sku || item.codigo || "")) {
-      return false;
-    }
-    if (String(filters.withoutPhoto || "") === "1" && normalizeText(item.preview_url || item.media_url || "")) {
-      return false;
-    }
-    if (String(filters.zeroStock || "") === "1" && Number(item.stock || 0) > 0) {
-      return false;
-    }
-    return true;
-  });
-  return filtered.slice(Math.max(0, Number(filters.offset || 0)), Math.max(0, Number(filters.offset || 0)) + Math.max(1, Math.min(200, Number(filters.limit || 60))));
+  };
 }
 
 function buildProductsSummary(products = []) {
@@ -15602,7 +15662,14 @@ async function getCampaignOperationData(campaignId) {
 }
 
 async function listCampaigns() {
-  const campaigns = await all("SELECT * FROM campaigns ORDER BY active DESC, id DESC");
+  const campaigns = await all(
+    `SELECT
+      id, name, seller, seller_id, seller_name, store, template,
+      seller_ids_json, filters_json, send_type, media_id, caption,
+      has_media, active, status, created_at, updated_at
+    FROM campaigns
+    ORDER BY active DESC, id DESC`
+  );
   const result = [];
   for (const campaign of campaigns) {
     const contactIds = await getCampaignContactIds(campaign.id);
@@ -15727,11 +15794,18 @@ async function countCampaignAudienceEstimate({ store = "", scope = "store_contac
   };
 }
 
-async function listImportBatches() {
+async function listImportBatches(query = {}) {
+  const limit = Math.max(1, Math.min(200, Number(query.limit || query.pageSize || query.page_size || 100)));
+  const page = Math.max(1, Number(query.page || 1));
+  const offset = Math.max(0, (page - 1) * limit);
   return all(
-    `SELECT *
+    `SELECT
+      id, filename, total_rows, contacts_created, contacts_updated, events_created,
+      total_sales_value, total_cashback_value, imported_by, status, created_at
     FROM import_batches
-    ORDER BY datetime(created_at) DESC, id DESC`
+    ORDER BY datetime(created_at) DESC, id DESC
+    LIMIT ? OFFSET ?`,
+    [limit, offset]
   );
 }
 
@@ -15742,6 +15816,9 @@ async function getImportBatchById(batchId) {
 async function getImportBatchItems(batchId, filters = {}) {
   const clauses = ["batch_id = ?"];
   const params = [batchId];
+  const limit = Math.max(1, Math.min(1000, Number(filters.limit || filters.pageSize || filters.page_size || 500)));
+  const page = Math.max(1, Number(filters.page || 1));
+  const offset = Math.max(0, (page - 1) * limit);
 
   if (filters.sellerName) {
     clauses.push("seller_name = ?");
@@ -15771,13 +15848,50 @@ async function getImportBatchItems(batchId, filters = {}) {
     params.push(Number(filters.highestSaleValue || 500));
   }
 
-  return all(
-    `SELECT *
+  const totalRow = await get(
+    `SELECT COUNT(*) AS total
     FROM import_batch_items
-    WHERE ${clauses.join(" AND ")}
-    ORDER BY row_number ASC, id ASC`,
+    WHERE ${clauses.join(" AND ")}`,
     params
   );
+  const items = await all(
+    `SELECT
+      id, batch_id, row_number, contact_id, customer_name, phone, sale_value,
+      cashback_value, sale_date, seller_name, ticket, nf, status, action, reason
+    FROM import_batch_items
+    WHERE ${clauses.join(" AND ")}
+    ORDER BY row_number ASC, id ASC
+    LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
+  const total = Number(totalRow?.total || 0);
+  return {
+    items,
+    pagination: {
+      page,
+      pageSize: limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit))
+    }
+  };
+}
+
+async function collectImportBatchItems(batchId, filters = {}) {
+  const pageSize = Math.max(1, Math.min(1000, Number(filters.limit || filters.pageSize || filters.page_size || 1000)));
+  const items = [];
+  let page = 1;
+  let totalPages = 1;
+  do {
+    const payload = await getImportBatchItems(batchId, {
+      ...filters,
+      page,
+      limit: pageSize
+    });
+    items.push(...payload.items);
+    totalPages = Number(payload.pagination?.totalPages || 1);
+    page += 1;
+  } while (page <= totalPages);
+  return items;
 }
 
 async function getImportBatchStats(batchId) {
@@ -16016,57 +16130,110 @@ async function buildAudienceRows(filters = {}) {
 }
 
 async function getLostCashbackReport(filters = {}) {
-  const rows = await all(
-    `SELECT
-      e.id,
-      e.contact_id,
-      e.value,
-      e.lost_value,
-      e.event_date,
-      e.expired_at,
-      e.lost_at,
-      e.seller,
-      c.name AS contact_name,
-      c.gender,
-      c.store
-    FROM cashback_events e
-    LEFT JOIN contacts c ON c.id = e.contact_id
-    WHERE e.event_type = 'cashback_perdido'
-    ORDER BY COALESCE(NULLIF(e.lost_at, ''), NULLIF(e.expired_at, ''), NULLIF(e.event_date, ''), SUBSTR(e.created_at, 1, 10)) DESC, e.id DESC`
-  );
-
   const dateFrom = String(filters.dateFrom || "").trim();
   const dateTo = String(filters.dateTo || "").trim();
   const store = String(filters.store || "").trim();
   const sellerName = String(filters.sellerName || "").trim();
   const gender = String(filters.gender || "").trim();
   const minLost = Number(filters.minLost || 0);
-  const filtered = rows.filter((row) => {
-    const eventDate = row.lost_at || row.expired_at || row.event_date || "";
-    if (!inDateRange(eventDate, dateFrom, dateTo)) {
-      return false;
-    }
-    if (store && String(row.store || "") !== store) {
-      return false;
-    }
-    if (sellerName && String(row.seller || "") !== sellerName) {
-      return false;
-    }
-    if (gender && String(row.gender || "") !== gender) {
-      return false;
-    }
-    if (minLost && Number(row.lost_value || row.value || 0) < minLost) {
-      return false;
-    }
-    return true;
-  });
+  const page = Math.max(1, Number(filters.page || 1));
+  const limit = Math.max(1, Math.min(500, Number(filters.limit || filters.pageSize || filters.page_size || 100)));
+  const offset = Math.max(0, (page - 1) * limit);
+  const eventDateExpr = "SUBSTR(COALESCE(NULLIF(e.lost_at, ''), NULLIF(e.expired_at, ''), NULLIF(e.event_date, ''), e.created_at), 1, 10)";
+  const lostValueExpr = "CASE WHEN COALESCE(e.lost_value, 0) > 0 THEN e.lost_value ELSE COALESCE(e.value, 0) END";
+  const clauses = ["e.event_type = 'cashback_perdido'"];
+  const params = [];
+  if (dateFrom) {
+    clauses.push(`${eventDateExpr} >= ?`);
+    params.push(dateFrom);
+  }
+  if (dateTo) {
+    clauses.push(`${eventDateExpr} <= ?`);
+    params.push(dateTo);
+  }
+  if (store) {
+    clauses.push("c.store = ?");
+    params.push(store);
+  }
+  if (sellerName) {
+    clauses.push("e.seller = ?");
+    params.push(sellerName);
+  }
+  if (gender) {
+    clauses.push("c.gender = ?");
+    params.push(gender);
+  }
+  if (minLost) {
+    clauses.push(`${lostValueExpr} >= ?`);
+    params.push(minLost);
+  }
+  const where = `WHERE ${clauses.join(" AND ")}`;
+  const summaryRow = await get(
+    `SELECT
+      COUNT(*) AS total_rows,
+      COUNT(DISTINCT e.contact_id) AS impacted_clients,
+      COALESCE(SUM(${lostValueExpr}), 0) AS total_lost,
+      COALESCE(MAX(${lostValueExpr}), 0) AS largest_lost
+    FROM cashback_events e
+    LEFT JOIN contacts c ON c.id = e.contact_id
+    ${where}`,
+    params
+  );
+  const [byStoreRows, bySellerRows, byGenderRows] = await Promise.all([
+    all(
+      `SELECT COALESCE(c.store, 'Sem loja') AS label, COALESCE(SUM(${lostValueExpr}), 0) AS value
+      FROM cashback_events e
+      LEFT JOIN contacts c ON c.id = e.contact_id
+      ${where}
+      GROUP BY COALESCE(c.store, 'Sem loja')
+      ORDER BY value DESC`,
+      params
+    ),
+    all(
+      `SELECT COALESCE(e.seller, 'Sem vendedor') AS label, COALESCE(SUM(${lostValueExpr}), 0) AS value
+      FROM cashback_events e
+      LEFT JOIN contacts c ON c.id = e.contact_id
+      ${where}
+      GROUP BY COALESCE(e.seller, 'Sem vendedor')
+      ORDER BY value DESC`,
+      params
+    ),
+    all(
+      `SELECT COALESCE(c.gender, 'Sem genero') AS label, COALESCE(SUM(${lostValueExpr}), 0) AS value
+      FROM cashback_events e
+      LEFT JOIN contacts c ON c.id = e.contact_id
+      ${where}
+      GROUP BY COALESCE(c.gender, 'Sem genero')
+      ORDER BY value DESC`,
+      params
+    )
+  ]);
+  const rows = await all(
+    `SELECT
+      e.id,
+      e.contact_id,
+      ${lostValueExpr} AS lost_value,
+      ${eventDateExpr} AS report_event_date,
+      e.seller,
+      c.name AS contact_name,
+      c.gender,
+      c.store
+    FROM cashback_events e
+    LEFT JOIN contacts c ON c.id = e.contact_id
+    ${where}
+    ORDER BY ${eventDateExpr} DESC, e.id DESC
+    LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
 
-  const totalLost = Number(filtered.reduce((sum, row) => sum + Number(row.lost_value || row.value || 0), 0).toFixed(2));
-  const uniqueClients = new Set(filtered.map((row) => row.contact_id).filter(Boolean)).size;
-  const largestLost = Number(filtered.reduce((max, row) => Math.max(max, Number(row.lost_value || row.value || 0)), 0).toFixed(2));
-  const byStoreMap = new Map();
-  const bySellerMap = new Map();
-  const byGenderMap = new Map();
+  const totalLost = Number(Number(summaryRow?.total_lost || 0).toFixed(2));
+  const uniqueClients = Number(summaryRow?.impacted_clients || 0);
+  const largestLost = Number(Number(summaryRow?.largest_lost || 0).toFixed(2));
+  const totalRows = Number(summaryRow?.total_rows || 0);
+  const filtered = [];
+  const byStoreMap = new Map(byStoreRows.map((row) => [row.label, Number(Number(row.value || 0).toFixed(2))]));
+  const bySellerMap = new Map(bySellerRows.map((row) => [row.label, Number(Number(row.value || 0).toFixed(2))]));
+  const byGenderMap = new Map(byGenderRows.map((row) => [row.label, Number(Number(row.value || 0).toFixed(2))]));
 
   filtered.forEach((row) => {
     const lostValue = Number(row.lost_value || row.value || 0);
@@ -16088,16 +16255,22 @@ async function getLostCashbackReport(filters = {}) {
     byStore: Array.from(byStoreMap.entries()).map(([label, value]) => ({ label, value })),
     bySeller: Array.from(bySellerMap.entries()).map(([label, value]) => ({ label, value })),
     byGender: Array.from(byGenderMap.entries()).map(([label, value]) => ({ label, value })),
-    rows: filtered.map((row) => ({
+    rows: rows.map((row) => ({
       id: row.id,
       contactId: row.contact_id,
       customerName: row.contact_name || "Cliente sem nome",
-      lostValue: Number(row.lost_value || row.value || 0),
-      eventDate: row.lost_at || row.expired_at || row.event_date || "",
+      lostValue: Number(row.lost_value || 0),
+      eventDate: row.report_event_date || "",
       seller: row.seller || "",
       store: row.store || "",
       gender: row.gender || ""
-    }))
+    })),
+    pagination: {
+      page,
+      pageSize: limit,
+      total: totalRows,
+      totalPages: Math.max(1, Math.ceil(totalRows / limit))
+    }
   };
 }
 
@@ -17208,8 +17381,8 @@ app.delete("/api/admin/users/:id", requirePermission("can_manage_users"), delete
 
 app.get("/api/admin/audit-logs", requirePermission("can_view_audit"), async (req, res) => {
   try {
-    const rows = await listAuditLogs(req.query || {});
-    res.json({ rows, total: rows.length });
+    const payload = await listAuditLogs(req.query || {});
+    res.json(payload);
   } catch (error) {
     res.status(500).json({ error: "Falha ao carregar auditoria operacional." });
   }
@@ -17914,7 +18087,11 @@ app.post("/api/crm_contacts/import/commit", requireManager, crmContactImportUplo
 
 app.get("/api/sellers", requirePermission("can_manage_users"), async (req, res) => {
   try {
-    const rows = await all("SELECT * FROM sellers ORDER BY status ASC, name ASC");
+    const rows = await all(
+      `SELECT id, name, store, status, created_at, updated_at
+      FROM sellers
+      ORDER BY status ASC, name ASC`
+    );
     res.json(rows.filter((row) => userCanAccessStore(req.user, row.store || row.store_id || "")));
   } catch (error) {
     res.status(500).json({ error: "Falha ao listar vendedores." });
@@ -18890,7 +19067,7 @@ app.post("/api/contacts/import/confirm", async (req, res) => {
 
 app.get("/api/import-batches", async (req, res) => {
   try {
-    res.json(await listImportBatches());
+    res.json(await listImportBatches(req.query || {}));
   } catch (error) {
     res.status(500).json({ error: "Falha ao listar os lotes de importação." });
   }
@@ -18904,7 +19081,7 @@ app.get("/api/import-batches/:id", async (req, res) => {
       return;
     }
 
-    const items = await getImportBatchItems(Number(req.params.id), {
+    const itemPayload = await getImportBatchItems(Number(req.params.id), {
       minCashback: req.query.minCashback || "",
       highestSale: req.query.highestSale || "",
       highestSaleValue: req.query.highestSaleValue || "",
@@ -18912,10 +19089,12 @@ app.get("/api/import-batches/:id", async (req, res) => {
       sellerName: req.query.sellerName || "",
       dateFrom: req.query.dateFrom || "",
       dateTo: req.query.dateTo || "",
-      status: req.query.status || ""
+      status: req.query.status || "",
+      page: req.query.page || 1,
+      limit: req.query.limit || req.query.pageSize || req.query.page_size || 500
     });
     const stats = await getImportBatchStats(Number(req.params.id));
-    res.json({ batch, stats, items });
+    res.json({ batch, stats, items: itemPayload.items, pagination: itemPayload.pagination });
   } catch (error) {
     res.status(500).json({ error: "Falha ao carregar o lote de importação." });
   }
@@ -18928,7 +19107,7 @@ app.get("/api/import-batches/:id/export", async (req, res) => {
       res.status(404).json({ error: "Lote de importação não encontrado." });
       return;
     }
-    const items = await getImportBatchItems(Number(req.params.id));
+    const items = await collectImportBatchItems(Number(req.params.id));
     const isLostBatch = String(batch.source || "").toLowerCase().includes("bônus perdido") || String(batch.source || "").toLowerCase().includes("bonus perdido");
     const headers = ["Cliente", "Telefone", isLostBatch ? "Valor da venda" : "Venda", isLostBatch ? "Bônus perdido" : "Bônus gerado", isLostBatch ? "Data em que perdeu" : "Data", "Vendedor", "Ticket", "NF", "Status", "Ação", "Observação"];
     const rows = [headers.join(",")].concat(
@@ -18962,7 +19141,7 @@ app.post("/api/import-batches/:id/campaign", async (req, res) => {
     }
 
     const mode = String(req.body.mode || "all");
-    const items = await getImportBatchItems(Number(req.params.id));
+    const items = await collectImportBatchItems(Number(req.params.id));
     let selectedItems = items.filter((item) => Number(item.contact_id));
     if (mode === "cashback50") {
       selectedItems = selectedItems.filter((item) => Number(item.cashback_value || 0) >= 50);
@@ -18997,7 +19176,7 @@ app.post("/api/import-batches/:id/undo", async (req, res) => {
       res.status(404).json({ error: "Lote de importação não encontrado." });
       return;
     }
-    const items = await getImportBatchItems(batchId);
+    const items = await collectImportBatchItems(batchId);
     for (const item of items) {
       if (item.cashback_id) {
         await run("DELETE FROM cashback_events WHERE cashback_id = ?", [item.cashback_id]);
@@ -21264,23 +21443,54 @@ app.get("/api/cashback/events", async (req, res) => {
   try {
     const clauses = [];
     const params = [];
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || req.query.pageSize || req.query.page_size || 100)));
+    const offset = Math.max(0, (page - 1) * limit);
     if (req.query.contactId) {
       clauses.push("e.contact_id = ?");
       params.push(req.query.contactId);
     }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const totalRow = await get(
+      `SELECT COUNT(*) AS total
+      FROM cashback_events e
+      LEFT JOIN contacts c ON c.id = e.contact_id
+      ${where}`,
+      params
+    );
     const rows = await all(
-      `SELECT e.*, c.name AS contact_name
+      `SELECT
+        e.id, e.cashback_id, e.contact_id, e.event_type, e.value, e.store,
+        e.seller, e.campaign, e.status, e.lost_value, e.expired_at, e.lost_at,
+        e.origin, e.ticket, e.nf, e.reason, e.notes, e.event_date, e.created_at,
+        c.name AS contact_name
       FROM cashback_events e
       LEFT JOIN contacts c ON c.id = e.contact_id
       ${where}
-      ORDER BY e.created_at DESC, e.id DESC`,
-      params
+      ORDER BY e.created_at DESC, e.id DESC
+      LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
     );
-    res.json(rows.map((row) => ({
+    res.setHeader("X-Total-Count", String(Number(totalRow?.total || 0)));
+    res.setHeader("X-Page", String(page));
+    res.setHeader("X-Page-Size", String(limit));
+    const payload = rows.map((row) => ({
       ...row,
       pin: ""
-    })));
+    }));
+    if (String(req.query.paged || req.query.pagination || "") === "1") {
+      res.json({
+        rows: payload,
+        pagination: {
+          page,
+          pageSize: limit,
+          total: Number(totalRow?.total || 0),
+          totalPages: Math.max(1, Math.ceil(Number(totalRow?.total || 0) / limit))
+        }
+      });
+      return;
+    }
+    res.json(payload);
   } catch (error) {
     res.status(500).json({ error: "Falha ao listar eventos de cashback." });
   }
@@ -21736,11 +21946,12 @@ app.get("/api/products", async (req, res) => {
     if (!canViewProductsCrud(req.user)) {
       return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de produtos." });
     }
-    const items = await listManualProducts(req.query || {});
+    const payload = await listManualProducts(req.query || {});
     res.json({
       success: true,
-      items,
-      summary: buildProductsSummary(items)
+      items: payload.items,
+      summary: payload.summary || buildProductsSummary(payload.items),
+      pagination: payload.pagination
     });
   } catch (error) {
     console.error("Erro ao listar produtos manuais:", error);

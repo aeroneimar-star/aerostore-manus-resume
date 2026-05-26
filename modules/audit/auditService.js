@@ -192,12 +192,37 @@ function buildAuditFilters(query = {}) {
 
 async function listAuditLogs(query = {}) {
   const { clauses, params } = buildAuditFilters(query);
-  const limit = Math.min(300, Math.max(25, Number(query.limit || 100)));
+  const limit = Math.min(300, Math.max(25, Number(query.limit || query.pageSize || query.page_size || 100)));
+  const page = Math.max(1, Number(query.page || 1));
+  const offset = Math.max(0, (page - 1) * limit);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  return all(
-    `SELECT * FROM audit_logs ${where} ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`,
-    [...params, limit]
+  const totalRow = await all(
+    `SELECT COUNT(*) AS total FROM audit_logs ${where}`,
+    params
   );
+  const rows = await all(
+    `SELECT
+      id, audit_id, created_at, user_id, user_name, user_email, user_role,
+      store_id, store_name, module, action, entity_type, entity_id, entity_label,
+      sale_id, customer_id, product_id, amount, previous_amount, new_amount,
+      before_json, after_json, metadata_json, reason, authorized_by, result,
+      message, source, ip, user_agent
+     FROM audit_logs ${where}
+     ORDER BY datetime(created_at) DESC, id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
+  const total = Number(totalRow?.[0]?.total || 0);
+  return {
+    rows,
+    total,
+    pagination: {
+      page,
+      pageSize: limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit))
+    }
+  };
 }
 
 module.exports = {
