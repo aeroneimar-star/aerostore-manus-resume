@@ -21983,3 +21983,12 @@ body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-r
     flex-direction: column;
   }
 }
+
+html body[data-auth-shell="authenticated"] #login-overlay.login-overlay,
+html body[data-auth-shell="authenticated"] .login-overlay#login-overlay {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  z-index: -1 !important;
+}
