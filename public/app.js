@@ -75,6 +75,8 @@ const state = {
     sourceType: "",
     storeOverride: "",
     importMode: "products_stock",
+    previewPage: 1,
+    previewPageSize: 50,
     lastResult: null,
     error: "",
     diagnostics: null
@@ -1148,6 +1150,10 @@ function canCreatePdvLabelProductFrontend() {
   return isCurrentUserManagerProfile() || hasAnyPermission("can_manage_products", "can_move_stock");
 }
 
+function canImportPdvTinyFrontend() {
+  return getCurrentUserRole() === "admin" || hasPermission("can_manage_products");
+}
+
 function canViewPdvOrdersFrontend() {
   return isCurrentUserManagerProfile() || hasAnyPermission("can_sell", "can_view_cash_register", "can_view_orders");
 }
@@ -1270,6 +1276,7 @@ const PATHNAME_SECTION_MAP = {
   "/pdv/trocas": "pdv-exchanges",
   "/pdv/orcamentos": "pdv-quotes",
   "/pdv/importacoes": "pdv-imports",
+  "/pdv/importações": "pdv-imports",
   "/pdv/testes": "pdv-dashboard",
   "/pdv/consumo": "pdv-dashboard",
   "/pdv/eventos": "pdv-dashboard"
@@ -1349,6 +1356,7 @@ const PDV_ROUTE_ITEMS = [
   { section: "pdv-products", label: "Produtos", route: "/pdv/produtos", visible: () => canViewPdvProductsFrontend() },
   { section: "pdv-customers", label: "Clientes", route: "/pdv/clientes", visible: () => canViewPdvCustomersFrontend() },
   { section: "pdv-stock", label: "Estoque", route: "/pdv/estoque", visible: () => canViewPdvStockFrontend() },
+  { section: "pdv-imports", label: "ImportaÃ§Ãµes", route: "/pdv/importacoes", visible: () => canImportPdvTinyFrontend() },
   { section: "pdv-reports", label: "Relatórios", route: "/pdv/relatorios", visible: () => canViewReports() || hasPermission("can_view_store_reports") },
   { section: "pdv-consolidation", label: "Consolidação", route: "/pdv/consolidacao", visible: () => canViewConsolidationMenu() },
   { section: "pdv-reservations", label: "Reservas", route: "/pdv/reservas", visible: () => canViewPdvReservationsFrontend() },
@@ -1360,14 +1368,16 @@ const SELLER_HIDDEN_PDV_MENU_SECTIONS = new Set([
   "pdv-stock",
   "pdv-reports",
   "pdv-consolidation",
-  "pdv-reservations"
+  "pdv-reservations",
+  "pdv-imports"
 ]);
 
 const SELLER_RESTRICTED_PDV_SECTIONS = new Set([
   "pdv-stock",
   "pdv-reports",
   "pdv-consolidation",
-  "pdv-reservations"
+  "pdv-reservations",
+  "pdv-imports"
 ]);
 
 function canAccessOfficialSection(sectionId = "") {
@@ -1407,6 +1417,9 @@ function canAccessOfficialSection(sectionId = "") {
   if (sectionId === "pdv-products") {
     return canViewPdvProductsFrontend();
   }
+  if (sectionId === "pdv-imports") {
+    return canImportPdvTinyFrontend();
+  }
   if (sectionId === "pdv-customers") {
     return canViewPdvCustomersFrontend();
   }
@@ -1422,7 +1435,7 @@ function canAccessOfficialSection(sectionId = "") {
   if (sectionId === "pdv-dashboard") {
     return canViewPdvDashboardFrontend();
   }
-  if (["pdv-sale", "pdv-quotes", "pdv-imports"].includes(sectionId)) {
+  if (["pdv-sale", "pdv-quotes"].includes(sectionId)) {
     return isCurrentUserManagerProfile() || hasPermission("can_sell");
   }
   return true;
@@ -11909,6 +11922,7 @@ function getPdvImportStoreOverrideOptions() {
 }
 
 const PDV_TINY_IMPORT_DESTINATION_STORE_IDS = ["vila_masc", "botanico"];
+const PDV_IMPORT_PREVIEW_PAGE_SIZES = [50, 100];
 
 function getPdvImportDestinationStoreOptions() {
   const allowedStores = toArray(state.currentUser?.allowed_stores || state.currentUser?.allowedStores || [])
@@ -11934,13 +11948,92 @@ function ensurePdvImportsState() {
   state.pdvImports.importMode = ["products_only", "stock_only"].includes(normalizeText(state.pdvImports.importMode || ""))
     ? normalizeText(state.pdvImports.importMode || "")
     : "products_stock";
+  state.pdvImports.previewPage = Math.max(1, Number.parseInt(state.pdvImports.previewPage || 1, 10) || 1);
+  state.pdvImports.previewPageSize = PDV_IMPORT_PREVIEW_PAGE_SIZES.includes(Number.parseInt(state.pdvImports.previewPageSize || 50, 10))
+    ? Number.parseInt(state.pdvImports.previewPageSize || 50, 10)
+    : 50;
   state.pdvImports.lastResult = state.pdvImports.lastResult && typeof state.pdvImports.lastResult === "object" ? state.pdvImports.lastResult : null;
   state.pdvImports.error = normalizeText(state.pdvImports.error || "");
   state.pdvImports.diagnostics = state.pdvImports.diagnostics && typeof state.pdvImports.diagnostics === "object" ? state.pdvImports.diagnostics : null;
 }
 
+function getPdvImportAppliedStoreLabel(summary = null, importState = state.pdvImports) {
+  return normalizeText(summary?.appliedStoreLabel || summary?.manualStoreOverrideLabel || "")
+    || formatStoreIdLabel(importState?.storeOverride || summary?.appliedStore || summary?.storeOverride || "");
+}
+
+function buildPdvImportStoreBanner(summary = null, importState = state.pdvImports) {
+  const storeLabel = getPdvImportAppliedStoreLabel(summary, importState);
+  const totalRows = Number(summary?.totalRows || 0);
+  const fileCount = toArray(summary?.fileSummaries).length || (importState?.fileName ? importState.fileName.split(",").filter(Boolean).length : 0);
+  return `
+    <div class="pdv-import-store-banner">
+      <div>
+        <span>Loja destino da importacao</span>
+        <strong>${escapeHtml(storeLabel || "Selecione a loja")}</strong>
+      </div>
+      <small>${summary ? escapeHtml(`${totalRows} linha(s) em ${fileCount || 1} arquivo(s). Estoque fica provisorio ate o inventario fisico.`) : "A loja destino e obrigatoria antes de gerar a previa."}</small>
+    </div>
+  `;
+}
+
+function buildPdvImportFileSummaryTable(summary = {}) {
+  const files = toArray(summary.fileSummaries);
+  if (!files.length) {
+    return "";
+  }
+  return `
+    <div class="pdv-import-file-panel">
+      <div class="pdv-import-section-title">
+        <strong>Arquivos do lote</strong>
+        <span>${escapeHtml(String(files.length))} arquivo(s) consolidados antes de aplicar.</span>
+      </div>
+      <div class="table-wrap pdv-import-file-table-wrap">
+        <table class="pdv-import-file-table">
+          <thead>
+            <tr><th>Arquivo</th><th>Linhas</th><th>SKUs</th><th>Duplicados</th><th>Negativos</th></tr>
+          </thead>
+          <tbody>
+            ${files.map((file) => {
+              const skus = file.uniqueSkus ?? file.uniqueSkuCount ?? file.productsWithSku ?? file.validRows ?? 0;
+              const duplicates = file.consolidatedDuplicateRows ?? file.duplicateRows ?? file.duplicatedRows ?? 0;
+              return `
+                <tr>
+                  <td><strong>${escapeHtml(file.file || file.name || "-")}</strong></td>
+                  <td>${escapeHtml(String(file.rows || file.totalRows || 0))}</td>
+                  <td>${escapeHtml(String(skus || 0))}</td>
+                  <td>${escapeHtml(String(duplicates || 0))}</td>
+                  <td><span class="tag ${Number(file.negativeStockRows || 0) > 0 ? "warning" : "success"}">${escapeHtml(String(file.negativeStockRows || 0))}</span></td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 function buildPdvImportSummaryCards(summary = {}) {
   const brands = toArray(summary.detectedBrands).slice(0, 6);
+  const uniqueSkus = summary.uniqueSkus ?? summary.uniqueSkuCount ?? summary.productsWithSku ?? 0;
+  const duplicates = toArray(summary.duplicatedSkusAcrossFiles).length || summary.duplicateRows || summary.duplicatedRows || 0;
+  return `
+    <div class="stats-grid pdv-import-summary-grid">
+      <article class="stat-card"><span>Total de linhas</span><strong>${escapeHtml(String(summary.totalRows || 0))}</strong><small>${escapeHtml(String(summary.validRows || 0))} validas para conferencia.</small></article>
+      <article class="stat-card"><span>SKUs unicos</span><strong>${escapeHtml(String(uniqueSkus || 0))}</strong><small>Base consolidada do lote.</small></article>
+      <article class="stat-card"><span>Duplicados</span><strong>${escapeHtml(String(duplicates || 0))}</strong><small>SKUs repetidos entre arquivos ou linhas.</small></article>
+      <article class="stat-card"><span>Produtos novos</span><strong>${escapeHtml(String(summary.newRows || 0))}</strong><small>Itens que ainda nao existem.</small></article>
+      <article class="stat-card"><span>Produtos existentes</span><strong>${escapeHtml(String(summary.updateRows || 0))}</strong><small>Itens que entram como atualizacao.</small></article>
+      <article class="stat-card"><span>Estoque positivo</span><strong>${escapeHtml(String(summary.productsWithPositiveStock || 0))}</strong><small>Saldo Tiny acima de zero.</small></article>
+      <article class="stat-card"><span>Estoque zero</span><strong>${escapeHtml(String(summary.productsWithZeroStock || 0))}</strong><small>Importavel como estoque provisorio.</small></article>
+      <article class="stat-card"><span>Estoque negativo</span><strong>${escapeHtml(String(summary.productsWithNegativeStock || 0))}</strong><small>${escapeHtml(`${summary.negativeStockImportableRows || 0} importavel(is) como divergencia.`)}</small></article>
+      <article class="stat-card"><span>Sem SKU</span><strong>${escapeHtml(String(summary.productsWithoutSku || 0))}</strong><small>Linhas que precisam de atencao.</small></article>
+      <article class="stat-card"><span>Sem preco</span><strong>${escapeHtml(String(summary.productsWithoutPrice || 0))}</strong><small>Conferencia antes do commit.</small></article>
+      ${brands.length ? `<article class="stat-card pdv-import-brand-card"><span>Marcas detectadas</span><strong>${escapeHtml(String(toArray(summary.detectedBrands).length))}</strong><small>${escapeHtml(brands.join(", "))}</small></article>` : ""}
+    </div>
+    ${summary.negativeStockMessage ? `<div class="pdv-import-callout warning"><strong>Estoque negativo importavel</strong><span>${escapeHtml(summary.negativeStockMessage)}</span></div>` : ""}
+  `;
   return `
     <div class="stats-grid pdv-import-summary-grid">
       <article class="stat-card"><span>Total de linhas</span><strong>${escapeHtml(String(summary.totalRows || 0))}</strong><small>${escapeHtml(String(summary.validRows || 0))} válidas no preview.</small></article>
@@ -11990,16 +12083,41 @@ function buildPdvImportPreviewRows(items = []) {
   `;
 }
 
-function buildPdvImportBatchPreviewRows(items = []) {
+function buildPdvImportBatchPreviewRows(items = [], options = {}) {
   if (!items.length) {
     return `<div class="empty-state compact"><strong>Nenhuma linha carregada ainda.</strong><span>Envie arquivos Tiny/Olist para auditar o lote antes do commit.</span></div>`;
   }
+  const pageSize = PDV_IMPORT_PREVIEW_PAGE_SIZES.includes(Number(options.pageSize || 50)) ? Number(options.pageSize || 50) : 50;
+  const totalItems = items.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const currentPage = Math.min(Math.max(1, Number(options.page || 1)), totalPages);
+  const startIndex = (currentPage - 1) * pageSize;
+  const visibleItems = items.slice(startIndex, startIndex + pageSize);
+  const firstRow = totalItems ? startIndex + 1 : 0;
+  const lastRow = Math.min(startIndex + pageSize, totalItems);
+  const totalRows = Number(options.totalRows || 0);
   return `
+    <div class="pdv-import-preview-toolbar">
+      <div>
+        <strong>Preview dos produtos</strong>
+        <span>Mostrando ${escapeHtml(String(firstRow))}-${escapeHtml(String(lastRow))} de ${escapeHtml(String(totalItems))} item(ns) retornados${totalRows > totalItems ? escapeHtml(` de ${totalRows} linha(s) do lote`) : ""}.</span>
+      </div>
+      <div class="pdv-import-pagination">
+        <label>Itens por pagina
+          <select data-pdv-import-page-size="true">
+            ${PDV_IMPORT_PREVIEW_PAGE_SIZES.map((size) => `<option value="${size}"${size === pageSize ? " selected" : ""}>${size}</option>`).join("")}
+          </select>
+        </label>
+        <button class="secondary-button small" type="button" data-pdv-import-page="${currentPage - 1}"${currentPage <= 1 ? " disabled" : ""}>Anterior</button>
+        <span>Pagina ${escapeHtml(String(currentPage))} de ${escapeHtml(String(totalPages))}</span>
+        <button class="secondary-button small" type="button" data-pdv-import-page="${currentPage + 1}"${currentPage >= totalPages ? " disabled" : ""}>Proxima</button>
+      </div>
+    </div>
     <div class="table-wrap">
       <table class="pdv-import-preview-table">
         <thead><tr><th>Arquivo</th><th>Produto</th><th>SKU</th><th>Preco</th><th>Estoque Tiny</th><th>Loja aplicada</th><th>Status</th><th>Pendencias</th></tr></thead>
         <tbody>
-          ${items.slice(0, 80).map((item) => `
+          ${visibleItems.map((item) => `
             <tr>
               <td>${escapeHtml(toArray(item.source_files).join(", ") || item.source_file || "-")}</td>
               <td><strong>${escapeHtml(item.nome || "-")}</strong><small>${escapeHtml(item.marca || item.categoria || "-")}</small></td>
@@ -12043,6 +12161,71 @@ function buildPdvImportCandidateRows(items = []) {
   `;
 }
 
+function escapePdvImportCsvValue(value = "") {
+  const text = normalizeText(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function exportPdvImportPreviewReport() {
+  ensurePdvImportsState();
+  const importState = state.pdvImports;
+  const summary = importState.summary || {};
+  const rows = toArray(importState.preview);
+  if (!rows.length) {
+    showFeedback("Gere uma previa antes de exportar o relatorio.", "error");
+    return false;
+  }
+  const storeLabel = getPdvImportAppliedStoreLabel(summary, importState);
+  const summaryRows = [
+    ["tipo", "campo", "valor"],
+    ["resumo", "loja_destino", storeLabel],
+    ["resumo", "total_linhas", summary.totalRows || 0],
+    ["resumo", "skus_unicos", summary.uniqueSkus ?? summary.uniqueSkuCount ?? summary.productsWithSku ?? 0],
+    ["resumo", "duplicados", toArray(summary.duplicatedSkusAcrossFiles).length || summary.duplicateRows || summary.duplicatedRows || 0],
+    ["resumo", "produtos_novos", summary.newRows || 0],
+    ["resumo", "produtos_existentes", summary.updateRows || 0],
+    ["resumo", "estoque_positivo", summary.productsWithPositiveStock || 0],
+    ["resumo", "estoque_zero", summary.productsWithZeroStock || 0],
+    ["resumo", "estoque_negativo", summary.productsWithNegativeStock || 0],
+    ["resumo", "sem_sku", summary.productsWithoutSku || 0],
+    ["resumo", "sem_preco", summary.productsWithoutPrice || 0],
+    ...toArray(summary.fileSummaries).map((file) => [
+      "arquivo",
+      file.file || file.name || "-",
+      `linhas=${file.rows || file.totalRows || 0}; skus=${file.uniqueSkus ?? file.uniqueSkuCount ?? file.productsWithSku ?? file.validRows ?? 0}; duplicados=${file.consolidatedDuplicateRows ?? file.duplicateRows ?? file.duplicatedRows ?? 0}; negativos=${file.negativeStockRows || 0}`
+    ])
+  ];
+  const itemHeaders = ["arquivo", "sku", "produto", "marca", "preco", "estoque_tiny", "loja_aplicada", "status", "pendencias"];
+  const itemRows = rows.map((item) => [
+    toArray(item.source_files).join(", ") || item.source_file || "",
+    item.sku || item.codigo_tiny || "",
+    item.nome || "",
+    item.marca || item.categoria || "",
+    item.preco_venda || "",
+    item.tiny_stock_quantity ?? item.imported_quantity_original ?? item.estoque ?? "",
+    item.store_label || "",
+    item.action || "",
+    toArray(item.pendencias).join(" | ")
+  ]);
+  const csv = [
+    ...summaryRows.map((row) => row.map(escapePdvImportCsvValue).join(";")),
+    "",
+    itemHeaders.map(escapePdvImportCsvValue).join(";"),
+    ...itemRows.map((row) => row.map(escapePdvImportCsvValue).join(";"))
+  ].join("\r\n");
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `previa-importacao-tiny-${normalizeText(storeLabel || "loja").replace(/\s+/g, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  showFeedback("Relatorio da previa exportado.");
+  return true;
+}
+
 function renderPdvImportsFront(container) {
   ensurePdvImportsState();
   const importState = state.pdvImports;
@@ -12063,6 +12246,8 @@ function renderPdvImportsFront(container) {
   const commitSummary = importState.lastResult?.summary
     ? `<div class="pdv-import-callout success"><strong>Importação concluída</strong><span>${escapeHtml(`${importState.lastResult.summary.imported || 0} produtos importados, ${importState.lastResult.summary.errors || 0} erro(s), ${importState.lastResult.summary.duplicates || 0} duplicidade(s).`)}</span></div>`
     : "";
+  const canCommitPreview = Boolean(importState.previewId && summary && Number(summary.validRows || 0) > 0 && !importState.commitLoading);
+  const hasPreviewRows = Boolean(toArray(importState.preview).length);
   container.innerHTML = buildPdvFrontShell({
     sectionId: "pdv-imports",
     title: "Importações",
@@ -12089,20 +12274,23 @@ function renderPdvImportsFront(container) {
             </label>
             <div class="action-row">
               <button class="secondary-button" type="submit"${importState.loading || !storeOptions.length ? " disabled" : ""}>${importState.loading ? "Gerando preview..." : "Gerar preview"}</button>
-              <button class="primary-button" type="button" data-pdv-import-commit="true"${importState.commitLoading || !importState.previewId ? " disabled" : ""}>${importState.commitLoading ? "Importando..." : "Confirmar importação"}</button>
+              <button class="secondary-button" type="button" data-pdv-import-export="true"${hasPreviewRows ? "" : " disabled"}>Exportar relatorio da previa</button>
+              <button class="primary-button" type="button" data-pdv-import-commit="true"${canCommitPreview ? "" : " disabled"}>${importState.commitLoading ? "Importando..." : "Aplicar importacao"}</button>
             </div>
           </form>
+          ${buildPdvImportStoreBanner(summary, importState)}
           ${importState.error ? `<div class="pdv-import-callout danger"><strong>Falha na leitura</strong><span>${escapeHtml(importState.error)}</span></div>` : ""}
           ${previewMeta}
           ${previewModeMeta}
           ${previewWarning}
           ${commitSummary}
           ${summary ? buildPdvImportSummaryCards(summary) : ""}
+          ${summary ? buildPdvImportFileSummaryTable(summary) : ""}
         </article>
         <div class="split-grid">
           <article class="panel">
             <div class="panel-header"><h3>Preview do arquivo</h3></div>
-            ${buildPdvImportBatchPreviewRows(importState.preview)}
+            ${buildPdvImportBatchPreviewRows(importState.preview, { page: importState.previewPage, pageSize: importState.previewPageSize, totalRows: summary?.totalRows || 0 })}
           </article>
           <article class="panel">
             <div class="panel-header"><h3>Candidatos Botânico após commit</h3></div>
@@ -12121,6 +12309,25 @@ function renderPdvImportsFront(container) {
   commitButton?.addEventListener("click", async (event) => {
     event.preventDefault();
     await commitPdvTinyImportPreview();
+  });
+  const exportButton = container.querySelector("[data-pdv-import-export]");
+  exportButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    exportPdvImportPreviewReport();
+  });
+  const pageSizeSelect = container.querySelector("[data-pdv-import-page-size]");
+  pageSizeSelect?.addEventListener("change", (event) => {
+    state.pdvImports.previewPageSize = Number.parseInt(event.target.value || "50", 10) || 50;
+    state.pdvImports.previewPage = 1;
+    renderPdvImportsFront(container);
+  });
+  Array.from(container.querySelectorAll("[data-pdv-import-page]")).forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const nextPage = Number.parseInt(button.dataset.pdvImportPage || "1", 10) || 1;
+      state.pdvImports.previewPage = Math.max(1, nextPage);
+      renderPdvImportsFront(container);
+    });
   });
 }
 
@@ -12154,6 +12361,7 @@ async function submitPdvTinyImportPreview(formElement) {
     ? normalizeText(importModeField?.value || "")
     : "products_stock";
   state.pdvImports.fileName = selectedFiles.map((file) => normalizeText(file.name || "")).filter(Boolean).join(", ");
+  state.pdvImports.previewPage = 1;
   const formData = new FormData(formElement || undefined);
   formData.delete("file");
   selectedFiles.forEach((file) => formData.append("file", file));
@@ -12187,7 +12395,10 @@ async function commitPdvTinyImportPreview() {
     showFeedback("Gere o preview antes de confirmar a importação.", "error");
     return;
   }
-  const confirmed = window.confirm("Confirmar aplicacao da importacao Tiny/Olist deste lote? O preview nao altera dados; esta etapa grava produtos/estoque provisoriamente na loja selecionada.");
+  const summary = state.pdvImports.summary || {};
+  const lineCount = Number(summary.validRows || summary.totalRows || toArray(state.pdvImports.preview).length || 0);
+  const storeLabel = getPdvImportAppliedStoreLabel(summary, state.pdvImports) || "loja selecionada";
+  const confirmed = window.confirm(`Voce esta prestes a importar ${lineCount} linhas para a loja ${storeLabel}.\n\nConfira a loja destino antes de continuar. O preview nao altera dados; esta etapa grava produtos/estoque provisoriamente.`);
   if (!confirmed) {
     showFeedback("Importacao cancelada antes da aplicacao.", "info");
     return;
@@ -15886,7 +16097,7 @@ function getSidebarMenuGroups() {
           { label: "Relatórios", route: "/pdv/relatorios" },
           { label: "Relatórios de Cashback", section: "cashback-reports" },
           { label: "Consolidação Estratégica", route: "/pdv/consolidacao", visible: canViewConsolidationMenu() },
-          { label: "Importações", section: "imports" },
+          { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() },
           { label: "AEROINTEL", route: "/aerointel", visible: canViewAerointelMenu() }
         ]
       },
@@ -15925,6 +16136,7 @@ function getSidebarMenuGroups() {
         title: "Gestão",
         items: [
           { label: "Relatórios da loja", route: "/pdv/relatorios", visible: hasPermission("can_view_reports") || hasPermission("can_view_store_reports") },
+          { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() },
           { label: "AEROINTEL", route: "/aerointel", visible: canViewAerointelMenu() },
           { label: "Loja / terminal", section: "settings", visible: hasPermission("can_manage_store_settings") || hasPermission("can_view_store_settings") }
         ]
