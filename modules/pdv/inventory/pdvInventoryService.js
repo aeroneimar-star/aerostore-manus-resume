@@ -111,6 +111,10 @@ function normalizeText(value = "") {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function pickFirstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
 function normalizeLookup(value = "") {
   return normalizeText(value)
     .normalize("NFD")
@@ -123,6 +127,32 @@ function normalizeLookup(value = "") {
 
 function normalizeDigits(value = "") {
   return String(value || "").replace(/\D/g, "");
+}
+
+function normalizeTinyYesNo(value = "", fallback = true) {
+  const normalized = normalizeLookup(value || "");
+  if (!normalized) return Boolean(fallback);
+  if (["sim", "s", "yes", "y", "true", "1"].includes(normalized)) return true;
+  if (["nao", "não", "n", "no", "false", "0"].includes(normalized)) return false;
+  return Boolean(fallback);
+}
+
+function normalizeTinyImportMode(value = "") {
+  const normalized = normalizeLookup(value || "");
+  if (["products_only", "produtos", "apenas_produtos", "produto", "products"].includes(normalized)) {
+    return "products_only";
+  }
+  if (["stock_only", "estoque", "apenas_estoque", "stock"].includes(normalized)) {
+    return "stock_only";
+  }
+  return "products_stock";
+}
+
+function formatTinyImportModeLabel(value = "") {
+  const mode = normalizeTinyImportMode(value);
+  if (mode === "products_only") return "Importar apenas produtos";
+  if (mode === "stock_only") return "Atualizar estoque provisório conforme Tiny";
+  return "Importar produtos + estoque provisório";
 }
 
 function toNumber(value) {
@@ -1012,6 +1042,12 @@ function saveInventoryAudit(action, payload = {}, user = {}) {
 }
 
 function updateRecordAvailabilityStatus(record) {
+  const stockStatus = normalizeLookup(record?.estoque_status || record?.stock_status || "");
+  const inventoryStatus = normalizeLookup(record?.inventory_status || "");
+  if (stockStatus.startsWith("provisional") || inventoryStatus === "pending_count") {
+    record.status = "ACTIVE";
+    return record;
+  }
   const available = roundQty(record.available_qty);
   if (available < 0) {
     record.status = "NEGATIVE";
@@ -2005,6 +2041,18 @@ function searchInventoryProducts(query = "", { storeId = "" } = {}) {
       reserved_qty: roundQty(item.reserved_qty),
       unavailable_qty: roundQty(item.unavailable_qty),
       store_id: item.store_id,
+      status: item.status || "",
+      tiny_stock_quantity: item.tiny_stock_quantity,
+      imported_quantity_original: item.imported_quantity_original,
+      estoque_status: item.estoque_status || "",
+      inventory_status: item.inventory_status || "",
+      sale_enabled: item.sale_enabled,
+      parent_sku: item.parent_sku || "",
+      gtin_tributavel: item.gtin_tributavel || "",
+      unidade: item.unidade || "",
+      ncm: item.ncm || "",
+      origem_fiscal: item.origem_fiscal || "",
+      import_batch_id: item.import_batch_id || "",
       availability_label: getProductAvailabilityLabel(item.available_qty),
       media_id: item.media_id || null,
       photo_preview_url: item.photo_preview_url || "",
@@ -2038,6 +2086,8 @@ function normalizeManualProductPayload(payload = {}) {
   const codigoInterno = normalizeText(payload.codigo_interno || payload.codigoInterno || payload.internal_code || payload.internalCode || labelCode || "");
   const productId = normalizeText(payload.product_id || payload.productId || "") || buildId("PRD");
   const codigoPrincipal = normalizeText(payload.codigo || codigoInterno || codigoTiny || sku || productId);
+  const originalImportedQty = roundQty(pickFirstDefined(payload.imported_quantity_original, payload.tiny_stock_quantity, payload.estoque_original, payload.estoque, payload.estoque_inicial, payload.available_qty, 0));
+  const operationalQty = roundQty(pickFirstDefined(payload.estoque, payload.available_qty, Math.max(0, originalImportedQty), 0));
   return {
     product_id: productId,
     codigo: codigoPrincipal,
@@ -2056,11 +2106,13 @@ function normalizeManualProductPayload(payload = {}) {
     cor: normalizeText(payload.cor || ""),
     tamanho: normalizeText(payload.tamanho || ""),
     grade: normalizeText(payload.grade || ""),
-    preco_venda: roundMoneyLike(payload.preco_venda || payload.sale_price || payload.salePrice || payload.price || 0),
+    preco_venda: roundMoneyLike(pickFirstDefined(payload.preco_venda, payload.sale_price, payload.salePrice, payload.price, 0)),
     original_price: roundMoneyLike(payload.original_price || payload.originalPrice || payload.preco_original || payload.precoOriginal || 0),
-    sale_price: roundMoneyLike(payload.sale_price || payload.salePrice || payload.preco_venda || payload.price || 0),
+    sale_price: roundMoneyLike(pickFirstDefined(payload.sale_price, payload.salePrice, payload.preco_venda, payload.price, 0)),
     preco_custo: roundMoneyLike(payload.preco_custo || payload.cost_price || payload.cost || 0),
-    estoque: roundQty(payload.estoque || payload.estoque_inicial || payload.available_qty || 0),
+    estoque: operationalQty,
+    tiny_stock_quantity: originalImportedQty,
+    imported_quantity_original: originalImportedQty,
     store_id: normalizeStoreId(payload.store_id || payload.origem_estoque || payload.storeId || DEFAULT_STORE_ID),
     status: normalizeText(payload.status || "ACTIVE") || "ACTIVE",
     observacao: normalizeText(payload.observacao || ""),
@@ -2071,6 +2123,19 @@ function normalizeManualProductPayload(payload = {}) {
     source: normalizeText(payload.source || "PDV_MANUAL") || "PDV_MANUAL",
     origem: normalizeText(payload.origem || payload.origin || ""),
     estoque_status: normalizeText(payload.estoque_status || payload.stock_status || ""),
+    inventory_status: normalizeText(payload.inventory_status || payload.inventoryStatus || ""),
+    import_batch_id: normalizeText(payload.import_batch_id || payload.importBatchId || ""),
+    imported_at: normalizeText(payload.imported_at || payload.importedAt || ""),
+    imported_by: normalizeText(payload.imported_by || payload.importedBy || ""),
+    import_mode: normalizeTinyImportMode(payload.import_mode || payload.importMode || ""),
+    stock_import_enabled: payload.stock_import_enabled === false ? false : payload.stockImportEnabled !== false,
+    sale_enabled: typeof payload.sale_enabled === "boolean" ? payload.sale_enabled : normalizeTinyYesNo(payload.sale_enabled ?? payload.permitir_venda, true),
+    parent_sku: normalizeText(payload.parent_sku || payload.parentSku || payload.codigo_pai || ""),
+    gtin_tributavel: normalizeDigits(payload.gtin_tributavel || payload.gtinTributavel || ""),
+    unidade: normalizeText(payload.unidade || payload.unit || ""),
+    ncm: normalizeText(payload.ncm || payload.classificacao_fiscal || payload.classificacaoFiscal || ""),
+    origem_fiscal: normalizeText(payload.origem_fiscal || payload.origemFiscal || ""),
+    cest: normalizeText(payload.cest || ""),
     loja_confirmacao: normalizeStoreId(payload.loja_confirmacao || payload.confirmation_store_id || payload.store_id || payload.storeId || ""),
     usuario_confirmacao: normalizeText(payload.usuario_confirmacao || payload.confirmation_user || payload.confirmed_by || ""),
     data_confirmacao: normalizeText(payload.data_confirmacao || payload.confirmed_at || "")
@@ -2204,6 +2269,8 @@ function persistInventoryProduct(payload = {}, user = {}, options = {}) {
     preco_custo: nextDatasetRow.preco_custo,
     store_id: desiredStoreId,
     available_qty: normalized.estoque,
+    tiny_stock_quantity: nextDatasetRow.tiny_stock_quantity,
+    imported_quantity_original: nextDatasetRow.imported_quantity_original,
     observacao: nextDatasetRow.observacao,
     media_id: nextDatasetRow.media_id,
     photo_preview_url: nextDatasetRow.photo_preview_url,
@@ -2212,6 +2279,19 @@ function persistInventoryProduct(payload = {}, user = {}, options = {}) {
     source: nextDatasetRow.source,
     origem: nextDatasetRow.origem,
     estoque_status: nextDatasetRow.estoque_status,
+    inventory_status: nextDatasetRow.inventory_status,
+    import_batch_id: nextDatasetRow.import_batch_id,
+    imported_at: nextDatasetRow.imported_at,
+    imported_by: nextDatasetRow.imported_by,
+    import_mode: nextDatasetRow.import_mode,
+    stock_import_enabled: nextDatasetRow.stock_import_enabled,
+    sale_enabled: nextDatasetRow.sale_enabled,
+    parent_sku: nextDatasetRow.parent_sku,
+    gtin_tributavel: nextDatasetRow.gtin_tributavel,
+    unidade: nextDatasetRow.unidade,
+    ncm: nextDatasetRow.ncm,
+    origem_fiscal: nextDatasetRow.origem_fiscal,
+    cest: nextDatasetRow.cest,
     loja_confirmacao: nextDatasetRow.loja_confirmacao,
     usuario_confirmacao: nextDatasetRow.usuario_confirmacao,
     data_confirmacao: nextDatasetRow.data_confirmacao,
@@ -2388,9 +2468,16 @@ function inferTinyImportPieceType(item = {}) {
 function mapTinyGroupedItemToInventoryPayload(item = {}, options = {}) {
   const storeInfo = mapTinyImportStoreInfoForImport(item, options);
   const sizeList = Array.isArray(item.sizes) ? item.sizes.map((value) => normalizeText(value)).filter(Boolean) : [];
-  const normalizedPrice = roundQty(item.price);
+  const importMode = normalizeTinyImportMode(options.importMode || "");
+  const shouldImportStock = importMode !== "products_only";
+  const originalPrice = roundQty(item.price);
+  const promotionalPrice = roundQty(item.promotional_price);
+  const normalizedPrice = promotionalPrice > 0 ? promotionalPrice : originalPrice;
   const normalizedCost = roundQty(item.cost);
-  const normalizedStock = roundQty(item.estoque_total);
+  const originalTinyStock = roundQty(item.estoque_total);
+  const operationalStock = shouldImportStock ? Math.max(0, originalTinyStock) : 0;
+  const stockStatus = originalTinyStock < 0 ? "provisional_divergent" : "provisional";
+  const importedAt = nowIso();
   const payload = {
     nome: normalizeText(item.commercial_name || item.name || ""),
     descricao: normalizeText(item.short_description || ""),
@@ -2401,20 +2488,43 @@ function mapTinyGroupedItemToInventoryPayload(item = {}, options = {}) {
     cor: normalizeText(item.color || ""),
     tamanho: sizeList.length === 1 ? sizeList[0] : "",
     grade: sizeList.length > 1 ? sizeList.join(", ") : "",
-    sku: normalizeText(item.sku || ""),
-    codigo_tiny: normalizeText(item.codigo || item.tiny_id || ""),
-    codigo_etiqueta: normalizeText(item.codigo_etiqueta || ""),
+    sku: normalizeText(item.sku || item.codigo || ""),
+    codigo: normalizeText(item.codigo || item.sku || ""),
+    codigo_tiny: normalizeText(item.codigo || item.sku || ""),
+    tiny_id: normalizeText(item.tiny_id || ""),
+    codigo_etiqueta: normalizeText(item.codigo_etiqueta || item.sku || item.codigo || ""),
     ean: normalizeDigits(item.ean || item.codigo_barras || item.gtin || ""),
-    codigo_interno: normalizeText(item.codigo_interno || ""),
+    codigo_barras: normalizeDigits(item.ean || item.codigo_barras || item.gtin || ""),
+    gtin_tributavel: normalizeDigits(item.gtin_tributavel || ""),
+    codigo_interno: normalizeText(item.codigo_interno || item.sku || item.codigo || ""),
     preco_venda: normalizedPrice,
+    original_price: originalPrice,
+    sale_price: normalizedPrice,
     preco_custo: normalizedCost,
-    estoque: normalizedStock,
+    estoque: operationalStock,
+    tiny_stock_quantity: originalTinyStock,
+    imported_quantity_original: originalTinyStock,
     origem_estoque: storeInfo.store_id,
+    store_id: storeInfo.store_id,
     status: "ACTIVE",
+    sale_enabled: normalizeTinyYesNo(item.permitir_venda, true),
+    parent_sku: normalizeText(item.codigo_pai || ""),
+    unidade: normalizeText(item.unidade || ""),
+    ncm: normalizeText(item.ncm || ""),
+    origem_fiscal: normalizeText(item.origem_fiscal || ""),
+    cest: normalizeText(item.cest || ""),
+    origem: "tiny_import",
+    estoque_status: stockStatus,
+    inventory_status: "pending_count",
+    imported_at: importedAt,
+    imported_by: normalizeText(options.importedBy || ""),
+    import_batch_id: normalizeText(options.importBatchId || ""),
+    import_mode: importMode,
+    stock_import_enabled: shouldImportStock,
     observacao: normalizeText(item.short_description || ""),
     photo_preview_url: Array.isArray(item.photos) ? normalizeText(item.photos[0] || "") : "",
     foto: Array.isArray(item.photos) ? normalizeText(item.photos[0] || "") : "",
-    source: "TINY_IMPORT"
+    source: "tiny_import"
   };
   return {
     payload,
@@ -2448,6 +2558,15 @@ function buildTinyInventoryPendingIssues(item = {}, mapped = {}, duplicate = nul
   if (!payload.foto) {
     pendingIssues.push("Sem foto");
   }
+  if (!payload.marca) {
+    pendingIssues.push("Sem marca");
+  }
+  if (!payload.sale_enabled) {
+    pendingIssues.push("Tiny marcou como nao permitido nas vendas");
+  }
+  if (["inativo", "inactive", "hidden", "oculto"].includes(normalizeLookup(item.status || item.status_original || ""))) {
+    pendingIssues.push("Tiny marcou como inativo");
+  }
   if (mapped.storeInfo?.pendingReason) {
     pendingIssues.push("Estoque pendente de auditoria");
   }
@@ -2457,8 +2576,14 @@ function buildTinyInventoryPendingIssues(item = {}, mapped = {}, duplicate = nul
   if (duplicate) {
     pendingIssues.push("Possível duplicidade");
   }
-  if (Number.isFinite(Number(item.estoque_total)) && Number(item.estoque_total) < 0) {
-    pendingIssues.push("Estoque negativo");
+  if (normalizeArray(item.source_files).filter(Boolean).length > 1) {
+    pendingIssues.push("SKU repetido entre arquivos: consolidado no lote");
+  }
+  const originalTinyStock = Number(item.estoque_total);
+  if (Number.isFinite(originalTinyStock) && originalTinyStock < 0) {
+    pendingIssues.push("Estoque negativo Tiny: divergencia provisoria");
+  } else if (Number.isFinite(originalTinyStock) && originalTinyStock === 0) {
+    pendingIssues.push("Estoque zerado provisoriamente");
   }
   return {
     pendingIssues,
@@ -2490,6 +2615,10 @@ function applyTinyDuplicateImportToStore(entry = {}, user = {}) {
     });
   }
   const beforeSnapshot = cloneInventorySnapshot(targetInventoryRecord);
+  const shouldImportStock = entry.payload?.stock_import_enabled !== false;
+  const nextAvailableQty = shouldImportStock
+    ? roundQty(entry.payload?.estoque || 0)
+    : roundQty(targetInventoryRecord.available_qty ?? sourceRecord.available_qty ?? sourceRecord.estoque ?? 0);
   Object.assign(targetInventoryRecord, {
     product_id: normalizeText(sourceRecord.product_id || targetInventoryRecord.product_id || ""),
     sku: normalizeText(entry.payload?.sku || sourceRecord.sku || sourceRecord.codigo || ""),
@@ -2511,13 +2640,30 @@ function applyTinyDuplicateImportToStore(entry = {}, user = {}) {
     preco_venda: roundQty(entry.payload?.preco_venda || sourceRecord.preco_venda || 0),
     preco_custo: roundQty(entry.payload?.preco_custo || sourceRecord.preco_custo || 0),
     store_id: desiredStoreId,
-    available_qty: roundQty(entry.payload?.estoque || 0),
+    available_qty: nextAvailableQty,
+    tiny_stock_quantity: roundQty(entry.payload?.tiny_stock_quantity ?? sourceRecord.tiny_stock_quantity ?? entry.payload?.estoque ?? 0),
+    imported_quantity_original: roundQty(entry.payload?.imported_quantity_original ?? sourceRecord.imported_quantity_original ?? entry.payload?.estoque ?? 0),
     observacao: normalizeText(entry.payload?.observacao || sourceRecord.observacao || ""),
     media_id: Number(entry.payload?.media_id || sourceRecord.media_id || 0) || null,
     photo_preview_url: normalizeText(entry.payload?.photo_preview_url || sourceRecord.photo_preview_url || ""),
     media_url: normalizeText(entry.payload?.media_url || sourceRecord.media_url || ""),
     foto: normalizeText(entry.payload?.foto || sourceRecord.foto || ""),
     source: normalizeText(entry.payload?.source || sourceRecord.source || "TINY_IMPORT") || "TINY_IMPORT",
+    origem: normalizeText(entry.payload?.origem || sourceRecord.origem || "tiny_import") || "tiny_import",
+    estoque_status: normalizeText(entry.payload?.estoque_status || sourceRecord.estoque_status || "provisional") || "provisional",
+    inventory_status: normalizeText(entry.payload?.inventory_status || sourceRecord.inventory_status || "pending_count") || "pending_count",
+    import_batch_id: normalizeText(entry.payload?.import_batch_id || sourceRecord.import_batch_id || ""),
+    imported_at: normalizeText(entry.payload?.imported_at || sourceRecord.imported_at || nowIso()),
+    imported_by: normalizeText(entry.payload?.imported_by || sourceRecord.imported_by || user?.name || user?.email || ""),
+    import_mode: normalizeText(entry.payload?.import_mode || sourceRecord.import_mode || ""),
+    stock_import_enabled: shouldImportStock,
+    sale_enabled: typeof entry.payload?.sale_enabled === "boolean" ? entry.payload.sale_enabled : sourceRecord.sale_enabled,
+    parent_sku: normalizeText(entry.payload?.parent_sku || sourceRecord.parent_sku || ""),
+    gtin_tributavel: normalizeDigits(entry.payload?.gtin_tributavel || sourceRecord.gtin_tributavel || ""),
+    unidade: normalizeText(entry.payload?.unidade || sourceRecord.unidade || ""),
+    ncm: normalizeText(entry.payload?.ncm || sourceRecord.ncm || ""),
+    origem_fiscal: normalizeText(entry.payload?.origem_fiscal || sourceRecord.origem_fiscal || ""),
+    cest: normalizeText(entry.payload?.cest || sourceRecord.cest || ""),
     status: normalizeText(entry.payload?.status || sourceRecord.status || "ACTIVE") || "ACTIVE",
     last_movement_at: nowIso()
   });
@@ -2531,7 +2677,7 @@ function applyTinyDuplicateImportToStore(entry = {}, user = {}) {
     codigo: targetInventoryRecord.codigo,
     nome: targetInventoryRecord.nome,
     store_id: targetInventoryRecord.store_id,
-    quantity: roundQty(entry.payload?.estoque || 0),
+    quantity: shouldImportStock ? roundQty(entry.payload?.estoque || 0) : 0,
     direction: "IN",
     reference_type: "TINY_IMPORT",
     reference_id: targetInventoryRecord.product_id,
@@ -2553,7 +2699,7 @@ function applyTinyDuplicateImportToStore(entry = {}, user = {}) {
 function getTinyInventoryImportStatus(item = {}, analysis = {}) {
   const originalStatus = normalizeLookup(item.status || item.status_original || "");
   if (["inativo", "inactive", "hidden", "oculto"].includes(originalStatus)) {
-    return "INACTIVE";
+    return "PENDING_REVIEW";
   }
   if (analysis.pendingIssues?.length) {
     return "PENDING_REVIEW";
@@ -2570,16 +2716,28 @@ function buildTinyInventoryPreviewRow(item = {}, options = {}) {
   const comparableIdentifiers = buildProductComparableIdentifiers(normalizedPayload);
   const duplicate = findDuplicateProductByIdentifiers(datasetRows, inventoryRows, normalizedPayload);
   const currentLineNumber = item.lineNumbers?.[0] || item.line || 0;
+  const requestedImportMode = normalizeTinyImportMode(options.importMode || "");
+  const currentSourceFiles = normalizeArray(item.source_files).filter(Boolean);
   let duplicateInFile = false;
+  let duplicateBetweenFiles = false;
   comparableIdentifiers.forEach((entry) => {
     if (!entry.value) {
       return;
     }
-    const firstSeenLine = Number(fileIdentifierMap.get(entry.value) || 0);
-    if (firstSeenLine && firstSeenLine !== currentLineNumber) {
+    const firstSeen = fileIdentifierMap.get(entry.value) || null;
+    const firstSeenLine = Number(firstSeen && typeof firstSeen === "object" ? firstSeen.line : firstSeen || 0);
+    const firstSeenFiles = normalizeArray(firstSeen && typeof firstSeen === "object" ? firstSeen.sourceFiles : []).filter(Boolean);
+    const sharesSourceFile = currentSourceFiles.length && firstSeenFiles.length
+      ? currentSourceFiles.some((file) => firstSeenFiles.includes(file))
+      : true;
+    if (firstSeen && (!sharesSourceFile || firstSeenLine !== currentLineNumber)) {
       duplicateInFile = true;
+      duplicateBetweenFiles = !sharesSourceFile;
     } else {
-      fileIdentifierMap.set(entry.value, currentLineNumber);
+      fileIdentifierMap.set(entry.value, {
+        line: currentLineNumber,
+        sourceFiles: currentSourceFiles
+      });
     }
   });
   const issueAnalysis = buildTinyInventoryPendingIssues(item, mapped, duplicate, duplicateInFile);
@@ -2591,6 +2749,18 @@ function buildTinyInventoryPreviewRow(item = {}, options = {}) {
     ...issueAnalysis,
     pendingIssues: normalizedPendingIssues
   };
+  if (duplicateBetweenFiles) {
+    normalizedIssueAnalysis.pendingIssues = [
+      ...normalizedIssueAnalysis.pendingIssues,
+      "Duplicado entre arquivos do lote"
+    ];
+  }
+  if (requestedImportMode === "stock_only" && !duplicate) {
+    normalizedIssueAnalysis.blockingIssues = [
+      ...normalizedIssueAnalysis.blockingIssues,
+      "Produto novo ignorado no modo apenas estoque"
+    ];
+  }
   const status = getTinyInventoryImportStatus(item, normalizedIssueAnalysis);
   const shouldSkipDuplicate = Boolean(duplicateInFile);
   const canImport = !normalizedIssueAnalysis.blockingIssues.length && !shouldSkipDuplicate;
@@ -2604,7 +2774,7 @@ function buildTinyInventoryPreviewRow(item = {}, options = {}) {
       duplicateInFile ? "Linha com identificador repetido dentro do arquivo Tiny." : ""
     ].filter(Boolean).join(" | "))
   };
-  const action = issueAnalysis.blockingIssues.length
+  const action = normalizedIssueAnalysis.blockingIssues.length
     ? "error"
     : shouldSkipDuplicate
       ? "duplicate"
@@ -2620,8 +2790,19 @@ function buildTinyInventoryPreviewRow(item = {}, options = {}) {
     ean: payload.ean,
     codigo_interno: payload.codigo_interno,
     preco_venda: payload.preco_venda,
+    original_price: payload.original_price,
+    sale_price: payload.sale_price,
     preco_custo: payload.preco_custo,
     estoque: payload.estoque,
+    tiny_stock_quantity: payload.tiny_stock_quantity,
+    imported_quantity_original: payload.imported_quantity_original,
+    estoque_status: payload.estoque_status,
+    inventory_status: payload.inventory_status,
+    sale_enabled: payload.sale_enabled,
+    parent_sku: payload.parent_sku,
+    gtin_tributavel: payload.gtin_tributavel,
+    source_file: normalizeArray(item.source_files).filter(Boolean)[0] || "",
+    source_files: item.source_files || [],
     categoria: payload.categoria,
     marca: payload.marca,
     cor: payload.cor,
@@ -2630,10 +2811,13 @@ function buildTinyInventoryPreviewRow(item = {}, options = {}) {
     status,
     action,
     import_mode: canUpdateExisting ? "update" : "create",
+    requested_import_mode: requestedImportMode,
+    requested_import_mode_label: formatTinyImportModeLabel(requestedImportMode),
     can_import: canImport,
     pendencias: [...normalizedIssueAnalysis.blockingIssues, ...normalizedIssueAnalysis.pendingIssues],
     duplicate,
     duplicate_in_file: duplicateInFile,
+    duplicate_between_files: duplicateBetweenFiles,
     store_id: payload.store_id,
     store_label: mapped.storeInfo?.store_label || formatStoreLabel(payload.store_id || DEFAULT_STORE_ID),
     detected_store_id: mapped.storeInfo?.detected_store_id || "",
@@ -2654,15 +2838,43 @@ function previewTinyInventoryImport(groupedItems = [], options = {}) {
     datasetRows,
     inventoryRows,
     fileIdentifierMap,
-    manualStoreOverride: options.manualStoreOverride || ""
+    manualStoreOverride: options.manualStoreOverride || "",
+    importBatchId: options.importBatchId || "",
+    importedBy: options.importedBy || "",
+    importMode: options.importMode || ""
   }));
   const brandSet = new Set();
   const detectedStoreSet = new Set();
   const appliedStoreSet = new Set();
+  const fileSummaryMap = new Map();
   preview.forEach((item) => {
     if (normalizeText(item.marca || "")) brandSet.add(normalizeText(item.marca || ""));
     if (normalizeText(item.detected_store_label || "")) detectedStoreSet.add(normalizeText(item.detected_store_label || ""));
     if (normalizeText(item.store_label || "")) appliedStoreSet.add(normalizeText(item.store_label || ""));
+    const sourceFiles = normalizeArray(item.source_files).filter(Boolean);
+    const files = sourceFiles.length ? sourceFiles : ["Arquivo nao informado"];
+    files.forEach((fileName) => {
+      const fileKey = normalizeText(fileName || "Arquivo nao informado");
+      const current = fileSummaryMap.get(fileKey) || {
+        file: fileKey,
+        rows: 0,
+        validRows: 0,
+        positiveStockRows: 0,
+        zeroStockRows: 0,
+        negativeStockRows: 0,
+        duplicateRows: 0,
+        consolidatedDuplicateRows: 0
+      };
+      const tinyQty = toNumber(item.tiny_stock_quantity ?? item.estoque ?? 0);
+      current.rows += 1;
+      if (item.can_import) current.validRows += 1;
+      if (tinyQty > 0) current.positiveStockRows += 1;
+      if (tinyQty === 0) current.zeroStockRows += 1;
+      if (tinyQty < 0) current.negativeStockRows += 1;
+      if (item.action === "duplicate") current.duplicateRows += 1;
+      if (item.duplicate_between_files || sourceFiles.length > 1) current.consolidatedDuplicateRows += 1;
+      fileSummaryMap.set(fileKey, current);
+    });
   });
   const manualOverride = resolveTinyImportManualStoreOverride(options.manualStoreOverride || "");
   const summary = {
@@ -2676,16 +2888,34 @@ function previewTinyInventoryImport(groupedItems = [], options = {}) {
     invalidRows: preview.filter((item) => item.action === "error").length,
     importedRows: 0,
     skippedRows: 0,
-    productsWithPositiveStock: preview.filter((item) => toNumber(item.estoque || 0) > 0).length,
-    productsWithZeroStock: preview.filter((item) => toNumber(item.estoque || 0) <= 0).length,
+    productsWithPositiveStock: preview.filter((item) => toNumber(item.tiny_stock_quantity ?? item.estoque ?? 0) > 0).length,
+    productsWithZeroStock: preview.filter((item) => toNumber(item.tiny_stock_quantity ?? item.estoque ?? 0) === 0).length,
+    productsWithNegativeStock: preview.filter((item) => toNumber(item.tiny_stock_quantity ?? item.estoque ?? 0) < 0).length,
+    negativeStockImportableRows: preview.filter((item) => toNumber(item.tiny_stock_quantity ?? item.estoque ?? 0) < 0 && item.can_import).length,
+    provisionalStockRows: preview.filter((item) => ["provisional", "provisional_divergent"].includes(normalizeText(item.estoque_status || ""))).length,
+    provisionalDivergentRows: preview.filter((item) => normalizeText(item.estoque_status || "") === "provisional_divergent").length,
     productsWithSku: preview.filter((item) => normalizeText(item.sku || "")).length,
     productsWithoutPrice: preview.filter((item) => item.pendencias.includes("Sem preço")).length,
     productsWithoutIdentifier: preview.filter((item) => item.pendencias.includes("Sem identificador")).length,
     productsWithoutSku: preview.filter((item) => item.pendencias.includes("Sem SKU")).length,
     productsWithoutEan: preview.filter((item) => item.pendencias.includes("Sem EAN")).length,
     productsWithoutEtiqueta: preview.filter((item) => item.pendencias.includes("Sem etiqueta")).length,
+    productsWithoutBrand: preview.filter((item) => item.pendencias.includes("Sem marca")).length,
     productsWithoutPhoto: preview.filter((item) => item.pendencias.includes("Sem foto")).length,
     pendingAuditStock: preview.filter((item) => item.pendencias.includes("Estoque pendente de auditoria")).length,
+    stockPositiveTotal: roundQty(preview.reduce((sum, item) => {
+      const qty = toNumber(item.tiny_stock_quantity ?? item.estoque ?? 0);
+      return qty > 0 ? sum + qty : sum;
+    }, 0)),
+    stockZeroTotal: preview.filter((item) => toNumber(item.tiny_stock_quantity ?? item.estoque ?? 0) === 0).length,
+    stockNegativeTotal: roundQty(preview.reduce((sum, item) => {
+      const qty = toNumber(item.tiny_stock_quantity ?? item.estoque ?? 0);
+      return qty < 0 ? sum + qty : sum;
+    }, 0)),
+    provisionalStockTotal: roundQty(preview.reduce((sum, item) => sum + toNumber(item.estoque || 0), 0)),
+    negativeStockMessage: preview.some((item) => toNumber(item.tiny_stock_quantity ?? item.estoque ?? 0) < 0)
+      ? "Estoque negativo no Tiny será importado como divergência provisória. O produto continuará ativo e poderá ser vendido mediante confirmação física durante o inventário."
+      : "",
     detectedBrands: Array.from(brandSet).sort((a, b) => a.localeCompare(b, "pt-BR")),
     detectedStores: Array.from(detectedStoreSet).sort((a, b) => a.localeCompare(b, "pt-BR")),
     appliedStores: Array.from(appliedStoreSet).sort((a, b) => a.localeCompare(b, "pt-BR")),
@@ -2696,7 +2926,12 @@ function previewTinyInventoryImport(groupedItems = [], options = {}) {
     overrideAppliedRows: preview.filter((item) => item.override_applied).length,
     productsBoundToAppliedStore: manualOverride
       ? preview.filter((item) => normalizeStoreId(item.store_id || "") === manualOverride.store_id).length
-      : 0
+      : 0,
+    importMode: normalizeTinyImportMode(options.importMode || ""),
+    importModeLabel: formatTinyImportModeLabel(options.importMode || ""),
+    stockOnlySkippedNewRows: preview.filter((item) => item.pendencias.includes("Produto novo ignorado no modo apenas estoque")).length,
+    duplicatedSkusAcrossFiles: preview.filter((item) => item.duplicate_between_files || normalizeArray(item.source_files).filter(Boolean).length > 1).length,
+    fileSummaries: Array.from(fileSummaryMap.values()).sort((a, b) => a.file.localeCompare(b.file, "pt-BR"))
   };
   return {
     preview,
@@ -2705,7 +2940,11 @@ function previewTinyInventoryImport(groupedItems = [], options = {}) {
 }
 
 function commitTinyInventoryImport(groupedItems = [], user = {}, options = {}) {
-  const { preview, summary: previewSummary } = previewTinyInventoryImport(groupedItems, options);
+  const { preview, summary: previewSummary } = previewTinyInventoryImport(groupedItems, {
+    ...options,
+    importedBy: options.importedBy || user?.name || user?.email || "",
+    importBatchId: options.importBatchId || ""
+  });
   const result = {
     totalRows: previewSummary.totalRows,
     imported: 0,

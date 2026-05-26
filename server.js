@@ -9569,6 +9569,20 @@ const TINY_VITRINE_FIELD_ALIASES = {
 TINY_VITRINE_FIELD_ALIASES.codigo_etiqueta.push("cod etiqueta", "cod.", "codigo da tag", "código da tag");
 TINY_VITRINE_FIELD_ALIASES.codigo_interno.push("cod interno", "cod.", "codigo da tag", "código da tag");
 
+TINY_VITRINE_FIELD_ALIASES.sku.push("código (sku)");
+TINY_VITRINE_FIELD_ALIASES.codigo.push("código", "código (sku)");
+TINY_VITRINE_FIELD_ALIASES.codigo_etiqueta.push("codigo (sku)", "código (sku)", "código etiqueta", "código da etiqueta");
+TINY_VITRINE_FIELD_ALIASES.codigo_interno.push("codigo (sku)", "código (sku)", "código interno", "código sistema");
+TINY_VITRINE_FIELD_ALIASES.codigo_pai.push("código pai", "código do pai");
+TINY_VITRINE_FIELD_ALIASES.ean.push("código de barras");
+TINY_VITRINE_FIELD_ALIASES.gtin_tributavel = ["gtin/ean tributavel", "gtin/ean tributável", "gtin tributavel", "gtin tributável", "ean tributavel", "ean tributável"];
+TINY_VITRINE_FIELD_ALIASES.unidade = ["unidade", "un", "unit"];
+TINY_VITRINE_FIELD_ALIASES.ncm = ["classificacao fiscal", "classificação fiscal", "ncm"];
+TINY_VITRINE_FIELD_ALIASES.origem_fiscal = ["origem", "origem fiscal"];
+TINY_VITRINE_FIELD_ALIASES.cest = ["cest"];
+TINY_VITRINE_FIELD_ALIASES.formato_produto = ["tipo do produto", "formato", "formato produto"];
+TINY_VITRINE_FIELD_ALIASES.permitir_venda.push("permitir inclusão nas vendas", "vendável");
+
 for (let index = 1; index <= 10; index += 1) {
   TINY_VITRINE_FIELD_ALIASES[`foto_externa_${index}`] = [
     `url imagem externa ${index}`,
@@ -9694,6 +9708,16 @@ const PDV_TINY_IMPORT_FIELD_DEFINITIONS = [
   { key: "loja", label: "Loja / origem do estoque" }
 ];
 
+PDV_TINY_IMPORT_FIELD_DEFINITIONS.splice(6, 0, { key: "gtin_tributavel", label: "GTIN/EAN tributavel" });
+PDV_TINY_IMPORT_FIELD_DEFINITIONS.splice(9, 0, { key: "preco_promocional", label: "Preco promocional" });
+PDV_TINY_IMPORT_FIELD_DEFINITIONS.splice(17, 0, { key: "codigo_pai", label: "Codigo do pai" });
+PDV_TINY_IMPORT_FIELD_DEFINITIONS.splice(18, 0, { key: "variacoes", label: "Variacoes" });
+PDV_TINY_IMPORT_FIELD_DEFINITIONS.splice(20, 0, { key: "permitir_venda", label: "Permitir inclusao nas vendas" });
+PDV_TINY_IMPORT_FIELD_DEFINITIONS.splice(21, 0, { key: "unidade", label: "Unidade" });
+PDV_TINY_IMPORT_FIELD_DEFINITIONS.splice(22, 0, { key: "ncm", label: "Classificacao fiscal" });
+PDV_TINY_IMPORT_FIELD_DEFINITIONS.splice(23, 0, { key: "origem_fiscal", label: "Origem fiscal" });
+PDV_TINY_IMPORT_FIELD_DEFINITIONS.splice(24, 0, { key: "cest", label: "CEST" });
+
 function buildTinyPdvImportSuggestedMapping(headerAnalysis = {}) {
   const matched = headerAnalysis?.matchedFields || {};
   return {
@@ -9703,15 +9727,24 @@ function buildTinyPdvImportSuggestedMapping(headerAnalysis = {}) {
     sku: matched.sku?.original || "",
     codigo_etiqueta: matched.codigo_etiqueta?.original || matched.codigo?.original || matched.sku?.original || "",
     ean: matched.ean?.original || "",
+    gtin_tributavel: matched.gtin_tributavel?.original || "",
     codigo_interno: matched.codigo_interno?.original || matched.codigo?.original || matched.sku?.original || "",
     preco: matched.preco?.original || "",
+    preco_promocional: matched.preco_promocional?.original || "",
     preco_custo: matched.preco_custo?.original || "",
     estoque_total: matched.estoque_total?.original || "",
     categoria: matched.categoria?.original || "",
     marca: matched.marca?.original || "",
     cor: matched.cor?.original || "",
     tamanhos: matched.tamanhos?.original || "",
+    codigo_pai: matched.codigo_pai?.original || "",
+    variacoes: matched.variacoes?.original || "",
     status: matched.status?.original || "",
+    permitir_venda: matched.permitir_venda?.original || "",
+    unidade: matched.unidade?.original || "",
+    ncm: matched.ncm?.original || "",
+    origem_fiscal: matched.origem_fiscal?.original || "",
+    cest: matched.cest?.original || "",
     foto_1: matched.foto_1?.original || "",
     loja: matched.loja?.original || ""
   };
@@ -9956,13 +9989,15 @@ function normalizeTinyGroupedProduct(row = {}) {
 
   return {
     line: Number(row.__line || 0),
+    source_file: String(row.__source_file || "").trim(),
     tiny_id: String(getTinyImportField(row, "tiny_id") || "").trim(),
-    sku: String(getTinyImportField(row, "sku") || "").trim(),
-    codigo: String(getTinyImportField(row, "codigo") || "").trim(),
-    codigo_etiqueta: String(getTinyImportField(row, "codigo_etiqueta") || "").trim(),
+    sku: String(getTinyImportField(row, "sku") || getTinyImportField(row, "codigo") || "").trim(),
+    codigo: String(getTinyImportField(row, "codigo") || getTinyImportField(row, "sku") || "").trim(),
+    codigo_etiqueta: String(getTinyImportField(row, "codigo_etiqueta") || getTinyImportField(row, "sku") || getTinyImportField(row, "codigo") || "").trim(),
     codigo_pai: String(getTinyImportField(row, "codigo_pai") || "").trim(),
-    codigo_interno: String(getTinyImportField(row, "codigo_interno") || "").trim(),
+    codigo_interno: String(getTinyImportField(row, "codigo_interno") || getTinyImportField(row, "sku") || getTinyImportField(row, "codigo") || "").trim(),
     ean: String(getTinyImportField(row, "ean") || "").replace(/\D/g, ""),
+    gtin_tributavel: String(getTinyImportField(row, "gtin_tributavel") || "").replace(/\D/g, ""),
     name,
     commercial_name: normalizeTinyCommercialName(commercial, name),
     category,
@@ -9976,6 +10011,11 @@ function normalizeTinyGroupedProduct(row = {}) {
     estoque_total: stock,
     fornecedor: String(getTinyImportField(row, "fornecedor") || "").trim(),
     localizacao: String(getTinyImportField(row, "localizacao") || "").trim(),
+    unidade: String(getTinyImportField(row, "unidade") || "").trim(),
+    ncm: String(getTinyImportField(row, "ncm") || "").trim(),
+    origem_fiscal: String(getTinyImportField(row, "origem_fiscal") || "").trim(),
+    cest: String(getTinyImportField(row, "cest") || "").trim(),
+    formato_produto: String(getTinyImportField(row, "formato_produto") || "").trim(),
     store: String(getTinyImportField(row, "loja") || "").trim(),
     priority: normalizeAiProductPriority(getTinyImportField(row, "prioridade") || "media"),
     status: normalizeTinyImportStatus(getTinyImportField(row, "status") || "ativo"),
@@ -10024,6 +10064,7 @@ function groupTinyVitrineImportRows(rows = [], options = {}) {
     const key = buildTinyGroupingKey(item, options);
     const current = grouped.get(key) || {
       key,
+      source_files: new Set(),
       lineNumbers: [],
       tiny_id: item.tiny_id,
       sku: item.sku,
@@ -10032,6 +10073,7 @@ function groupTinyVitrineImportRows(rows = [], options = {}) {
       codigo_pai: item.codigo_pai,
       codigo_interno: item.codigo_interno,
       ean: item.ean,
+      gtin_tributavel: item.gtin_tributavel,
       name: item.name,
       commercial_name: item.commercial_name,
       category: item.category,
@@ -10045,6 +10087,11 @@ function groupTinyVitrineImportRows(rows = [], options = {}) {
       estoque_total: 0,
       fornecedor: item.fornecedor,
       localizacao: item.localizacao,
+      unidade: item.unidade,
+      ncm: item.ncm,
+      origem_fiscal: item.origem_fiscal,
+      cest: item.cest,
+      formato_produto: item.formato_produto,
       store: item.store,
       priority: item.priority,
       status: item.status,
@@ -10059,6 +10106,7 @@ function groupTinyVitrineImportRows(rows = [], options = {}) {
     };
 
     current.lineNumbers.push(item.line);
+    if (item.source_file) current.source_files.add(item.source_file);
     item.sizes.forEach((size) => current.sizes.add(size));
     parseDelimitedValues(item.tags).forEach((tag) => current.tags.add(tag));
     current.estoque_total += Number(item.estoque_total || 0);
@@ -10077,10 +10125,16 @@ function groupTinyVitrineImportRows(rows = [], options = {}) {
     if (!current.category && item.category) current.category = item.category;
     if (!current.codigo_interno && item.codigo_interno) current.codigo_interno = item.codigo_interno;
     if (!current.ean && item.ean) current.ean = item.ean;
+    if (!current.gtin_tributavel && item.gtin_tributavel) current.gtin_tributavel = item.gtin_tributavel;
     if (!current.gender && item.gender) current.gender = item.gender;
     if (!current.color && item.color) current.color = item.color;
     if (!current.fornecedor && item.fornecedor) current.fornecedor = item.fornecedor;
     if (!current.localizacao && item.localizacao) current.localizacao = item.localizacao;
+    if (!current.unidade && item.unidade) current.unidade = item.unidade;
+    if (!current.ncm && item.ncm) current.ncm = item.ncm;
+    if (!current.origem_fiscal && item.origem_fiscal) current.origem_fiscal = item.origem_fiscal;
+    if (!current.cest && item.cest) current.cest = item.cest;
+    if (!current.formato_produto && item.formato_produto) current.formato_produto = item.formato_produto;
     if (!current.store && item.store) current.store = item.store;
     if (!current.status_original && item.status_original) current.status_original = item.status_original;
     if (!current.permitir_venda && item.permitir_venda) current.permitir_venda = item.permitir_venda;
@@ -10094,6 +10148,7 @@ function groupTinyVitrineImportRows(rows = [], options = {}) {
 
   return Array.from(grouped.values()).map((item) => ({
     ...item,
+    source_files: Array.from(item.source_files || []),
     sizes: Array.from(item.sizes),
     tags: Array.from(item.tags).join(", "),
     fotos_extras: item.photos.slice(3).join(", ")
@@ -22473,8 +22528,12 @@ app.get("/api/ia/vitrine-import/history", requireManager, async (req, res) => {
   }
 });
 
-app.post("/api/pdv/inventory/import/tiny/preview", requireAnyPermission(["can_manage_products"], "Seu perfil nao pode importar produtos ou estoque."), tinyImportUpload.single("file"), async (req, res) => {
-  if (!req.file) {
+app.post("/api/pdv/inventory/import/tiny/preview", requireAnyPermission(["can_manage_products"], "Seu perfil nao pode importar produtos ou estoque."), tinyImportUpload.fields([{ name: "file", maxCount: 20 }, { name: "files", maxCount: 20 }]), async (req, res) => {
+  const uploadedFiles = [
+    ...(req.files?.file || []),
+    ...(req.files?.files || [])
+  ];
+  if (!uploadedFiles.length) {
     return res.status(400).json({ error: "Formato não suportado. Envie uma planilha .xlsx, .xls ou .csv exportada do Tiny." });
   }
 
@@ -22482,34 +22541,60 @@ app.post("/api/pdv/inventory/import/tiny/preview", requireAnyPermission(["can_ma
     cleanupPdvTinyProductImportPreviews();
     const storeAccess = await assertPdvTinyImportStoreAccess(req, req.body?.storeOverride || req.body?.store_id || req.body?.storeId || "");
     if (!storeAccess.ok) {
-      if (req.file?.path && fs.existsSync(req.file.path)) {
-        moveTinyImportFile(req.file.path, tinyVitrineImportErrorsDir);
-      }
+      uploadedFiles.forEach((file) => {
+        if (file?.path && fs.existsSync(file.path)) {
+          moveTinyImportFile(file.path, tinyVitrineImportErrorsDir);
+        }
+      });
       return res.status(storeAccess.status || 400).json({ error: storeAccess.error, store_id: storeAccess.storeId || "" });
     }
     const manualStoreOverride = storeAccess.storeId;
-    const parsed = readTinyVitrineWorkbookFromFile(req.file.path);
-    const mapping = parseTinyPdvImportMapping(req.body?.mapping || "", parsed.headerAnalysis || {});
-    const mappedRows = applyTinyPdvImportMapping(parsed.rows || [], mapping);
-    const groupedItems = groupTinyVitrineImportRows(mappedRows, {
-      sourceType: parsed.sourceType || "spreadsheet",
-      groupByParent: false
-    });
-    const previewPayload = previewTinyInventoryImport(groupedItems, {
-      manualStoreOverride
-    });
+    const requestedImportMode = normalizeLookup(req.body?.importMode || req.body?.import_mode || "");
+    const importMode = requestedImportMode === "products_only" || requestedImportMode === "stock_only"
+      ? requestedImportMode
+      : "products_stock";
     const previewId = crypto.randomUUID();
+    const parsedFiles = uploadedFiles.map((file) => {
+      const parsed = readTinyVitrineWorkbookFromFile(file.path);
+      const mapping = parseTinyPdvImportMapping(req.body?.mapping || "", parsed.headerAnalysis || {});
+      const sourceFileName = sanitizeFilename(file.originalname || file.filename || "");
+      const mappedRows = applyTinyPdvImportMapping(parsed.rows || [], mapping)
+        .map((row) => ({ ...row, __source_file: sourceFileName }));
+      return {
+        file,
+        parsed,
+        mapping,
+        sourceFileName,
+        groupedItems: groupTinyVitrineImportRows(mappedRows, {
+          sourceType: parsed.sourceType || "spreadsheet",
+          groupByParent: false
+        })
+      };
+    });
+    const groupedItems = parsedFiles.flatMap((entry) => entry.groupedItems || []);
+    const parsed = parsedFiles[0]?.parsed || {};
+    const mapping = parsedFiles[0]?.mapping || {};
+    const previewPayload = previewTinyInventoryImport(groupedItems, {
+      manualStoreOverride,
+      importBatchId: previewId,
+      importedBy: req.user?.name || req.user?.email || "",
+      importMode
+    });
     pdvTinyProductImportPreviews.set(previewId, {
       createdAt: Date.now(),
       createdBy: req.user?.id || 0,
-      filePath: req.file.path,
-      filename: req.file.filename,
-      originalFilename: sanitizeFilename(req.file.originalname),
+      filePath: uploadedFiles[0]?.path || "",
+      filePaths: uploadedFiles.map((file) => file.path).filter(Boolean),
+      filename: uploadedFiles[0]?.filename || "",
+      filenames: uploadedFiles.map((file) => file.filename || "").filter(Boolean),
+      originalFilename: parsedFiles[0]?.sourceFileName || "",
+      originalFilenames: parsedFiles.map((entry) => entry.sourceFileName).filter(Boolean),
       worksheetName: parsed.worksheetName,
       sourceType: parsed.sourceType || "spreadsheet",
       delimiter: parsed.delimiter || "",
       groupedItems,
       manualStoreOverride,
+      importMode,
       storeId: storeAccess.storeId,
       storeLabel: storeAccess.storeLabel,
       mapping,
@@ -22527,10 +22612,13 @@ app.post("/api/pdv/inventory/import/tiny/preview", requireAnyPermission(["can_ma
       result: "success",
       includeBody: false,
       metadata: {
-        filename: sanitizeFilename(req.file.originalname),
+        filename: parsedFiles[0]?.sourceFileName || "",
+        filenames: parsedFiles.map((entry) => entry.sourceFileName).filter(Boolean),
         source_type: parsed.sourceType || "spreadsheet",
         total_rows: Number(previewPayload.summary?.totalRows || 0),
         valid_rows: Number(previewPayload.summary?.validRows || 0),
+        negative_stock_rows: Number(previewPayload.summary?.productsWithNegativeStock || 0),
+        import_mode: importMode,
         products_bound_to_store: Number(previewPayload.summary?.productsBoundToAppliedStore || 0)
       }
     });
@@ -22549,17 +22637,21 @@ app.post("/api/pdv/inventory/import/tiny/preview", requireAnyPermission(["can_ma
       summary: previewPayload.summary,
       preview: (previewPayload.preview || []).slice(0, 300),
       storeOverride: manualStoreOverride,
+      importMode,
       store_id: storeAccess.storeId,
       store_label: storeAccess.storeLabel,
+      files: parsedFiles.map((entry) => entry.sourceFileName).filter(Boolean),
       diagnostics: {
         selectedSheet: parsed.worksheetName || "",
         missingMinimum: parsed.headerAnalysis?.missingMinimum || []
       }
     });
   } catch (error) {
-    if (req.file?.path && fs.existsSync(req.file.path)) {
-      moveTinyImportFile(req.file.path, tinyVitrineImportErrorsDir);
-    }
+    uploadedFiles.forEach((file) => {
+      if (file?.path && fs.existsSync(file.path)) {
+        moveTinyImportFile(file.path, tinyVitrineImportErrorsDir);
+      }
+    });
     console.error("Erro ao gerar preview Tiny do PDV:", error);
     res.status(400).json({
       error: error.message || "Não foi possível importar a planilha. Verifique o arquivo e tente novamente.",
@@ -22570,6 +22662,7 @@ app.post("/api/pdv/inventory/import/tiny/preview", requireAnyPermission(["can_ma
 
 app.post("/api/pdv/inventory/import/tiny/commit", requireAnyPermission(["can_manage_products"], "Seu perfil nao pode importar produtos ou estoque."), async (req, res) => {
   let filePath = "";
+  let filePaths = [];
   try {
     cleanupPdvTinyProductImportPreviews();
     const previewId = String(req.body?.previewId || "").trim();
@@ -22585,17 +22678,23 @@ app.post("/api/pdv/inventory/import/tiny/commit", requireAnyPermission(["can_man
       return res.status(storeAccess.status || 400).json({ error: storeAccess.error, store_id: storeAccess.storeId || "" });
     }
     filePath = preview.filePath;
+    filePaths = Array.isArray(preview.filePaths) && preview.filePaths.length ? preview.filePaths : [filePath].filter(Boolean);
     const payload = commitTinyInventoryImport(preview.groupedItems || [], req.user || {}, {
-      manualStoreOverride: storeAccess.storeId
+      manualStoreOverride: storeAccess.storeId,
+      importBatchId: previewId,
+      importedBy: req.user?.name || req.user?.email || "",
+      importMode: preview.importMode || ""
     });
-    if (filePath && fs.existsSync(filePath)) {
-      moveTinyImportFile(filePath, payload.errors ? tinyVitrineImportErrorsDir : tinyVitrineImportProcessedDir);
-    }
+    filePaths.forEach((targetPath) => {
+      if (targetPath && fs.existsSync(targetPath)) {
+        moveTinyImportFile(targetPath, payload.errors ? tinyVitrineImportErrorsDir : tinyVitrineImportProcessedDir);
+      }
+    });
     pdvTinyProductImportPreviews.delete(previewId);
     await recordAuditEvent({
       req,
       module: "pdv_inventory",
-      action: "tiny_import_committed",
+      action: "tiny_import_applied",
       entityType: "pdv_tiny_import_preview",
       entityId: previewId,
       storeId: storeAccess.storeId,
@@ -22604,11 +22703,14 @@ app.post("/api/pdv/inventory/import/tiny/commit", requireAnyPermission(["can_man
       includeBody: false,
       metadata: {
         filename: preview.originalFilename || preview.filename || "",
+        filenames: preview.originalFilenames || [],
         source_type: preview.sourceType || "",
         import_batch_id: previewId,
         total_rows: Number(payload.totalRows || 0),
         imported: Number(payload.imported || 0),
         pending: Number(payload.pending || 0),
+        negative_stock_rows: Number(payload.previewSummary?.productsWithNegativeStock || 0),
+        import_mode: preview.importMode || payload.previewSummary?.importMode || "",
         duplicates: Number(payload.duplicates || 0),
         errors: Number(payload.errors || 0)
       }
@@ -22629,9 +22731,11 @@ app.post("/api/pdv/inventory/import/tiny/commit", requireAnyPermission(["can_man
       errorRows: payload.errorRows || []
     });
   } catch (error) {
-    if (filePath && fs.existsSync(filePath)) {
-      moveTinyImportFile(filePath, tinyVitrineImportErrorsDir);
-    }
+    filePaths.forEach((targetPath) => {
+      if (targetPath && fs.existsSync(targetPath)) {
+        moveTinyImportFile(targetPath, tinyVitrineImportErrorsDir);
+      }
+    });
     console.error("Erro ao concluir importação Tiny do PDV:", error);
     res.status(500).json({
       error: error.message || "Não foi possível importar a planilha. Verifique o arquivo e tente novamente."

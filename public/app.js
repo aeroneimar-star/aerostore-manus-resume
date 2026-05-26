@@ -74,6 +74,7 @@ const state = {
     worksheetName: "",
     sourceType: "",
     storeOverride: "",
+    importMode: "products_stock",
     lastResult: null,
     error: "",
     diagnostics: null
@@ -11930,6 +11931,9 @@ function ensurePdvImportsState() {
   state.pdvImports.worksheetName = normalizeText(state.pdvImports.worksheetName || "");
   state.pdvImports.sourceType = normalizeText(state.pdvImports.sourceType || "");
   state.pdvImports.storeOverride = normalizeText(state.pdvImports.storeOverride || "").toLowerCase();
+  state.pdvImports.importMode = ["products_only", "stock_only"].includes(normalizeText(state.pdvImports.importMode || ""))
+    ? normalizeText(state.pdvImports.importMode || "")
+    : "products_stock";
   state.pdvImports.lastResult = state.pdvImports.lastResult && typeof state.pdvImports.lastResult === "object" ? state.pdvImports.lastResult : null;
   state.pdvImports.error = normalizeText(state.pdvImports.error || "");
   state.pdvImports.diagnostics = state.pdvImports.diagnostics && typeof state.pdvImports.diagnostics === "object" ? state.pdvImports.diagnostics : null;
@@ -11943,10 +11947,19 @@ function buildPdvImportSummaryCards(summary = {}) {
       <article class="stat-card"><span>Novos / atualizar</span><strong>${escapeHtml(`${summary.newRows || 0} / ${summary.updateRows || 0}`)}</strong><small>Produtos novos e itens que entram como atualização de loja.</small></article>
       <article class="stat-card"><span>Estoque positivo / zero</span><strong>${escapeHtml(`${summary.productsWithPositiveStock || 0} / ${summary.productsWithZeroStock || 0}`)}</strong><small>Saldo útil para leitura operacional.</small></article>
       <article class="stat-card"><span>Com SKU / sem SKU</span><strong>${escapeHtml(`${summary.productsWithSku || 0} / ${summary.productsWithoutSku || 0}`)}</strong><small>Conferência rápida de identificação comercial.</small></article>
+      <article class="stat-card"><span>Estoque negativo</span><strong>${escapeHtml(String(summary.productsWithNegativeStock || 0))}</strong><small>${escapeHtml(`${summary.negativeStockImportableRows || 0} importável(is) como divergência provisória.`)}</small></article>
+      <article class="stat-card"><span>Estoque provisório</span><strong>${escapeHtml(String(summary.provisionalStockRows || 0))}</strong><small>${escapeHtml(`Divergentes: ${summary.provisionalDivergentRows || 0}. Saldo operacional: ${summary.provisionalStockTotal || 0}.`)}</small></article>
       <article class="stat-card"><span>Loja detectada</span><strong>${escapeHtml(summary.detectedStoreLabel || "Não informada")}</strong><small>${escapeHtml(toArray(summary.detectedStores).join(", ") || "O arquivo não trouxe loja preenchida.")}</small></article>
       <article class="stat-card"><span>Loja aplicada</span><strong>${escapeHtml(summary.appliedStoreLabel || "Usando arquivo")}</strong><small>${escapeHtml(summary.manualStoreOverrideLabel ? `${summary.productsBoundToAppliedStore || 0} produtos serão vinculados a esta loja.` : "Sem override manual neste preview.")}</small></article>
       ${brands.length ? `<article class="stat-card pdv-import-brand-card"><span>Marcas detectadas</span><strong>${escapeHtml(String(toArray(summary.detectedBrands).length))}</strong><small>${escapeHtml(brands.join(", "))}</small></article>` : ""}
     </div>
+    ${summary.negativeStockMessage ? `<div class="pdv-import-callout warning"><strong>Estoque negativo importável</strong><span>${escapeHtml(summary.negativeStockMessage)}</span></div>` : ""}
+    ${toArray(summary.fileSummaries).length ? `
+      <div class="pdv-import-callout">
+        <strong>Resumo por arquivo</strong>
+        <span>${toArray(summary.fileSummaries).map((file) => `${escapeHtml(file.file || "-")}: ${escapeHtml(String(file.rows || 0))} linha(s), ${escapeHtml(String(file.negativeStockRows || 0))} negativo(s), ${escapeHtml(String(file.consolidatedDuplicateRows || 0))} SKU(s) consolidado(s)`).join(" | ")}</span>
+      </div>
+    ` : ""}
   `;
 }
 
@@ -11964,11 +11977,38 @@ function buildPdvImportPreviewRows(items = []) {
               <td><strong>${escapeHtml(item.nome || "-")}</strong><small>${escapeHtml(item.marca || item.categoria || "-")}</small></td>
               <td>${escapeHtml(item.sku || item.codigo_tiny || "-")}</td>
               <td>${currency(item.preco_venda || 0)}</td>
-              <td>${escapeHtml(String(toNumber(item.estoque || 0)))}</td>
+              <td><strong>${escapeHtml(String(toNumber(item.tiny_stock_quantity ?? item.imported_quantity_original ?? item.estoque ?? 0)))}</strong><small>${escapeHtml(item.estoque_status === "provisional_divergent" ? "Divergência provisória" : "Provisório Tiny")}</small></td>
               <td>${escapeHtml(item.detected_store_label || item.raw_store || "Não informada")}</td>
               <td>${escapeHtml(item.store_label || "-")}</td>
               <td><span class="tag ${item.can_import ? "success" : "warning"}">${escapeHtml(item.action || "-")}</span></td>
-              <td>${escapeHtml(toArray(item.pendencias).slice(0, 3).join(" • ") || "-")}</td>
+              <td>${escapeHtml(toArray(item.pendencias).slice(0, 4).join(" • ") || "-")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function buildPdvImportBatchPreviewRows(items = []) {
+  if (!items.length) {
+    return `<div class="empty-state compact"><strong>Nenhuma linha carregada ainda.</strong><span>Envie arquivos Tiny/Olist para auditar o lote antes do commit.</span></div>`;
+  }
+  return `
+    <div class="table-wrap">
+      <table class="pdv-import-preview-table">
+        <thead><tr><th>Arquivo</th><th>Produto</th><th>SKU</th><th>Preco</th><th>Estoque Tiny</th><th>Loja aplicada</th><th>Status</th><th>Pendencias</th></tr></thead>
+        <tbody>
+          ${items.slice(0, 80).map((item) => `
+            <tr>
+              <td>${escapeHtml(toArray(item.source_files).join(", ") || item.source_file || "-")}</td>
+              <td><strong>${escapeHtml(item.nome || "-")}</strong><small>${escapeHtml(item.marca || item.categoria || "-")}</small></td>
+              <td>${escapeHtml(item.sku || item.codigo_tiny || "-")}</td>
+              <td>${currency(item.preco_venda || 0)}</td>
+              <td><strong>${escapeHtml(String(toNumber(item.tiny_stock_quantity ?? item.imported_quantity_original ?? item.estoque ?? 0)))}</strong><small>${escapeHtml(item.estoque_status === "provisional_divergent" ? "Divergencia provisoria" : "Provisorio Tiny")}</small></td>
+              <td>${escapeHtml(item.store_label || "-")}</td>
+              <td><span class="tag ${item.can_import ? "success" : "warning"}">${escapeHtml(item.action || "-")}</span></td>
+              <td>${escapeHtml(toArray(item.pendencias).slice(0, 4).join(" | ") || "-")}</td>
             </tr>
           `).join("")}
         </tbody>
@@ -12007,6 +12047,9 @@ function renderPdvImportsFront(container) {
   ensurePdvImportsState();
   const importState = state.pdvImports;
   const summary = importState.summary || null;
+  const previewModeMeta = summary?.importModeLabel
+    ? `<div class="pdv-import-meta">Modo: <strong>${escapeHtml(summary.importModeLabel)}</strong></div>`
+    : "";
   const storeOptions = getPdvImportDestinationStoreOptions();
   if (!storeOptions.some((option) => normalizeText(option.value || "") === normalizeText(importState.storeOverride || ""))) {
     importState.storeOverride = storeOptions.length === 1 ? storeOptions[0].value : "";
@@ -12030,11 +12073,18 @@ function renderPdvImportsFront(container) {
         <article class="panel">
           <div class="panel-header"><h3>Importação Tiny / Vitrine</h3></div>
           <form class="pdv-import-form" data-pdv-import-preview-form="true">
-            <label>Arquivo Tiny/Olist<input type="file" name="file" accept=".xlsx,.xls,.csv" /></label>
+            <label>Arquivo Tiny/Olist<input type="file" name="file" accept=".xlsx,.xls,.csv" multiple /></label>
             <label>Loja/depósito deste arquivo
               <select name="storeOverride" required${storeOptions.length ? "" : " disabled"}>
                 ${storeOptions.length > 1 ? `<option value="">Selecione a loja destino</option>` : ""}
                 ${storeOptions.map((option) => `<option value="${escapeHtml(option.value)}"${normalizeText(importState.storeOverride || "") === normalizeText(option.value) ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+              </select>
+            </label>
+            <label>Modo de importacao
+              <select name="importMode">
+                <option value="products_stock"${importState.importMode === "products_stock" ? " selected" : ""}>Importar produtos + estoque provisorio</option>
+                <option value="products_only"${importState.importMode === "products_only" ? " selected" : ""}>Importar apenas produtos</option>
+                <option value="stock_only"${importState.importMode === "stock_only" ? " selected" : ""}>Atualizar estoque provisorio conforme Tiny</option>
               </select>
             </label>
             <div class="action-row">
@@ -12044,6 +12094,7 @@ function renderPdvImportsFront(container) {
           </form>
           ${importState.error ? `<div class="pdv-import-callout danger"><strong>Falha na leitura</strong><span>${escapeHtml(importState.error)}</span></div>` : ""}
           ${previewMeta}
+          ${previewModeMeta}
           ${previewWarning}
           ${commitSummary}
           ${summary ? buildPdvImportSummaryCards(summary) : ""}
@@ -12051,7 +12102,7 @@ function renderPdvImportsFront(container) {
         <div class="split-grid">
           <article class="panel">
             <div class="panel-header"><h3>Preview do arquivo</h3></div>
-            ${buildPdvImportPreviewRows(importState.preview)}
+            ${buildPdvImportBatchPreviewRows(importState.preview)}
           </article>
           <article class="panel">
             <div class="panel-header"><h3>Candidatos Botânico após commit</h3></div>
@@ -12084,8 +12135,10 @@ async function submitPdvTinyImportPreview(formElement) {
   ensurePdvImportsState();
   const fileInput = formElement?.querySelector('input[name="file"]');
   const storeOverrideField = formElement?.querySelector('select[name="storeOverride"]');
-  const selectedFile = fileInput?.files?.[0];
-  if (!selectedFile) {
+  const importModeField = formElement?.querySelector('select[name="importMode"]');
+  const selectedFiles = Array.from(fileInput?.files || []);
+  const selectedFile = selectedFiles[0];
+  if (!selectedFiles.length) {
     showFeedback("Selecione um arquivo .xlsx, .xls ou .csv do Tiny/Olist.", "error");
     return;
   }
@@ -12097,10 +12150,15 @@ async function submitPdvTinyImportPreview(formElement) {
   state.pdvImports.loading = true;
   state.pdvImports.error = "";
   state.pdvImports.storeOverride = selectedStore;
-  state.pdvImports.fileName = normalizeText(selectedFile.name || "");
+  state.pdvImports.importMode = ["products_only", "stock_only"].includes(normalizeText(importModeField?.value || ""))
+    ? normalizeText(importModeField?.value || "")
+    : "products_stock";
+  state.pdvImports.fileName = selectedFiles.map((file) => normalizeText(file.name || "")).filter(Boolean).join(", ");
   const formData = new FormData(formElement || undefined);
-  formData.set("file", selectedFile);
+  formData.delete("file");
+  selectedFiles.forEach((file) => formData.append("file", file));
   formData.set("storeOverride", state.pdvImports.storeOverride || "");
+  formData.set("importMode", state.pdvImports.importMode || "products_stock");
   const container = document.getElementById("pdv-imports-content");
   if (container) renderPdvImportsFront(container);
   try {
@@ -12110,6 +12168,7 @@ async function submitPdvTinyImportPreview(formElement) {
     state.pdvImports.preview = toArray(response.preview);
     state.pdvImports.worksheetName = normalizeText(response.worksheetName || "");
     state.pdvImports.sourceType = normalizeText(response.sourceType || "");
+    state.pdvImports.importMode = normalizeText(response.importMode || response.summary?.importMode || state.pdvImports.importMode || "products_stock");
     state.pdvImports.diagnostics = response.diagnostics || null;
     state.pdvImports.lastResult = null;
     state.pdvImports.candidates = [];
@@ -12126,6 +12185,11 @@ async function commitPdvTinyImportPreview() {
   ensurePdvImportsState();
   if (!state.pdvImports.previewId) {
     showFeedback("Gere o preview antes de confirmar a importação.", "error");
+    return;
+  }
+  const confirmed = window.confirm("Confirmar aplicacao da importacao Tiny/Olist deste lote? O preview nao altera dados; esta etapa grava produtos/estoque provisoriamente na loja selecionada.");
+  if (!confirmed) {
+    showFeedback("Importacao cancelada antes da aplicacao.", "info");
     return;
   }
   state.pdvImports.commitLoading = true;
