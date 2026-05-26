@@ -13740,6 +13740,36 @@ body.theme-light .eyebrow {
   font-size: 0.82rem;
 }
 
+.pdv-import-code-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 150px;
+  max-width: 240px;
+}
+
+.pdv-import-code-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid rgba(45, 212, 191, 0.28);
+  border-radius: 999px;
+  background: rgba(45, 212, 191, 0.1);
+  color: var(--text);
+  font-size: 0.72rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.pdv-import-code-chip strong {
+  color: #2DD4BF;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .pdv-import-preview-toolbar {
   margin-top: 0;
   margin-bottom: 12px;
@@ -13810,6 +13840,10 @@ body.theme-light .eyebrow {
 .pdv-import-preview-table td strong,
 .pdv-import-preview-table td small {
   display: block;
+}
+
+.pdv-import-preview-table .pdv-import-code-chip strong {
+  display: inline;
 }
 
 .pdv-import-preview-table td small {

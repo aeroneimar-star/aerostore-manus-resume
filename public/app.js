@@ -12056,6 +12056,41 @@ function buildPdvImportSummaryCards(summary = {}) {
   `;
 }
 
+function getPdvImportItemCodeParts(item = {}) {
+  return {
+    sku: normalizeText(item.sku || ""),
+    internal: normalizeText(item.codigo_interno || item.internal_code || ""),
+    label: normalizeText(item.codigo_etiqueta || item.label_code || ""),
+    tiny: normalizeText(item.codigo_tiny || item.tiny_code || item.codigo || ""),
+    barcode: normalizeText(item.barcode || item.codigo_barras || item.ean || item.gtin || item.gtin_ean || "")
+  };
+}
+
+function buildPdvImportCodeChips(item = {}) {
+  const codes = getPdvImportItemCodeParts(item);
+  const coreValues = [codes.sku, codes.internal, codes.label, codes.tiny].filter(Boolean);
+  const uniqueCoreValues = Array.from(new Set(coreValues.map((value) => normalizeText(value)).filter(Boolean)));
+  const chips = uniqueCoreValues.length === 1
+    ? [{ label: "Cod.", value: uniqueCoreValues[0] }]
+    : [
+        codes.sku ? { label: "SKU", value: codes.sku } : null,
+        codes.internal ? { label: "Interno", value: codes.internal } : null,
+        codes.label ? { label: "Etiqueta", value: codes.label } : null,
+        codes.tiny ? { label: "Tiny", value: codes.tiny } : null
+      ].filter(Boolean);
+  if (codes.barcode) {
+    chips.push({ label: "EAN/GTIN", value: codes.barcode });
+  }
+  if (!chips.length) {
+    return `<span class="muted">Sem codigo</span>`;
+  }
+  return `
+    <div class="pdv-import-code-stack">
+      ${chips.map((chip) => `<span class="pdv-import-code-chip"><strong>${escapeHtml(chip.label)}</strong>${escapeHtml(chip.value)}</span>`).join("")}
+    </div>
+  `;
+}
+
 function buildPdvImportPreviewRows(items = []) {
   if (!items.length) {
     return `<div class="empty-state compact"><strong>Nenhuma linha carregada ainda.</strong><span>Envie um arquivo Tiny/Olist para auditar a importação antes do commit.</span></div>`;
@@ -12063,12 +12098,12 @@ function buildPdvImportPreviewRows(items = []) {
   return `
     <div class="table-wrap">
       <table class="pdv-import-preview-table">
-        <thead><tr><th>Produto</th><th>SKU</th><th>Preço</th><th>Estoque</th><th>Loja detectada</th><th>Loja aplicada</th><th>Status</th><th>Pendências</th></tr></thead>
+        <thead><tr><th>Produto</th><th>Codigos</th><th>Preço</th><th>Estoque</th><th>Loja detectada</th><th>Loja aplicada</th><th>Status</th><th>Pendências</th></tr></thead>
         <tbody>
           ${items.slice(0, 40).map((item) => `
             <tr>
               <td><strong>${escapeHtml(item.nome || "-")}</strong><small>${escapeHtml(item.marca || item.categoria || "-")}</small></td>
-              <td>${escapeHtml(item.sku || item.codigo_tiny || "-")}</td>
+              <td>${buildPdvImportCodeChips(item)}</td>
               <td>${currency(item.preco_venda || 0)}</td>
               <td><strong>${escapeHtml(String(toNumber(item.tiny_stock_quantity ?? item.imported_quantity_original ?? item.estoque ?? 0)))}</strong><small>${escapeHtml(item.estoque_status === "provisional_divergent" ? "Divergência provisória" : "Provisório Tiny")}</small></td>
               <td>${escapeHtml(item.detected_store_label || item.raw_store || "Não informada")}</td>
@@ -12115,13 +12150,13 @@ function buildPdvImportBatchPreviewRows(items = [], options = {}) {
     </div>
     <div class="table-wrap">
       <table class="pdv-import-preview-table">
-        <thead><tr><th>Arquivo</th><th>Produto</th><th>SKU</th><th>Preco</th><th>Estoque Tiny</th><th>Loja aplicada</th><th>Status</th><th>Pendencias</th></tr></thead>
+        <thead><tr><th>Arquivo</th><th>Produto</th><th>Codigos</th><th>Preco</th><th>Estoque Tiny</th><th>Loja aplicada</th><th>Status</th><th>Pendencias</th></tr></thead>
         <tbody>
           ${visibleItems.map((item) => `
             <tr>
               <td>${escapeHtml(toArray(item.source_files).join(", ") || item.source_file || "-")}</td>
               <td><strong>${escapeHtml(item.nome || "-")}</strong><small>${escapeHtml(item.marca || item.categoria || "-")}</small></td>
-              <td>${escapeHtml(item.sku || item.codigo_tiny || "-")}</td>
+              <td>${buildPdvImportCodeChips(item)}</td>
               <td>${currency(item.preco_venda || 0)}</td>
               <td><strong>${escapeHtml(String(toNumber(item.tiny_stock_quantity ?? item.imported_quantity_original ?? item.estoque ?? 0)))}</strong><small>${escapeHtml(item.estoque_status === "provisional_divergent" ? "Divergencia provisoria" : "Provisorio Tiny")}</small></td>
               <td>${escapeHtml(item.store_label || "-")}</td>
@@ -12195,18 +12230,25 @@ function exportPdvImportPreviewReport() {
       `linhas=${file.rows || file.totalRows || 0}; skus=${file.uniqueSkus ?? file.uniqueSkuCount ?? file.productsWithSku ?? file.validRows ?? 0}; duplicados=${file.consolidatedDuplicateRows ?? file.duplicateRows ?? file.duplicatedRows ?? 0}; negativos=${file.negativeStockRows || 0}`
     ])
   ];
-  const itemHeaders = ["arquivo", "sku", "produto", "marca", "preco", "estoque_tiny", "loja_aplicada", "status", "pendencias"];
-  const itemRows = rows.map((item) => [
-    toArray(item.source_files).join(", ") || item.source_file || "",
-    item.sku || item.codigo_tiny || "",
-    item.nome || "",
-    item.marca || item.categoria || "",
-    item.preco_venda || "",
-    item.tiny_stock_quantity ?? item.imported_quantity_original ?? item.estoque ?? "",
-    item.store_label || "",
-    item.action || "",
-    toArray(item.pendencias).join(" | ")
-  ]);
+  const itemHeaders = ["arquivo", "sku", "codigo_interno", "codigo_etiqueta", "codigo_tiny", "ean_gtin_barcode", "produto", "marca", "preco", "estoque_tiny", "loja_aplicada", "status", "pendencias"];
+  const itemRows = rows.map((item) => {
+    const codes = getPdvImportItemCodeParts(item);
+    return [
+      toArray(item.source_files).join(", ") || item.source_file || "",
+      codes.sku,
+      codes.internal,
+      codes.label,
+      codes.tiny,
+      codes.barcode,
+      item.nome || "",
+      item.marca || item.categoria || "",
+      item.preco_venda || "",
+      item.tiny_stock_quantity ?? item.imported_quantity_original ?? item.estoque ?? "",
+      item.store_label || "",
+      item.action || "",
+      toArray(item.pendencias).join(" | ")
+    ];
+  });
   const csv = [
     ...summaryRows.map((row) => row.map(escapePdvImportCsvValue).join(";")),
     "",
