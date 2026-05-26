@@ -928,6 +928,7 @@ function syncAuthShellState() {
       : "guest";
   document.body.dataset.authShell = authShell;
   document.body.classList.toggle("auth-shell-hidden", authShell !== "authenticated");
+  syncLoginOverlayForAuthShell(authShell);
 }
 
 function redirectToLogin() {
@@ -942,8 +943,16 @@ function setLoginOverlayMode(mode = "guest") {
   if (!overlay) {
     return;
   }
-  const resolvedMode = mode === "checking" ? "checking" : "guest";
+  const resolvedMode = mode === "checking"
+    ? "checking"
+    : mode === "authenticated"
+      ? "authenticated"
+      : "guest";
   overlay.dataset.mode = resolvedMode;
+  if (resolvedMode === "authenticated") {
+    overlay.setAttribute("aria-hidden", "true");
+    return;
+  }
   const title = document.getElementById("login-title");
   const description = document.getElementById("login-description");
   const statusBox = document.getElementById("login-status");
@@ -962,6 +971,26 @@ function setLoginOverlayMode(mode = "guest") {
   if (errorBox && resolvedMode === "checking") {
     errorBox.textContent = "";
   }
+}
+
+function syncLoginOverlayForAuthShell(authShell = document.body.dataset.authShell) {
+  const overlay = document.getElementById("login-overlay");
+  if (!overlay) {
+    return;
+  }
+
+  if (authShell === "authenticated") {
+    overlay.classList.remove("active");
+    overlay.dataset.mode = "authenticated";
+    overlay.style.display = "none";
+    overlay.style.pointerEvents = "none";
+    overlay.setAttribute("aria-hidden", "true");
+    return;
+  }
+
+  overlay.style.removeProperty("display");
+  overlay.style.removeProperty("pointer-events");
+  overlay.setAttribute("aria-hidden", overlay.classList.contains("active") ? "false" : "true");
 }
 
 function setAuthSession(token, user) {
@@ -18604,7 +18633,7 @@ function hideLoginOverlay() {
   if (overlay) {
     overlay.classList.remove("active");
   }
-  setLoginOverlayMode("guest");
+  setLoginOverlayMode(state.currentUser ? "authenticated" : "guest");
   const statusBox = document.getElementById("login-status");
   if (statusBox) {
     statusBox.textContent = "";
