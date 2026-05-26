@@ -38,6 +38,7 @@ const { pdvImportRouter } = require("./modules/pdv/routes/pdvImportRoutes");
 const { pdvConsolidationRouter } = require("./modules/pdv/consolidation/routes/pdvConsolidationRoutes");
 const { pdvOperationalRouter } = require("./modules/pdv/routes/pdvOperationalRoutes");
 const { pdvSalesRouter } = require("./modules/pdv/routes/pdvSalesRoutes");
+const { pdvExchangeRouter } = require("./modules/pdv/routes/pdvExchangeRoutes");
 const { pdvControlRouter } = require("./modules/pdv/routes/pdvControlRoutes");
 const { pdvExperienceRouter } = require("./modules/pdv/routes/pdvExperienceRoutes");
 const { pdvInventoryRouter } = require("./modules/pdv/inventory/pdvInventoryRoutes");
@@ -56,6 +57,7 @@ const {
   searchCustomersDetailed: searchOperationalCustomersDetailed,
   buildCustomerBehaviorSnapshot
 } = require("./modules/pdv/services/pdvOperationalService");
+const { recordAuditEvent, listAuditLogs } = require("./modules/audit/auditService");
 
 const CONFIG_DIR = path.join(__dirname, "config");
 const INSTANCE_CONFIG_ENV_PATH = String(process.env.AEROSTORE_INSTANCE_CONFIG || "").trim();
@@ -177,6 +179,19 @@ function getConfiguredWhatsAppAuthMode() {
 
 function isLegacyWhatsAppQrFallbackEnabled() {
   return instanceConfig.whatsapp?.legacy_qr_fallback !== false;
+}
+
+function isWhatsAppQrManualRefreshEnabled() {
+  if (process.env.WHATSAPP_QR_MANUAL_REFRESH !== undefined) {
+    return String(process.env.WHATSAPP_QR_MANUAL_REFRESH || "").trim().toLowerCase() !== "false";
+  }
+  return instanceConfig.whatsapp?.qr_manual_refresh !== false;
+}
+
+function getWhatsAppQrRequestTtlMs() {
+  const configured = Number(process.env.WHATSAPP_QR_REQUEST_TTL_MS || instanceConfig.whatsapp?.qr_request_ttl_ms || instanceConfig.whatsapp?.qr_timeout_ms || WHATSAPP_QR_REQUEST_DEFAULT_TTL_MS);
+  if (!Number.isFinite(configured) || configured <= 0) return WHATSAPP_QR_REQUEST_DEFAULT_TTL_MS;
+  return Math.max(WHATSAPP_QR_REQUEST_MIN_TTL_MS, Math.min(configured, 5 * 60 * 1000));
 }
 
 function getConfiguredWhatsAppSessionName() {
@@ -382,6 +397,8 @@ const CASHBACK_STATUSES = ["pending_pin", "disponivel", "a_receber", "vencido", 
 const WHATSAPP_PROTOCOL_TIMEOUT_MS = Number(process.env.WHATSAPP_PROTOCOL_TIMEOUT_MS || 240000);
 const WHATSAPP_SEND_HEALTH_TIMEOUT_MS = Number(process.env.WHATSAPP_SEND_HEALTH_TIMEOUT_MS || 25000);
 const WHATSAPP_BOOTSTRAP_TIMEOUT_MS = Number(process.env.WHATSAPP_BOOTSTRAP_TIMEOUT_MS || 120000);
+const WHATSAPP_QR_REQUEST_MIN_TTL_MS = 30000;
+const WHATSAPP_QR_REQUEST_DEFAULT_TTL_MS = 120000;
 const CANCEL_REASONS = [
   "Arrependimento da compra",
   "Não recebimento do PIN",
@@ -446,7 +463,11 @@ let whatsappState = {
   lastQrRaw: null,
   connectedNumber: null,
   lastConnectedAt: null,
-  lastError: null
+  lastError: null,
+  qrRequestExpiresAt: null,
+  qrRequestRequestedAt: null,
+  lastQrSuppressedAt: null,
+  qrSuppressedCount: 0
 };
 const campaignHumanizedOperations = new Map();
 const CAMPAIGN_HUMANIZED_LOG_LIMIT = 40;
@@ -877,12 +898,14 @@ function serializeCampaignHumanizedOperation(operation) {
 
 console.log("[AEROSTORE BOOT]");
 console.log("runtime version:", RUNTIME_VERSION);
-console.log("cwd:", process.cwd());
-console.log("__dirname:", __dirname);
-console.log("server file:", __filename);
 console.log("boot time:", BOOT_TIME);
 console.log("node version:", process.version);
-console.log("database path:", dbPath);
+if (String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production") {
+  console.log("cwd:", process.cwd());
+  console.log("__dirname:", __dirname);
+  console.log("server file:", __filename);
+  console.log("database file:", path.basename(dbPath || ""));
+}
 
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -1092,6 +1115,11 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "4mb" }));
 app.use(express.urlencoded({ extended: true }));
+
+app.get("/", (req, res) => {
+  res.redirect(302, "/pdv");
+});
+
 app.use(express.static(path.join(__dirname, "public"), {
   setHeaders(res, filePath) {
     if (filePath.endsWith(".html")) {
@@ -1104,6 +1132,11 @@ app.use(express.static(path.join(__dirname, "public"), {
   }
 }));
 app.use("/samples", express.static(path.join(__dirname, "samples")));
+
+// Rotas web do PDV precisam responder antes da pilha extensa de APIs.
+app.get(PDV_WEB_ROUTES, (req, res) => {
+  servePublicIndex(res);
+});
 
 function sanitizePhone(phone) {
   return String(phone || "").replace(/\D/g, "");
@@ -1249,6 +1282,41 @@ function resetWhatsAppState(status = "desconectado", overrides = {}) {
   whatsappState.lastConnectedAt = null;
   whatsappState.lastError = null;
   Object.assign(whatsappState, overrides || {});
+}
+
+function isWhatsAppQrRequestActive() {
+  return Boolean(whatsappState.qrRequestExpiresAt && Date.now() < Number(whatsappState.qrRequestExpiresAt));
+}
+
+function requestWhatsAppQrWindow(reason = "manual_refresh") {
+  const now = Date.now();
+  const ttlMs = getWhatsAppQrRequestTtlMs();
+  whatsappState.qrRequestRequestedAt = new Date(now).toISOString();
+  whatsappState.qrRequestExpiresAt = now + ttlMs;
+  whatsappState.qrBase64 = null;
+  whatsappState.lastQrRaw = null;
+  whatsappState.lastError = null;
+  console.log(`[WHATSAPP] Janela manual de QR Code aberta por ${Math.round(ttlMs / 1000)}s (${reason}).`);
+  return getWhatsAppQrPolicyState();
+}
+
+function clearWhatsAppQrWindow() {
+  whatsappState.qrRequestExpiresAt = null;
+  whatsappState.qrRequestRequestedAt = null;
+}
+
+function getWhatsAppQrPolicyState() {
+  const manualMode = isWhatsAppQrManualRefreshEnabled();
+  const requestActive = isWhatsAppQrRequestActive();
+  return {
+    manualMode,
+    requestActive,
+    requestExpiresAt: requestActive ? new Date(Number(whatsappState.qrRequestExpiresAt)).toISOString() : null,
+    requestRequestedAt: whatsappState.qrRequestRequestedAt || null,
+    suppressedCount: Number(whatsappState.qrSuppressedCount || 0),
+    lastSuppressedAt: whatsappState.lastQrSuppressedAt || null,
+    ttlMs: getWhatsAppQrRequestTtlMs()
+  };
 }
 
 function bumpWhatsAppLifecycleNonce() {
@@ -5977,7 +6045,7 @@ async function handleInboundAiWhatsAppMessage(message) {
     ? "skipped_cooldown"
     : "ok";
 
-  console.log("[IA WHATSAPP INBOUND]", {
+  console.log("[IA WHATSAPP INBOUND]", sanitizeLogPayload({
     connectedNumber,
     from: rawFrom,
     inboundChatId: sender.inboundChatId,
@@ -5995,7 +6063,7 @@ async function handleInboundAiWhatsAppMessage(message) {
     cooldownReason: cooldownAnalysis.reason,
     stageBefore: stateBefore?.stage || "",
     waitingForBefore: stateBefore?.waiting_for || ""
-  });
+  }));
 
   const inboundDebugContext = {
     autoReplyEnabled: Boolean(settings.autoReplyEnabled),
@@ -6188,7 +6256,7 @@ async function handleInboundAiWhatsAppMessage(message) {
       });
     }
 
-    console.log("[IA WHATSAPP INBOUND]", {
+    console.log("[IA WHATSAPP INBOUND]", sanitizeLogPayload({
       connectedNumber,
       from: rawFrom,
       inboundChatId: sender.inboundChatId,
@@ -6210,9 +6278,9 @@ async function handleInboundAiWhatsAppMessage(message) {
       photoSent,
       photoCount,
       error: null
-    });
+    }));
   } catch (error) {
-    console.log("[IA WHATSAPP INBOUND]", {
+    console.log("[IA WHATSAPP INBOUND]", sanitizeLogPayload({
       connectedNumber,
       from: rawFrom,
       inboundChatId: sender.inboundChatId,
@@ -6234,7 +6302,7 @@ async function handleInboundAiWhatsAppMessage(message) {
       photoSent,
       photoCount,
       error: String(error.userMessage || error.message || error)
-    });
+    }));
     await createAiMessageLog({
       contactId: payload.contact?.id || contact?.id || null,
       phone: sender.phoneNormalized || "",
@@ -11517,11 +11585,17 @@ const COOKIE_SESSION_MARKER = "cookie-session";
 
 function normalizeSystemRole(role = "") {
   const normalized = String(role || "").trim().toLowerCase();
-  if (["admin", "master"].includes(normalized)) {
+  if (["admin", "master", "administrator", "administrador"].includes(normalized)) {
     return "admin";
   }
-  if (["manager", "gerente"].includes(normalized)) {
+  if (["manager", "gerente", "gestor"].includes(normalized)) {
     return "manager";
+  }
+  if (["cashier", "caixa"].includes(normalized)) {
+    return "cashier";
+  }
+  if (["consult", "consulta", "readonly", "operacional"].includes(normalized)) {
+    return "consult";
   }
   return "seller";
 }
@@ -11530,6 +11604,8 @@ function buildDefaultPermissions(role = "seller") {
   const normalized = normalizeSystemRole(role);
   const base = {
     can_sell: false,
+    can_finalize_sale: false,
+    can_cancel_sale: false,
     can_view_products: false,
     can_manage_products: false,
     can_view_customers: false,
@@ -11544,6 +11620,7 @@ function buildDefaultPermissions(role = "seller") {
     can_approve_discount_authorization: false,
     can_view_cashback: false,
     can_manage_cashback: false,
+    can_launch_cashback: false,
     can_use_whatsapp: false,
     can_view_whatsapp_status: false,
     can_reconnect_whatsapp: false,
@@ -11563,7 +11640,14 @@ function buildDefaultPermissions(role = "seller") {
     can_view_aerointel: false,
     can_view_campaigns: false,
     can_manage_campaigns: false,
-    can_view_store_settings: false
+    can_view_store_settings: false,
+    can_view_orders: false,
+    can_release_orders: false,
+    can_view_exchanges: false,
+    can_generate_exchange_credit: false,
+    can_view_stock: false,
+    can_move_stock: false,
+    can_export_data: false
   };
 
   if (normalized === "admin") {
@@ -11577,6 +11661,8 @@ function buildDefaultPermissions(role = "seller") {
     return {
       ...base,
       can_sell: true,
+      can_finalize_sale: true,
+      can_cancel_sale: true,
       can_view_products: true,
       can_manage_products: true,
       can_view_customers: true,
@@ -11590,6 +11676,7 @@ function buildDefaultPermissions(role = "seller") {
       can_approve_discount_authorization: true,
       can_view_cashback: true,
       can_manage_cashback: true,
+      can_launch_cashback: true,
       can_use_whatsapp: true,
       can_view_whatsapp_status: true,
       can_reconnect_whatsapp: true,
@@ -11602,21 +11689,149 @@ function buildDefaultPermissions(role = "seller") {
       can_view_campaigns: true,
       can_manage_campaigns: true,
       can_manage_store_settings: true,
-      can_view_store_settings: true
+      can_view_store_settings: true,
+      can_view_orders: true,
+      can_release_orders: true,
+      can_view_exchanges: true,
+      can_generate_exchange_credit: true,
+      can_view_stock: true,
+      can_move_stock: true,
+      can_export_data: true
+    };
+  }
+
+  if (normalized === "cashier") {
+    return {
+      ...base,
+      can_view_products: true,
+      can_view_customers: true,
+      can_view_cash_register: true,
+      can_open_close_register: true,
+      can_register_cash_movement: true,
+      can_close_register: true,
+      can_view_orders: true,
+      can_release_orders: true,
+      can_view_cashback: true,
+      can_view_whatsapp_status: true
+    };
+  }
+
+  if (normalized === "consult") {
+    return {
+      ...base,
+      can_view_products: true,
+      can_view_customers: true,
+      can_view_cashback: true,
+      can_view_orders: true,
+      can_view_whatsapp_status: true
     };
   }
 
   return {
     ...base,
     can_sell: true,
+    can_finalize_sale: true,
     can_view_products: true,
     can_view_customers: true,
     can_create_customers: true,
     can_use_whatsapp: true,
     can_view_whatsapp_status: true,
-    can_request_discount_authorization: true
+    can_request_discount_authorization: true,
+    can_view_orders: true,
+    can_view_exchanges: true
   };
 }
+
+const USER_ROLE_PROFILES = [
+  { key: "admin", label: "Administrador", description: "Acesso total ao CRM, PDV, usuarios e permissoes." },
+  { key: "manager", label: "Gestor", description: "Gestao operacional, autorizacoes, caixa, estoque e relatorios permitidos." },
+  { key: "seller", label: "Vendedor", description: "Frente de venda, clientes, produtos, cashback/credito permitido e finalizacao dentro das regras." },
+  { key: "cashier", label: "Caixa", description: "Caixa, recebimentos, comprovantes e liberacoes operacionais." },
+  { key: "consult", label: "Consulta", description: "Acesso operacional limitado e leitura de modulos permitidos." }
+];
+
+const STORE_ACCESS_OPTIONS = [
+  { id: "vila_masc", label: "Vila Masc." },
+  { id: "vila_fem", label: "Vila Fem/Infant." },
+  { id: "botanico", label: "Botanico" },
+  { id: "sul", label: "Sul" }
+];
+
+const USER_PERMISSION_CATALOG = [
+  {
+    group: "PDV Venda",
+    items: [
+      ["can_sell", "Acessar Venda"],
+      ["can_finalize_sale", "Finalizar venda"],
+      ["can_cancel_sale", "Cancelar venda"],
+      ["can_apply_discount", "Aplicar desconto"],
+      ["can_request_discount_authorization", "Solicitar autorizacao"],
+      ["can_approve_discount_authorization", "Autorizar desconto"]
+    ]
+  },
+  {
+    group: "Operacao",
+    items: [
+      ["can_view_orders", "Acessar pedidos"],
+      ["can_release_orders", "Liberar pedido"],
+      ["can_view_products", "Acessar produtos"],
+      ["can_manage_products", "Gerenciar produtos"],
+      ["can_view_customers", "Acessar clientes"],
+      ["can_create_customers", "Criar clientes"],
+      ["can_edit_customers", "Editar clientes"]
+    ]
+  },
+  {
+    group: "Caixa / Estoque / Trocas",
+    items: [
+      ["can_view_cash_register", "Acessar caixa"],
+      ["can_open_close_register", "Abrir/fechar caixa"],
+      ["can_register_cash_movement", "Sangria/suprimento"],
+      ["can_close_register", "Fechar caixa"],
+      ["can_view_stock", "Acessar estoque"],
+      ["can_move_stock", "Movimentar estoque"],
+      ["can_view_exchanges", "Acessar trocas"],
+      ["can_generate_exchange_credit", "Gerar credito de troca"]
+    ]
+  },
+  {
+    group: "CRM / Beneficios",
+    items: [
+      ["can_view_cashback", "Acessar cashback"],
+      ["can_manage_cashback", "Gerenciar cashback"],
+      ["can_launch_cashback", "Lancar cashback"],
+      ["can_use_whatsapp", "Usar WhatsApp CRM"],
+      ["can_view_whatsapp_status", "Ver status WhatsApp"],
+      ["can_reconnect_whatsapp", "Reconectar WhatsApp"],
+      ["can_disconnect_whatsapp", "Desconectar WhatsApp"],
+      ["can_reset_whatsapp_session", "Resetar sessao WhatsApp"],
+      ["can_view_whatsapp_logs", "Ver logs WhatsApp"],
+      ["can_send_whatsapp_test", "Enviar teste WhatsApp"]
+    ]
+  },
+  {
+    group: "Gestao",
+    items: [
+      ["can_view_reports", "Ver relatorios"],
+      ["can_view_store_reports", "Relatorios da loja"],
+      ["can_view_global_reports", "Relatorios globais"],
+      ["can_view_consolidation", "Consolidacao"],
+      ["can_view_audit", "Auditoria"],
+      ["can_manage_users", "Gerenciar usuarios"],
+      ["can_manage_store_settings", "Configurar loja"],
+      ["can_manage_global_settings", "Configuracoes globais"],
+      ["can_view_store_settings", "Ver configuracoes da loja"],
+      ["can_view_all_stores", "Ver todas as lojas"],
+      ["can_export_data", "Exportar dados"],
+      ["can_view_aerointel", "Acessar AEROINTEL"],
+      ["can_view_campaigns", "Ver campanhas"],
+      ["can_manage_campaigns", "Gerenciar campanhas"]
+    ]
+  }
+].map((group) => ({
+  ...group,
+  items: group.items.map(([key, label]) => ({ key, label }))
+}));
 
 function safeJsonParse(value, fallback) {
   try {
@@ -11715,13 +11930,16 @@ function serializeAuthUser(user = {}) {
     name: enriched.name || enriched.username || enriched.email || "Usuário AEROSTORE",
     email: enriched.email || "",
     username: enriched.username || "",
+    phone: enriched.phone || "",
     role: enriched.role_key,
     legacyRole: enriched.role || "",
+    status: enriched.status || "",
     store_id: enriched.store_id || null,
     store_label: enriched.store_label || "",
     allowed_stores: allowedStores,
     permissions: enriched.permissions || {},
-    sellerId: enriched.seller_id || null
+    sellerId: enriched.seller_id || null,
+    last_access_at: enriched.last_access_at || ""
   };
 }
 
@@ -11874,12 +12092,53 @@ function userCanAccessStore(user = {}, storeId = "") {
 function requirePermission(permission, message = "") {
   return (req, res, next) => {
     if (!userHasPermission(req.user, permission)) {
+      recordAuditEvent({
+        req,
+        module: "security",
+        action: "permission_denied",
+        entityType: "endpoint",
+        entityId: req.originalUrl || req.path || "",
+        result: "blocked",
+        message: message || "Acesso restrito para o seu perfil.",
+        metadata: { permission }
+      });
       return res.status(403).json({
         error: message || "Acesso restrito para o seu perfil.",
         permission
       });
     }
     next();
+  };
+}
+
+function requireAnyPermission(permissionKeys = [], message = "") {
+  const keys = Array.isArray(permissionKeys) ? permissionKeys.filter(Boolean) : [];
+  return (req, res, next) => {
+    if (!keys.length || keys.some((permission) => userHasPermission(req.user, permission))) {
+      return next();
+    }
+    recordAuditEvent({
+      req,
+      module: "security",
+      action: "permission_denied",
+      entityType: "endpoint",
+      entityId: req.originalUrl || req.path || "",
+      result: "blocked",
+      message: message || "Voce nao tem permissao para executar esta acao.",
+      metadata: { permissions: keys }
+    });
+    return res.status(403).json({
+      error: message || "Voce nao tem permissao para executar esta acao.",
+      permissions: keys
+    });
+  };
+}
+
+function requireByHttpMethod(policy = {}, fallbackPermissions = []) {
+  return (req, res, next) => {
+    const method = String(req.method || "GET").toUpperCase();
+    const permissions = policy[method] || fallbackPermissions || [];
+    return requireAnyPermission(permissions)(req, res, next);
   };
 }
 
@@ -11915,6 +12174,329 @@ function requireStoreAccess(options = {}) {
     }
     next();
   };
+}
+
+function resolveAuditMutationMeta(req = {}) {
+  const pathName = getRequestPathname(req.originalUrl || req.path || "");
+  const method = String(req.method || "").toUpperCase();
+  const body = req.body || {};
+  const params = req.params || {};
+  const base = {
+    module: "api",
+    action: `${method.toLowerCase()}_mutation`,
+    entity_type: "endpoint",
+    entity_id: pathName
+  };
+  const rules = [
+    [/\/api\/auth\/logout/, { module: "auth", action: "logout", entity_type: "session" }],
+    [/\/api\/admin\/users/, { module: "users", action: "user_mutation", entity_type: "user", entity_id: params.id || body.id || "" }],
+    [/\/api\/pdv\/sales\/finalize\//, { module: "pdv_sales", action: "sale_finalized", entity_type: "sale_session", entity_id: params.sessionId || "" }],
+    [/\/api\/pdv\/sales\/cancel\//, { module: "pdv_sales", action: "sale_cancelled", entity_type: "sale", entity_id: params.saleId || "", sale_id: params.saleId || "" }],
+    [/\/api\/pdv\/operational\/cart\/.*\/payment-plan/, { module: "pdv_sales", action: "payment_plan_changed", entity_type: "sale_session", entity_id: params.sessionId || "" }],
+    [/\/api\/pdv\/operational\/cart\/.*\/discount$/, { module: "discounts", action: "general_discount_changed", entity_type: "sale_session", entity_id: params.sessionId || "" }],
+    [/\/api\/pdv\/operational\/cart\/.*\/items\/.*\/discount/, { module: "discounts", action: "item_discount_changed", entity_type: "cart_item", entity_id: params.itemId || "" }],
+    [/\/api\/pdv\/control\/authorizations\/validate/, { module: "authorizations", action: "authorization_token_validated", entity_type: "authorization" }],
+    [/\/api\/pdv\/sales\/session\/.*\/apply-cashback/, { module: "cashback", action: "cashback_applied", entity_type: "sale_session", entity_id: params.sessionId || "" }],
+    [/\/api\/pdv\/sales\/session\/.*\/apply-exchange-credit/, { module: "exchange_credit", action: "exchange_credit_applied", entity_type: "sale_session", entity_id: params.sessionId || "" }],
+    [/\/api\/pdv\/sales\/exchanges/, { module: "exchange_credit", action: "exchange_credit_generated", entity_type: "exchange" }],
+    [/\/api\/pdv\/inventory\/adjust/, { module: "inventory", action: "inventory_adjusted", entity_type: "product", product_id: body.product_id || body.productId || "" }],
+    [/\/api\/pdv\/inventory\/transfer/, { module: "inventory", action: "inventory_transferred", entity_type: "product", product_id: body.product_id || body.productId || "" }],
+    [/\/api\/pdv\/operational\/customers\/quick-register/, { module: "customers", action: "customer_created", entity_type: "customer" }],
+    [/\/api\/products/, { module: "products", action: "product_mutation", entity_type: "product", product_id: params.id || params.productId || body.id || "" }],
+    [/\/api\/customers/, { module: "customers", action: "customer_mutation", entity_type: "customer", customer_id: params.id || params.customerId || body.id || "" }]
+  ];
+  const match = rules.find(([pattern]) => pattern.test(pathName));
+  return { ...base, ...(match ? match[1] : {}) };
+}
+
+function auditSensitiveMutationMiddleware(req, res, next) {
+  const method = String(req.method || "").toUpperCase();
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    return next();
+  }
+  const pathName = getRequestPathname(req.originalUrl || req.path || "");
+  if (pathName.includes("/audit-logs")) {
+    return next();
+  }
+  let responseBody = null;
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    responseBody = body;
+    return originalJson(body);
+  };
+  res.on("finish", () => {
+    const statusCode = Number(res.statusCode || 0);
+    const meta = resolveAuditMutationMeta(req);
+    const result = statusCode === 403 ? "blocked" : statusCode >= 400 ? "failed" : "success";
+    const includeBody = ![
+      "/api/ia/responder",
+      "/api/assistant",
+      "/api/whatsapp"
+    ].some((sensitivePath) => pathName.includes(sensitivePath));
+    recordAuditEvent({
+      req,
+      ...meta,
+      result,
+      message: responseBody?.error || responseBody?.message || "",
+      reason: req.body?.reason || "",
+      amount: req.body?.amount || req.body?.value || null,
+      after: statusCode < 400 ? responseBody : null,
+      includeBody,
+      metadata: { status_code: statusCode }
+    });
+  });
+  next();
+}
+
+function getRoleProfile(role = "") {
+  const normalized = normalizeSystemRole(role);
+  return USER_ROLE_PROFILES.find((item) => item.key === normalized) || USER_ROLE_PROFILES.find((item) => item.key === "seller");
+}
+
+function getStoreOption(storeId = "") {
+  const normalized = normalizeStoreKey(storeId || "");
+  return STORE_ACCESS_OPTIONS.find((item) => item.id === normalized) || null;
+}
+
+function serializeAdminUser(row = {}) {
+  const enriched = enrichUserRecord(row);
+  if (!enriched) {
+    return null;
+  }
+  const roleProfile = getRoleProfile(enriched.role_key);
+  const storeOption = getStoreOption(enriched.store_id);
+  return {
+    id: enriched.id,
+    name: enriched.name || enriched.username || enriched.email || "",
+    email: enriched.email || "",
+    username: enriched.username || "",
+    phone: enriched.phone || "",
+    role: enriched.role_key,
+    role_label: roleProfile?.label || enriched.role_key,
+    legacyRole: enriched.role || "",
+    store_id: enriched.store_id || "",
+    store_label: storeOption?.label || enriched.store_label || "",
+    allowed_stores: enriched.allowed_stores || [],
+    permissions: enriched.permissions || {},
+    seller_id: enriched.seller_id || null,
+    status: enriched.status || "ativo",
+    created_at: enriched.created_at || "",
+    updated_at: enriched.updated_at || "",
+    last_access_at: enriched.last_access_at || ""
+  };
+}
+
+function normalizeAdminUserPayload(body = {}, existing = null) {
+  const role = normalizeSystemRole(body.role || body.role_key || existing?.role || "seller");
+  const storeId = normalizeStoreKey(body.store_id || body.storeId || body.store || existing?.store_id || "vila_masc") || "vila_masc";
+  const storeLabel = getStoreOption(storeId)?.label || String(body.store_label || body.store || existing?.store || "").trim() || storeId;
+  const defaultPermissions = buildDefaultPermissions(role);
+  const explicitPermissions = body.permissions && typeof body.permissions === "object" && !Array.isArray(body.permissions)
+    ? body.permissions
+    : {};
+  const permissions = normalizePermissionSet({ ...defaultPermissions, ...explicitPermissions }, role);
+  const allowedStoresInput = Array.isArray(body.allowed_stores)
+    ? body.allowed_stores
+    : Array.isArray(body.allowedStores)
+      ? body.allowedStores
+      : existing?.allowed_stores_json || [];
+  const allowedStores = normalizeAllowedStores(allowedStoresInput, storeId);
+  return {
+    name: String(body.name ?? existing?.name ?? "").trim(),
+    email: String(body.email ?? existing?.email ?? "").trim().toLowerCase(),
+    username: String(body.username ?? existing?.username ?? "").trim().toLowerCase(),
+    phone: String(body.phone ?? existing?.phone ?? "").trim(),
+    role,
+    store: storeLabel,
+    store_id: storeId,
+    allowed_stores_json: JSON.stringify(allowedStores),
+    permissions_json: JSON.stringify(permissions),
+    status: String(body.status ?? existing?.status ?? "ativo").trim().toLowerCase() === "inativo" ? "inativo" : "ativo",
+    seller_id: body.seller_id || body.sellerId || existing?.seller_id || null
+  };
+}
+
+function buildUsersAdminMeta() {
+  return {
+    profiles: USER_ROLE_PROFILES.map((profile) => ({
+      ...profile,
+      default_permissions: buildDefaultPermissions(profile.key)
+    })),
+    permission_catalog: USER_PERMISSION_CATALOG,
+    store_options: STORE_ACCESS_OPTIONS
+  };
+}
+
+async function listAdminUsers(req, res) {
+  const q = String(req.query.q || "").trim().toLowerCase();
+  const role = String(req.query.role || "").trim().toLowerCase();
+  const status = String(req.query.status || "").trim().toLowerCase();
+  const clauses = [];
+  const params = [];
+  if (q) {
+    clauses.push("(lower(email) LIKE ? OR lower(username) LIKE ? OR lower(name) LIKE ? OR lower(store) LIKE ?)");
+    params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+  }
+  if (role) {
+    clauses.push("lower(role) = ?");
+    params.push(role);
+  }
+  if (status) {
+    clauses.push("lower(status) = ?");
+    params.push(status);
+  }
+  const rows = await all(
+    `SELECT id, email, role, store, seller_id, status, created_at, updated_at,
+            name, username, phone, store_id, allowed_stores_json, permissions_json, last_access_at
+     FROM users
+     ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+     ORDER BY CASE WHEN status = 'ativo' THEN 0 ELSE 1 END, name COLLATE NOCASE ASC, email COLLATE NOCASE ASC`,
+    params
+  );
+  res.json({
+    users: rows.map(serializeAdminUser).filter(Boolean),
+    meta: buildUsersAdminMeta()
+  });
+}
+
+async function createAdminUser(req, res) {
+  const payload = normalizeAdminUserPayload(req.body || {});
+  const password = String(req.body?.password || "").trim() || "123456";
+  if (!payload.email || !payload.name) {
+    return res.status(400).json({ error: "Informe nome e e-mail do usuario." });
+  }
+  const existing = await get("SELECT id FROM users WHERE lower(email) = ? LIMIT 1", [payload.email]);
+  if (existing?.id) {
+    return res.status(409).json({ error: "Ja existe usuario com este e-mail." });
+  }
+  const result = await run(
+    `INSERT INTO users
+      (email, password_hash, role, store, seller_id, status, created_at, updated_at,
+       name, username, phone, store_id, allowed_stores_json, permissions_json)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?, ?)`,
+    [
+      payload.email,
+      hashPassword(password),
+      payload.role,
+      payload.store,
+      payload.seller_id,
+      payload.status,
+      payload.name,
+      payload.username,
+      payload.phone,
+      payload.store_id,
+      payload.allowed_stores_json,
+      payload.permissions_json
+    ]
+  );
+  const user = await get("SELECT * FROM users WHERE id = ? LIMIT 1", [result?.lastID]);
+  res.status(201).json({ user: serializeAdminUser(user), meta: buildUsersAdminMeta() });
+}
+
+async function updateAdminUser(req, res) {
+  const userId = Number(req.params.id || 0);
+  const existing = await get("SELECT * FROM users WHERE id = ? LIMIT 1", [userId]);
+  if (!existing) {
+    return res.status(404).json({ error: "Usuario nao encontrado." });
+  }
+  const payload = normalizeAdminUserPayload(req.body || {}, existing);
+  if (!payload.email || !payload.name) {
+    return res.status(400).json({ error: "Informe nome e e-mail do usuario." });
+  }
+  const nextPermissions = safeJsonParse(payload.permissions_json, {});
+  if (Number(req.user?.id || 0) === userId && (!nextPermissions.can_manage_users || payload.status !== "ativo")) {
+    return res.status(400).json({ error: "Voce nao pode remover seu proprio acesso administrativo." });
+  }
+  const duplicate = await get("SELECT id FROM users WHERE lower(email) = ? AND id <> ? LIMIT 1", [payload.email, userId]);
+  if (duplicate?.id) {
+    return res.status(409).json({ error: "Ja existe outro usuario com este e-mail." });
+  }
+  await run(
+    `UPDATE users SET
+       email = ?,
+       role = ?,
+       store = ?,
+       seller_id = ?,
+       status = ?,
+       name = ?,
+       username = ?,
+       phone = ?,
+       store_id = ?,
+       allowed_stores_json = ?,
+       permissions_json = ?,
+       updated_at = datetime('now')
+     WHERE id = ?`,
+    [
+      payload.email,
+      payload.role,
+      payload.store,
+      payload.seller_id,
+      payload.status,
+      payload.name,
+      payload.username,
+      payload.phone,
+      payload.store_id,
+      payload.allowed_stores_json,
+      payload.permissions_json,
+      userId
+    ]
+  );
+  const nextPassword = String(req.body?.password || "").trim();
+  if (nextPassword) {
+    await run("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?", [hashPassword(nextPassword), userId]);
+  }
+  const user = await get("SELECT * FROM users WHERE id = ? LIMIT 1", [userId]);
+  res.json({ user: serializeAdminUser(user), meta: buildUsersAdminMeta() });
+}
+
+async function resetAdminUserPassword(req, res) {
+  const userId = Number(req.params.id || 0);
+  const password = String(req.body?.password || "").trim();
+  if (!password || password.length < 4) {
+    return res.status(400).json({ error: "Informe uma senha com pelo menos 4 caracteres." });
+  }
+  const existing = await get("SELECT id FROM users WHERE id = ? LIMIT 1", [userId]);
+  if (!existing) {
+    return res.status(404).json({ error: "Usuario nao encontrado." });
+  }
+  await run("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?", [hashPassword(password), userId]);
+  res.json({ success: true });
+}
+
+async function setAdminUserStatus(req, res) {
+  const userId = Number(req.params.id || 0);
+  const status = String(req.body?.status || "").trim().toLowerCase() === "inativo" ? "inativo" : "ativo";
+  if (Number(req.user?.id || 0) === userId && status === "inativo") {
+    return res.status(400).json({ error: "Voce nao pode desativar seu proprio usuario." });
+  }
+  const existing = await get("SELECT id FROM users WHERE id = ? LIMIT 1", [userId]);
+  if (!existing) {
+    return res.status(404).json({ error: "Usuario nao encontrado." });
+  }
+  await run("UPDATE users SET status = ?, updated_at = datetime('now') WHERE id = ?", [status, userId]);
+  const user = await get("SELECT * FROM users WHERE id = ? LIMIT 1", [userId]);
+  res.json({ user: serializeAdminUser(user), meta: buildUsersAdminMeta() });
+}
+
+async function deleteAdminUser(req, res) {
+  const userId = Number(req.params.id || 0);
+  if (Number(req.user?.id || 0) === userId) {
+    return res.status(400).json({ error: "Voce nao pode excluir seu proprio usuario." });
+  }
+  const existing = await get("SELECT * FROM users WHERE id = ? LIMIT 1", [userId]);
+  if (!existing) {
+    return res.status(404).json({ error: "Usuario nao encontrado." });
+  }
+  const marker = `${existing.email || ""} ${existing.name || ""} ${existing.username || ""}`.toLowerCase();
+  const canDeleteSafely = marker.includes("teste") || marker.includes("test") || String(existing.status || "").toLowerCase() === "inativo";
+  if (!canDeleteSafely) {
+    return res.status(409).json({
+      error: "Usuario com possivel historico operacional. Desative em vez de excluir para preservar vendas antigas."
+    });
+  }
+  await run("DELETE FROM user_sessions WHERE user_id = ?", [userId]);
+  await run("DELETE FROM users WHERE id = ?", [userId]);
+  res.json({ success: true });
 }
 
 function listAccessibleStoreSettings(user = {}) {
@@ -13238,8 +13820,7 @@ const PUBLIC_API_PATHS = new Set([
   "/api/health",
   "/api/login",
   "/api/auth/login",
-  "/api/instance/info",
-  "/api/ia/responder"
+  "/api/instance/info"
 ]);
 
 function getRequestPathname(requestPath = "") {
@@ -13248,6 +13829,213 @@ function getRequestPathname(requestPath = "") {
 
 function isPublicApiPath(requestPath = "") {
   return PUBLIC_API_PATHS.has(getRequestPathname(requestPath));
+}
+
+const LOG_SENSITIVE_KEYS = new Set([
+  "authorization",
+  "cookie",
+  "password",
+  "senha",
+  "pin",
+  "token",
+  "secret",
+  "password_hash",
+  "access_token",
+  "refresh_token"
+]);
+
+function maskPhoneForLog(value = "") {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+  return digits.length <= 4 ? `***${digits}` : `***${digits.slice(-4)}`;
+}
+
+function sanitizeLogPayload(value, depth = 0) {
+  if (depth > 4) {
+    return "[TRUNCATED]";
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => sanitizeLogPayload(item, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value).reduce((acc, [key, item]) => {
+      const normalizedKey = normalizeText(key).toLowerCase();
+      if (LOG_SENSITIVE_KEYS.has(normalizedKey) || normalizedKey.includes("token") || normalizedKey.includes("secret")) {
+        acc[key] = "[REDACTED]";
+      } else if (["phone", "telefone", "mobile", "whatsapp"].includes(normalizedKey)) {
+        acc[key] = maskPhoneForLog(item);
+      } else if (["message", "mensagem", "body", "text", "customer_message", "conversation"].includes(normalizedKey)) {
+        acc[key] = normalizeText(item).slice(0, 80) ? "[REDACTED_TEXT]" : "";
+      } else {
+        acc[key] = sanitizeLogPayload(item, depth + 1);
+      }
+      return acc;
+    }, {});
+  }
+  return value;
+}
+
+function safeCompareSecrets(received = "", expected = "") {
+  const receivedText = normalizeText(received);
+  const expectedText = normalizeText(expected);
+  if (!receivedText || !expectedText) {
+    return false;
+  }
+  const receivedBuffer = Buffer.from(receivedText);
+  const expectedBuffer = Buffer.from(expectedText);
+  return receivedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
+}
+
+const PAGBANK_WEBHOOK_EVENT_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
+const pagBankWebhookEventCache = new Map();
+
+function prunePagBankWebhookEventCache() {
+  const now = Date.now();
+  for (const [key, timestamp] of pagBankWebhookEventCache.entries()) {
+    if (now - Number(timestamp || 0) > PAGBANK_WEBHOOK_EVENT_CACHE_TTL_MS) {
+      pagBankWebhookEventCache.delete(key);
+    }
+  }
+}
+
+function getPagBankWebhookEventKey(req = {}, payload = {}, source = "") {
+  const body = payload && typeof payload === "object" ? payload : {};
+  const nested = body.data && typeof body.data === "object" ? body.data : {};
+  const candidates = [
+    req.headers?.["x-request-id"],
+    req.headers?.["x-pagbank-event-id"],
+    req.headers?.["x-pagseguro-notification-id"],
+    body.event_id,
+    body.eventId,
+    body.notification_id,
+    body.notificationCode,
+    body.code,
+    body.id,
+    nested.id,
+    nested.code
+  ].map((item) => normalizeText(item)).filter(Boolean);
+  if (candidates.length) {
+    return `${source}:${candidates[0]}`;
+  }
+  const reference = [
+    source,
+    body.checkout_id || body.checkoutId || nested.checkout_id || nested.checkoutId || "",
+    body.reference_id || body.referenceId || nested.reference_id || nested.referenceId || "",
+    body.sale_id || nested.sale_id || "",
+    body.status || nested.status || body.payment_status || nested.payment_status || ""
+  ].map((item) => normalizeText(item)).join("|");
+  return reference.replace(/\|/g, "") ? crypto.createHash("sha256").update(reference).digest("hex") : "";
+}
+
+async function recordPagBankWebhookAudit(req = {}, { source = "", result = "", message = "", eventKey = "", mapped = null } = {}) {
+  try {
+    await recordAuditEvent({
+      req,
+      module: "payments",
+      action: "pagbank_webhook",
+      entityType: "webhook",
+      entityId: eventKey || source,
+      saleId: mapped?.sale?.sale_id || mapped?.sale_id || "",
+      result,
+      message,
+      includeBody: false,
+      metadata: {
+        provider: "pagbank",
+        source,
+        event_key: eventKey,
+        matched: Boolean(mapped?.matched),
+        payment_status: mapped?.payment_link?.payment_status || mapped?.payment_status || ""
+      }
+    });
+  } catch (error) {
+    console.error("[AUDIT] PagBank webhook audit failed", sanitizeLogPayload({ message: error.message || String(error) }));
+  }
+}
+
+function validatePagBankWebhookRequest(req = {}) {
+  const expectedSecret = normalizeText(process.env.PAGBANK_WEBHOOK_SECRET || "");
+  if (!expectedSecret) {
+    return {
+      ok: false,
+      status: 503,
+      error: "Webhook PagBank sem segredo configurado no servidor."
+    };
+  }
+  const receivedSecret = req.headers?.["x-aerostore-pagbank-webhook-secret"] || "";
+  if (!safeCompareSecrets(receivedSecret, expectedSecret)) {
+    return {
+      ok: false,
+      status: 403,
+      error: "Webhook PagBank nao autorizado."
+    };
+  }
+  return { ok: true };
+}
+
+async function handlePagBankWebhook(req, res, source = "generic") {
+  const validation = validatePagBankWebhookRequest(req);
+  const eventKey = getPagBankWebhookEventKey(req, req.body || {}, source);
+  if (!validation.ok) {
+    await recordPagBankWebhookAudit(req, {
+      source,
+      result: "blocked",
+      message: validation.error,
+      eventKey
+    });
+    console.warn("[PAGBANK WEBHOOK] blocked", sanitizeLogPayload({
+      source,
+      event_key: eventKey,
+      status: validation.status,
+      reason: validation.error,
+      ip: req.ip || req.socket?.remoteAddress || ""
+    }));
+    return res.status(validation.status).json({ error: validation.error });
+  }
+
+  prunePagBankWebhookEventCache();
+  if (eventKey && pagBankWebhookEventCache.has(eventKey)) {
+    await recordPagBankWebhookAudit(req, {
+      source,
+      result: "success",
+      message: "Webhook PagBank duplicado ignorado.",
+      eventKey
+    });
+    return res.status(200).json({ received: true, duplicate: true });
+  }
+
+  try {
+    const mapped = applyPagBankWebhookToSale(req.body || {}, { source });
+    if (eventKey) {
+      pagBankWebhookEventCache.set(eventKey, Date.now());
+    }
+    await recordPagBankWebhookAudit(req, {
+      source,
+      result: "success",
+      message: "Webhook PagBank aceito.",
+      eventKey,
+      mapped
+    });
+    console.info("[PAGBANK WEBHOOK] accepted", sanitizeLogPayload({
+      source,
+      event_key: eventKey,
+      matched: Boolean(mapped?.matched),
+      sale_id: mapped?.sale?.sale_id || ""
+    }));
+    return res.status(200).json({ received: true, mapped });
+  } catch (error) {
+    await recordPagBankWebhookAudit(req, {
+      source,
+      result: "failed",
+      message: error.message || "Falha ao processar webhook PagBank.",
+      eventKey
+    });
+    console.error("[PAGBANK WEBHOOK] error", sanitizeLogPayload({
+      source,
+      event_key: eventKey,
+      message: error.message || String(error)
+    }));
+    return res.status(200).json({ received: true });
+  }
 }
 
 async function authMiddleware(req, res, next) {
@@ -13259,6 +14047,17 @@ async function authMiddleware(req, res, next) {
   const user = await getUserByToken(token);
 
   if (!user) {
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(String(req.method || "").toUpperCase())) {
+      recordAuditEvent({
+        req,
+        module: "security",
+        action: "unauthenticated_request",
+        entityType: "endpoint",
+        entityId: req.originalUrl || req.path || "",
+        result: "blocked",
+        message: "Sessao expirada ou usuario nao autenticado"
+      });
+    }
     console.warn('[AUTH] Token inválido ou expirado:', { path: req.originalUrl, hasToken: !!token });
     res.status(401).json({ error: "Sessão expirada ou usuário não autenticado", details: "Faça login novamente" });
     return;
@@ -16258,35 +17057,38 @@ async function buildReportsCsv(rawFilters = {}) {
 app.get("/api/health", async (req, res) => {
   res.json({
     ok: true,
-    port: PORT,
-    database: dbPath
+    port: PORT
   });
 });
 
-app.get("/api/runtime-version", async (req, res) => {
+app.get("/api/runtime-version", authMiddleware, requireAnyPermission(["can_manage_global_settings", "can_manage_users"]), async (req, res) => {
   let tables = [];
-  try {
-    tables = await all(
-      `SELECT name
-       FROM sqlite_master
-       WHERE type = 'table'
-         AND name IN ('ai_conversation_state', 'ai_product_categories', 'ai_product_genders', 'ai_product_colors', 'ai_product_sizes')
-       ORDER BY name`
-    );
-  } catch (error) {
-    tables = [];
+  const isProduction = String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
+  if (!isProduction) {
+    try {
+      tables = await all(
+        `SELECT name
+         FROM sqlite_master
+         WHERE type = 'table'
+           AND name IN ('ai_conversation_state', 'ai_product_categories', 'ai_product_genders', 'ai_product_colors', 'ai_product_sizes')
+         ORDER BY name`
+      );
+    } catch (error) {
+      tables = [];
+    }
   }
 
-  res.json({
+  const payload = {
     version: RUNTIME_VERSION,
-    cwd: process.cwd(),
-    dirname: __dirname,
-    filename: __filename,
     bootTime: BOOT_TIME,
     nodeVersion: process.version,
-    database: dbPath,
-    tables: tables.map((item) => item.name)
-  });
+    environment: String(process.env.NODE_ENV || "development")
+  };
+  if (!isProduction) {
+    payload.database = path.basename(dbPath || "");
+    payload.tables = tables.map((item) => item.name);
+  }
+  res.json(payload);
 });
 
 async function handleAuthLogin(req, res) {
@@ -16300,26 +17102,8 @@ async function handleAuthLogin(req, res) {
       return;
     }
 
-    const user = email
-      ? await get(
-        `SELECT *
-         FROM users
-         WHERE status = 'ativo'
-           AND lower(email) = ?
-         ORDER BY id ASC
-         LIMIT 1`,
-        [email]
-      )
-      : await get(
-        `SELECT *
-         FROM users
-         WHERE status = 'ativo'
-           AND lower(username) = ?
-         ORDER BY id ASC
-         LIMIT 1`,
-        [username]
-      );
-    if (!user || user.password_hash !== hashPassword(password)) {
+    const user = await getUserByCredentials({ email, username, password });
+    if (!user) {
       res.status(401).json({ error: "Credenciais invalidas." });
       return;
     }
@@ -16330,7 +17114,17 @@ async function handleAuthLogin(req, res) {
       "INSERT INTO user_sessions (user_id, token, expires_at, created_at) VALUES (?, ?, ?, datetime('now'))",
       [user.id, token, expiresAt]
     );
+    await run("UPDATE users SET last_access_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [user.id]);
     setAuthSessionCookie(res, token);
+    recordAuditEvent({
+      req: { ...req, user },
+      module: "auth",
+      action: "login",
+      entityType: "session",
+      entityId: String(user.id || ""),
+      result: "success",
+      message: "Login realizado"
+    });
 
     res.json({
       success: true,
@@ -16346,6 +17140,7 @@ app.post("/api/login", handleAuthLogin);
 app.post("/api/auth/login", handleAuthLogin);
 
 app.post("/api/payments/pagbank/webhook", async (req, res) => {
+  return handlePagBankWebhook(req, res, "generic");
   try {
     const mapped = applyPagBankWebhookToSale(req.body || {}, { source: "generic" });
     console.log("[PAGBANK WEBHOOK] generic", {
@@ -16353,7 +17148,7 @@ app.post("/api/payments/pagbank/webhook", async (req, res) => {
         "content-type": req.headers["content-type"] || "",
         "x-request-id": req.headers["x-request-id"] || ""
       },
-      payload: req.body || {},
+      payload: "[REDACTED]",
       mapped
     });
     // TODO: validar autenticidade da notificação PagBank.
@@ -16365,9 +17160,10 @@ app.post("/api/payments/pagbank/webhook", async (req, res) => {
 });
 
 app.post("/api/payments/pagbank/webhook/checkout", async (req, res) => {
+  return handlePagBankWebhook(req, res, "checkout");
   try {
     const mapped = applyPagBankWebhookToSale(req.body || {}, { source: "checkout" });
-    console.log("[PAGBANK WEBHOOK] checkout", { payload: req.body || {}, mapped });
+    console.log("[PAGBANK WEBHOOK] checkout", sanitizeLogPayload({ payload: req.body || {}, mapped }));
     // TODO: validar autenticidade da notificação PagBank.
     // TODO: consultar o checkout antes de refletir qualquer alteração interna.
     res.status(200).json({ received: true, mapped });
@@ -16378,9 +17174,10 @@ app.post("/api/payments/pagbank/webhook/checkout", async (req, res) => {
 });
 
 app.post("/api/payments/pagbank/webhook/payment", async (req, res) => {
+  return handlePagBankWebhook(req, res, "payment");
   try {
     const mapped = applyPagBankWebhookToSale(req.body || {}, { source: "payment" });
-    console.log("[PAGBANK WEBHOOK] payment", { payload: req.body || {}, mapped });
+    console.log("[PAGBANK WEBHOOK] payment", sanitizeLogPayload({ payload: req.body || {}, mapped }));
     // TODO: validar autenticidade da notificação PagBank.
     // TODO: consultar o pagamento no PagBank antes de atualizar pedido/financeiro interno.
     res.status(200).json({ received: true, mapped });
@@ -16391,6 +17188,7 @@ app.post("/api/payments/pagbank/webhook/payment", async (req, res) => {
 });
 
 app.use("/api", authMiddleware);
+app.use("/api", auditSensitiveMutationMiddleware);
 
 function handleAuthMe(req, res) {
   res.json({
@@ -16401,6 +17199,124 @@ function handleAuthMe(req, res) {
 
 app.get("/api/me", handleAuthMe);
 app.get("/api/auth/me", handleAuthMe);
+app.get("/api/admin/users", requirePermission("can_manage_users"), listAdminUsers);
+app.post("/api/admin/users", requirePermission("can_manage_users"), createAdminUser);
+app.patch("/api/admin/users/:id", requirePermission("can_manage_users"), updateAdminUser);
+app.post("/api/admin/users/:id/reset-password", requirePermission("can_manage_users"), resetAdminUserPassword);
+app.post("/api/admin/users/:id/status", requirePermission("can_manage_users"), setAdminUserStatus);
+app.delete("/api/admin/users/:id", requirePermission("can_manage_users"), deleteAdminUser);
+
+app.get("/api/admin/audit-logs", requirePermission("can_view_audit"), async (req, res) => {
+  try {
+    const rows = await listAuditLogs(req.query || {});
+    res.json({ rows, total: rows.length });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao carregar auditoria operacional." });
+  }
+});
+
+// Guards para rotas legadas: autenticar nao basta; cada familia sensivel precisa de permissao real.
+app.use("/api/dashboard", requireAnyPermission(["can_sell", "can_view_reports", "can_view_store_reports", "can_view_cashback", "can_view_campaigns"]));
+app.use("/api/reports", requireAnyPermission(["can_view_reports", "can_view_store_reports"]));
+app.use("/api/crm_contacts/import", requireAnyPermission(["can_export_data", "can_manage_campaigns"]));
+app.use("/api/contacts/import", requireAnyPermission(["can_export_data", "can_manage_campaigns"]));
+app.use("/api/contatos/exportar", requireAnyPermission(["can_export_data"]));
+app.use("/api/contacts", requireByHttpMethod({
+  GET: ["can_view_customers", "can_sell"],
+  POST: ["can_create_customers", "can_sell"],
+  PUT: ["can_edit_customers"],
+  DELETE: ["can_edit_customers"]
+}));
+app.use("/api/contatos", requireByHttpMethod({
+  GET: ["can_view_customers", "can_sell"],
+  POST: ["can_create_customers", "can_sell"],
+  PUT: ["can_edit_customers"],
+  DELETE: ["can_edit_customers"]
+}));
+app.use("/api/clientes", requireAnyPermission(["can_view_customers", "can_sell"]));
+app.use("/api/customers", requireByHttpMethod({
+  GET: ["can_view_customers", "can_sell"],
+  POST: ["can_create_customers", "can_sell"],
+  PUT: ["can_edit_customers"],
+  DELETE: ["can_edit_customers"]
+}));
+app.use("/api/sellers", requireAnyPermission(["can_manage_users"]));
+app.use("/api/import-batches", requireByHttpMethod({
+  GET: ["can_export_data", "can_manage_campaigns"],
+  POST: ["can_export_data", "can_manage_campaigns"],
+  PUT: ["can_export_data", "can_manage_campaigns"],
+  DELETE: ["can_export_data", "can_manage_campaigns"]
+}));
+app.use("/api/audiences/export", requireAnyPermission(["can_export_data"]));
+app.use("/api/audiences", requireByHttpMethod({
+  GET: ["can_view_campaigns", "can_manage_campaigns"],
+  POST: ["can_manage_campaigns"],
+  PUT: ["can_manage_campaigns"],
+  DELETE: ["can_manage_campaigns"]
+}));
+app.use("/api/campaigns", requireByHttpMethod({
+  GET: ["can_view_campaigns", "can_manage_campaigns"],
+  POST: ["can_manage_campaigns"],
+  PUT: ["can_manage_campaigns"],
+  DELETE: ["can_manage_campaigns"]
+}));
+app.use("/api/uploads/media", requireByHttpMethod({
+  GET: ["can_view_campaigns", "can_manage_campaigns"],
+  POST: ["can_manage_campaigns"],
+  PUT: ["can_manage_campaigns"],
+  DELETE: ["can_manage_campaigns"]
+}));
+app.use("/api/assistant", requireAnyPermission(["can_use_whatsapp", "can_manage_campaigns"]));
+app.use("/api/settings/stores", requireByHttpMethod({
+  GET: ["can_sell", "can_view_products", "can_view_customers", "can_view_cash_register", "can_view_store_settings", "can_manage_store_settings", "can_manage_global_settings"],
+  PUT: ["can_manage_store_settings", "can_manage_global_settings"]
+}));
+app.use("/api/cashbacks/import", requireAnyPermission(["can_manage_cashback", "can_export_data"]));
+app.use("/api/cashbacks/exportar", requireAnyPermission(["can_export_data", "can_manage_cashback"]));
+app.use("/api/cashback/events", requireAnyPermission(["can_view_cashback", "can_manage_cashback"]));
+app.use("/api/cashback/recovery-segments", requireByHttpMethod({
+  GET: ["can_view_cashback", "can_manage_cashback"],
+  POST: ["can_manage_cashback", "can_manage_campaigns"]
+}));
+app.use("/api/cashback", requireByHttpMethod({
+  GET: ["can_sell", "can_view_cashback", "can_manage_cashback"],
+  POST: ["can_launch_cashback", "can_manage_cashback", "can_sell"],
+  PUT: ["can_manage_cashback"],
+  DELETE: ["can_manage_cashback"]
+}));
+app.use("/api/cashbacks", requireByHttpMethod({
+  GET: ["can_view_cashback", "can_manage_cashback", "can_sell"],
+  POST: ["can_launch_cashback", "can_manage_cashback", "can_sell"],
+  PUT: ["can_manage_cashback"],
+  DELETE: ["can_manage_cashback"]
+}));
+app.use("/api/products", requireByHttpMethod({
+  GET: ["can_view_products", "can_sell"],
+  POST: ["can_manage_products"],
+  PUT: ["can_manage_products"],
+  DELETE: ["can_manage_products"]
+}));
+app.use("/api/whatsapp/logs", requirePermission("can_view_whatsapp_logs"));
+app.use("/api/whatsapp/qr", requireByHttpMethod({
+  GET: ["can_use_whatsapp", "can_view_whatsapp_status"],
+  POST: ["can_reconnect_whatsapp"]
+}));
+app.use("/api/whatsapp/status", requireAnyPermission(["can_use_whatsapp", "can_view_whatsapp_status"]));
+app.use("/api/whatsapp/send", requirePermission("can_use_whatsapp"));
+app.use("/api/whatsapp/send-bulk", requireAnyPermission(["can_manage_campaigns", "can_use_whatsapp"]));
+app.use("/api/whatsapp/send-media", requirePermission("can_use_whatsapp"));
+app.use("/api/whatsapp/reinitialize", requirePermission("can_reconnect_whatsapp"));
+app.use("/api/whatsapp/disconnect", requirePermission("can_disconnect_whatsapp"));
+app.use("/api/whatsapp/reset-session", requirePermission("can_reset_whatsapp_session"));
+app.use("/api/ia/settings", requireByHttpMethod({
+  GET: ["can_view_aerointel", "can_manage_global_settings"],
+  PUT: ["can_manage_global_settings"]
+}));
+app.use("/api/ia/logs", requireAnyPermission(["can_view_aerointel", "can_view_audit"]));
+app.use("/api/ia/catalogs", requireAnyPermission(["can_view_aerointel"]));
+app.use("/api/ia/product-catalogs", requireAnyPermission(["can_view_aerointel"]));
+app.use("/api/ia/products", requireAnyPermission(["can_view_aerointel"]));
+app.use("/api/aerointel/conversations", requireAnyPermission(["can_view_aerointel"]));
 
 app.get("/api/pdv/manifest", async (req, res) => {
   try {
@@ -16415,6 +17331,7 @@ app.use("/api/pdv/imports", pdvImportRouter);
 app.use("/api/pdv/consolidation", requirePermission("can_view_consolidation"), pdvConsolidationRouter);
 app.use("/api/pdv/operational", requirePermission("can_sell"), pdvOperationalRouter);
 app.use("/api/pdv/sales", pdvSalesRouter);
+app.use("/api/pdv/exchanges", requirePermission("can_sell"), pdvExchangeRouter);
 app.use("/api/pdv/control", pdvControlRouter);
 app.use("/api/pdv/experience", pdvExperienceRouter);
 app.use("/api/pdv/inventory", pdvInventoryRouter);
@@ -16995,7 +17912,7 @@ app.post("/api/crm_contacts/import/commit", requireManager, crmContactImportUplo
   }
 });
 
-app.get("/api/sellers", async (req, res) => {
+app.get("/api/sellers", requirePermission("can_manage_users"), async (req, res) => {
   try {
     const rows = await all("SELECT * FROM sellers ORDER BY status ASC, name ASC");
     res.json(rows.filter((row) => userCanAccessStore(req.user, row.store || row.store_id || "")));
@@ -17004,12 +17921,8 @@ app.get("/api/sellers", async (req, res) => {
   }
 });
 
-app.post("/api/sellers", async (req, res) => {
+app.post("/api/sellers", requirePermission("can_manage_users"), async (req, res) => {
   try {
-    if (!isAdmin(req.user)) {
-      res.status(403).json({ error: "Acesso restrito a admin." });
-      return;
-    }
     const name = String(req.body.name || "").trim();
     const store = String(req.body.store || "").trim();
     const status = String(req.body.status || "ativo").trim();
@@ -17039,12 +17952,8 @@ app.post("/api/sellers", async (req, res) => {
   }
 });
 
-app.put("/api/sellers/:id", async (req, res) => {
+app.put("/api/sellers/:id", requirePermission("can_manage_users"), async (req, res) => {
   try {
-    if (!isAdmin(req.user)) {
-      res.status(403).json({ error: "Acesso restrito a admin." });
-      return;
-    }
     const current = await get("SELECT * FROM sellers WHERE id = ?", [req.params.id]);
     if (!current) {
       res.status(404).json({ error: "Vendedor não encontrado." });
@@ -17085,12 +17994,8 @@ app.put("/api/sellers/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/sellers/:id", async (req, res) => {
+app.delete("/api/sellers/:id", requirePermission("can_manage_users"), async (req, res) => {
   try {
-    if (!isAdmin(req.user)) {
-      res.status(403).json({ error: "Acesso restrito a admin." });
-      return;
-    }
     const seller = await get("SELECT * FROM sellers WHERE id = ?", [req.params.id]);
     if (!seller) {
       res.status(404).json({ error: "Vendedor não encontrado." });
@@ -20431,7 +21336,7 @@ app.post("/api/ai/variation", (req, res) => {
 });
 
 app.get("/", (req, res) => {
-  servePublicIndex(res);
+  res.redirect(302, "/pdv");
 });
 
 app.get("/settings", (req, res) => {
@@ -20458,7 +21363,10 @@ app.get(
     "/relatorios",
     "/consolidacao",
     "/importacoes",
-    "/configuracoes"
+    "/configuracoes",
+    "/auditoria",
+    "/usuarios",
+    "/users"
   ],
   (req, res) => {
     servePublicIndex(res);
@@ -22472,7 +23380,7 @@ app.get("/api/aerointel/product/:sku/enriched", requireAdmin, async (req, res) =
   }
 });
 
-app.post("/api/ia/responder", async (req, res) => {
+app.post("/api/ia/responder", requirePermission("can_view_aerointel", "Seu perfil nao tem permissao para usar o AEROINTEL."), async (req, res) => {
   const { mensagem, telefone = "", nome = "", contexto = "" } = req.body || {};
   if (!mensagem) {
     return res.status(400).json({ error: "Mensagem é obrigatória" });
@@ -22494,6 +23402,21 @@ app.post("/api/ia/responder", async (req, res) => {
       mediaId: payload.produtosSugeridos?.[0]?.media_id || null,
       status: "ok"
     });
+    recordAuditEvent({
+      req,
+      module: "aerointel",
+      action: "ai_reply_requested",
+      entityType: "ai_request",
+      result: "success",
+      includeBody: false,
+      metadata: {
+        source: "panel",
+        has_phone: Boolean(telefone),
+        has_context: Boolean(contexto),
+        intent: payload.intencao || "",
+        needs_human: Boolean(payload.precisaHumano)
+      }
+    });
     res.json({
       resposta: payload.resposta,
       intencao: payload.intencao,
@@ -22512,7 +23435,16 @@ app.post("/api/ia/responder", async (req, res) => {
       aerointelSignals: payload.aerointelSignals || null
     });
   } catch (error) {
-    console.error("Erro na rota /api/ia/responder:", error);
+    recordAuditEvent({
+      req,
+      module: "aerointel",
+      action: "ai_reply_requested",
+      entityType: "ai_request",
+      result: "failed",
+      includeBody: false,
+      message: error.message || "Erro interno do servidor"
+    });
+    console.error("Erro na rota /api/ia/responder:", sanitizeLogPayload({ message: error.message || String(error) }));
     res.status(500).json({ error: "Erro interno do servidor" });
   }
 });
@@ -22605,6 +23537,19 @@ async function initializeWhatsAppClient() {
         if (!isActiveClient()) {
           return;
         }
+        if (isWhatsAppQrManualRefreshEnabled() && !isWhatsAppQrRequestActive()) {
+          const nowIso = new Date().toISOString();
+          whatsappState.status = 'qr_pendente';
+          whatsappState.lastQrRaw = null;
+          whatsappState.qrBase64 = null;
+          whatsappState.lastQrSuppressedAt = nowIso;
+          whatsappState.qrSuppressedCount = Number(whatsappState.qrSuppressedCount || 0) + 1;
+          whatsappState.lastError = 'QR Code bloqueado em modo seguro. Clique em Atualizar QR Code para liberar uma janela de conexao.';
+          if (whatsappState.qrSuppressedCount === 1 || whatsappState.qrSuppressedCount % 10 === 0) {
+            console.warn(`[WHATSAPP] QR Code suprimido pelo modo manual (${profile.key}). Use Atualizar QR Code no CRM para conectar.`);
+          }
+          return;
+        }
         whatsappState.status = 'aguardando_qr';
         whatsappState.lastQrRaw = qr;
         whatsappState.qrBase64 = null;
@@ -22634,6 +23579,7 @@ async function initializeWhatsAppClient() {
         whatsappState.lastQrRaw = null;
         whatsappState.qrBase64 = null;
         whatsappState.lastError = null;
+        clearWhatsAppQrWindow();
         console.log(`WhatsApp conectado! (${profile.key})`);
 
         try {
@@ -22684,7 +23630,7 @@ async function initializeWhatsAppClient() {
           const from = String(message.from || "");
           if (!from || from.endsWith("@g.us") || from === "status@broadcast") return;
           if (message.hasMedia && !String(message.body || "").trim()) {
-            console.log("[IA WHATSAPP INBOUND]", {
+            console.log("[IA WHATSAPP INBOUND]", sanitizeLogPayload({
               connectedNumber: getCurrentConnectedNumber(),
               from,
               phoneNormalized: normalizePhone(from.replace(/@(c|s)\.us$/i, "").replace(/@lid$/i, "")),
@@ -22698,7 +23644,7 @@ async function initializeWhatsAppClient() {
               textSent: false,
               photoSent: false,
               error: "Mídia ignorada nesta fase"
-            });
+            }));
             return;
           }
           await handleInboundAiWhatsAppMessage(message);
@@ -23671,12 +24617,16 @@ app.get('/api/whatsapp/status', (req, res) => {
   const profileLabel = String(whatsappClient?.options?.authStrategy?.clientId || instanceConfig.whatsapp?.session_name || "default").trim() || "default";
   const effectiveAuthProfile = whatsappRuntimeProfile?.key || getConfiguredWhatsAppAuthMode();
   const normalizedStatus = String(whatsappState.status || "desconectado").trim().toLowerCase();
+  const qrPolicy = getWhatsAppQrPolicyState();
+  const canExposeQr = !qrPolicy.manualMode || qrPolicy.requestActive;
   const sessionStateLabel = normalizedStatus === "conectado"
     ? "LocalAuth ativa"
     : normalizedStatus === "autenticando"
       ? (isWhatsAppInitializationStale() ? "Inicializacao travada - sem QR" : "Inicializando sessao local")
       : normalizedStatus === "aguardando_qr"
         ? "Aguardando leitura do QR"
+        : normalizedStatus === "qr_pendente"
+          ? "QR protegido - clique em Atualizar QR Code"
         : normalizedStatus === "erro"
           ? "Sessao local com falha"
           : "Sessao local nao iniciada";
@@ -23686,7 +24636,13 @@ app.get('/api/whatsapp/status', (req, res) => {
     connectedNumber: whatsappState.connectedNumber,
     lastConnectedAt: whatsappState.lastConnectedAt,
     lastError: whatsappState.lastError,
-    hasQr: Boolean(whatsappState.qrBase64),
+    hasQr: Boolean(canExposeQr && whatsappState.qrBase64),
+    qrManualMode: qrPolicy.manualMode,
+    qrRequestActive: qrPolicy.requestActive,
+    qrRequestExpiresAt: qrPolicy.requestExpiresAt,
+    qrRequestRequestedAt: qrPolicy.requestRequestedAt,
+    qrSuppressedCount: qrPolicy.suppressedCount,
+    qrLastSuppressedAt: qrPolicy.lastSuppressedAt,
     instanceId: instanceConfig.instance_id,
     store: instanceConfig.store,
     profile: profileLabel,
@@ -23710,14 +24666,66 @@ app.get('/api/whatsapp/qr', (req, res) => {
   if (!userCanAccessStore(req.user, instanceConfig.store?.id || "")) {
     return res.status(403).json({ error: "Acesso restrito ao WhatsApp da sua loja." });
   }
+  const qrPolicy = getWhatsAppQrPolicyState();
+  const canExposeQr = !qrPolicy.manualMode || qrPolicy.requestActive;
   res.json({
     status: whatsappState.status,
-    qrBase64: whatsappState.qrBase64 || null,
-    hasQr: Boolean(whatsappState.qrBase64),
+    qrBase64: canExposeQr ? (whatsappState.qrBase64 || null) : null,
+    hasQr: Boolean(canExposeQr && whatsappState.qrBase64),
     lastError: whatsappState.lastError || null,
+    qrManualMode: qrPolicy.manualMode,
+    qrRequestActive: qrPolicy.requestActive,
+    qrRequestExpiresAt: qrPolicy.requestExpiresAt,
+    qrRequestRequestedAt: qrPolicy.requestRequestedAt,
+    qrSuppressedCount: qrPolicy.suppressedCount,
+    qrLastSuppressedAt: qrPolicy.lastSuppressedAt,
     instanceId: instanceConfig.instance_id,
     store: instanceConfig.store
   });
+});
+
+app.post('/api/whatsapp/qr/refresh', async (req, res) => {
+  try {
+    if (!userHasPermission(req.user, "can_reconnect_whatsapp")) {
+      return res.status(403).json({ error: "Acesso restrito ao QR Code do WhatsApp CRM." });
+    }
+    if (!userCanAccessStore(req.user, instanceConfig.store?.id || "")) {
+      return res.status(403).json({ error: "Acesso restrito ao WhatsApp da sua loja." });
+    }
+    if (whatsappState.status === "conectado") {
+      return res.json({
+        success: true,
+        message: "WhatsApp ja esta conectado. Nao foi gerado novo QR Code.",
+        status: whatsappState.status,
+        connected: true,
+        qr: getWhatsAppQrPolicyState()
+      });
+    }
+
+    const qrPolicy = requestWhatsAppQrWindow("crm_refresh_button");
+    await recycleWhatsAppClient("manual_qr_refresh", {
+      nextStatus: "autenticando",
+      clearBrowserRuntime: true,
+      resetError: true
+    });
+
+    initializeWhatsAppClient().catch((error) => {
+      console.error('Falha ao gerar QR manual WhatsApp:', error);
+      whatsappState.status = 'erro';
+      whatsappState.lastError = normalizeWhatsAppBootstrapError(error);
+    });
+
+    res.json({
+      success: true,
+      message: "Janela de QR Code aberta. Aguarde alguns segundos e escaneie o QR exibido.",
+      status: whatsappState.status,
+      connected: false,
+      qr: qrPolicy
+    });
+  } catch (error) {
+    console.error('Erro ao atualizar QR WhatsApp:', error);
+    res.status(500).json({ error: 'Erro ao atualizar QR Code do WhatsApp.', details: error.message });
+  }
 });
 
 app.post('/api/whatsapp/reinitialize', async (req, res) => {
