@@ -4201,6 +4201,88 @@ body.theme-dark .pdv-cart-item-logistics span { background: rgba(255,255,255,0.0
   color: rgba(243, 237, 225, 0.72);
 }
 
+.pdv-sale-label-not-found {
+  align-items: flex-start;
+  border-color: rgba(45, 212, 191, 0.24);
+  background: rgba(45, 212, 191, 0.07);
+}
+
+.pdv-sale-label-not-found .primary-button {
+  width: fit-content;
+  margin-top: 4px;
+}
+
+.pdv-label-product-drawer {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(45, 212, 191, 0.10), transparent 30%),
+    linear-gradient(180deg, #131A23 0%, #0F141B 100%);
+  border-left-color: rgba(255, 255, 255, 0.08);
+  color: #F4F7FA;
+}
+
+.pdv-label-product-drawer .pdv-drawer-header p {
+  margin: 0;
+  color: #AAB4C0;
+  line-height: 1.45;
+}
+
+.pdv-label-product-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.pdv-label-product-grid label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #AAB4C0;
+}
+
+.pdv-label-product-grid .span-2 {
+  grid-column: 1 / -1;
+}
+
+.pdv-label-product-grid input,
+.pdv-label-product-grid textarea {
+  width: 100%;
+  min-height: 42px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0B0F14;
+  color: #F4F7FA;
+  padding: 10px 12px;
+  outline: none;
+}
+
+.pdv-label-product-grid input:focus,
+.pdv-label-product-grid textarea:focus {
+  border-color: rgba(45, 212, 191, 0.42);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.10);
+}
+
+.pdv-label-product-confirmation {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(45, 212, 191, 0.24);
+  background: rgba(45, 212, 191, 0.08);
+}
+
+.pdv-label-product-confirmation span {
+  color: #AAB4C0;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 720px) {
+  .pdv-label-product-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .table-wrap {
   position: relative;
   overflow-x: auto;

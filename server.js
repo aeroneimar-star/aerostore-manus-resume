@@ -9560,6 +9560,9 @@ const TINY_VITRINE_FIELD_ALIASES = {
   tags: ["tags", "etiquetas", "palavras-chave"]
 };
 
+TINY_VITRINE_FIELD_ALIASES.codigo_etiqueta.push("cod etiqueta", "cod.", "codigo da tag", "código da tag");
+TINY_VITRINE_FIELD_ALIASES.codigo_interno.push("cod interno", "cod.", "codigo da tag", "código da tag");
+
 for (let index = 1; index <= 10; index += 1) {
   TINY_VITRINE_FIELD_ALIASES[`foto_externa_${index}`] = [
     `url imagem externa ${index}`,
@@ -9692,9 +9695,9 @@ function buildTinyPdvImportSuggestedMapping(headerAnalysis = {}) {
     codigo: matched.codigo?.original || matched.tiny_id?.original || "",
     tiny_id: matched.tiny_id?.original || "",
     sku: matched.sku?.original || "",
-    codigo_etiqueta: matched.codigo_etiqueta?.original || "",
+    codigo_etiqueta: matched.codigo_etiqueta?.original || matched.codigo?.original || matched.sku?.original || "",
     ean: matched.ean?.original || "",
-    codigo_interno: matched.codigo_interno?.original || "",
+    codigo_interno: matched.codigo_interno?.original || matched.codigo?.original || matched.sku?.original || "",
     preco: matched.preco?.original || "",
     preco_custo: matched.preco_custo?.original || "",
     estoque_total: matched.estoque_total?.original || "",

@@ -130,8 +130,31 @@ function toNumber(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function parseMoneyLike(value) {
+  if (typeof value === "number") {
+    return toNumber(value);
+  }
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return 0;
+  }
+  const sanitized = raw.replace(/[^\d,.-]/g, "");
+  const decimalIndex = Math.max(sanitized.lastIndexOf(","), sanitized.lastIndexOf("."));
+  if (decimalIndex >= 0) {
+    const integerPart = sanitized.slice(0, decimalIndex).replace(/[^\d-]/g, "");
+    const decimalPart = sanitized.slice(decimalIndex + 1).replace(/\D/g, "");
+    const parsed = Number(`${integerPart || "0"}.${decimalPart || "0"}`);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return toNumber(sanitized.replace(/[^\d-]/g, ""));
+}
+
 function roundQty(value) {
   return Number(toNumber(value).toFixed(2));
+}
+
+function roundMoneyLike(value) {
+  return Number(parseMoneyLike(value).toFixed(2));
 }
 
 function nowIso() {
@@ -1076,6 +1099,9 @@ function buildInventorySearchText(record = {}) {
     record.codigo_etiqueta,
     record.ean,
     record.codigo_barras,
+    record.barcode,
+    record.gtin,
+    record.gtin_ean,
     record.codigo_interno,
     record.nome,
     record.descricao,
@@ -1124,7 +1150,7 @@ function getInventoryProduct(identifier = "", { storeId = "" } = {}) {
       [item.inventory_id, item.product_id, item.sku, item.codigo, item.codigo_tiny, item.codigo_etiqueta, item.codigo_interno]
         .map((value) => normalizeText(value))
         .includes(normalizedIdentifier)
-      || (normalizedDigitsIdentifier && [item.ean, item.codigo_barras].map((value) => normalizeDigits(value)).includes(normalizedDigitsIdentifier))
+      || (normalizedDigitsIdentifier && [item.ean, item.codigo_barras, item.barcode, item.gtin, item.gtin_ean].map((value) => normalizeDigits(value)).includes(normalizedDigitsIdentifier))
     )
   )) || null;
   if (!record) {
@@ -2003,11 +2029,13 @@ function buildProductComparableIdentifiers(record = {}) {
 }
 
 function normalizeManualProductPayload(payload = {}) {
-  const sku = normalizeText(payload.sku || "");
+  const labelCode = normalizeText(payload.label_code || payload.labelCode || payload.codigo_etiqueta || payload.codigoEtiqueta || payload.internal_code || payload.internalCode || payload.codigo_interno || payload.codigoInterno || payload.codigo || "");
+  const barcode = normalizeDigits(payload.barcode || payload.codigo_barras || payload.codigoBarras || payload.ean || payload.gtin || payload.gtin_ean || payload.gtinEan || "");
+  const sku = normalizeText(payload.sku || labelCode || "");
   const codigoTiny = normalizeText(payload.codigo_tiny || payload.codigoTiny || "");
-  const codigoEtiqueta = normalizeText(payload.codigo_etiqueta || payload.codigoEtiqueta || "");
-  const ean = normalizeDigits(payload.ean || payload.codigo_barras || payload.codigoBarras || "");
-  const codigoInterno = normalizeText(payload.codigo_interno || payload.codigoInterno || "");
+  const codigoEtiqueta = normalizeText(payload.codigo_etiqueta || payload.codigoEtiqueta || payload.label_code || payload.labelCode || labelCode || "");
+  const ean = barcode;
+  const codigoInterno = normalizeText(payload.codigo_interno || payload.codigoInterno || payload.internal_code || payload.internalCode || labelCode || "");
   const productId = normalizeText(payload.product_id || payload.productId || "") || buildId("PRD");
   const codigoPrincipal = normalizeText(payload.codigo || codigoInterno || codigoTiny || sku || productId);
   return {
@@ -2028,8 +2056,10 @@ function normalizeManualProductPayload(payload = {}) {
     cor: normalizeText(payload.cor || ""),
     tamanho: normalizeText(payload.tamanho || ""),
     grade: normalizeText(payload.grade || ""),
-    preco_venda: roundQty(payload.preco_venda || payload.sale_price || payload.price || 0),
-    preco_custo: roundQty(payload.preco_custo || payload.cost_price || payload.cost || 0),
+    preco_venda: roundMoneyLike(payload.preco_venda || payload.sale_price || payload.salePrice || payload.price || 0),
+    original_price: roundMoneyLike(payload.original_price || payload.originalPrice || payload.preco_original || payload.precoOriginal || 0),
+    sale_price: roundMoneyLike(payload.sale_price || payload.salePrice || payload.preco_venda || payload.price || 0),
+    preco_custo: roundMoneyLike(payload.preco_custo || payload.cost_price || payload.cost || 0),
     estoque: roundQty(payload.estoque || payload.estoque_inicial || payload.available_qty || 0),
     store_id: normalizeStoreId(payload.store_id || payload.origem_estoque || payload.storeId || DEFAULT_STORE_ID),
     status: normalizeText(payload.status || "ACTIVE") || "ACTIVE",
@@ -2038,7 +2068,12 @@ function normalizeManualProductPayload(payload = {}) {
     photo_preview_url: normalizeText(payload.photo_preview_url || payload.preview_url || payload.previewUrl || ""),
     media_url: normalizeText(payload.media_url || payload.mediaUrl || ""),
     foto: normalizeText(payload.foto || payload.photo_preview_url || payload.preview_url || payload.previewUrl || ""),
-    source: normalizeText(payload.source || "PDV_MANUAL") || "PDV_MANUAL"
+    source: normalizeText(payload.source || "PDV_MANUAL") || "PDV_MANUAL",
+    origem: normalizeText(payload.origem || payload.origin || ""),
+    estoque_status: normalizeText(payload.estoque_status || payload.stock_status || ""),
+    loja_confirmacao: normalizeStoreId(payload.loja_confirmacao || payload.confirmation_store_id || payload.store_id || payload.storeId || ""),
+    usuario_confirmacao: normalizeText(payload.usuario_confirmacao || payload.confirmation_user || payload.confirmed_by || ""),
+    data_confirmacao: normalizeText(payload.data_confirmacao || payload.confirmed_at || "")
   };
 }
 
@@ -2164,6 +2199,8 @@ function persistInventoryProduct(payload = {}, user = {}, options = {}) {
     tamanho: nextDatasetRow.tamanho,
     grade: nextDatasetRow.grade,
     preco_venda: nextDatasetRow.preco_venda,
+    original_price: nextDatasetRow.original_price,
+    sale_price: nextDatasetRow.sale_price,
     preco_custo: nextDatasetRow.preco_custo,
     store_id: desiredStoreId,
     available_qty: normalized.estoque,
@@ -2173,6 +2210,11 @@ function persistInventoryProduct(payload = {}, user = {}, options = {}) {
     media_url: nextDatasetRow.media_url,
     foto: nextDatasetRow.foto,
     source: nextDatasetRow.source,
+    origem: nextDatasetRow.origem,
+    estoque_status: nextDatasetRow.estoque_status,
+    loja_confirmacao: nextDatasetRow.loja_confirmacao,
+    usuario_confirmacao: nextDatasetRow.usuario_confirmacao,
+    data_confirmacao: nextDatasetRow.data_confirmacao,
     status: nextDatasetRow.status,
     last_movement_at: timestamp
   });
@@ -2748,6 +2790,68 @@ function createInventoryProduct(payload = {}, user = {}) {
   return persistInventoryProduct(payload, user, {});
 }
 
+function resolveExistingProductFromDuplicate(duplicate = {}, datasetRows = [], inventoryRows = []) {
+  if (!duplicate) {
+    return null;
+  }
+  const inventory = inventoryRows.find((row) => (
+    normalizeText(row.inventory_id || "") === normalizeText(duplicate.existing_inventory_id || "")
+    || (duplicate.existing_product_id && normalizeText(row.product_id || "") === normalizeText(duplicate.existing_product_id || ""))
+  )) || null;
+  const dataset = datasetRows.find((row) => normalizeText(row.product_id || "") === normalizeText(duplicate.existing_product_id || inventory?.product_id || "")) || null;
+  return inventory || dataset || null;
+}
+
+function createInventoryProductFromLabel(payload = {}, user = {}) {
+  const labelCode = normalizeText(payload.label_code || payload.labelCode || payload.codigo || payload.codigo_etiqueta || payload.codigo_interno || payload.sku || "");
+  const barcode = normalizeDigits(payload.barcode || payload.codigo_barras || payload.ean || payload.gtin || payload.gtin_ean || "");
+  const storeId = normalizeStoreId(payload.store_id || payload.storeId || payload.loja_confirmacao || DEFAULT_STORE_ID);
+  const timestamp = nowIso();
+  const normalizedPayload = {
+    ...payload,
+    sku: normalizeText(payload.sku || labelCode || ""),
+    codigo: normalizeText(payload.codigo || labelCode || ""),
+    codigo_etiqueta: normalizeText(payload.codigo_etiqueta || labelCode || ""),
+    codigo_interno: normalizeText(payload.codigo_interno || labelCode || ""),
+    ean: barcode,
+    codigo_barras: barcode,
+    preco_venda: roundMoneyLike(payload.preco_venda || payload.sale_price || payload.salePrice || payload.price || 0),
+    original_price: roundMoneyLike(payload.original_price || payload.preco_original || payload.originalPrice || 0),
+    estoque: roundQty(payload.estoque || payload.estoque_inicial || payload.available_qty || 0),
+    store_id: storeId,
+    origem_estoque: storeId,
+    source: "etiqueta_aerostore",
+    origem: "etiqueta_aerostore",
+    estoque_status: "confirmado_fisicamente",
+    loja_confirmacao: storeId,
+    usuario_confirmacao: normalizeText(user.name || user.email || user.username || ""),
+    data_confirmacao: timestamp,
+    status: "ACTIVE"
+  };
+  const normalized = normalizeManualProductPayload(normalizedPayload);
+  const datasetRows = loadProductsDataset();
+  const inventoryRows = ensureInventorySeeded();
+  const duplicate = findDuplicateProductByIdentifiers(datasetRows, inventoryRows, normalized);
+  if (duplicate) {
+    const existing = resolveExistingProductFromDuplicate(duplicate, datasetRows, inventoryRows);
+    return {
+      product: existing ? {
+        ...existing,
+        availability_label: getProductAvailabilityLabel(existing.available_qty ?? existing.estoque ?? 0)
+      } : null,
+      duplicate,
+      created: false,
+      existing: true,
+      message: `Produto ja existente localizado por ${duplicate.label}.`
+    };
+  }
+  return {
+    ...persistInventoryProduct(normalizedPayload, user, {}),
+    created: true,
+    existing: false
+  };
+}
+
 function updateInventoryProduct(productId = "", payload = {}, user = {}) {
   const normalizedProductId = normalizeText(productId || payload.product_id || "");
   if (!normalizedProductId) {
@@ -2780,6 +2884,7 @@ module.exports = {
   getInventoryMovements,
   getInventoryAlerts,
   createInventoryProduct,
+  createInventoryProductFromLabel,
   updateInventoryProduct,
   createManualAdjustment,
   createTransfer,

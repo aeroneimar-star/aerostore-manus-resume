@@ -1126,6 +1126,9 @@ function buildUnifiedProductSearchText(product = {}) {
     product.codigo_etiqueta,
     product.ean,
     product.codigo_barras,
+    product.barcode,
+    product.gtin,
+    product.gtin_ean,
     product.codigo_interno,
     product.nome,
     product.name,
@@ -1155,7 +1158,9 @@ function buildProductSearchIdentifiers(product = {}) {
     digitCodes: [
       product.ean,
       product.codigo_barras,
-      product.gtin
+      product.barcode,
+      product.gtin,
+      product.gtin_ean
     ].map((value) => normalizeDigits(value)).filter(Boolean),
     name: normalizeLookup(product.nome || product.name || ""),
     text: buildUnifiedProductSearchText(product)
@@ -1525,7 +1530,7 @@ async function searchProductsDetailed(query = "", { storeId = "", limit = 20 } =
       const lookup = `%${normalizedQuery}%`;
       const digitLookup = `%${normalizeDigits(query)}%`;
       const crmCatalogRows = await all(
-        `SELECT id, name, commercial_name, sku, codigo, marca, category, color, sizes, price, store, short_description, estoque_total, main_media_id
+        `SELECT id, name, commercial_name, sku, codigo, gtin_ean, marca, category, color, sizes, price, store, short_description, estoque_total, main_media_id
          FROM ai_products
          WHERE COALESCE(deleted_at, '') = ''
            AND (
@@ -1537,10 +1542,11 @@ async function searchProductsDetailed(query = "", { storeId = "", limit = 20 } =
              OR lower(COALESCE(sizes, '')) LIKE ?
              OR COALESCE(sku, '') LIKE ?
              OR COALESCE(codigo, '') LIKE ?
+             OR COALESCE(gtin_ean, '') LIKE ?
            )
          ORDER BY updated_at DESC, id DESC
          LIMIT ?`,
-        [lookup, lookup, lookup, lookup, lookup, lookup, digitLookup, digitLookup, safeLimit]
+        [lookup, lookup, lookup, lookup, lookup, lookup, digitLookup, digitLookup, digitLookup, safeLimit]
       );
       resultsBySource.crm_catalog = crmCatalogRows
         .filter((product) => buildUnifiedProductSearchText(product).includes(normalizedQuery))
@@ -1551,9 +1557,9 @@ async function searchProductsDetailed(query = "", { storeId = "", limit = 20 } =
           sku: normalizeText(product.sku || product.codigo || ""),
           codigo_tiny: "",
           codigo_etiqueta: "",
-          ean: "",
-          codigo_barras: "",
-          codigo_interno: "",
+          ean: normalizeDigits(product.gtin_ean || ""),
+          codigo_barras: normalizeDigits(product.gtin_ean || ""),
+          codigo_interno: normalizeText(product.codigo || ""),
           nome: normalizeText(product.name || product.commercial_name || ""),
           marca: normalizeText(product.marca || ""),
           categoria: normalizeText(product.category || ""),

@@ -194,6 +194,9 @@ const state = {
     productResults: [],
     productSearching: false,
     productAddingKey: "",
+    labelProductDrawerOpen: false,
+    labelProductSaving: false,
+    labelProductDraft: null,
     productResolutionOpen: false,
     productResolutionItem: null,
     productResolutionSubmitting: false,
@@ -1138,6 +1141,10 @@ function canViewPdvCustomersFrontend() {
 
 function canViewPdvStockFrontend() {
   return isCurrentUserManagerProfile() || hasPermission("can_view_stock") || hasPermission("can_view_products");
+}
+
+function canCreatePdvLabelProductFrontend() {
+  return isCurrentUserManagerProfile() || hasAnyPermission("can_manage_products", "can_move_stock");
 }
 
 function canViewPdvOrdersFrontend() {
@@ -3177,6 +3184,16 @@ function buildPdvSaleResolutionModal() {
 function buildPdvSaleProductResults() {
   const rows = toArray(state.pdvSale.productResults);
   if (!rows.length) {
+    const searchedQuery = normalizeText(state.pdvSale.productQuery || "");
+    if (searchedQuery.length >= 2 && !state.pdvSale.productSearching) {
+      return `
+        <div class="pdv-sale-empty-state compact pdv-sale-label-not-found">
+          <strong>Produto nÃ£o encontrado</strong>
+          <span>Deseja cadastrar pela etiqueta AEROSTORE usando o cÃ³digo ${escapeHtml(searchedQuery)}?</span>
+          ${canCreatePdvLabelProductFrontend() ? `<button class="primary-button" type="button" data-pdv-sale-label-product-open="true">Cadastrar por etiqueta</button>` : `<small>Seu perfil nÃ£o pode cadastrar produto ou estoque.</small>`}
+        </div>
+      `;
+    }
     return `
       <div class="pdv-sale-empty-state compact">
         <strong>Nenhum produto carregado</strong>
@@ -3202,10 +3219,15 @@ function buildPdvSaleProductResults() {
             <div class="pdv-product-card-name">${escapeHtml(item.nome || item.name || "Produto")}</div>
             <div class="pdv-product-card-identifiers">
               <span class="pdv-product-card-sku">${escapeHtml(item.sku || item.codigo || item.codigo_tiny || "-")}</span>
+              ${item.codigo_interno || item.codigo_etiqueta ? `<span class="pdv-product-card-sku">Etiqueta ${escapeHtml(item.codigo_interno || item.codigo_etiqueta)}</span>` : ""}
+              ${item.ean || item.codigo_barras ? `<span class="pdv-product-card-sku">Barcode ${escapeHtml(item.ean || item.codigo_barras)}</span>` : ""}
             </div>
             <div class="pdv-product-card-tags">
               ${item.marca ? `<span class="pdv-product-card-tag">${escapeHtml(item.marca)}</span>` : ""}
               ${item.categoria ? `<span class="pdv-product-card-tag">${escapeHtml(item.categoria)}</span>` : ""}
+              ${item.tamanho ? `<span class="pdv-product-card-tag">${escapeHtml(item.tamanho)}</span>` : ""}
+              ${item.cor ? `<span class="pdv-product-card-tag">${escapeHtml(item.cor)}</span>` : ""}
+              ${item.estoque_status ? `<span class="pdv-product-card-tag">${escapeHtml(item.estoque_status)}</span>` : ""}
             </div>
           </div>
         </div>
@@ -3226,6 +3248,67 @@ function buildPdvSaleProductResults() {
       <button class="pdv-product-results-close" type="button" data-pdv-sale-product-results-close="true" aria-label="Fechar resultados da busca">×</button>
     </div>
     ${resultsHtml}
+  `;
+}
+
+function getPdvSaleLabelProductDraft() {
+  const draft = state.pdvSale.labelProductDraft || {};
+  const query = normalizeText(state.pdvSale.productQuery || "");
+  return {
+    label_code: normalizeText(draft.label_code || query || ""),
+    barcode: normalizeText(draft.barcode || ""),
+    nome: normalizeText(draft.nome || ""),
+    cor: normalizeText(draft.cor || ""),
+    tamanho: normalizeText(draft.tamanho || ""),
+    original_price: normalizeText(draft.original_price || ""),
+    sale_price: normalizeText(draft.sale_price || ""),
+    store_id: normalizeText(draft.store_id || getCurrentPdvStoreId() || ""),
+    estoque: normalizeText(draft.estoque || "1"),
+    observacao: normalizeText(draft.observacao || "")
+  };
+}
+
+function buildPdvSaleLabelProductDrawer() {
+  if (!state.pdvSale.labelProductDrawerOpen) {
+    return "";
+  }
+  const draft = getPdvSaleLabelProductDraft();
+  const saving = Boolean(state.pdvSale.labelProductSaving);
+  return `
+    <div class="pdv-drawer-overlay pdv-label-product-overlay" data-pdv-sale-label-product-overlay="true">
+      <aside class="pdv-drawer pdv-label-product-drawer open" aria-label="Cadastrar produto por etiqueta">
+        <header class="pdv-drawer-header">
+          <div>
+            <span class="eyebrow">Etiqueta AEROSTORE</span>
+            <h3>Cadastrar produto por etiqueta</h3>
+            <p>Use o cÃ³digo fÃ­sico da peÃ§a para preparar a venda e confirmar estoque da loja atual.</p>
+          </div>
+          <button class="pdv-drawer-close" type="button" data-pdv-sale-label-product-close="true"${saving ? " disabled" : ""}>Fechar</button>
+        </header>
+        <form class="pdv-drawer-body pdv-label-product-form" data-pdv-sale-label-product-form="true">
+          <div class="pdv-label-product-grid">
+            <label>CÃ³digo da etiqueta<input name="label_code" type="text" required value="${escapeHtml(draft.label_code)}" placeholder="Ex.: 118511" /></label>
+            <label>CÃ³digo de barras<input name="barcode" type="text" value="${escapeHtml(draft.barcode)}" placeholder="Ex.: 7890001185110" /></label>
+            <label class="span-2">Nome do produto<input name="nome" type="text" required value="${escapeHtml(draft.nome)}" placeholder="BLUSA CAPUZ PRETA NEVER STAY THE SAME" /></label>
+            <label>Cor<input name="cor" type="text" value="${escapeHtml(draft.cor)}" placeholder="PRETA" /></label>
+            <label>Tamanho<input name="tamanho" type="text" value="${escapeHtml(draft.tamanho)}" placeholder="12A" /></label>
+            <label>PreÃ§o original<input name="original_price" type="text" inputmode="decimal" value="${escapeHtml(draft.original_price)}" placeholder="449,90" /></label>
+            <label>PreÃ§o de venda<input name="sale_price" type="text" inputmode="decimal" required value="${escapeHtml(draft.sale_price)}" placeholder="199,90" /></label>
+            <label>Loja confirmada<input name="store_id" type="text" readonly value="${escapeHtml(draft.store_id || getCurrentPdvStoreId())}" /></label>
+            <label>Quantidade fÃ­sica<input name="estoque" type="number" min="0" step="1" value="${escapeHtml(draft.estoque)}" /></label>
+            <label class="span-2">ObservaÃ§Ã£o<textarea name="observacao" rows="3" placeholder="Ex.: peÃ§a encontrada na arara durante atendimento">${escapeHtml(draft.observacao)}</textarea></label>
+          </div>
+          <div class="pdv-label-product-confirmation">
+            <strong>ConfirmaÃ§Ã£o fÃ­sica</strong>
+            <span>Origem: etiqueta_aerostore â€¢ Estoque: confirmado_fisicamente â€¢ Loja: ${escapeHtml(formatStoreIdLabel(draft.store_id || getCurrentPdvStoreId()))}</span>
+          </div>
+          <div class="action-row">
+            <button class="primary-button" type="submit"${saving ? " disabled" : ""}>${saving ? "Salvando..." : "Salvar produto da etiqueta"}</button>
+            <button class="ghost-button" type="button" data-pdv-sale-label-product-close="true"${saving ? " disabled" : ""}>Cancelar</button>
+          </div>
+        </form>
+      </aside>
+    </div>
   `;
 }
 
@@ -4372,6 +4455,7 @@ function buildPdvSaleActiveContent() {
 
       </div>
       ${buildPdvSaleResolutionModal()}
+      ${buildPdvSaleLabelProductDrawer()}
       ${buildPdvSaleCustomerRegistrationDrawer()}
     </div>
   `;
@@ -4603,6 +4687,86 @@ async function searchPdvSaleProducts() {
     state.pdvSale.productSearching = false;
     renderPdvSaleSurface();
     endAeroStorePerfMeasure(perfToken, { results: toArray(state.pdvSale.productResults).length });
+  }
+}
+
+function openPdvSaleLabelProductDrawer() {
+  if (!canCreatePdvLabelProductFrontend()) {
+    showFeedback("Seu perfil nÃ£o pode cadastrar produto ou estoque.", "error");
+    return;
+  }
+  const query = normalizeText(state.pdvSale.productQuery || "");
+  state.pdvSale.labelProductDraft = {
+    ...getPdvSaleLabelProductDraft(),
+    label_code: query,
+    store_id: getCurrentPdvStoreId()
+  };
+  state.pdvSale.labelProductDrawerOpen = true;
+  state.pdvSale.labelProductSaving = false;
+  renderPdvSaleSurface();
+}
+
+function closePdvSaleLabelProductDrawer() {
+  if (state.pdvSale.labelProductSaving) {
+    return;
+  }
+  state.pdvSale.labelProductDrawerOpen = false;
+  state.pdvSale.labelProductDraft = null;
+  renderPdvSaleSurface();
+}
+
+async function savePdvSaleLabelProduct(form) {
+  if (!canCreatePdvLabelProductFrontend()) {
+    showFeedback("Seu perfil nÃ£o pode cadastrar produto ou estoque.", "error");
+    return;
+  }
+  const formData = new FormData(form);
+  const labelCode = normalizeText(formData.get("label_code") || "");
+  const salePrice = normalizeText(formData.get("sale_price") || "");
+  const name = normalizeText(formData.get("nome") || "");
+  if (!labelCode || !name || !salePrice) {
+    showFeedback("Informe cÃ³digo, nome e preÃ§o de venda da etiqueta.", "error");
+    return;
+  }
+  const payload = {
+    label_code: labelCode,
+    codigo: labelCode,
+    codigo_etiqueta: labelCode,
+    codigo_interno: labelCode,
+    sku: labelCode,
+    barcode: normalizeText(formData.get("barcode") || ""),
+    ean: normalizeText(formData.get("barcode") || ""),
+    nome: name,
+    cor: normalizeText(formData.get("cor") || ""),
+    tamanho: normalizeText(formData.get("tamanho") || ""),
+    original_price: parseMoneyAmount(formData.get("original_price") || ""),
+    sale_price: parseMoneyAmount(salePrice),
+    preco_venda: parseMoneyAmount(salePrice),
+    store_id: normalizeText(formData.get("store_id") || getCurrentPdvStoreId()),
+    estoque: normalizeText(formData.get("estoque") || "1"),
+    observacao: normalizeText(formData.get("observacao") || "")
+  };
+  state.pdvSale.labelProductSaving = true;
+  state.pdvSale.labelProductDraft = payload;
+  renderPdvSaleSurface();
+  try {
+    const response = await api("/api/pdv/inventory/products/from-label", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const product = response?.product || null;
+    state.pdvSale.labelProductDrawerOpen = false;
+    state.pdvSale.labelProductSaving = false;
+    state.pdvSale.labelProductDraft = null;
+    state.pdvSale.productQuery = labelCode;
+    state.pdvSale.productResults = product ? [product] : [];
+    renderPdvSaleSurface();
+    showFeedback(response?.existing ? "Produto existente localizado. NÃ£o foi criado duplicado." : "Produto cadastrado pela etiqueta.");
+  } catch (error) {
+    state.pdvSale.labelProductSaving = false;
+    renderPdvSaleSurface();
+    handleUiError("Erro ao cadastrar produto pela etiqueta", error);
   }
 }
 
@@ -21775,6 +21939,9 @@ async function logoutUser() {
     productResults: [],
     productSearching: false,
     productAddingKey: "",
+    labelProductDrawerOpen: false,
+    labelProductSaving: false,
+    labelProductDraft: null,
     productResolutionOpen: false,
     productResolutionItem: null,
     productResolutionSubmitting: false,
@@ -23680,6 +23847,18 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const openPdvSaleLabelProductButton = event.target.closest("[data-pdv-sale-label-product-open]");
+  if (openPdvSaleLabelProductButton) {
+    openPdvSaleLabelProductDrawer();
+    return;
+  }
+
+  const closePdvSaleLabelProductButton = event.target.closest("[data-pdv-sale-label-product-close]");
+  if (closePdvSaleLabelProductButton) {
+    closePdvSaleLabelProductDrawer();
+    return;
+  }
+
   const closePdvSaleProductResultsButton = event.target.closest("[data-pdv-sale-product-results-close]");
   if (closePdvSaleProductResultsButton) {
     state.pdvSale.productQuery = "";
@@ -24831,6 +25010,13 @@ function handleDocumentSubmit(event) {
     const productFormData = new FormData(productSearchForm);
     state.pdvSale.productQuery = normalizeText(productFormData.get("pdv_query_search_product_v2") || productFormData.get("productQuery") || "");
     searchPdvSaleProducts().catch((error) => handleUiError("Erro ao buscar produtos da venda", error));
+    return;
+  }
+
+  const labelProductForm = event.target.closest("[data-pdv-sale-label-product-form]");
+  if (labelProductForm) {
+    event.preventDefault();
+    savePdvSaleLabelProduct(labelProductForm).catch((error) => handleUiError("Erro ao cadastrar produto pela etiqueta", error));
     return;
   }
 

@@ -11,6 +11,7 @@ const {
   getInventoryMovements,
   getInventoryAlerts,
   createInventoryProduct,
+  createInventoryProductFromLabel,
   updateInventoryProduct,
   createManualAdjustment,
   createTransfer,
@@ -18,6 +19,7 @@ const {
   convertReservationById
 } = require("./pdvInventoryService");
 const { projectInventoryPayloadPhotos } = require("./pdvInventoryPhotoProjectionService");
+const { recordAuditEvent } = require("../../audit/auditService");
 
 ensureInventoryDirs();
 ensureInventorySeeded();
@@ -141,6 +143,58 @@ router.post("/products", canManageInventory, async (req, res) => {
     res.json(createInventoryProduct(req.body || {}, req.user || {}));
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao cadastrar o produto operacional do PDV." });
+  }
+});
+
+router.post("/products/from-label", canManageInventory, async (req, res) => {
+  try {
+    const targetStore = req.body?.store_id || req.body?.storeId || getDefaultStoreScope(req.user || {});
+    if (!ensureStoreAccess(req, res, targetStore)) {
+      return;
+    }
+    const result = createInventoryProductFromLabel({
+      ...(req.body || {}),
+      store_id: targetStore
+    }, req.user || {});
+    recordAuditEvent({
+      req,
+      module: "inventory",
+      action: result.created ? "product_created_from_label" : "product_label_duplicate_found",
+      store_id: normalizeStoreScope(targetStore),
+      store_name: targetStore,
+      entityType: "product",
+      entityId: result.product?.product_id || "",
+      entityLabel: result.product?.nome || req.body?.nome || req.body?.name || "",
+      productId: result.product?.product_id || "",
+      productName: result.product?.nome || req.body?.nome || req.body?.name || "",
+      result: result.created ? "success" : "blocked",
+      includeBody: false,
+      metadata: {
+        internal_code: req.body?.label_code || req.body?.codigo || req.body?.codigo_interno || "",
+        barcode: req.body?.barcode || req.body?.ean || req.body?.gtin || "",
+        store_id: normalizeStoreScope(targetStore),
+        quantity: req.body?.estoque || req.body?.estoque_inicial || req.body?.available_qty || 0,
+        origem: "etiqueta_aerostore",
+        duplicate: result.duplicate || null
+      }
+    }).catch((error) => console.warn("[AUDIT] product label audit failed", error.message || String(error)));
+    res.status(result.created ? 201 : 200).json(result);
+  } catch (error) {
+    recordAuditEvent({
+      req,
+      module: "inventory",
+      action: "product_created_from_label",
+      store_id: req.body?.store_id || req.body?.storeId || "",
+      entityType: "product",
+      result: "failed",
+      message: error.message || "Falha ao cadastrar produto por etiqueta.",
+      includeBody: false,
+      metadata: {
+        internal_code: req.body?.label_code || req.body?.codigo || req.body?.codigo_interno || "",
+        store_id: req.body?.store_id || req.body?.storeId || ""
+      }
+    }).catch(() => {});
+    res.status(400).json({ error: error.message || "Falha ao cadastrar o produto pela etiqueta." });
   }
 });
 
