@@ -90,3 +90,9 @@ config/instance*.json
 # External/local UI skill package
 ui-ux-pro-max-skill/
 .codex/skills/ui-ux-pro-max/
+scripts/audit_exchange_credit_duplicates.js
+scripts/stage829_pdv_sales_orders_smoke.js
+scripts/stage830_pdv_sales_orders_bulk_actions_smoke.js
+scripts/audit_exchange_credit_duplicates.js
+scripts/stage829_pdv_sales_orders_smoke.js
+scripts/stage830_pdv_sales_orders_bulk_actions_smoke.js
