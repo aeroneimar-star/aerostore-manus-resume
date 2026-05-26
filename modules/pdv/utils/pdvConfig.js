@@ -4,6 +4,8 @@ const PDV_BASE_ROUTES = [
   "/pdv",
   "/pdv/dashboard",
   "/pdv/venda",
+  "/pdv/pedidos",
+  "/pdv/vendas",
   "/pdv/orcamentos",
   "/pdv/reservas",
   "/pdv/caixa",
@@ -37,6 +39,12 @@ const PDV_ROUTE_META = [
     path: "/pdv/venda",
     label: "Venda",
     description: "Busca operacional, cliente identificado, carrinho e preparacao de pagamento."
+  },
+  {
+    key: "vendas",
+    path: "/pdv/vendas",
+    label: "Pedidos de venda",
+    description: "Consulta operacional de pedidos, pagamentos, cashback, cupom e liberacao de mercadoria."
   },
   {
     key: "orcamentos",

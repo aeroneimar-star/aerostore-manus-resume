@@ -74,6 +74,8 @@ function buildRolePermissions(role = "seller") {
   const normalized = String(role || "").trim().toLowerCase();
   const base = {
     can_sell: false,
+    can_finalize_sale: false,
+    can_cancel_sale: false,
     can_view_products: false,
     can_manage_products: false,
     can_view_customers: false,
@@ -88,6 +90,7 @@ function buildRolePermissions(role = "seller") {
     can_approve_discount_authorization: false,
     can_view_cashback: false,
     can_manage_cashback: false,
+    can_launch_cashback: false,
     can_use_whatsapp: false,
     can_view_whatsapp_status: false,
     can_reconnect_whatsapp: false,
@@ -107,20 +110,29 @@ function buildRolePermissions(role = "seller") {
     can_view_aerointel: false,
     can_view_campaigns: false,
     can_manage_campaigns: false,
-    can_view_store_settings: false
+    can_view_store_settings: false,
+    can_view_orders: false,
+    can_release_orders: false,
+    can_view_exchanges: false,
+    can_generate_exchange_credit: false,
+    can_view_stock: false,
+    can_move_stock: false,
+    can_export_data: false
   };
 
-  if (normalized === "admin") {
+  if (["admin", "administrator", "administrador", "master"].includes(normalized)) {
     return Object.keys(base).reduce((acc, key) => {
       acc[key] = true;
       return acc;
     }, {});
   }
 
-  if (normalized === "manager") {
+  if (["manager", "gerente", "gestor"].includes(normalized)) {
     return {
       ...base,
       can_sell: true,
+      can_finalize_sale: true,
+      can_cancel_sale: true,
       can_view_products: true,
       can_manage_products: true,
       can_view_customers: true,
@@ -134,6 +146,7 @@ function buildRolePermissions(role = "seller") {
       can_approve_discount_authorization: true,
       can_view_cashback: true,
       can_manage_cashback: true,
+      can_launch_cashback: true,
       can_use_whatsapp: true,
       can_view_whatsapp_status: true,
       can_reconnect_whatsapp: true,
@@ -146,19 +159,56 @@ function buildRolePermissions(role = "seller") {
       can_view_campaigns: true,
       can_manage_campaigns: true,
       can_manage_store_settings: true,
-      can_view_store_settings: true
+      can_view_store_settings: true,
+      can_view_orders: true,
+      can_release_orders: true,
+      can_view_exchanges: true,
+      can_generate_exchange_credit: true,
+      can_view_stock: true,
+      can_move_stock: true,
+      can_export_data: true
+    };
+  }
+
+  if (["cashier", "caixa"].includes(normalized)) {
+    return {
+      ...base,
+      can_view_products: true,
+      can_view_customers: true,
+      can_view_cash_register: true,
+      can_open_close_register: true,
+      can_register_cash_movement: true,
+      can_close_register: true,
+      can_view_orders: true,
+      can_release_orders: true,
+      can_view_cashback: true,
+      can_view_whatsapp_status: true
+    };
+  }
+
+  if (["consult", "consulta", "readonly", "operacional"].includes(normalized)) {
+    return {
+      ...base,
+      can_view_products: true,
+      can_view_customers: true,
+      can_view_cashback: true,
+      can_view_orders: true,
+      can_view_whatsapp_status: true
     };
   }
 
   return {
     ...base,
     can_sell: true,
+    can_finalize_sale: true,
     can_view_products: true,
     can_view_customers: true,
     can_create_customers: true,
     can_use_whatsapp: true,
     can_view_whatsapp_status: true,
-    can_request_discount_authorization: true
+    can_request_discount_authorization: true,
+    can_view_orders: true,
+    can_view_exchanges: true
   };
 }
 
@@ -177,6 +227,7 @@ async function ensureUserAccount({
   roleKey = "seller",
   name = "",
   username = "",
+  phone = "",
   store = "",
   storeId = "",
   allowedStores = [],
@@ -198,6 +249,7 @@ async function ensureUserAccount({
     status: String(status || "ativo").trim(),
     name: String(name || "").trim(),
     username: String(username || "").trim(),
+    phone: String(phone || "").trim(),
     allowed_stores_json: ensureArrayJson(allowedStores),
     permissions_json: ensureObjectJson(buildRolePermissions(roleKey))
   };
@@ -213,6 +265,7 @@ async function ensureUserAccount({
         status = COALESCE(NULLIF(status, ''), ?),
         name = COALESCE(NULLIF(name, ''), ?),
         username = COALESCE(NULLIF(username, ''), ?),
+        phone = COALESCE(NULLIF(phone, ''), ?),
         allowed_stores_json = COALESCE(NULLIF(allowed_stores_json, ''), ?),
         permissions_json = COALESCE(NULLIF(permissions_json, ''), ?),
         updated_at = datetime('now')
@@ -226,6 +279,7 @@ async function ensureUserAccount({
         payload.status,
         payload.name,
         payload.username,
+        payload.phone,
         payload.allowed_stores_json,
         payload.permissions_json,
         existing.id
@@ -236,8 +290,8 @@ async function ensureUserAccount({
 
   await run(
     `INSERT INTO users
-    (email, password_hash, role, store, store_id, seller_id, status, name, username, allowed_stores_json, permissions_json, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+    (email, password_hash, role, store, store_id, seller_id, status, name, username, phone, allowed_stores_json, permissions_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
     [
       payload.email,
       payload.password_hash,
@@ -248,6 +302,7 @@ async function ensureUserAccount({
       payload.status,
       payload.name,
       payload.username,
+      payload.phone,
       payload.allowed_stores_json,
       payload.permissions_json
     ]
@@ -578,6 +633,28 @@ async function ensureSeedData() {
     storeId: "vila_masc",
     allowedStores: ["vila_masc"],
     sellerId: firstSeller?.id || null
+  });
+  await ensureUserAccount({
+    email: "caixa@aerostore.local",
+    password: "123456",
+    roleLegacy: "caixa",
+    roleKey: "cashier",
+    name: "Caixa AEROSTORE",
+    username: "caixa",
+    store: "Vila Masc.",
+    storeId: "vila_masc",
+    allowedStores: ["vila_masc"]
+  });
+  await ensureUserAccount({
+    email: "consulta@aerostore.local",
+    password: "123456",
+    roleLegacy: "consulta",
+    roleKey: "consult",
+    name: "Consulta AEROSTORE",
+    username: "consulta",
+    store: "Vila Masc.",
+    storeId: "vila_masc",
+    allowedStores: ["vila_masc"]
   });
 }
 
@@ -1694,9 +1771,11 @@ async function initializeDatabase() {
   `);
   await ensureColumn("users", "name", "TEXT DEFAULT ''");
   await ensureColumn("users", "username", "TEXT DEFAULT ''");
+  await ensureColumn("users", "phone", "TEXT DEFAULT ''");
   await ensureColumn("users", "store_id", "TEXT DEFAULT ''");
   await ensureColumn("users", "allowed_stores_json", "TEXT DEFAULT '[]'");
   await ensureColumn("users", "permissions_json", "TEXT DEFAULT '{}'");
+  await ensureColumn("users", "last_access_at", "TEXT DEFAULT ''");
 
   await run(`
     CREATE TABLE IF NOT EXISTS user_sessions (
@@ -1708,6 +1787,45 @@ async function initializeDatabase() {
       FOREIGN KEY (user_id) REFERENCES users(id)
     )
   `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      audit_id TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      user_id INTEGER,
+      user_name TEXT DEFAULT '',
+      user_email TEXT DEFAULT '',
+      user_role TEXT DEFAULT '',
+      store_id TEXT DEFAULT '',
+      store_name TEXT DEFAULT '',
+      module TEXT DEFAULT '',
+      action TEXT DEFAULT '',
+      entity_type TEXT DEFAULT '',
+      entity_id TEXT DEFAULT '',
+      entity_label TEXT DEFAULT '',
+      sale_id TEXT DEFAULT '',
+      customer_id TEXT DEFAULT '',
+      product_id TEXT DEFAULT '',
+      amount REAL,
+      previous_amount REAL,
+      new_amount REAL,
+      before_json TEXT,
+      after_json TEXT,
+      metadata_json TEXT,
+      reason TEXT DEFAULT '',
+      authorized_by TEXT DEFAULT '',
+      result TEXT DEFAULT '',
+      message TEXT DEFAULT '',
+      source TEXT DEFAULT '',
+      ip TEXT DEFAULT '',
+      user_agent TEXT DEFAULT ''
+    )
+  `);
+  await run("CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_email)");
+  await run("CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(module, action)");
+  await run("CREATE INDEX IF NOT EXISTS idx_audit_logs_sale ON audit_logs(sale_id)");
 
   await run(`
     CREATE TABLE IF NOT EXISTS cashback_events (

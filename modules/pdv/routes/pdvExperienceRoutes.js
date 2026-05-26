@@ -25,6 +25,26 @@ function canViewAllStores(user = {}) {
   return Boolean(user?.permissions?.can_view_all_stores);
 }
 
+function hasPermission(user = {}, permission = "") {
+  return Boolean(user?.permissions?.[permission]);
+}
+
+function hasAnyPermission(user = {}, permissions = []) {
+  return permissions.some((permission) => hasPermission(user, permission));
+}
+
+function requireExperiencePermission(permissions = [], message = "Seu perfil nao pode executar esta acao de experiencia.") {
+  return (req, res, next) => {
+    if (hasAnyPermission(req.user || {}, permissions)) {
+      return next();
+    }
+    return res.status(403).json({ error: message, permissions });
+  };
+}
+
+const canHandleCoupon = requireExperiencePermission(["can_sell", "can_view_orders", "can_view_cash_register"], "Seu perfil nao pode acessar cupons da venda.");
+const canHandleMessages = requireExperiencePermission(["can_use_whatsapp", "can_manage_campaigns"], "Seu perfil nao pode operar mensagens do PDV.");
+
 function getAllowedStores(user = {}) {
   return Array.isArray(user?.allowed_stores)
     ? user.allowed_stores.map((item) => normalizeStoreScope(item)).filter(Boolean)
@@ -77,7 +97,7 @@ router.get("/templates", async (req, res) => {
   }
 });
 
-router.post("/coupon/:saleId/generate", async (req, res) => {
+router.post("/coupon/:saleId/generate", canHandleCoupon, async (req, res) => {
   try {
     const sale = getSaleById(req.params.saleId);
     if (!sale) {
@@ -92,7 +112,7 @@ router.post("/coupon/:saleId/generate", async (req, res) => {
   }
 });
 
-router.post("/coupon/:saleId/reprint", async (req, res) => {
+router.post("/coupon/:saleId/reprint", canHandleCoupon, async (req, res) => {
   try {
     const sale = getSaleById(req.params.saleId);
     if (!sale) {
@@ -110,7 +130,7 @@ router.post("/coupon/:saleId/reprint", async (req, res) => {
   }
 });
 
-router.get("/coupon/:saleId", async (req, res) => {
+router.get("/coupon/:saleId", canHandleCoupon, async (req, res) => {
   try {
     const sale = getSaleById(req.params.saleId);
     if (!sale) {
@@ -129,7 +149,7 @@ router.get("/coupon/:saleId", async (req, res) => {
   }
 });
 
-router.get("/coupon/:saleId/document", async (req, res) => {
+router.get("/coupon/:saleId/document", canHandleCoupon, async (req, res) => {
   try {
     const sale = getSaleById(req.params.saleId);
     if (!sale) {
@@ -155,7 +175,7 @@ router.get("/coupon/:saleId/document", async (req, res) => {
   }
 });
 
-router.get("/messages/queue", async (req, res) => {
+router.get("/messages/queue", canHandleMessages, async (req, res) => {
   try {
     res.json({ items: loadMessageQueue().slice(0, 200) });
   } catch (error) {
@@ -163,7 +183,7 @@ router.get("/messages/queue", async (req, res) => {
   }
 });
 
-router.post("/messages/queue", async (req, res) => {
+router.post("/messages/queue", canHandleMessages, async (req, res) => {
   try {
     res.json(queueMessage(req.body || {}, req.user || {}));
   } catch (error) {
@@ -171,7 +191,7 @@ router.post("/messages/queue", async (req, res) => {
   }
 });
 
-router.patch("/messages/:messageId/status", async (req, res) => {
+router.patch("/messages/:messageId/status", canHandleMessages, async (req, res) => {
   try {
     res.json(updateMessageStatus(req.params.messageId, req.body?.status || "", req.user || {}));
   } catch (error) {

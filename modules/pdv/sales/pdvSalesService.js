@@ -32,6 +32,11 @@ const {
 const { normalizeStoreKey, formatStoreLabel, storesMatch } = require("../utils/pdvStoreUtils");
 const { getStorePublicContext } = require("../../../services/storeSettingsService");
 const { PagBankError, createPagBankCheckout, getPagBankCheckout } = require("../../../services/pagbankService");
+const {
+  listActiveExchangeCreditsForCustomer,
+  getExchangeCreditById,
+  consumeExchangeCreditForSale
+} = require("../exchanges/pdvExchangeCreditService");
 
 const salesRootDir = path.join(process.cwd(), "data", "pdv", "sales");
 const salesFiles = {
@@ -659,8 +664,54 @@ function inferRedemptionBlocked(item) {
   return haystack.includes("perfume") || haystack.includes("perfumes");
 }
 
+function getSaleCartItemUnitPrice(item = {}) {
+  return toNumber(item.preco_referencia || item.preco_venda || item.price || 0);
+}
+
+function getSaleCartItemQuantity(item = {}) {
+  return Math.max(1, Math.round(toNumber(item.quantidade || 1)));
+}
+
+function normalizeSaleCartItemDiscount(item = {}) {
+  const gross = roundMoney(getSaleCartItemUnitPrice(item) * getSaleCartItemQuantity(item));
+  const source = item.item_discount && typeof item.item_discount === "object"
+    ? item.item_discount
+    : {};
+  const mode = normalizeText(source.mode || source.discount_mode || "amount").toLowerCase() === "percent" ? "percent" : "amount";
+  const value = roundMoney(Math.max(0, toNumber(source.value ?? source.percent ?? source.amount ?? 0)));
+  let amount = mode === "percent"
+    ? roundMoney((gross * value) / 100)
+    : value;
+  amount = roundMoney(Math.min(gross, Math.max(0, amount)));
+  const percent = gross > 0 ? Number(((amount / gross) * 100).toFixed(2)) : 0;
+  if (amount <= 0) {
+    return null;
+  }
+  return {
+    mode,
+    value,
+    amount,
+    percent,
+    reason: normalizeText(source.reason || ""),
+    applied_by: normalizeText(source.applied_by || ""),
+    applied_at: normalizeText(source.applied_at || "")
+  };
+}
+
+function getSaleItemDiscountTotal(cartItems = []) {
+  return roundMoney((cartItems || []).reduce((sum, item) => {
+    return sum + roundMoney(normalizeSaleCartItemDiscount(item)?.amount || 0);
+  }, 0));
+}
+
+function getSaleItemsNetSubtotal(cartItems = []) {
+  return roundMoney(Math.max(0, getSaleSubtotal(cartItems) - getSaleItemDiscountTotal(cartItems)));
+}
+
 function getSaleSubtotal(cartItems = []) {
-  return roundMoney((cartItems || []).reduce((sum, item) => sum + (toNumber(item.preco_referencia) * Math.max(1, toNumber(item.quantidade))), 0));
+  return roundMoney((cartItems || []).reduce((sum, item) => {
+    return sum + (getSaleCartItemUnitPrice(item) * getSaleCartItemQuantity(item));
+  }, 0));
 }
 
 function sumPaymentMethods(methods = [], accepted = []) {
@@ -769,12 +820,13 @@ function getCustomerCashbackSnapshot(phone = "") {
   };
 }
 
-function computeIncrementalBase({ subtotal, extraDiscount, paymentMethods, cashbackUsed = 0 }) {
+function computeIncrementalBase({ subtotal, itemDiscountAmount = 0, extraDiscount, paymentMethods, cashbackUsed = 0 }) {
+  const netItemsSubtotal = roundMoney(Math.max(0, subtotal - roundMoney(itemDiscountAmount)));
   const discount = roundMoney(extraDiscount);
   const giftCardUsed = sumPaymentMethods(paymentMethods, ["vale_presente"]);
   const exchangeCredit = sumPaymentMethods(paymentMethods, ["credito_troca"]);
   const permuta = sumPaymentMethods(paymentMethods, ["permuta"]);
-  const incremental = subtotal - discount - roundMoney(cashbackUsed) - giftCardUsed - exchangeCredit - permuta;
+  const incremental = netItemsSubtotal - discount - roundMoney(cashbackUsed) - giftCardUsed - exchangeCredit - permuta;
   return roundMoney(Math.max(0, incremental));
 }
 
@@ -785,8 +837,14 @@ function buildNormalizedPaymentMethods(methods = []) {
     installments: Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1)))),
     installment_amount: roundMoney(item.installment_amount || (toNumber(item.amount || 0) / Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1)))))),
     brand: normalizeText(item.brand || ""),
-    nsu: normalizeText(item.nsu || "")
+    nsu: normalizeText(item.nsu || ""),
+    credit_id: normalizeText(item.credit_id || item.exchange_credit_id || ""),
+    customer_id: normalizeText(item.customer_id || "")
   })).filter((item) => item.method);
+}
+
+function isRealPaymentMethod(method = "") {
+  return !["cashback", "credito_troca", "vale_presente", "permuta"].includes(normalizeText(method || ""));
 }
 
 function getCashbackRedemptionContext(session = {}, payload = {}, paymentMethodsSource = null) {
@@ -795,6 +853,8 @@ function getCashbackRedemptionContext(session = {}, payload = {}, paymentMethods
     : buildNormalizedPaymentMethods(payload.paymentMethods || session.payment_plan?.methods || []);
   const financialPaymentMethods = paymentMethods.filter((item) => item.method !== "cashback");
   const subtotal = getSaleSubtotal(session.cart_items || []);
+  const itemDiscountAmount = getSaleItemDiscountTotal(session.cart_items || []);
+  const subtotalAfterItemDiscount = roundMoney(Math.max(0, subtotal - itemDiscountAmount));
   const extraDiscount = roundMoney(
     payload.desconto_extra
     ?? payload.extra_discount
@@ -807,8 +867,12 @@ function getCashbackRedemptionContext(session = {}, payload = {}, paymentMethods
   const giftCardUsed = sumPaymentMethods(financialPaymentMethods, ["vale_presente"]);
   const exchangeCredit = sumPaymentMethods(financialPaymentMethods, ["credito_troca"]);
   const permutaAmount = sumPaymentMethods(financialPaymentMethods, ["permuta"]);
-  const eligibleBase = roundMoney(Math.max(0, subtotal - extraDiscount - giftCardUsed - exchangeCredit - permutaAmount));
-  const maxCashbackUsable = roundMoney(eligibleBase * CASHBACK_REDEMPTION_LIMIT_RATE);
+  const eligibleBase = roundMoney(Math.max(0, subtotalAfterItemDiscount - extraDiscount - giftCardUsed - permutaAmount));
+  const remainingBeforeCashback = roundMoney(Math.max(0, eligibleBase - exchangeCredit));
+  const maxCashbackUsable = roundMoney(Math.min(
+    eligibleBase * CASHBACK_REDEMPTION_LIMIT_RATE,
+    remainingBeforeCashback
+  ));
   const requestedApplication = resolveCashbackApplication(session, payload, paymentMethods);
   const requestedAmount = roundMoney(requestedApplication?.amount || payload.amount || payload.cashback_amount || 0);
   const customerPhone = normalizePhone(session.customer?.phone || "");
@@ -822,11 +886,14 @@ function getCashbackRedemptionContext(session = {}, payload = {}, paymentMethods
   const blockedForRedemption = (session.cart_items || []).some(inferRedemptionBlocked);
   return {
     subtotal,
+    itemDiscountAmount,
+    subtotalAfterItemDiscount,
     extraDiscount,
     giftCardUsed,
     exchangeCredit,
     permutaAmount,
     eligibleBase,
+    remainingBeforeCashback,
     maxCashbackUsable,
     requestedAmount,
     requestedApplication,
@@ -878,10 +945,15 @@ function validateCashbackRedemption(session = {}, payload = {}, paymentMethodsSo
 function computeSaleTotals(session, payload = {}) {
   const cartItems = session.cart_items || [];
   const subtotal = getSaleSubtotal(cartItems);
+  const itemDiscountAmount = getSaleItemDiscountTotal(cartItems);
+  const subtotalAfterItemDiscount = getSaleItemsNetSubtotal(cartItems);
   if (!cartItems.length || subtotal <= 0) {
     return {
       subtotal: 0,
+      itemDiscountAmount: 0,
+      subtotalAfterItemDiscount: 0,
       extraDiscount: 0,
+      totalDiscountAmount: 0,
       totalAfterDiscount: 0,
       cashbackUsed: 0,
       giftCardUsed: 0,
@@ -912,14 +984,19 @@ function computeSaleTotals(session, payload = {}) {
   const giftCardUsed = sumPaymentMethods(paymentMethods, ["vale_presente"]);
   const exchangeCredit = sumPaymentMethods(paymentMethods, ["credito_troca"]);
   const permutaAmount = sumPaymentMethods(paymentMethods, ["permuta"]);
-  const paidAmount = roundMoney(paymentMethods.reduce((sum, item) => sum + toNumber(item.amount), 0));
-  const totalAfterDiscount = roundMoney(Math.max(0, subtotal - extraDiscount - giftCardUsed - exchangeCredit - permutaAmount));
+  const paidAmount = roundMoney(paymentMethods.filter((item) => isRealPaymentMethod(item.method)).reduce((sum, item) => sum + toNumber(item.amount), 0));
+  const safeExtraDiscount = roundMoney(Math.min(extraDiscount, subtotalAfterItemDiscount));
+  const totalDiscountAmount = roundMoney(itemDiscountAmount + safeExtraDiscount);
+  const totalAfterDiscount = roundMoney(Math.max(0, subtotalAfterItemDiscount - safeExtraDiscount - giftCardUsed - exchangeCredit - permutaAmount));
   const totalFinal = roundMoney(Math.max(0, totalAfterDiscount - cashbackUsed));
-  const incrementalBase = computeIncrementalBase({ subtotal, extraDiscount, paymentMethods, cashbackUsed });
+  const incrementalBase = computeIncrementalBase({ subtotal, itemDiscountAmount, extraDiscount: safeExtraDiscount, paymentMethods, cashbackUsed });
   const blockedForRedemption = cartItems.some(inferRedemptionBlocked);
   return {
     subtotal,
-    extraDiscount,
+    itemDiscountAmount,
+    subtotalAfterItemDiscount,
+    extraDiscount: safeExtraDiscount,
+    totalDiscountAmount,
     totalAfterDiscount,
     cashbackUsed,
     giftCardUsed,
@@ -1032,7 +1109,7 @@ function applyCashbackToSession(sessionId, payload = {}, user = {}) {
   if (snapshot.available <= 0) {
     throw new Error("O cliente nÃ£o possui cashback disponÃ­vel para uso.");
   }
-  const saleCeiling = roundMoney(Math.max(0, previewTotals.subtotal - previewTotals.extraDiscount - previewTotals.giftCardUsed - previewTotals.exchangeCredit - previewTotals.permutaAmount));
+  const saleCeiling = roundMoney(Math.max(0, previewTotals.subtotalAfterItemDiscount - previewTotals.extraDiscount - previewTotals.giftCardUsed - previewTotals.exchangeCredit - previewTotals.permutaAmount));
   if (saleCeiling <= 0) {
     throw new Error("NÃ£o hÃ¡ valor elegÃ­vel para abatimento com cashback nesta venda.");
   }
@@ -1161,7 +1238,11 @@ function buildCouponPayload(sale) {
       color: item.cor,
       size: item.tamanho,
       quantity: item.quantidade,
-      unit_price: giftMode ? null : item.preco_referencia
+      unit_price: giftMode ? null : item.preco_referencia,
+      item_discount: giftMode ? null : normalizeSaleCartItemDiscount(item),
+      line_total: giftMode ? null : roundMoney(
+        Math.max(0, (getSaleCartItemUnitPrice(item) * getSaleCartItemQuantity(item)) - (normalizeSaleCartItemDiscount(item)?.amount || 0))
+      )
     })),
     summary: giftMode ? {
       message: sale.gift_sale?.message || "",
@@ -1507,6 +1588,12 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
   }
   const saleId = buildId("SAL");
   const totals = computeSaleTotals(session, payload);
+  const exchangeCreditApplication = totals.exchangeCredit > 0
+    ? validateExchangeCreditForSession(session, {
+      credit_id: getSessionExchangeCreditApplication(session)?.credit_id,
+      amount: totals.exchangeCredit
+    })
+    : null;
   if (totals.cashbackUsed > 0) {
     validateCashbackRedemption(session, payload);
   }
@@ -1525,6 +1612,8 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
       saleSessionId: session.session_id,
       subtotal: totals.subtotal,
       extraDiscount: totals.extraDiscount,
+      itemDiscountAmount: totals.itemDiscountAmount,
+      discountBase: roundMoney(Math.max(0, totals.subtotalAfterItemDiscount - totals.cashbackUsed - totals.exchangeCredit)),
       cashbackUsed: totals.cashbackUsed,
       totalFinal: totals.totalFinal,
       paidAmount: totals.paidAmount,
@@ -1651,8 +1740,11 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
     items: saleItems,
     subtotal: totals.subtotal,
     gross_amount: totals.subtotal,
-    desconto_extra: totals.extraDiscount,
-    discount_amount: totals.extraDiscount,
+    item_discount_amount: totals.itemDiscountAmount,
+    subtotal_after_item_discount: totals.subtotalAfterItemDiscount,
+    general_discount_amount: totals.extraDiscount,
+    desconto_extra: totals.totalDiscountAmount,
+    discount_amount: totals.totalDiscountAmount,
     discount_percent: controlValidation.discount_percent,
     discount_policy: controlValidation.discount_policy || null,
     discount_authorization_id: normalizeText(payload.discount_authorization_id || ""),
@@ -1660,6 +1752,7 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
     cashback_used_amount: totals.cashbackUsed,
     vale_presente_usado: totals.giftCardUsed,
     credito_troca_usado: totals.exchangeCredit,
+    exchange_credit_application: session.exchange_credit_application || null,
     permuta_usada: totals.permutaAmount,
     total_final: totals.totalFinal,
     net_amount: totals.totalFinal,
@@ -1710,6 +1803,30 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
     sale.cashback_consumed = consumeCashbackEntries(session.customer.phone, totals.cashbackUsed, sale.sale_id, user);
   } else {
     sale.cashback_consumed = [];
+  }
+
+  if (exchangeCreditApplication) {
+    const consumption = consumeExchangeCreditForSale({
+      creditId: exchangeCreditApplication.creditId,
+      amount: exchangeCreditApplication.amount,
+      saleId: sale.sale_id,
+      customer: session.customer,
+      user
+    });
+    sale.exchange_credit_usage = {
+      credit_id: consumption.credit.credit_id,
+      customer_id: consumption.credit.customer_id,
+      amount: exchangeCreditApplication.amount,
+      balance_before: consumption.movement.before,
+      balance_after: consumption.movement.after,
+      movement_id: consumption.movement.movement_id
+    };
+    sale.exchange_credit_application = {
+      ...(sale.exchange_credit_application || {}),
+      ...sale.exchange_credit_usage
+    };
+  } else {
+    sale.exchange_credit_usage = null;
   }
 
   const sales = loadSales();
@@ -2105,6 +2222,351 @@ function listPendingPaymentLinkSales(user = {}) {
   };
 }
 
+function getSalePrimaryPaymentMethods(sale = {}) {
+  return (sale?.pagamentos || sale?.payment_plan?.methods || [])
+    .map((item) => ({
+      method: normalizeText(item?.method || item?.type || "").toLowerCase(),
+      label: normalizeText(item?.label || item?.name || item?.method || item?.type || ""),
+      amount: roundMoney(item?.amount || item?.value || 0)
+    }))
+    .filter((item) => item.method || item.amount > 0);
+}
+
+function getSaleCashbackGeneratedAmount(sale = {}) {
+  return roundMoney(
+    sale?.cashback_generated?.amount
+    ?? sale?.cashback_generated_amount
+    ?? sale?.coupon_payload?.summary?.cashback_generated
+    ?? 0
+  );
+}
+
+function getSaleDiscountAmount(sale = {}) {
+  return roundMoney(
+    sale?.discount_amount
+    ?? sale?.desconto_extra
+    ?? sale?.discount_total
+    ?? sale?.coupon_payload?.summary?.extra_discount
+    ?? 0
+  );
+}
+
+function getSaleCashbackUsedAmount(sale = {}) {
+  return roundMoney(
+    sale?.cashback_used_amount
+    ?? sale?.cashback_usado
+    ?? sale?.coupon_payload?.summary?.cashback_used
+    ?? 0
+  );
+}
+
+function getSaleOperationalStatus(sale = {}) {
+  const status = normalizeText(sale?.status || "").toUpperCase();
+  if (status === "CANCELLED" || status === "CANCELED") {
+    return "cancelled";
+  }
+  if (saleUsesPaymentLink(sale) || getSalePaymentLinkUrl(sale) || getSalePaymentLinkCheckoutId(sale)) {
+    const paymentStatus = normalizeText(sale?.payment_link_payment_status || "").toLowerCase()
+      || normalizePagBankPaymentLinkStatus({
+        payment_link_status: sale?.payment_link_status || "",
+        payment_link_provider_status: sale?.payment_link_provider_status || "",
+        payment_link_url: getSalePaymentLinkUrl(sale),
+        payment_link_checkout_id: getSalePaymentLinkCheckoutId(sale)
+      }, sale);
+    if (paymentStatus === "paid" || Boolean(sale?.payment_link_can_release_goods)) {
+      return "payment_confirmed";
+    }
+    return "awaiting_payment";
+  }
+  if (status === "COMPLETED" || status === "EXCHANGE") {
+    return "completed";
+  }
+  return status ? status.toLowerCase() : "completed";
+}
+
+function buildPdvSalesOrderRow(sale = {}) {
+  const normalizedSale = normalizeSalePaymentLinkState(normalizeLegacySaleFulfillment(sale || {}));
+  if (!normalizedSale?.sale_id) {
+    return null;
+  }
+  const storeContext = getStorePublicContext(
+    normalizedSale.loja || normalizedSale.loja_venda || normalizedSale.store_id || "",
+    {
+      store_id: normalizeStoreKey(normalizedSale.loja || normalizedSale.loja_venda || normalizedSale.store_id || ""),
+      display_name: formatStoreLabel(normalizedSale.loja || normalizedSale.loja_venda || normalizedSale.store_id || "")
+    }
+  );
+  const paymentLink = buildSalePaymentLinkPayload(normalizedSale);
+  const paymentMethods = getSalePrimaryPaymentMethods(normalizedSale);
+  const paymentStatus = normalizeText(normalizedSale.payment_link_payment_status || paymentLink?.payment_status || "").toLowerCase();
+  const releaseDecision = paymentLink?.release_decision || getPaymentLinkReleaseDecision(paymentStatus || "");
+  return {
+    sale_id: normalizedSale.sale_id,
+    status: normalizeText(normalizedSale.status || ""),
+    operational_status: getSaleOperationalStatus(normalizedSale),
+    created_at: normalizeText(normalizedSale.created_at || normalizedSale.data_hora || normalizedSale.updated_at || ""),
+    customer_name: normalizeText(normalizedSale.customer?.name || normalizedSale.customer_name || "Venda balcão"),
+    customer_phone: normalizePhone(normalizedSale.customer?.phone || normalizedSale.customer?.whatsapp || normalizedSale.customer_phone || ""),
+    customer_document: normalizeText(normalizedSale.customer?.document || normalizedSale.customer_document || ""),
+    store_id: storeContext.store_id || normalizeStoreKey(normalizedSale.loja || normalizedSale.loja_venda || normalizedSale.store_id || ""),
+    store_label: storeContext.display_name || normalizedSale.store_label || formatStoreLabel(normalizedSale.loja || normalizedSale.loja_venda || normalizedSale.store_id || ""),
+    store_context: storeContext,
+    seller_name: normalizeText(normalizedSale.vendedor || normalizedSale.seller_name || normalizedSale.operator_name || normalizedSale.created_by || ""),
+    subtotal: roundMoney(normalizedSale.subtotal || normalizedSale.gross_amount || 0),
+    total: roundMoney(normalizedSale.total_final || normalizedSale.net_amount || normalizedSale.total || 0),
+    paid_amount: roundMoney(normalizedSale.paid_amount || 0),
+    discount_amount: getSaleDiscountAmount(normalizedSale),
+    discount_percent: roundMoney(normalizedSale.discount_percent || 0),
+    cashback_applied: getSaleCashbackUsedAmount(normalizedSale),
+    cashback_generated: getSaleCashbackGeneratedAmount(normalizedSale),
+    payment_methods: paymentMethods,
+    payment_method_label: paymentMethods.map((item) => item.label || item.method).filter(Boolean).join(" + ") || "-",
+    uses_payment_link: Boolean(paymentLink?.uses_payment_link),
+    payment_link: paymentLink,
+    payment_link_status: normalizeText(paymentLink?.status || ""),
+    payment_link_payment_status: normalizeText(paymentLink?.payment_status || ""),
+    payment_link_provider_status: normalizeText(paymentLink?.provider_status || ""),
+    payment_link_release_status: normalizeText(paymentLink?.release_status || releaseDecision?.status || ""),
+    can_release_goods: Boolean(normalizedSale.payment_link_can_release_goods || releaseDecision?.can_release_goods),
+    payment_link_url: normalizeText(paymentLink?.url || ""),
+    payment_link_checkout_id: normalizeText(paymentLink?.checkout_id || ""),
+    coupon_available: Boolean(normalizedSale.coupon_payload?.coupon_id || normalizedSale.coupon?.mode),
+    coupon_id: normalizeText(normalizedSale.coupon_payload?.coupon_id || ""),
+    discount_authorization_id: normalizeText(normalizedSale.discount_authorization_id || normalizedSale.control_validation?.authorization_id || ""),
+    has_authorization: Boolean(normalizedSale.discount_authorization_id || normalizedSale.control_validation?.authorization_id),
+    has_discount: getSaleDiscountAmount(normalizedSale) > 0,
+    has_cashback: getSaleCashbackUsedAmount(normalizedSale) > 0 || getSaleCashbackGeneratedAmount(normalizedSale) > 0
+  };
+}
+
+function saleMatchesOrdersSearch(row = {}, sale = {}, search = "") {
+  const normalizedSearch = normalizeText(search || "").toLowerCase();
+  if (!normalizedSearch) {
+    return true;
+  }
+  const digits = normalizeDigits(search || "");
+  const haystack = [
+    row.sale_id,
+    row.customer_name,
+    row.customer_phone,
+    row.customer_document,
+    row.seller_name,
+    row.store_label,
+    row.payment_method_label,
+    ...(sale.items || []).flatMap((item) => [
+      item?.sku,
+      item?.codigo,
+      item?.codigo_interno,
+      item?.codigo_barras,
+      item?.nome,
+      item?.marca
+    ])
+  ].map((value) => normalizeText(value || "").toLowerCase()).join(" ");
+  if (haystack.includes(normalizedSearch)) {
+    return true;
+  }
+  return Boolean(digits && normalizeDigits(haystack).includes(digits));
+}
+
+function saleMatchesOrdersStatus(row = {}, status = "") {
+  const normalizedStatus = normalizeText(status || "").toLowerCase();
+  if (!normalizedStatus || normalizedStatus === "all" || normalizedStatus === "todos") {
+    return true;
+  }
+  if (normalizedStatus === "link_payment") return row.uses_payment_link;
+  if (normalizedStatus === "with_cashback") return row.has_cashback;
+  if (normalizedStatus === "with_discount") return row.has_discount;
+  if (normalizedStatus === "with_authorization") return row.has_authorization;
+  if (normalizedStatus === "release_goods") return Boolean(row.can_release_goods);
+  if (normalizedStatus === "do_not_release") return row.uses_payment_link && !row.can_release_goods;
+  return row.operational_status === normalizedStatus || normalizeText(row.status || "").toLowerCase() === normalizedStatus;
+}
+
+function getPdvSalesOrderFilterDateRange(query = {}) {
+  const preset = normalizeText(query.period || "").toLowerCase();
+  const todayDate = new Date();
+  const end = query.date_to ? new Date(`${query.date_to}T23:59:59.999`) : null;
+  const start = query.date_from ? new Date(`${query.date_from}T00:00:00.000`) : null;
+  if (start || end) {
+    return { start, end };
+  }
+  if (preset === "today" || preset === "hoje") {
+    return {
+      start: new Date(todayDate.getFullYear(), todayDate.getMonth(), todayDate.getDate(), 0, 0, 0, 0),
+      end: new Date(todayDate.getFullYear(), todayDate.getMonth(), todayDate.getDate(), 23, 59, 59, 999)
+    };
+  }
+  if (preset === "7d" || preset === "7") {
+    const startDate = new Date(todayDate);
+    startDate.setDate(startDate.getDate() - 6);
+    startDate.setHours(0, 0, 0, 0);
+    return { start: startDate, end: null };
+  }
+  if (preset === "30d" || preset === "30") {
+    const startDate = new Date(todayDate);
+    startDate.setDate(startDate.getDate() - 29);
+    startDate.setHours(0, 0, 0, 0);
+    return { start: startDate, end: null };
+  }
+  return { start: null, end: null };
+}
+
+function filterPdvSalesOrders(rows = [], query = {}) {
+  const { start, end } = getPdvSalesOrderFilterDateRange(query);
+  const storeId = normalizeText(query.store_id || "");
+  const sellerId = normalizeText(query.seller_id || query.seller || "").toLowerCase();
+  const paymentMethod = normalizeText(query.payment_method || "").toLowerCase();
+  const paymentStatus = normalizeText(query.payment_status || "").toLowerCase();
+  const search = normalizeText(query.search || query.q || "");
+  const status = normalizeText(query.status || "");
+  return rows.filter(({ row, sale }) => {
+    if (!saleMatchesOrdersSearch(row, sale, search)) return false;
+    if (!saleMatchesOrdersStatus(row, status)) return false;
+    if (storeId && !storesMatch(row.store_id, storeId)) return false;
+    if (sellerId && !normalizeText(row.seller_name || "").toLowerCase().includes(sellerId)) return false;
+    if (paymentMethod && paymentMethod !== "all" && !row.payment_methods.some((item) => item.method === paymentMethod)) return false;
+    if (paymentStatus && paymentStatus !== "all" && row.payment_link_payment_status !== paymentStatus && row.operational_status !== paymentStatus) return false;
+    if (start || end) {
+      const createdAt = new Date(row.created_at || 0);
+      if (Number.isNaN(createdAt.getTime())) return false;
+      if (start && createdAt < start) return false;
+      if (end && createdAt > end) return false;
+    }
+    return true;
+  });
+}
+
+function buildPdvSalesOrdersSummary(rows = []) {
+  const totalOrders = rows.length;
+  const totalSold = roundMoney(rows.filter((row) => row.operational_status !== "cancelled").reduce((sum, row) => sum + toNumber(row.total), 0));
+  const awaitingRows = rows.filter((row) => row.operational_status === "awaiting_payment");
+  const linkPendingRows = rows.filter((row) => row.uses_payment_link && !row.can_release_goods);
+  const discountTotal = roundMoney(rows.reduce((sum, row) => sum + toNumber(row.discount_amount), 0));
+  const subtotalTotal = roundMoney(rows.reduce((sum, row) => sum + toNumber(row.subtotal || row.total), 0));
+  return {
+    total_orders: totalOrders,
+    total_sold: totalSold,
+    average_ticket: totalOrders ? roundMoney(totalSold / totalOrders) : 0,
+    awaiting_payment_count: awaitingRows.length,
+    awaiting_payment_amount: roundMoney(awaitingRows.reduce((sum, row) => sum + toNumber(row.total), 0)),
+    cashback_used: roundMoney(rows.reduce((sum, row) => sum + toNumber(row.cashback_applied), 0)),
+    cashback_generated: roundMoney(rows.reduce((sum, row) => sum + toNumber(row.cashback_generated), 0)),
+    discounts_total: discountTotal,
+    discounts_average_percent: subtotalTotal > 0 ? roundMoney((discountTotal / subtotalTotal) * 100) : 0,
+    payment_link_pending_count: linkPendingRows.length
+  };
+}
+
+function buildPdvSalesOrdersTabs(rows = []) {
+  return {
+    all: rows.length,
+    today: filterPdvSalesOrders(rows.map((row) => ({ row, sale: row.__sale || {} })), { period: "today" }).length,
+    awaiting_payment: rows.filter((row) => row.operational_status === "awaiting_payment").length,
+    payment_confirmed: rows.filter((row) => row.operational_status === "payment_confirmed" || row.can_release_goods).length,
+    link_payment: rows.filter((row) => row.uses_payment_link).length,
+    with_cashback: rows.filter((row) => row.has_cashback).length,
+    with_discount: rows.filter((row) => row.has_discount).length,
+    with_authorization: rows.filter((row) => row.has_authorization).length,
+    cancelled: rows.filter((row) => row.operational_status === "cancelled").length
+  };
+}
+
+function listPdvSalesOrders(query = {}, user = {}) {
+  const pageSize = Math.min(100, Math.max(1, Number(query.page_size || query.pageSize || 25)));
+  const page = Math.max(1, Number(query.page || 1));
+  const scopedPairs = loadSales()
+    .map((sale) => normalizeSalePaymentLinkState(normalizeLegacySaleFulfillment(sale)))
+    .filter((sale) => canAccessSale(sale, user))
+    .map((sale) => ({ sale, row: buildPdvSalesOrderRow(sale) }))
+    .filter((item) => item.row);
+  const filteredPairs = filterPdvSalesOrders(scopedPairs, query);
+  const sortedPairs = filteredPairs.sort((left, right) => {
+    const leftDate = new Date(left.row.created_at || 0).getTime();
+    const rightDate = new Date(right.row.created_at || 0).getTime();
+    return rightDate - leftDate;
+  });
+  const filteredRows = sortedPairs.map((item) => item.row);
+  const total = filteredRows.length;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const rows = filteredRows.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const scopedRows = scopedPairs.map((item) => ({ ...item.row, __sale: item.sale }));
+  return {
+    rows,
+    summary: buildPdvSalesOrdersSummary(filteredRows),
+    tabs: buildPdvSalesOrdersTabs(scopedRows),
+    pagination: {
+      page: safePage,
+      page_size: pageSize,
+      total,
+      page_count: pageCount
+    },
+    filters: {
+      search: normalizeText(query.search || query.q || ""),
+      status: normalizeText(query.status || "all"),
+      period: normalizeText(query.period || ""),
+      store_id: normalizeText(query.store_id || ""),
+      seller_id: normalizeText(query.seller_id || query.seller || ""),
+      payment_method: normalizeText(query.payment_method || ""),
+      payment_status: normalizeText(query.payment_status || "")
+    }
+  };
+}
+
+function getPdvSalesOrderDetail(saleId = "", user = {}) {
+  const sale = getSaleById(saleId);
+  if (!sale) {
+    return null;
+  }
+  if (!canAccessSale(sale, user)) {
+    throw createSaleAccessError();
+  }
+  return {
+    sale,
+    row: buildPdvSalesOrderRow(sale),
+    payment_link: buildSalePaymentLinkPayload(sale)
+  };
+}
+
+async function bulkRefreshPdvSalesOrdersPaymentLinks(saleIds = [], user = {}) {
+  const uniqueSaleIds = uniqueTextList((Array.isArray(saleIds) ? saleIds : []).map((value) => normalizeText(value || ""))).slice(0, 50);
+  const updated = [];
+  const skipped = [];
+  const errors = [];
+  for (const saleId of uniqueSaleIds) {
+    const sale = getSaleById(saleId);
+    if (!sale) {
+      skipped.push({ sale_id: saleId, reason: "Venda nao encontrada." });
+      continue;
+    }
+    if (!canAccessSale(sale, user)) {
+      errors.push({ sale_id: saleId, error: "Sem permissao para acessar esta venda." });
+      continue;
+    }
+    if (!saleUsesPaymentLink(sale) && !getSalePaymentLinkCheckoutId(sale) && !getSalePaymentLinkUrl(sale)) {
+      skipped.push({ sale_id: saleId, reason: "Venda sem Link pagamento." });
+      continue;
+    }
+    try {
+      const refreshedSale = await refreshSalePaymentLinkStatus(saleId, user);
+      updated.push({
+        sale_id: saleId,
+        row: buildPdvSalesOrderRow(refreshedSale),
+        sale: refreshedSale,
+        payment_link: buildSalePaymentLinkPayload(refreshedSale)
+      });
+    } catch (error) {
+      errors.push({ sale_id: saleId, error: error.message || "Falha ao atualizar PagBank." });
+    }
+  }
+  return {
+    ok: errors.length === 0,
+    updated,
+    skipped,
+    errors
+  };
+}
+
 function getSaleById(saleId) {
   const sale = loadSales().find((item) => item.sale_id === String(saleId || "").trim()) || null;
   if (!sale) {
@@ -2296,13 +2758,143 @@ function applyCashbackToSession(sessionId, payload = {}, user = {}) {
   };
 }
 
+function getCustomerExchangeCreditSnapshot(payload = {}) {
+  return listActiveExchangeCreditsForCustomer({
+    customer_id: payload.customer_id || payload.customerId || payload.master_customer_id || payload.id || "",
+    phone: payload.phone || payload.telefone || "",
+    name: payload.name || payload.nome || ""
+  });
+}
+
+function getSessionExchangeCreditApplication(session = {}) {
+  const methods = buildNormalizedPaymentMethods(session.payment_plan?.methods || []);
+  return methods.find((item) => item.method === "credito_troca" && roundMoney(item.amount) > 0) || null;
+}
+
+function validateExchangeCreditForSession(session = {}, payload = {}) {
+  if (!session.customer) {
+    throw new Error("Selecione um cliente antes de usar Credito de Troca.");
+  }
+  const amount = roundMoney(payload.amount || payload.credit_amount || 0);
+  if (amount <= 0) {
+    throw new Error("Informe um valor valido de Credito de Troca.");
+  }
+  const creditId = normalizeText(payload.credit_id || payload.exchange_credit_id || "");
+  if (!creditId) {
+    throw new Error("Selecione o Credito de Troca que sera usado.");
+  }
+  const credit = getExchangeCreditById(creditId);
+  if (!credit) {
+    throw new Error("Credito de Troca nao encontrado.");
+  }
+  if (normalizeText(credit.status || "").toLowerCase() !== "ativo") {
+    throw new Error("Este Credito de Troca nao esta ativo.");
+  }
+  const sessionCustomerId = normalizeText(session.customer.master_customer_id || session.customer.customer_id || session.customer.id || "");
+  const sessionPhone = normalizePhone(session.customer.phone || "");
+  const creditCustomerId = normalizeText(credit.customer_id || "");
+  const creditPhone = normalizePhone(credit.customer_phone || "");
+  if (sessionCustomerId && creditCustomerId && sessionCustomerId !== creditCustomerId) {
+    throw new Error("Este Credito de Troca pertence a outro cliente.");
+  }
+  if (sessionPhone && creditPhone && sessionPhone !== creditPhone) {
+    throw new Error("Este Credito de Troca pertence a outro telefone.");
+  }
+  const available = roundMoney(credit.remaining_amount || 0);
+  if (amount > available + 0.009) {
+    throw new Error("O valor usado e maior que o saldo do Credito de Troca.");
+  }
+  const previewMethods = buildNormalizedPaymentMethods(session.payment_plan?.methods || [])
+    .filter((item) => item.method !== "credito_troca");
+  const previewSession = {
+    ...session,
+    payment_plan: {
+      methods: [...previewMethods, {
+        method: "credito_troca",
+        amount,
+        credit_id: creditId,
+        customer_id: credit.customer_id
+      }]
+    }
+  };
+  const totals = computeSaleTotals(previewSession, {});
+  const maxUsable = roundMoney(totals.subtotalAfterItemDiscount - totals.extraDiscount - totals.giftCardUsed - totals.permutaAmount);
+  if (amount > maxUsable + 0.009) {
+    throw new Error("O Credito de Troca nao pode ser maior que o total da venda.");
+  }
+  return { credit, amount, creditId, totals };
+}
+
+function applyExchangeCreditToSession(sessionId, payload = {}, user = {}) {
+  const session = getSessionById(sessionId);
+  if (!session) {
+    throw new Error("Sessao operacional do PDV nao encontrada.");
+  }
+  if (session.completed_sale_id || session.status === "COMPLETED") {
+    throw new Error("Nao e possivel aplicar Credito de Troca em uma venda ja finalizada.");
+  }
+  if (!(session.cart_items || []).length) {
+    throw new Error("Adicione itens ao carrinho antes de aplicar Credito de Troca.");
+  }
+  const validation = validateExchangeCreditForSession(session, payload);
+  const currentMethods = buildNormalizedPaymentMethods(session.payment_plan?.methods || [])
+    .filter((item) => item.method !== "credito_troca");
+  session.payment_plan = {
+    methods: [...currentMethods, {
+      method: "credito_troca",
+      amount: validation.amount,
+      installments: 1,
+      installment_amount: validation.amount,
+      credit_id: validation.creditId,
+      customer_id: validation.credit.customer_id
+    }]
+  };
+  session.exchange_credit_application = {
+    credit_id: validation.creditId,
+    customer_id: validation.credit.customer_id,
+    amount: validation.amount,
+    balance_before: roundMoney(validation.credit.remaining_amount || 0),
+    balance_after_preview: roundMoney((validation.credit.remaining_amount || 0) - validation.amount),
+    applied_at: nowIso(),
+    applied_by: user?.name || user?.email || "sistema"
+  };
+  session.updated_at = nowIso();
+  saveSession(session);
+  return {
+    session,
+    credit: validation.credit,
+    applied: session.exchange_credit_application,
+    credits: getCustomerExchangeCreditSnapshot(session.customer || {})
+  };
+}
+
+function removeExchangeCreditFromSession(sessionId, user = {}) {
+  const session = getSessionById(sessionId);
+  if (!session) {
+    throw new Error("Sessao operacional do PDV nao encontrada.");
+  }
+  if (session.completed_sale_id || session.status === "COMPLETED") {
+    throw new Error("Nao e possivel remover Credito de Troca de uma venda ja finalizada.");
+  }
+  const currentMethods = buildNormalizedPaymentMethods(session.payment_plan?.methods || [])
+    .filter((item) => item.method !== "credito_troca");
+  session.payment_plan = { methods: currentMethods };
+  session.exchange_credit_application = null;
+  session.updated_at = nowIso();
+  saveSession(session);
+  return session;
+}
+
 module.exports = {
   CASHBACK_RATE,
   CASHBACK_VALIDITY_DAYS,
   getCustomerCashbackBalance,
   getCustomerCashbackSnapshot,
+  getCustomerExchangeCreditSnapshot,
   applyCashbackToSession,
   removeCashbackFromSession,
+  applyExchangeCreditToSession,
+  removeExchangeCreditFromSession,
   getCashbackValidFrom,
   getCashbackExpiresAt,
   finalizeSaleFromSession,
@@ -2312,6 +2904,9 @@ module.exports = {
   createExchange,
   getSalesSummary,
   listPendingPaymentLinkSales,
+  listPdvSalesOrders,
+  getPdvSalesOrderDetail,
+  bulkRefreshPdvSalesOrdersPaymentLinks,
   getSaleById,
   canAccessSale,
   buildSalePaymentLinkPayload,

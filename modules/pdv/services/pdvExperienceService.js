@@ -16,6 +16,7 @@ const experienceFiles = {
   welcomeBonuses: path.join(experienceRootDir, "welcome-bonuses.json")
 };
 const salesFile = path.join(process.cwd(), "data", "pdv", "sales", "sales.json");
+const RECEIPT_LOGO_URL = "/assets/aerostore-receipt-logo.png";
 
 const MESSAGE_TEMPLATE_KEYS = [
   "SALE_COMPLETED",
@@ -125,6 +126,48 @@ function formatCurrency(value) {
     style: "currency",
     currency: "BRL"
   }).format(toNumber(value));
+}
+
+function getFirstPositiveNumber(...values) {
+  for (const value of values) {
+    const numberValue = toNumber(value);
+    if (numberValue > 0) {
+      return numberValue;
+    }
+  }
+  return 0;
+}
+
+function getCouponItemUnitPrice(item = {}) {
+  return roundMoney(getFirstPositiveNumber(
+    item.preco_referencia,
+    item.preco_unitario,
+    item.unit_price,
+    item.unitPrice,
+    item.preco_venda,
+    item.price,
+    item.original_price,
+    item.sale_price,
+    item.valor_unitario
+  ));
+}
+
+function getCouponItemDiscount(item = {}) {
+  const source = item?.item_discount && typeof item.item_discount === "object" ? item.item_discount : {};
+  const quantity = Math.max(1, Math.round(toNumber(item.quantidade || item.quantity || item.qty || 1)));
+  const gross = roundMoney(getCouponItemUnitPrice(item) * quantity);
+  const explicitAmount = getFirstPositiveNumber(source.amount, item.item_discount_amount, item.discount_amount, item.desconto_item);
+  if (explicitAmount > 0) {
+    return roundMoney(Math.min(gross, explicitAmount));
+  }
+  const percent = getFirstPositiveNumber(source.percent, item.item_discount_percent, item.discount_percent);
+  return percent > 0 ? roundMoney(Math.min(gross, (gross * percent) / 100)) : 0;
+}
+
+function getCouponItemLineTotal(item = {}) {
+  const quantity = Math.max(1, Math.round(toNumber(item.quantidade || item.quantity || item.qty || 1)));
+  const gross = roundMoney(getCouponItemUnitPrice(item) * quantity);
+  return roundMoney(Math.max(0, gross - getCouponItemDiscount(item)));
 }
 
 function formatDate(value) {
@@ -276,13 +319,17 @@ function buildCouponLines(sale, mode = "normal", storeContext = getSaleStoreCont
     lines.splice(4, 0, contactSummary);
   }
   (sale.items || []).forEach((item) => {
-    lines.push(`- ${item.nome || "Produto"} | ${item.cor || "-"} | ${item.tamanho || "-"} | Qtd ${item.quantidade || 1}${mode === "normal" ? ` | ${formatCurrency(item.preco_referencia || 0)}` : ""}`);
+    const itemDiscount = getCouponItemDiscount(item);
+    const priceText = mode === "normal"
+      ? ` | Unitario ${formatCurrency(getCouponItemUnitPrice(item))}${itemDiscount > 0 ? ` | Desconto -${formatCurrency(itemDiscount)}` : ""} | Total ${formatCurrency(getCouponItemLineTotal(item))}`
+      : "";
+    lines.push(`- ${item.nome || "Produto"} | ${item.cor || "-"} | ${item.tamanho || "-"} | Qtd ${item.quantidade || 1}${priceText}`);
   });
   if (mode === "normal") {
     lines.push(`Subtotal: ${formatCurrency(sale.subtotal || 0)}`);
     lines.push(`Desconto extra: ${formatCurrency(sale.desconto_extra || 0)}`);
     lines.push(`Cashback usado: ${formatCurrency(sale.cashback_usado || 0)}`);
-    lines.push(`Cashback ganho: ${formatCurrency(sale.cashback_generated?.amount || 0)}`);
+    lines.push(`Cashback gerado: ${formatCurrency(sale.cashback_generated?.amount || 0)}`);
     lines.push(`Total final: ${formatCurrency(sale.total_final || 0)}`);
     lines.push(`Pagamentos: ${(sale.pagamentos || []).map((item) => `${item.method} ${formatCurrency(item.amount || 0)}`).join(" | ") || "-"}`);
   } else {
@@ -308,10 +355,36 @@ function buildCouponHtml({ sale, mode, qrDataUrl, documentUrl, pdfUrl, storeCont
   const contactSummary = buildStoreContactSummary(storeContext);
   const receiptFooter = normalizeText(storeContext?.terminal?.receipt_footer || "");
   const paymentRows = normalMode
-    ? (sale.pagamentos || []).map((item) => `<li><strong>${escapeHtml(item.method || "-")}</strong><span>${escapeHtml(formatCurrency(item.amount || 0))}${item.installments > 1 ? ` • ${item.installments}x` : ""}</span></li>`).join("")
+    ? (sale.pagamentos || [])
+      .filter((item) => toNumber(item.amount || 0) > 0)
+      .map((item) => `<li><strong>${escapeHtml(item.method || "-")}</strong><span>${escapeHtml(formatCurrency(item.amount || 0))}${item.installments > 1 ? ` &bull; ${item.installments}x` : ""}</span></li>`)
+      .join("")
     : "";
+  const itemCardsHtml = (sale.items || []).map((item) => {
+    const itemDiscount = getCouponItemDiscount(item);
+    return `
+      <article class="item-card">
+        <div class="item-title">
+          <span>Produto</span>
+          <strong>${escapeHtml(item.nome || "-")}</strong>
+        </div>
+        <div class="item-details">
+          <span>Tamanho: <strong>${escapeHtml(item.tamanho || "-")}</strong></span>
+          <span>Cor: <strong>${escapeHtml(item.cor || "-")}</strong></span>
+          <span>Qtd: <strong>${escapeHtml(String(item.quantidade || 1))}</strong></span>
+        </div>
+        ${normalMode ? `
+          <div class="item-values">
+            <div><span>Unitário</span><strong>${escapeHtml(formatCurrency(getCouponItemUnitPrice(item)))}</strong></div>
+            ${itemDiscount > 0 ? `<div class="negative"><span>Desconto</span><strong>-${escapeHtml(formatCurrency(itemDiscount))}</strong></div>` : ""}
+            <div class="total"><span>Total</span><strong>${escapeHtml(formatCurrency(getCouponItemLineTotal(item)))}</strong></div>
+          </div>
+        ` : ""}
+      </article>
+    `;
+  }).join("");
   const cashbackMessage = sale.cashback_generated?.amount > 0
-    ? `<div class="notice">Você ganhou <strong>${escapeHtml(formatCurrency(sale.cashback_generated.amount || 0))}</strong>. Disponível amanhã e válido até ${escapeHtml(formatDate(sale.cashback_generated.expires_at || ""))}.</div>`
+    ? `<div class="notice cashback-notice">Você ganhou <strong>${escapeHtml(formatCurrency(sale.cashback_generated.amount || 0))}</strong> em cashback para a próxima compra. Disponível amanhã e válido até ${escapeHtml(formatDate(sale.cashback_generated.expires_at || ""))}.</div>`
     : "";
   return `<!doctype html>
 <html lang="pt-BR">
@@ -322,32 +395,51 @@ function buildCouponHtml({ sale, mode, qrDataUrl, documentUrl, pdfUrl, storeCont
     :root { color-scheme: light; }
     body { margin: 0; background: #f3efe8; font-family: Georgia, "Times New Roman", serif; color: #1e1a17; }
     .sheet { max-width: 780px; margin: 24px auto; background: #fffdf8; border: 1px solid rgba(44,34,27,0.08); box-shadow: 0 30px 60px rgba(36,28,22,0.12); }
-    .hero { padding: 28px 32px 20px; background: linear-gradient(135deg, #f5f0e7 0%, #fbf8f2 100%); border-bottom: 1px solid rgba(44,34,27,0.08); }
-    .brand { font-size: 2rem; letter-spacing: 0.18em; text-transform: uppercase; margin: 0 0 6px; }
-    .subtitle { margin: 0; color: #5d554f; font-size: 0.96rem; }
+    .hero { padding: 30px 32px 22px; background: linear-gradient(135deg, #f5f0e7 0%, #fbf8f2 100%); border-bottom: 1px solid rgba(44,34,27,0.08); text-align: center; }
+    .receipt-logo { display: block; width: auto; height: auto; max-width: 168px; max-height: 72px; object-fit: contain; margin: 0 auto 12px; }
+    .brand { font-size: 1.18rem; letter-spacing: 0.12em; text-transform: uppercase; margin: 0 0 4px; }
+    .subtitle { margin: 0; color: #5d554f; font-size: 0.88rem; }
     .content { padding: 26px 32px 34px; display: grid; gap: 22px; }
     .meta, .totals, .payments, .items, .footer { display: grid; gap: 10px; }
     .meta-grid, .totals-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .card { background: #faf6ef; border: 1px solid rgba(44,34,27,0.08); border-radius: 16px; padding: 14px 16px; display: grid; gap: 4px; }
+    .card { background: #faf6ef; border: 1px solid rgba(44,34,27,0.08); border-radius: 16px; padding: 14px 16px; display: grid; gap: 4px; min-width: 0; }
     .card span { color: #6f665f; font-size: 0.88rem; text-transform: uppercase; letter-spacing: 0.04em; }
-    .card strong { font-size: 1rem; }
-    .items-table { width: 100%; border-collapse: collapse; }
-    .items-table th, .items-table td { text-align: left; padding: 10px 0; border-bottom: 1px solid rgba(44,34,27,0.08); font-size: 0.96rem; }
+    .card strong { font-size: 1rem; overflow-wrap: anywhere; }
+    .card small { color: #7a7068; }
+    .section-title { margin: 0 0 4px; font-size: 1.1rem; letter-spacing: 0.02em; }
+    .item-list { display: grid; gap: 12px; }
+    .item-card { background: #fffaf2; border: 1px solid rgba(44,34,27,0.09); border-radius: 18px; padding: 16px; display: grid; gap: 12px; }
+    .item-title { display: grid; gap: 4px; }
+    .item-title span, .item-values span { color: #7a7068; font-size: 0.76rem; letter-spacing: 0.06em; text-transform: uppercase; }
+    .item-title strong { font-size: 1rem; line-height: 1.35; overflow-wrap: anywhere; }
+    .item-details { display: flex; flex-wrap: wrap; gap: 8px; color: #5f5750; font-size: 0.86rem; }
+    .item-details span { background: #f4ede3; border: 1px solid rgba(44,34,27,0.07); border-radius: 999px; padding: 6px 10px; }
+    .item-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .item-values div { background: #f7f0e6; border: 1px solid rgba(44,34,27,0.07); border-radius: 14px; padding: 10px 12px; display: grid; gap: 3px; text-align: right; }
+    .item-values strong { white-space: nowrap; }
+    .item-values .negative strong { color: #7f3f1f; }
+    .item-values .total { background: #1e1a17; color: #fffaf2; border-color: #1e1a17; }
+    .item-values .total span { color: rgba(255,250,242,0.7); }
+    .payments { background: #faf6ef; border: 1px solid rgba(44,34,27,0.08); border-radius: 18px; padding: 16px; }
     .payments ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
-    .payments li { display: flex; justify-content: space-between; gap: 16px; }
+    .payments li { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(44,34,27,0.07); padding-bottom: 8px; }
+    .payments li:last-child { border-bottom: 0; padding-bottom: 0; }
     .footer { padding-top: 8px; border-top: 1px solid rgba(44,34,27,0.08); }
     .footer-note { color: #6f665f; font-size: 0.92rem; line-height: 1.5; }
-    .qr-wrap { display: grid; justify-items: center; gap: 10px; padding: 18px; border: 1px solid rgba(44,34,27,0.08); border-radius: 18px; background: #f8f3ea; }
-    .qr-wrap img { width: 164px; height: 164px; }
-    .notice { padding: 14px 16px; border-radius: 14px; background: #f3ead7; color: #5c4822; border: 1px solid rgba(125, 93, 26, 0.18); }
+    .qr-wrap { display: grid; justify-items: center; gap: 8px; padding: 16px; border: 1px solid rgba(44,34,27,0.08); border-radius: 18px; background: #f8f3ea; text-align: center; }
+    .qr-wrap img { width: 152px; height: 152px; }
+    .notice { padding: 14px 16px; border-radius: 14px; background: #f3ead7; color: #5c4822; border: 1px solid rgba(125, 93, 26, 0.18); line-height: 1.5; }
+    .cashback-notice strong { font-size: 1.05rem; }
     .links { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.9rem; }
     .links a { color: #5a3d16; text-decoration: none; border-bottom: 1px solid rgba(90, 61, 22, 0.22); }
-    @media print { body { background: #fff; } .sheet { margin: 0; box-shadow: none; border: none; } }
+    @media (max-width: 620px) { .sheet { margin: 0; } .hero, .content { padding-left: 18px; padding-right: 18px; } .meta-grid, .totals-grid, .item-values { grid-template-columns: 1fr; } .item-values div { text-align: left; } }
+    @media print { body { background: #fff; } .sheet { margin: 0; box-shadow: none; border: none; } .item-card, .card, .payments, .qr-wrap { break-inside: avoid; } }
   </style>
 </head>
 <body>
   <main class="sheet">
     <header class="hero">
+      <img class="receipt-logo" src="${RECEIPT_LOGO_URL}" alt="AEROSTORE" />
       <h1 class="brand">${escapeHtml(brandTitle || "AEROSTORE")}</h1>
       <p class="subtitle">${normalMode ? "Cupom digital não fiscal" : "Cupom presente AEROSTORE"}</p>
       ${legalName || cnpj || addressSummary || contactSummary ? `
@@ -372,42 +464,27 @@ function buildCouponHtml({ sale, mode, qrDataUrl, documentUrl, pdfUrl, storeCont
       </div>
 
       <div class="items">
-        <table class="items-table">
-          <thead>
-            <tr>
-              <th>Produto</th>
-              <th>Tamanho</th>
-              <th>Cor</th>
-              <th>Qtd</th>
-              ${normalMode ? "<th>Valor</th>" : ""}
-            </tr>
-          </thead>
-          <tbody>
-            ${(sale.items || []).map((item) => `
-              <tr>
-                <td>${escapeHtml(item.nome || "-")}</td>
-                <td>${escapeHtml(item.tamanho || "-")}</td>
-                <td>${escapeHtml(item.cor || "-")}</td>
-                <td>${escapeHtml(String(item.quantidade || 1))}</td>
-                ${normalMode ? `<td>${escapeHtml(formatCurrency(item.preco_referencia || 0))}</td>` : ""}
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
+        <h2 class="section-title">Itens</h2>
+        <div class="item-list">
+          ${itemCardsHtml || `<div class="card"><strong>Sem itens registrados.</strong></div>`}
+        </div>
       </div>
 
       ${normalMode ? `
         <div class="totals">
+          <h2 class="section-title">Resumo financeiro</h2>
           <div class="totals-grid">
             <div class="card"><span>Subtotal</span><strong>${escapeHtml(formatCurrency(sale.subtotal || 0))}</strong></div>
-            <div class="card"><span>Desconto extra</span><strong>${escapeHtml(formatCurrency(sale.desconto_extra || 0))}</strong></div>
+            <div class="card"><span>Desconto nos itens</span><strong>${escapeHtml(formatCurrency(sale.item_discount_amount || 0))}</strong></div>
+            <div class="card"><span>Desconto geral</span><strong>${escapeHtml(formatCurrency(sale.general_discount_amount || 0))}</strong></div>
             <div class="card"><span>Cashback usado</span><strong>${escapeHtml(formatCurrency(sale.cashback_usado || 0))}</strong></div>
-            <div class="card"><span>Vale presente</span><strong>${escapeHtml(formatCurrency(sale.vale_presente_usado || 0))}</strong></div>
+            <div class="card"><span>Crédito de Troca</span><strong>${escapeHtml(formatCurrency(sale.credito_troca_usado || 0))}</strong></div>
             <div class="card"><span>Total final</span><strong>${escapeHtml(formatCurrency(sale.total_final || 0))}</strong></div>
-            <div class="card"><span>Cashback ganho</span><strong>${escapeHtml(formatCurrency(sale.cashback_generated?.amount || 0))}</strong></div>
+            <div class="card"><span>Cashback gerado</span><strong>${escapeHtml(formatCurrency(sale.cashback_generated?.amount || 0))}</strong><small>Disponível amanhã</small></div>
           </div>
         </div>
         <div class="payments">
+          <h2 class="section-title">Pagamento</h2>
           <ul>${paymentRows || "<li><strong>Pagamentos</strong><span>-</span></li>"}</ul>
         </div>
         ${cashbackMessage}

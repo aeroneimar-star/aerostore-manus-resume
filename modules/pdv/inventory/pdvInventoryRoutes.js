@@ -42,6 +42,27 @@ function getDefaultStoreScope(user = {}) {
   return normalizeStoreScope(user?.store_id || user?.storeId || user?.store || "") || getAllowedStores(user)[0] || "";
 }
 
+function hasPermission(user = {}, permission = "") {
+  return Boolean(user?.permissions?.[permission]);
+}
+
+function hasAnyPermission(user = {}, permissions = []) {
+  return permissions.some((permission) => hasPermission(user, permission));
+}
+
+function requireInventoryPermission(permissions = [], message = "Seu perfil nao pode executar esta acao de estoque.") {
+  return (req, res, next) => {
+    if (hasAnyPermission(req.user || {}, permissions)) {
+      return next();
+    }
+    return res.status(403).json({ error: message, permissions });
+  };
+}
+
+const canViewInventory = requireInventoryPermission(["can_view_stock", "can_view_products", "can_sell"], "Seu perfil nao pode consultar estoque.");
+const canManageInventory = requireInventoryPermission(["can_manage_products", "can_move_stock"], "Seu perfil nao pode alterar estoque.");
+const canMoveInventory = requireInventoryPermission(["can_move_stock"], "Seu perfil nao pode movimentar estoque.");
+
 function ensureStoreAccess(req, res, storeValue = "") {
   const targetStore = normalizeStoreScope(storeValue);
   if (!targetStore || canViewAllStores(req.user || {})) {
@@ -69,7 +90,7 @@ function resolveInventoryStoreScope(req, res) {
   return getDefaultStoreScope(req.user || {});
 }
 
-router.get("/summary", async (req, res) => {
+router.get("/summary", canViewInventory, async (req, res) => {
   try {
     const storeScope = resolveInventoryStoreScope(req, res);
     if (storeScope === null) {
@@ -81,7 +102,7 @@ router.get("/summary", async (req, res) => {
   }
 });
 
-router.get("/products", async (req, res) => {
+router.get("/products", canViewInventory, async (req, res) => {
   try {
     const storeScope = resolveInventoryStoreScope(req, res);
     if (storeScope === null) {
@@ -99,7 +120,7 @@ router.get("/products", async (req, res) => {
   }
 });
 
-router.get("/product/:productId", async (req, res) => {
+router.get("/product/:productId", canViewInventory, async (req, res) => {
   try {
     const storeScope = resolveInventoryStoreScope(req, res);
     if (storeScope === null) {
@@ -115,7 +136,7 @@ router.get("/product/:productId", async (req, res) => {
   }
 });
 
-router.post("/products", async (req, res) => {
+router.post("/products", canManageInventory, async (req, res) => {
   try {
     res.json(createInventoryProduct(req.body || {}, req.user || {}));
   } catch (error) {
@@ -123,7 +144,7 @@ router.post("/products", async (req, res) => {
   }
 });
 
-router.put("/products/:productId", async (req, res) => {
+router.put("/products/:productId", canManageInventory, async (req, res) => {
   try {
     res.json(updateInventoryProduct(req.params.productId, req.body || {}, req.user || {}));
   } catch (error) {
@@ -131,7 +152,7 @@ router.put("/products/:productId", async (req, res) => {
   }
 });
 
-router.post("/adjust", async (req, res) => {
+router.post("/adjust", canMoveInventory, async (req, res) => {
   try {
     res.json(createManualAdjustment(req.body || {}, req.user || {}));
   } catch (error) {
@@ -139,7 +160,7 @@ router.post("/adjust", async (req, res) => {
   }
 });
 
-router.post("/transfer", async (req, res) => {
+router.post("/transfer", canMoveInventory, async (req, res) => {
   try {
     res.json(createTransfer(req.body || {}, req.user || {}));
   } catch (error) {
@@ -147,7 +168,7 @@ router.post("/transfer", async (req, res) => {
   }
 });
 
-router.post("/reservations/:reservationId/release", async (req, res) => {
+router.post("/reservations/:reservationId/release", canMoveInventory, async (req, res) => {
   try {
     res.json(releaseReservationById(req.params.reservationId, req.body || {}, req.user || {}));
   } catch (error) {
@@ -155,7 +176,7 @@ router.post("/reservations/:reservationId/release", async (req, res) => {
   }
 });
 
-router.post("/reservations/:reservationId/convert", async (req, res) => {
+router.post("/reservations/:reservationId/convert", canMoveInventory, async (req, res) => {
   try {
     res.json(convertReservationById(req.params.reservationId, req.body?.sale_id || req.body?.saleId || "", req.user || {}));
   } catch (error) {
@@ -163,7 +184,7 @@ router.post("/reservations/:reservationId/convert", async (req, res) => {
   }
 });
 
-router.get("/movements", async (req, res) => {
+router.get("/movements", canViewInventory, async (req, res) => {
   try {
     const storeScope = resolveInventoryStoreScope(req, res);
     if (storeScope === null) {
@@ -180,7 +201,7 @@ router.get("/movements", async (req, res) => {
   }
 });
 
-router.get("/alerts", async (req, res) => {
+router.get("/alerts", canViewInventory, async (req, res) => {
   try {
     const storeScope = resolveInventoryStoreScope(req, res);
     if (storeScope === null) {

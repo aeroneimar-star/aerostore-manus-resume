@@ -1,0 +1,281 @@
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+
+const exchangeCreditsRootDir = path.join(process.cwd(), "data", "pdv", "sales");
+const exchangeCreditsFilePath = path.join(exchangeCreditsRootDir, "exchange-credits.json");
+
+function ensureExchangeCreditFile() {
+  fs.mkdirSync(exchangeCreditsRootDir, { recursive: true });
+  if (!fs.existsSync(exchangeCreditsFilePath)) {
+    fs.writeFileSync(exchangeCreditsFilePath, "[]", "utf8");
+  }
+}
+
+function readExchangeCredits() {
+  ensureExchangeCreditFile();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(exchangeCreditsFilePath, "utf8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveExchangeCredits(rows = []) {
+  ensureExchangeCreditFile();
+  fs.writeFileSync(exchangeCreditsFilePath, JSON.stringify(Array.isArray(rows) ? rows : [], null, 2), "utf8");
+}
+
+function buildId(prefix = "EXCR") {
+  return `${prefix}_${crypto.randomBytes(6).toString("hex")}`;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function normalizeText(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizePhone(value = "") {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function toNumber(value = 0) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
+  }
+  const normalized = String(value ?? "")
+    .replace(/[^\d,.-]/g, "")
+    .replace(/\.(?=\d{3}(?:\D|$))/g, "")
+    .replace(",", ".");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function roundMoney(value = 0) {
+  return Math.round((toNumber(value) + Number.EPSILON) * 100) / 100;
+}
+
+function buildExchangeSourceKey(source = {}) {
+  const item = source.returned_item || source.item || source;
+  return [
+    normalizeText(source.original_sale_id || source.origin_sale_id || item.original_sale_id || ""),
+    normalizeText(item.sale_item_id || item.item_id || item.original_item_id || item.cart_item_id || item.id || ""),
+    normalizeText(item.inventory_id || item.selected_inventory_id || ""),
+    normalizeText(item.product_id || item.selected_product_id || ""),
+    normalizeText(item.sku || item.selected_sku || item.codigo || item.selected_codigo || ""),
+    normalizeText(item.cor || item.color || ""),
+    normalizeText(item.tamanho || item.size || ""),
+    String(roundMoney(item.unit_value || item.unit_price || item.original_unit_price || item.valor_unitario_pago || item.price || 0))
+  ].join("|");
+}
+
+function isCreditActive(credit = {}) {
+  const status = normalizeText(credit.status || "").toLowerCase();
+  return ["ativo", "active"].includes(status) && roundMoney(credit.remaining_amount) > 0;
+}
+
+function compareCreditCreatedAt(left = {}, right = {}) {
+  const leftTime = new Date(left.created_at || left.updated_at || 0).getTime() || 0;
+  const rightTime = new Date(right.created_at || right.updated_at || 0).getTime() || 0;
+  return leftTime - rightTime;
+}
+
+function createHttpError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function getActorName(user = {}) {
+  return normalizeText(user?.name || user?.email || "sistema");
+}
+
+function normalizeCreditOwner(customer = {}) {
+  const customerId = normalizeText(
+    customer.customer_id
+    || customer.exchange_customer_id
+    || customer.master_customer_id
+    || customer.id
+    || ""
+  );
+  const phone = normalizeText(customer.phone || customer.telefone || customer.customer_phone || "");
+  return {
+    customer_id: customerId || normalizePhone(phone),
+    customer_name: normalizeText(customer.name || customer.nome || customer.customer_name || ""),
+    customer_phone: phone,
+    customer_document: normalizeText(customer.document || customer.cpf || customer.cnpj || "")
+  };
+}
+
+function normalizeCreditRow(row = {}) {
+  const amount = roundMoney(row.amount || 0);
+  const remaining = roundMoney(row.remaining_amount ?? amount);
+  const used = roundMoney(row.used_amount ?? Math.max(0, amount - remaining));
+  return {
+    ...row,
+    amount,
+    remaining_amount: remaining,
+    used_amount: used,
+    status: normalizeText(row.status || (remaining > 0 ? "ativo" : "usado")) || "ativo",
+    movements: Array.isArray(row.movements) ? row.movements : [],
+    expires_at: row.expires_at ?? null
+  };
+}
+
+function createExchangeCredit({ exchange = {}, owner = {}, amount = 0, user = {} } = {}) {
+  const creditAmount = roundMoney(amount || exchange.credit_generated || exchange.returned_total || 0);
+  if (creditAmount <= 0) {
+    return null;
+  }
+  const normalizedOwner = normalizeCreditOwner(owner || exchange.exchange_customer || {});
+  if (!normalizedOwner.customer_id || !normalizedOwner.customer_name || !normalizedOwner.customer_phone) {
+    throw createHttpError("Selecione o cliente que recebera o Credito de Troca.");
+  }
+  const credits = readExchangeCredits().map(normalizeCreditRow);
+  const existing = credits.find((item) => item.exchange_id === exchange.exchange_id && !["cancelado", "cancelled"].includes(normalizeText(item.status).toLowerCase()));
+  if (existing) {
+    return existing;
+  }
+  const returnedItems = Array.isArray(exchange.returned_items)
+    ? exchange.returned_items.filter(Boolean)
+    : (exchange.returned_item ? [exchange.returned_item] : []);
+  const sourceItemKeys = returnedItems
+    .map((returnedItem) => normalizeText(returnedItem.source_item_key || "") || buildExchangeSourceKey({ ...exchange, returned_item: returnedItem }))
+    .filter(Boolean);
+  const sourceItemKey = normalizeText(exchange.source_item_key || "") || sourceItemKeys.join("||") || buildExchangeSourceKey(exchange);
+  const duplicateSource = sourceItemKeys.length
+    ? credits.find((item) => {
+      if (!isCreditActive(item)) return false;
+      const creditKeys = Array.isArray(item.source_item_keys)
+        ? item.source_item_keys.map((key) => normalizeText(key)).filter(Boolean)
+        : [normalizeText(item.source_item_key || "")].filter(Boolean);
+      return sourceItemKeys.some((key) => creditKeys.includes(key));
+    })
+    : null;
+  if (duplicateSource) {
+    throw createHttpError(`Este item ja gerou Credito de Troca. Credito existente: ${duplicateSource.credit_id}.`);
+  }
+  const returnedItem = returnedItems[0] || exchange.returned_item || {};
+  const credit = normalizeCreditRow({
+    credit_id: buildId("EXCR"),
+    exchange_id: normalizeText(exchange.exchange_id || ""),
+    source_type: "exchange",
+    original_sale_id: normalizeText(exchange.original_sale_id || exchange.origin_sale_id || ""),
+    source_item_key: sourceItemKey,
+    source_item_keys: sourceItemKeys,
+    returned_items: returnedItems,
+    returned_sku: normalizeText(returnedItem.sku || returnedItem.codigo || ""),
+    returned_product_id: normalizeText(returnedItem.product_id || returnedItem.selected_product_id || ""),
+    returned_quantity: roundMoney(returnedItems.reduce((sum, item) => sum + roundMoney(item.quantity || item.quantidade || 1), 0) || 1),
+    customer_id: normalizedOwner.customer_id,
+    customer_name: normalizedOwner.customer_name,
+    customer_phone: normalizedOwner.customer_phone,
+    amount: creditAmount,
+    remaining_amount: creditAmount,
+    used_amount: 0,
+    status: "ativo",
+    origin: "troca",
+    expires_at: null,
+    created_at: nowIso(),
+    updated_at: nowIso(),
+    created_by: getActorName(user),
+    movements: []
+  });
+  credits.unshift(credit);
+  saveExchangeCredits(credits);
+  return credit;
+}
+
+function listActiveExchangeCreditsForCustomer(customer = {}) {
+  const normalizedOwner = normalizeCreditOwner(customer);
+  const ownerId = normalizeText(normalizedOwner.customer_id || "");
+  const ownerPhone = normalizePhone(normalizedOwner.customer_phone || "");
+  const rows = readExchangeCredits().map(normalizeCreditRow)
+    .filter((credit) => {
+      if (!isCreditActive(credit)) return false;
+      const creditCustomerId = normalizeText(credit.customer_id || "");
+      const creditPhone = normalizePhone(credit.customer_phone || "");
+      return Boolean((ownerId && creditCustomerId === ownerId) || (ownerPhone && creditPhone === ownerPhone));
+    });
+  const deduped = [...rows]
+    .sort(compareCreditCreatedAt)
+    .reduce((acc, credit) => {
+      const key = normalizeText(credit.source_item_key || "") || `credit:${normalizeText(credit.credit_id || "")}`;
+      if (!acc.seen.has(key)) {
+        acc.seen.add(key);
+        acc.items.push(credit);
+      }
+      return acc;
+    }, { seen: new Set(), items: [] }).items;
+  const total = deduped.reduce((sum, credit) => roundMoney(sum + roundMoney(credit.remaining_amount)), 0);
+  return { items: deduped, total: roundMoney(total) };
+}
+
+function getExchangeCreditById(creditId = "") {
+  const normalizedId = normalizeText(creditId || "");
+  return readExchangeCredits().map(normalizeCreditRow).find((credit) => normalizeText(credit.credit_id || "") === normalizedId) || null;
+}
+
+function consumeExchangeCreditForSale({ creditId = "", amount = 0, saleId = "", customer = {}, user = {} } = {}) {
+  const useAmount = roundMoney(amount);
+  if (!creditId) {
+    throw createHttpError("Informe o Credito de Troca.");
+  }
+  if (useAmount <= 0) {
+    throw createHttpError("Informe um valor valido de Credito de Troca.");
+  }
+  const owner = normalizeCreditOwner(customer);
+  const credits = readExchangeCredits().map(normalizeCreditRow);
+  const index = credits.findIndex((credit) => normalizeText(credit.credit_id || "") === normalizeText(creditId));
+  if (index < 0) {
+    throw createHttpError("Credito de Troca nao encontrado.", 404);
+  }
+  const credit = credits[index];
+  const status = normalizeText(credit.status).toLowerCase();
+  if (!["ativo", "active"].includes(status)) {
+    throw createHttpError("Este Credito de Troca nao esta ativo.");
+  }
+  if (owner.customer_id && normalizeText(credit.customer_id || "") && normalizeText(credit.customer_id || "") !== owner.customer_id) {
+    throw createHttpError("Este Credito de Troca pertence a outro cliente.");
+  }
+  if (owner.customer_phone && normalizePhone(credit.customer_phone || "") && normalizePhone(credit.customer_phone || "") !== normalizePhone(owner.customer_phone)) {
+    throw createHttpError("Este Credito de Troca pertence a outro telefone.");
+  }
+  const before = roundMoney(credit.remaining_amount);
+  if (useAmount > before + 0.009) {
+    throw createHttpError("O valor usado e maior que o saldo do Credito de Troca.");
+  }
+  const after = roundMoney(Math.max(0, before - useAmount));
+  const movement = {
+    movement_id: buildId("EXCMOV"),
+    type: "uso_em_venda",
+    sale_id: normalizeText(saleId || ""),
+    amount: useAmount,
+    before,
+    after,
+    created_at: nowIso(),
+    created_by: getActorName(user)
+  };
+  credit.remaining_amount = after;
+  credit.used_amount = roundMoney((credit.used_amount || 0) + useAmount);
+  credit.status = after <= 0 ? "usado" : "ativo";
+  credit.updated_at = nowIso();
+  credit.movements = [...(Array.isArray(credit.movements) ? credit.movements : []), movement];
+  credits[index] = credit;
+  saveExchangeCredits(credits);
+  return { credit, movement };
+}
+
+module.exports = {
+  createExchangeCredit,
+  listActiveExchangeCreditsForCustomer,
+  getExchangeCreditById,
+  consumeExchangeCreditForSale,
+  buildExchangeSourceKey
+};

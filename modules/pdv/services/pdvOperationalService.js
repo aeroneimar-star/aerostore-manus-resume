@@ -8,6 +8,8 @@ const { PDV_PAYMENT_METHODS } = require("../utils/pdvConfig");
 const { normalizeStoreKey, storesMatch, formatStoreLabel } = require("../utils/pdvStoreUtils");
 const { getDiscountPolicyForSale } = require("./pdvControlService");
 
+const GENERAL_DISCOUNT_ALLOWED_PAYMENT_METHODS = new Set(["pix", "dinheiro"]);
+
 const operationalRootDir = path.join(process.cwd(), "data", "pdv", "operational");
 const operationalFiles = {
   sessions: path.join(operationalRootDir, "customer-sessions.json"),
@@ -122,17 +124,130 @@ function normalizePhone(value = "") {
   return digits;
 }
 
+function getCartItemUnitPrice(item = {}) {
+  return toNumber(item.preco_venda || item.price || item.preco_referencia || 0);
+}
+
+function getCartItemQuantity(item = {}) {
+  return Math.max(1, Math.round(toNumber(item.quantidade || 1)));
+}
+
+function normalizeCartItemDiscount(item = {}) {
+  const unitPrice = getCartItemUnitPrice(item);
+  const quantity = getCartItemQuantity(item);
+  const gross = Number((unitPrice * quantity).toFixed(2));
+  const source = item.item_discount && typeof item.item_discount === "object"
+    ? item.item_discount
+    : {};
+  const mode = normalizeText(source.mode || source.discount_mode || "amount").toLowerCase() === "percent" ? "percent" : "amount";
+  const value = Number(Math.max(0, toNumber(source.value ?? source.percent ?? source.amount ?? 0)).toFixed(2));
+  let amount = mode === "percent"
+    ? Number(((gross * value) / 100).toFixed(2))
+    : Number(value.toFixed(2));
+  amount = Number(Math.min(gross, Math.max(0, amount)).toFixed(2));
+  const percent = gross > 0 ? Number(((amount / gross) * 100).toFixed(2)) : 0;
+  if (amount <= 0) {
+    return null;
+  }
+  return {
+    mode,
+    value,
+    amount,
+    percent,
+    reason: normalizeText(source.reason || ""),
+    applied_by: normalizeText(source.applied_by || ""),
+    applied_at: normalizeText(source.applied_at || "")
+  };
+}
+
+function getCartItemsGrossSubtotal(cartItems = []) {
+  return Number((Array.isArray(cartItems) ? cartItems : []).reduce((sum, item) => {
+    return sum + (getCartItemUnitPrice(item) * getCartItemQuantity(item));
+  }, 0).toFixed(2));
+}
+
+function getCartItemsDiscountTotal(cartItems = []) {
+  return Number((Array.isArray(cartItems) ? cartItems : []).reduce((sum, item) => {
+    return sum + toNumber(normalizeCartItemDiscount(item)?.amount || 0);
+  }, 0).toFixed(2));
+}
+
+function getCartItemsNetSubtotal(cartItems = []) {
+  return Number(Math.max(0, getCartItemsGrossSubtotal(cartItems) - getCartItemsDiscountTotal(cartItems)).toFixed(2));
+}
+
+function sumSessionPaymentMethods(session = {}, methods = []) {
+  const allowed = new Set(methods);
+  return Number((Array.isArray(session?.payment_plan?.methods) ? session.payment_plan.methods : []).reduce((sum, item) => {
+    const method = normalizeText(item?.method || "");
+    if (!allowed.has(method)) {
+      return sum;
+    }
+    return sum + toNumber(item?.amount || 0);
+  }, 0).toFixed(2));
+}
+
+function isPaymentMethodEligibleForGeneralDiscount(method = "") {
+  return GENERAL_DISCOUNT_ALLOWED_PAYMENT_METHODS.has(normalizeText(method || "").toLowerCase());
+}
+
+function getGeneralDiscountBlockingPaymentMethods(session = {}) {
+  const launched = (Array.isArray(session?.payment_plan?.methods) ? session.payment_plan.methods : [])
+    .map((item) => ({
+      method: normalizeText(item?.method || "").toLowerCase(),
+      amount: toNumber(item?.amount || 0)
+    }))
+    .filter((item) => item.method && item.amount > 0.01);
+  const cashbackAmount = toNumber(session?.cashback_application?.amount || 0);
+  if (cashbackAmount > 0.01 && !launched.some((item) => item.method === "cashback")) {
+    launched.push({ method: "cashback", amount: cashbackAmount });
+  }
+  const exchangeCreditAmount = sumSessionPaymentMethods(session, ["credito_troca"]) || toNumber(session?.exchange_credit_application?.amount || 0);
+  if (exchangeCreditAmount > 0.01 && !launched.some((item) => item.method === "credito_troca")) {
+    launched.push({ method: "credito_troca", amount: exchangeCreditAmount });
+  }
+  return launched.filter((item) => !isPaymentMethodEligibleForGeneralDiscount(item.method));
+}
+
+function getPaymentMethodPolicyLabel(method = "") {
+  const labels = {
+    pix: "Pix",
+    dinheiro: "Dinheiro",
+    debito: "Cartao de debito",
+    credito: "Cartao de credito",
+    credito_ate_10x: "Cartao de credito",
+    link_pagamento: "Link pagamento",
+    credito_troca: "Credito de Troca",
+    cashback: "Cashback",
+    vale_presente: "Vale presente",
+    permuta: "Permuta"
+  };
+  return labels[normalizeText(method || "").toLowerCase()] || normalizeText(method || "Metodo nao elegivel");
+}
+
 function getSessionDiscountPolicy(session = {}) {
-  const discountAmount = toNumber(
+  const cartItems = Array.isArray(session?.cart_items) ? session.cart_items : [];
+  const itemDiscountAmount = getCartItemsDiscountTotal(cartItems);
+  const generalDiscountAmount = toNumber(
     session?.desconto_extra
     ?? session?.discount_amount
     ?? 0
   );
-  const discountPercent = toNumber(session?.discount_percent || 0);
+  const subtotal = getCartItemsGrossSubtotal(cartItems);
+  const policyBase = Number(Math.max(
+    0,
+    getCartItemsNetSubtotal(cartItems)
+      - toNumber(session?.cashback_application?.amount || 0)
+      - sumSessionPaymentMethods(session, ["credito_troca"])
+  ).toFixed(2));
+  const discountPercent = policyBase > 0 ? Number(((generalDiscountAmount / policyBase) * 100).toFixed(2)) : toNumber(session?.discount_percent || 0);
   return getDiscountPolicyForSale({
     paymentMethods: session?.payment_plan?.methods || [],
-    discountAmount,
-    discountPercent
+    discountAmount: generalDiscountAmount,
+    discountPercent,
+    itemDiscountAmount,
+    discountBase: policyBase,
+    subtotal
   });
 }
 
@@ -2533,6 +2648,7 @@ function addProductToCart(sessionId, payload = {}, user = {}) {
     destination_store_name: normalizeText(fulfillment.destination_store_name || formatStoreLabel(fulfillment.sale_store_id)),
     fulfillment_options: Array.isArray(fulfillment.fulfillment_options) ? fulfillment.fulfillment_options : []
   };
+  item.item_discount = null;
   session.cart_items.push(item);
   session.updated_at = nowIso();
   saveSession(session);
@@ -2581,6 +2697,44 @@ function updateCartItem(sessionId, itemId, payload = {}) {
   }
   session.updated_at = nowIso();
   saveSession(session);
+  return session;
+}
+
+function updateCartItemDiscount(sessionId, itemId, payload = {}, user = {}) {
+  const session = getSessionById(sessionId);
+  if (!session) {
+    throw new Error("Sessão do atendimento não encontrada.");
+  }
+  const item = session.cart_items.find((row) => row.item_id === String(itemId || "").trim());
+  if (!item) {
+    throw new Error("Item do carrinho não encontrado.");
+  }
+  const removeDiscount = Boolean(payload.remove || payload.clear || payload.amount === 0 || payload.value === 0);
+  if (removeDiscount) {
+    item.item_discount = null;
+  } else {
+    const mode = normalizeText(payload.mode || payload.discount_mode || "amount").toLowerCase() === "percent" ? "percent" : "amount";
+    const value = Number(Math.max(0, toNumber(payload.value ?? payload.amount ?? payload.percent ?? 0)).toFixed(2));
+    if (value <= 0) {
+      throw new Error("Informe um desconto válido para o item.");
+    }
+    item.item_discount = {
+      mode,
+      value,
+      reason: normalizeText(payload.reason || ""),
+      applied_by: user?.name || user?.email || "sistema",
+      applied_at: nowIso()
+    };
+    item.item_discount = normalizeCartItemDiscount(item);
+  }
+  applySessionDiscountPolicy(session);
+  session.updated_at = nowIso();
+  saveSession(session);
+  appendEvent("CART_ITEM_DISCOUNT_UPDATED", { session_id: sessionId, item_id: itemId, loja: session.loja }, {
+    item_id: item.item_id,
+    item_discount: item.item_discount,
+    product_name: item.nome
+  }, user);
   return session;
 }
 
@@ -2692,6 +2846,10 @@ function detachCustomerFromSession(sessionId, user = {}) {
   }
   session.customer = null;
   session.cashback_application = null;
+  session.exchange_credit_application = null;
+  session.payment_plan = {
+    methods: (session.payment_plan?.methods || []).filter((item) => item.method !== "credito_troca")
+  };
   session.updated_at = nowIso();
   saveSession(session);
   appendEvent("CUSTOMER_IDENTIFIED", { session_id: sessionId, loja: session.loja }, { customer: null, action: "removed" }, user);
@@ -2735,14 +2893,10 @@ function saveCartDraft(sessionId, payload = {}, user = {}) {
   }
   const drafts = loadDrafts();
   const itemCount = Array.isArray(session.cart_items) ? session.cart_items.length : 0;
-  const grossAmount = Number((Array.isArray(session.cart_items)
-    ? session.cart_items.reduce((sum, item) => {
-      const quantity = Math.max(1, Math.round(toNumber(item.quantidade || 1)));
-      const unitPrice = toNumber(item.preco_venda || item.price || item.preco_referencia || 0);
-      return sum + (quantity * unitPrice);
-    }, 0)
-    : 0).toFixed(2));
-  const totalAmount = Number(Math.max(0, grossAmount - toNumber(session.desconto_extra || session.discount_amount || 0)).toFixed(2));
+  const grossAmount = getCartItemsGrossSubtotal(session.cart_items || []);
+  const itemDiscountAmount = getCartItemsDiscountTotal(session.cart_items || []);
+  const netItemsAmount = getCartItemsNetSubtotal(session.cart_items || []);
+  const totalAmount = Number(Math.max(0, netItemsAmount - toNumber(session.desconto_extra || session.discount_amount || 0)).toFixed(2));
   const draft = {
     draft_id: buildId("DRF"),
     session_id: sessionId,
@@ -2752,6 +2906,9 @@ function saveCartDraft(sessionId, payload = {}, user = {}) {
     loja: normalizeStoreKey(payload.loja || session.loja || ""),
     seller: normalizeText(payload.vendedor || session.seller || ""),
     item_count: itemCount,
+    gross_amount: grossAmount,
+    item_discount_amount: itemDiscountAmount,
+    subtotal_after_item_discount: netItemsAmount,
     total_amount: totalAmount,
     desconto_extra: Number(toNumber(session.desconto_extra || session.discount_amount || 0).toFixed(2)),
     discount_percent: Number(toNumber(session.discount_percent || 0).toFixed(2)),
@@ -2830,11 +2987,24 @@ function updatePaymentPlan(sessionId, methods = []) {
     method: PDV_PAYMENT_METHODS.includes(item.method) ? item.method : "dinheiro",
     amount: toNumber(item.amount),
     installments: Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1)))),
-    installment_amount: Number((toNumber(item.amount) / Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1))))).toFixed(2))
+    installment_amount: Number((toNumber(item.amount) / Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1))))).toFixed(2)),
+    credit_id: normalizeText(item.credit_id || item.exchange_credit_id || ""),
+    customer_id: normalizeText(item.customer_id || "")
   }));
   session.payment_plan = {
     methods: normalizedMethods
   };
+  const exchangeCreditMethod = normalizedMethods.find((item) => item.method === "credito_troca" && toNumber(item.amount) > 0);
+  if (exchangeCreditMethod) {
+    session.exchange_credit_application = {
+      ...(session.exchange_credit_application || {}),
+      credit_id: exchangeCreditMethod.credit_id || session.exchange_credit_application?.credit_id || "",
+      customer_id: exchangeCreditMethod.customer_id || session.exchange_credit_application?.customer_id || "",
+      amount: toNumber(exchangeCreditMethod.amount)
+    };
+  } else {
+    session.exchange_credit_application = null;
+  }
   applySessionDiscountPolicy(session);
   session.updated_at = nowIso();
   saveSession(session);
@@ -2847,14 +3017,22 @@ function updateSessionDiscount(sessionId, payload = {}) {
     throw new Error("Sessao do atendimento nao encontrada.");
   }
   const cartItems = Array.isArray(session.cart_items) ? session.cart_items : [];
-  const subtotal = Number(cartItems.reduce((sum, item) => {
-    const quantity = Math.max(1, Math.round(toNumber(item.quantidade || 1)));
-    const unitPrice = toNumber(item.preco_venda || item.price || item.preco_referencia || 0);
-    return sum + (quantity * unitPrice);
-  }, 0).toFixed(2));
+  const subtotal = Number(Math.max(
+    0,
+    getCartItemsNetSubtotal(cartItems)
+      - toNumber(session?.cashback_application?.amount || 0)
+      - sumSessionPaymentMethods(session, ["credito_troca"])
+  ).toFixed(2));
   const mode = normalizeText(payload.mode || payload.discount_mode || "percent").toLowerCase() === "value" ? "value" : "percent";
   const rawValue = toNumber(payload.value ?? payload.amount ?? payload.percent ?? 0);
   const reason = normalizeText(payload.reason || "");
+  if (rawValue > 0) {
+    const blockingMethods = getGeneralDiscountBlockingPaymentMethods(session);
+    if (blockingMethods.length) {
+      const labels = [...new Set(blockingMethods.map((item) => getPaymentMethodPolicyLabel(item.method)).filter(Boolean))];
+      throw new Error(`Desconto geral permitido somente para Pix ou Dinheiro. ${labels.length ? `Esta venda possui pagamento em ${labels.join(" + ")}. ` : ""}Remova ou ajuste os pagamentos lancados antes de aplicar este desconto.`);
+    }
+  }
   let discountAmount = 0;
   let discountPercent = 0;
   if (mode === "percent") {
@@ -3023,6 +3201,7 @@ module.exports = {
   addProductToCart,
   updateCartItem,
   removeCartItem,
+  updateCartItemDiscount,
   attachCustomerToSession,
   detachCustomerFromSession,
   completeSession,

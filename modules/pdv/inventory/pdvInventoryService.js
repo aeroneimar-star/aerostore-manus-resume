@@ -1604,6 +1604,88 @@ function applyExchangeInboundFromSale(originSale, exchange = {}, user = {}) {
   return movements;
 }
 
+function getExchangeInboundMutationByCondition(condition = "", quantity = 1) {
+  const normalizedCondition = normalizeText(condition || "").toLowerCase();
+  if (["disponivel", "disponivel_para_venda", "available", "ok"].includes(normalizedCondition)) {
+    return {
+      available_delta: quantity,
+      bucket: "available"
+    };
+  }
+  if (["perda", "perda_nao_retornar", "nao_retornar", "loss"].includes(normalizedCondition)) {
+    return {
+      unavailable_delta: quantity,
+      bucket: "loss"
+    };
+  }
+  return {
+    exchange_delta: quantity,
+    bucket: "exchange_review"
+  };
+}
+
+function applyExchangeInboundItem(returnedItem = {}, exchange = {}, user = {}) {
+  const quantity = Math.max(1, roundQty(returnedItem.quantity || returnedItem.quantidade || 1));
+  if (!returnedItem || (!returnedItem.product_id && !returnedItem.sku && !returnedItem.codigo && !returnedItem.nome)) {
+    throw new Error("Informe o item devolvido para registrar a entrada da troca.");
+  }
+  const records = ensureInventorySeeded();
+  const storeId = normalizeStoreId(
+    returnedItem.return_store_id
+    || returnedItem.store_id
+    || exchange.return_store_id
+    || exchange.store_id
+    || exchange.original_sale_store_id
+    || DEFAULT_STORE_ID
+  );
+  const record = ensureInventoryRecord(records, {
+    productId: returnedItem.product_id || returnedItem.selected_product_id,
+    sku: returnedItem.sku,
+    codigo: returnedItem.codigo,
+    nome: returnedItem.nome || returnedItem.name,
+    marca: returnedItem.marca || returnedItem.brand,
+    categoria: returnedItem.categoria || returnedItem.category,
+    cor: returnedItem.cor || returnedItem.color,
+    tamanho: returnedItem.tamanho || returnedItem.size,
+    preco_venda: returnedItem.preco_venda || returnedItem.price || returnedItem.unit_value,
+    storeId
+  });
+  const condition = normalizeText(exchange.returned_condition || returnedItem.returned_condition || returnedItem.condition || "aguardando_conferencia");
+  const mutation = getExchangeInboundMutationByCondition(condition, quantity);
+  const snapshots = changeInventoryRecord(record, mutation);
+  const movement = appendInventoryMovement({
+    inventory_id: record.inventory_id,
+    type: "EXCHANGE_IN",
+    product_id: record.product_id,
+    sku: record.sku,
+    codigo: record.codigo,
+    nome: record.nome,
+    store_id: record.store_id,
+    quantity,
+    direction: "IN",
+    reference_type: "EXCHANGE",
+    reference_id: exchange.exchange_id || "",
+    reason: mutation.bucket === "available"
+      ? "Entrada por troca de item devolvido disponível para venda."
+      : "Entrada por troca de item devolvido para conferência.",
+    notes: exchange.notes || exchange.reason_notes || "",
+    before_qty: snapshots.before.available_qty,
+    after_qty: snapshots.after.available_qty,
+    before_snapshot: snapshots.before,
+    after_snapshot: snapshots.after,
+    metadata: {
+      origin_sale_id: exchange.original_sale_id || returnedItem.original_sale_id || "",
+      origin_item_id: returnedItem.item_id || returnedItem.original_item_id || "",
+      exchange_id: exchange.exchange_id || "",
+      returned_condition: condition,
+      inventory_bucket: mutation.bucket
+    }
+  }, user);
+  emitStockAlertEvents(record, user);
+  saveInventoryRecords(records);
+  return [movement];
+}
+
 function createManualAdjustment(payload = {}, user = {}) {
   const records = ensureInventorySeeded();
   const reason = normalizeText(payload.reason || payload.motivo || "").toUpperCase();
@@ -2714,6 +2796,7 @@ module.exports = {
   convertReservationInventory,
   applyInternalConsumptionInventory,
   applyExchangeInboundFromSale,
+  applyExchangeInboundItem,
   releaseReservationById,
   convertReservationById,
   searchInventoryProducts,

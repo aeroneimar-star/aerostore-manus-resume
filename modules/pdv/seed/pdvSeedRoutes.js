@@ -10,6 +10,19 @@ const {
 
 const router = express.Router();
 
+function hasPermission(user = {}, permission = "") {
+  return Boolean(user?.permissions?.[permission]);
+}
+
+function requireSeedPermission(req, res, next) {
+  if (hasPermission(req.user || {}, "can_manage_global_settings") || hasPermission(req.user || {}, "can_view_audit")) {
+    return next();
+  }
+  return res.status(403).json({ error: "Seu perfil nao pode operar a massa de teste do PDV." });
+}
+
+router.use(requireSeedPermission);
+
 router.get("/status", async (req, res) => {
   try {
     res.json(getSeedStatus());

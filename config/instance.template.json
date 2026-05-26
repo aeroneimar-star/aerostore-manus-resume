@@ -14,7 +14,9 @@
     "session_name": "aerostore_store_slug",
     "session_path": "./data/whatsapp-sessions/store_slug",
     "auto_connect": true,
-    "qr_timeout_ms": 60000
+    "qr_timeout_ms": 60000,
+    "qr_manual_refresh": true,
+    "qr_request_ttl_ms": 120000
   },
   "features": {
     "pdv_enabled": true,

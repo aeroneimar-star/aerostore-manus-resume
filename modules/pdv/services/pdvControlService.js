@@ -75,7 +75,7 @@ const TOTP_SECRET_BYTES = 20;
 const AUTHORIZATION_APPROVAL_TTL_MINUTES = 5;
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const AUTOMATIC_DISCOUNT_ALLOWED_METHODS = new Set(["pix", "dinheiro"]);
-const DISCOUNT_CONTEXT_IGNORED_METHODS = new Set(["cashback"]);
+const DISCOUNT_CONTEXT_IGNORED_METHODS = new Set(["cashback", "credito_troca"]);
 const DISCOUNT_PAYMENT_METHOD_LABELS = {
   pix: "Pix",
   dinheiro: "Dinheiro",
@@ -213,11 +213,25 @@ function isAutomaticDiscountAllowedPaymentMethod(method = "") {
   return AUTOMATIC_DISCOUNT_ALLOWED_METHODS.has(normalizeDiscountPaymentMethod(method));
 }
 
-function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, discountPercent = 0 } = {}) {
+function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, discountPercent = 0, itemDiscountAmount = 0, discountBase = 0, subtotal = 0 } = {}) {
   const methods = getDiscountRelevantPaymentMethods(paymentMethods);
   const invalidMethods = methods.filter((method) => !isAutomaticDiscountAllowedPaymentMethod(method));
-  const hasDiscount = roundMoney(discountAmount) > 0 || Number(toNumber(discountPercent || 0).toFixed(2)) > 0;
-  const normalizedPercent = Number(toNumber(discountPercent || 0).toFixed(2));
+  const hasItemDiscount = roundMoney(itemDiscountAmount || 0) > 0;
+  const generalDiscountAmount = roundMoney(discountAmount || 0);
+  const policyBase = roundMoney(discountBase || 0);
+  const hasGeneralDiscount = generalDiscountAmount > 0;
+  const normalizedPercent = policyBase > 0
+    ? Number(((generalDiscountAmount / policyBase) * 100).toFixed(2))
+    : Number(toNumber(discountPercent || 0).toFixed(2));
+  const automaticLimitAmount = roundMoney((policyBase * 10) / 100);
+  const hasDiscount = hasItemDiscount || hasGeneralDiscount || normalizedPercent > 0;
+  const generalWithinAutomaticPolicy = hasGeneralDiscount
+    && methods.length > 0
+    && !invalidMethods.length
+    && generalDiscountAmount <= automaticLimitAmount + 0.01;
+  const generalRequiresAuthorization = hasGeneralDiscount
+    && !generalWithinAutomaticPolicy
+    && !(!methods.length && normalizedPercent <= 10.001);
   const invalidMethodsLabel = invalidMethods.map((method) => getDiscountPaymentMethodLabel(method)).join(" + ");
 
   if (!hasDiscount) {
@@ -230,7 +244,46 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
       pendingPaymentMethod: false,
       requiresAuthorization: false,
       allowedWithoutAuthorization: true,
-      message: "Sem desconto aplicado."
+      message: "Sem desconto aplicado.",
+      policyBase,
+      automaticLimitAmount,
+      generalDiscountPercent: normalizedPercent,
+      generalWithinAutomaticPolicy,
+      generalRequiresAuthorization: false,
+      generalExceptionAmount: 0,
+      authorizationAmount: 0,
+      authorizationPercent: 0
+    };
+  }
+
+  if (hasItemDiscount) {
+    const generalExceptionAmount = roundMoney(generalRequiresAuthorization ? generalDiscountAmount : 0);
+    const authorizationAmount = roundMoney(itemDiscountAmount + generalExceptionAmount);
+    const authorizationPercent = subtotal > 0 ? Number(((authorizationAmount / subtotal) * 100).toFixed(2)) : 0;
+    return {
+      limitPercent: 10,
+      reason: generalRequiresAuthorization && invalidMethods.length ? "ITEM_DISCOUNT_SPECIAL_WITH_NON_CASH_METHOD" : "ITEM_DISCOUNT_SPECIAL",
+      paymentMethods: methods,
+      invalidMethods,
+      invalidMethodsLabel,
+      pendingPaymentMethod: hasGeneralDiscount && !methods.length,
+      requiresAuthorization: true,
+      allowedWithoutAuthorization: false,
+      message: generalRequiresAuthorization && invalidMethods.length
+        ? "Este desconto e permitido apenas para PIX ou dinheiro."
+        : generalRequiresAuthorization
+          ? "Autorizacao gerencial necessaria para desconto especial."
+          : generalWithinAutomaticPolicy
+            ? "Desconto de PIX/dinheiro dentro da politica."
+            : "Autorizacao gerencial necessaria para desconto especial.",
+      policyBase,
+      automaticLimitAmount,
+      generalDiscountPercent: normalizedPercent,
+      generalWithinAutomaticPolicy,
+      generalRequiresAuthorization,
+      generalExceptionAmount,
+      authorizationAmount,
+      authorizationPercent
     };
   }
 
@@ -244,7 +297,15 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
       pendingPaymentMethod: !methods.length,
       requiresAuthorization: true,
       allowedWithoutAuthorization: false,
-      message: "Descontos acima de 10% exigem autorizacao gerencial."
+      message: "Autorizacao gerencial necessaria para desconto especial.",
+      policyBase,
+      automaticLimitAmount,
+      generalDiscountPercent: normalizedPercent,
+      generalWithinAutomaticPolicy,
+      generalRequiresAuthorization: true,
+      generalExceptionAmount: generalDiscountAmount,
+      authorizationAmount: generalDiscountAmount,
+      authorizationPercent: subtotal > 0 ? Number(((generalDiscountAmount / subtotal) * 100).toFixed(2)) : normalizedPercent
     };
   }
 
@@ -258,7 +319,15 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
       pendingPaymentMethod: true,
       requiresAuthorization: false,
       allowedWithoutAuthorization: false,
-      message: "Escolha a forma de pagamento para validar este desconto."
+      message: "Escolha a forma de pagamento para validar este desconto.",
+      policyBase,
+      automaticLimitAmount,
+      generalDiscountPercent: normalizedPercent,
+      generalWithinAutomaticPolicy,
+      generalRequiresAuthorization: false,
+      generalExceptionAmount: 0,
+      authorizationAmount: 0,
+      authorizationPercent: 0
     };
   }
 
@@ -272,7 +341,15 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
       pendingPaymentMethod: false,
       requiresAuthorization: false,
       allowedWithoutAuthorization: true,
-      message: "Desconto permitido para PIX ou Dinheiro."
+      message: "Desconto de PIX/dinheiro dentro da politica.",
+      policyBase,
+      automaticLimitAmount,
+      generalDiscountPercent: normalizedPercent,
+      generalWithinAutomaticPolicy,
+      generalRequiresAuthorization: false,
+      generalExceptionAmount: 0,
+      authorizationAmount: 0,
+      authorizationPercent: 0
     };
   }
 
@@ -285,7 +362,15 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
     pendingPaymentMethod: false,
     requiresAuthorization: true,
     allowedWithoutAuthorization: false,
-    message: `Desconto automatico de ate 10% e permitido apenas para PIX ou Dinheiro. Para ${invalidMethodsLabel || "este metodo"}, e necessaria autorizacao gerencial.`
+    message: "Este desconto e permitido apenas para PIX ou dinheiro.",
+    policyBase,
+    automaticLimitAmount,
+    generalDiscountPercent: normalizedPercent,
+    generalWithinAutomaticPolicy,
+    generalRequiresAuthorization: true,
+    generalExceptionAmount: generalDiscountAmount,
+    authorizationAmount: generalDiscountAmount,
+    authorizationPercent: subtotal > 0 ? Number(((generalDiscountAmount / subtotal) * 100).toFixed(2)) : normalizedPercent
   };
 }
 
@@ -294,9 +379,9 @@ function buildDiscountAuthorizationError(policy = {}) {
     return "Escolha a forma de pagamento para validar este desconto.";
   }
   if (policy.invalidMethods?.length) {
-    return `Desconto automatico de ate 10% e permitido apenas para PIX ou Dinheiro. Para ${policy.invalidMethodsLabel || "este metodo"}, e necessaria autorizacao gerencial.`;
+    return "Este desconto e permitido apenas para PIX ou dinheiro.";
   }
-  return `Desconto acima do limite exige autorizacao. Maximo sem autorizacao: ${Number(toNumber(policy.limitPercent || 10).toFixed(2))}%.`;
+  return "Autorizacao gerencial necessaria para desconto especial.";
 }
 
 function paymentMethodSetsMatch(left = [], right = []) {
@@ -684,11 +769,14 @@ function setAuthorizerStatus(authorizerId = "", isActive = true, user = {}) {
   return sanitizeAuthorizer(entry);
 }
 
-function getDiscountLimitForSale({ paymentMethods = [], discountAmount = 0, discountPercent = 0 } = {}) {
+function getDiscountLimitForSale({ paymentMethods = [], discountAmount = 0, discountPercent = 0, itemDiscountAmount = 0, discountBase = 0, subtotal = 0 } = {}) {
   return getDiscountPolicyForSale({
     paymentMethods,
     discountAmount,
-    discountPercent
+    discountPercent,
+    itemDiscountAmount,
+    discountBase,
+    subtotal
   });
 }
 
@@ -875,27 +963,8 @@ function consumeValidatedAuthorization({
   if (roundMoney(amount) > roundMoney(entry.amount || 0) + 0.01 || Number(percent || 0) > Number(entry.percent || 0) + 0.01) {
     throw new Error("Autorizacao insuficiente para o desconto solicitado.");
   }
-  if (Array.isArray(entry.metadata_json?.payment_methods) && entry.metadata_json.payment_methods.length) {
-    if (!paymentMethodSetsMatch(entry.metadata_json.payment_methods, paymentMethods)) {
-      throw new Error("Autorizacao emitida para outra combinacao de pagamento.");
-    }
-  }
-  if (Array.isArray(entry.metadata_json?.payment_amounts) && entry.metadata_json.payment_amounts.length) {
-    if (!paymentAmountSetsMatch(entry.metadata_json.payment_amounts, paymentAmounts)) {
-      throw new Error("Autorizacao emitida para outra composicao de pagamento.");
-    }
-  }
   if (entry.metadata_json && Object.prototype.hasOwnProperty.call(entry.metadata_json, "subtotal")) {
     compareAuthorizedNumber(subtotal, entry.metadata_json.subtotal, "subtotal");
-  }
-  if (entry.metadata_json && Object.prototype.hasOwnProperty.call(entry.metadata_json, "cashback_applied")) {
-    compareAuthorizedNumber(cashbackApplied, entry.metadata_json.cashback_applied, "cashback");
-  }
-  if (entry.metadata_json && Object.prototype.hasOwnProperty.call(entry.metadata_json, "amount_to_pay")) {
-    compareAuthorizedNumber(amountToPay, entry.metadata_json.amount_to_pay, "total a pagar");
-  }
-  if (entry.metadata_json && Object.prototype.hasOwnProperty.call(entry.metadata_json, "paid_amount")) {
-    compareAuthorizedNumber(paidAmount, entry.metadata_json.paid_amount, "total lancado");
   }
   entry.status = "CONSUMED";
   entry.used_at = nowIso();
@@ -1190,9 +1259,10 @@ function reopenCashRegister({ cashRegisterId = "", reason = "", pin = "" } = {},
   return register;
 }
 
-function validateSaleControls({ saleContext = {}, authorization = {} } = {}, user = {}) {
+function validateSaleControlsLegacyUnused({ saleContext = {}, authorization = {} } = {}, user = {}) {
   const subtotal = roundMoney(saleContext.subtotal || 0);
   const extraDiscount = roundMoney(saleContext.extraDiscount || 0);
+  const itemDiscountAmount = roundMoney(saleContext.itemDiscountAmount || 0);
   const items = saleContext.items || [];
   const permutaAmount = roundMoney(saleContext.permutaAmount || 0);
   const loja = normalizeStoreKey(saleContext.loja || "");
@@ -1250,17 +1320,21 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
 function validateSaleControls({ saleContext = {}, authorization = {} } = {}, user = {}) {
   const subtotal = roundMoney(saleContext.subtotal || 0);
   const extraDiscount = roundMoney(saleContext.extraDiscount || 0);
+  const itemDiscountAmount = roundMoney(saleContext.itemDiscountAmount || 0);
   const permutaAmount = roundMoney(saleContext.permutaAmount || 0);
   const loja = normalizeStoreKey(saleContext.loja || "");
   const saleId = normalizeText(saleContext.saleId || "");
   const saleSessionId = normalizeText(saleContext.saleSessionId || "");
-  const discountPercent = subtotal > 0 ? Number(((extraDiscount / subtotal) * 100).toFixed(2)) : 0;
+  const discountBase = roundMoney(saleContext.discountBase || 0);
+  const discountPercent = discountBase > 0 ? Number(((extraDiscount / discountBase) * 100).toFixed(2)) : 0;
   const discountPolicy = getDiscountLimitForSale({
     subtotal,
     items: saleContext.items || [],
     paymentMethods: saleContext.paymentMethods || [],
     discountAmount: extraDiscount,
-    discountPercent
+    discountPercent,
+    itemDiscountAmount,
+    discountBase
   });
   const discountLimit = Number(toNumber(discountPolicy.limitPercent || 10).toFixed(2));
 
@@ -1277,8 +1351,8 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
       operationType: "DISCOUNT_ABOVE_LIMIT",
       saleSessionId,
       saleId,
-      amount: extraDiscount,
-      percent: discountPercent,
+      amount: discountPolicy.authorizationAmount || (itemDiscountAmount + extraDiscount),
+      percent: discountPolicy.authorizationPercent || discountPercent,
       paymentMethods: saleContext.paymentMethods || [],
       paymentAmounts: saleContext.paymentMethods || [],
       subtotal,

@@ -11,6 +11,7 @@ const {
   getSessionById,
   addProductToCart,
   updateCartItem,
+  updateCartItemDiscount,
   removeCartItem,
   attachCustomerToSession,
   detachCustomerFromSession,
@@ -51,6 +52,24 @@ function getAllowedStores(user = {}) {
 function hasPermission(user = {}, permission = "") {
   return Boolean(user?.permissions?.[permission]);
 }
+
+function hasAnyPermission(user = {}, permissions = []) {
+  return permissions.some((permission) => hasPermission(user, permission));
+}
+
+function requireOperationalPermission(permissions = [], message = "Seu perfil nao pode executar esta acao do PDV.") {
+  return (req, res, next) => {
+    if (hasAnyPermission(req.user || {}, permissions)) {
+      return next();
+    }
+    return res.status(403).json({ error: message, permissions });
+  };
+}
+
+const canCreateCustomer = requireOperationalPermission(["can_create_customers", "can_sell"], "Seu perfil nao pode cadastrar clientes.");
+const canApplyDiscount = requireOperationalPermission(["can_apply_discount", "can_sell"], "Seu perfil nao pode aplicar desconto.");
+const canOperatePaymentPlan = requireOperationalPermission(["can_finalize_sale", "can_sell", "can_view_cash_register"], "Seu perfil nao pode alterar pagamentos da venda.");
+const canRegisterInternalConsumption = requireOperationalPermission(["can_move_stock", "can_manage_products"], "Seu perfil nao pode registrar uso e consumo.");
 
 function ensureStoreAccess(req, res, storeValue = "") {
   const user = req.user || {};
@@ -184,7 +203,7 @@ router.get("/debug-search", async (req, res) => {
   }
 });
 
-router.post("/customers/quick-register", async (req, res) => {
+router.post("/customers/quick-register", canCreateCustomer, async (req, res) => {
   try {
     res.json(createQuickCustomer(req.body || {}, req.user || {}));
   } catch (error) {
@@ -278,6 +297,21 @@ router.patch("/cart/:sessionId/items/:itemId", async (req, res) => {
   }
 });
 
+router.patch("/cart/:sessionId/items/:itemId/discount", canApplyDiscount, async (req, res) => {
+  try {
+    const session = getSessionById(req.params.sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "SessÃ£o operacional do PDV nÃ£o encontrada." });
+    }
+    if (!ensureStoreAccess(req, res, session.store_id || session.loja || "")) {
+      return;
+    }
+    res.json(updateCartItemDiscount(req.params.sessionId, req.params.itemId, req.body || {}, req.user || {}));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao atualizar o desconto do item do carrinho." });
+  }
+});
+
 router.delete("/cart/:sessionId/items/:itemId", async (req, res) => {
   try {
     const session = getSessionById(req.params.sessionId);
@@ -341,7 +375,7 @@ router.delete("/drafts/:draftId", async (req, res) => {
   }
 });
 
-router.post("/cart/:sessionId/payment-plan", async (req, res) => {
+router.post("/cart/:sessionId/payment-plan", canOperatePaymentPlan, async (req, res) => {
   try {
     const session = getSessionById(req.params.sessionId);
     if (!session) {
@@ -356,7 +390,7 @@ router.post("/cart/:sessionId/payment-plan", async (req, res) => {
   }
 });
 
-router.patch("/cart/:sessionId/discount", async (req, res) => {
+router.patch("/cart/:sessionId/discount", canApplyDiscount, async (req, res) => {
   try {
     const session = getSessionById(req.params.sessionId);
     if (!session) {
@@ -432,7 +466,7 @@ router.get("/reservations", async (req, res) => {
   }
 });
 
-router.post("/internal-consumption", async (req, res) => {
+router.post("/internal-consumption", canRegisterInternalConsumption, async (req, res) => {
   try {
     if (!ensureStoreAccess(req, res, req.body?.store_id || req.body?.loja || "")) {
       return;

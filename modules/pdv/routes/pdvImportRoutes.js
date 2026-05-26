@@ -19,6 +19,19 @@ ensurePdvImportDirs();
 
 const router = express.Router();
 
+function hasPermission(user = {}, permission = "") {
+  return Boolean(user?.permissions?.[permission]);
+}
+
+function requireImportPermission(req, res, next) {
+  if (hasPermission(req.user || {}, "can_manage_products") || hasPermission(req.user || {}, "can_export_data")) {
+    return next();
+  }
+  return res.status(403).json({ error: "Seu perfil nao pode operar importacoes do PDV." });
+}
+
+router.use(requireImportPermission);
+
 const pdvImportIncomingDir = path.join(process.cwd(), "data", "imports", "pdv", "incoming");
 const pdvImportStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, pdvImportIncomingDir),

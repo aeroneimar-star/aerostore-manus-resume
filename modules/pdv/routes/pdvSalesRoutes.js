@@ -8,6 +8,9 @@ const {
   createExchange,
   getSalesSummary,
   listPendingPaymentLinkSales,
+  listPdvSalesOrders,
+  getPdvSalesOrderDetail,
+  bulkRefreshPdvSalesOrdersPaymentLinks,
   getSaleById,
   canAccessSale,
   buildSalePaymentLinkPayload,
@@ -17,11 +20,39 @@ const {
   getCustomerCashbackBalance,
   getCustomerCashbackSnapshot,
   applyCashbackToSession,
-  removeCashbackFromSession
+  removeCashbackFromSession,
+  getCustomerExchangeCreditSnapshot,
+  applyExchangeCreditToSession,
+  removeExchangeCreditFromSession
 } = require("../sales/pdvSalesService");
 const { validateAuthorizationPin, getPdvUserRole } = require("../services/pdvControlService");
 
 const router = express.Router();
+
+function hasPermission(user = {}, permission = "") {
+  return Boolean(user?.permissions?.[permission]);
+}
+
+function hasAnyPermission(user = {}, permissions = []) {
+  return permissions.some((permission) => hasPermission(user, permission));
+}
+
+function requireAnyPermission(permissions = [], message = "Voce nao tem permissao para executar esta acao.") {
+  return (req, res, next) => {
+    if (hasAnyPermission(req.user || {}, permissions)) {
+      return next();
+    }
+    return res.status(403).json({ error: message, permissions });
+  };
+}
+
+const canViewOrders = requireAnyPermission(["can_view_orders", "can_sell", "can_view_cash_register"], "Seu perfil nao pode acessar pedidos de venda.");
+const canFinalizeSale = requireAnyPermission(["can_finalize_sale", "can_sell", "can_view_cash_register"], "Seu perfil nao pode finalizar venda.");
+const canCancelSale = requireAnyPermission(["can_cancel_sale"], "Seu perfil nao pode cancelar venda.");
+const canUseSaleBenefits = requireAnyPermission(["can_sell", "can_view_cashback", "can_view_exchanges"], "Seu perfil nao pode aplicar beneficios nesta venda.");
+const canManagePaymentLinks = requireAnyPermission(["can_release_orders", "can_sell"], "Seu perfil nao pode gerar ou atualizar link de pagamento.");
+const canIssueGiftCard = requireAnyPermission(["can_manage_cashback", "can_generate_exchange_credit"], "Seu perfil nao pode emitir vale presente.");
+const canCreateExchange = requireAnyPermission(["can_view_exchanges", "can_generate_exchange_credit", "can_sell"], "Seu perfil nao pode registrar trocas.");
 
 function ensureSaleAccess(req, res, sale = null) {
   if (sale && canAccessSale(sale, req.user || {})) {
@@ -31,7 +62,7 @@ function ensureSaleAccess(req, res, sale = null) {
   return false;
 }
 
-router.get("/summary", async (req, res) => {
+router.get("/summary", canViewOrders, async (req, res) => {
   try {
     res.json(getSalesSummary());
   } catch (error) {
@@ -39,7 +70,7 @@ router.get("/summary", async (req, res) => {
   }
 });
 
-router.get("/payment-links/pending", async (req, res) => {
+router.get("/payment-links/pending", canViewOrders, async (req, res) => {
   try {
     res.json(listPendingPaymentLinkSales(req.user || {}));
   } catch (error) {
@@ -47,7 +78,38 @@ router.get("/payment-links/pending", async (req, res) => {
   }
 });
 
-router.post("/finalize/:sessionId", async (req, res) => {
+router.get("/orders", canViewOrders, async (req, res) => {
+  try {
+    res.json(listPdvSalesOrders(req.query || {}, req.user || {}));
+  } catch (error) {
+    const statusCode = error.statusCode || 500;
+    res.status(statusCode).json({ error: error.message || "Falha ao carregar os pedidos de venda do PDV." });
+  }
+});
+
+router.post("/orders/bulk/payment-link-refresh", canManagePaymentLinks, async (req, res) => {
+  try {
+    res.json(await bulkRefreshPdvSalesOrdersPaymentLinks(req.body?.sale_ids || req.body?.saleIds || [], req.user || {}));
+  } catch (error) {
+    const statusCode = error.statusCode || 400;
+    res.status(statusCode).json({ error: error.message || "Falha ao atualizar links PagBank em lote." });
+  }
+});
+
+router.get("/orders/:saleId", canViewOrders, async (req, res) => {
+  try {
+    const detail = getPdvSalesOrderDetail(req.params.saleId, req.user || {});
+    if (!detail) {
+      return res.status(404).json({ error: "Venda do PDV nao encontrada." });
+    }
+    res.json(detail);
+  } catch (error) {
+    const statusCode = error.statusCode || 500;
+    res.status(statusCode).json({ error: error.message || "Falha ao carregar o detalhe do pedido de venda." });
+  }
+});
+
+router.post("/finalize/:sessionId", canFinalizeSale, async (req, res) => {
   try {
     res.json(await finalizeSaleFromSession(req.params.sessionId, req.body || {}, req.user || {}));
   } catch (error) {
@@ -55,7 +117,7 @@ router.post("/finalize/:sessionId", async (req, res) => {
   }
 });
 
-router.post("/cancel/:saleId", async (req, res) => {
+router.post("/cancel/:saleId", canCancelSale, async (req, res) => {
   try {
     const sale = getSaleById(req.params.saleId);
     if (!sale) {
@@ -107,7 +169,7 @@ router.post("/cancel/:saleId", async (req, res) => {
   }
 });
 
-router.get("/sale/:saleId", async (req, res) => {
+router.get("/sale/:saleId", canViewOrders, async (req, res) => {
   try {
     const sale = getSaleById(req.params.saleId);
     if (!sale) {
@@ -122,7 +184,7 @@ router.get("/sale/:saleId", async (req, res) => {
   }
 });
 
-router.get("/sale/:saleId/payment-link", async (req, res) => {
+router.get("/sale/:saleId/payment-link", canViewOrders, async (req, res) => {
   try {
     const sale = getSaleById(req.params.saleId);
     if (!sale) {
@@ -141,7 +203,7 @@ router.get("/sale/:saleId/payment-link", async (req, res) => {
   }
 });
 
-router.post("/sale/:saleId/payment-link/generate", async (req, res) => {
+router.post("/sale/:saleId/payment-link/generate", canManagePaymentLinks, async (req, res) => {
   try {
     const currentSale = getSaleById(req.params.saleId);
     if (!currentSale) {
@@ -163,7 +225,7 @@ router.post("/sale/:saleId/payment-link/generate", async (req, res) => {
   }
 });
 
-router.post("/sale/:saleId/payment-link/refresh", async (req, res) => {
+router.post("/sale/:saleId/payment-link/refresh", canManagePaymentLinks, async (req, res) => {
   try {
     const currentSale = getSaleById(req.params.saleId);
     if (!currentSale) {
@@ -183,7 +245,7 @@ router.post("/sale/:saleId/payment-link/refresh", async (req, res) => {
   }
 });
 
-router.get("/cashback/balance", async (req, res) => {
+router.get("/cashback/balance", canUseSaleBenefits, async (req, res) => {
   try {
     res.json({ balance: getCustomerCashbackBalance(req.query.phone || "") });
   } catch (error) {
@@ -191,7 +253,7 @@ router.get("/cashback/balance", async (req, res) => {
   }
 });
 
-router.get("/customer/:customerId/cashback", async (req, res) => {
+router.get("/customer/:customerId/cashback", canUseSaleBenefits, async (req, res) => {
   try {
     res.json(getCustomerCashbackSnapshot(req.query.phone || ""));
   } catch (error) {
@@ -199,7 +261,19 @@ router.get("/customer/:customerId/cashback", async (req, res) => {
   }
 });
 
-router.post("/session/:sessionId/apply-cashback", async (req, res) => {
+router.get("/customer/:customerId/exchange-credits", canUseSaleBenefits, async (req, res) => {
+  try {
+    res.json(getCustomerExchangeCreditSnapshot({
+      customer_id: req.params.customerId,
+      phone: req.query.phone || "",
+      name: req.query.name || ""
+    }));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao consultar Credito de Troca do cliente no PDV." });
+  }
+});
+
+router.post("/session/:sessionId/apply-cashback", canUseSaleBenefits, async (req, res) => {
   try {
     res.json(applyCashbackToSession(req.params.sessionId, req.body || {}, req.user || {}));
   } catch (error) {
@@ -207,7 +281,7 @@ router.post("/session/:sessionId/apply-cashback", async (req, res) => {
   }
 });
 
-router.post("/session/:sessionId/remove-cashback", async (req, res) => {
+router.post("/session/:sessionId/remove-cashback", canUseSaleBenefits, async (req, res) => {
   try {
     res.json(removeCashbackFromSession(req.params.sessionId, req.user || {}));
   } catch (error) {
@@ -215,7 +289,23 @@ router.post("/session/:sessionId/remove-cashback", async (req, res) => {
   }
 });
 
-router.post("/gift-cards/issue", async (req, res) => {
+router.post("/session/:sessionId/apply-exchange-credit", canUseSaleBenefits, async (req, res) => {
+  try {
+    res.json(applyExchangeCreditToSession(req.params.sessionId, req.body || {}, req.user || {}));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao aplicar Credito de Troca na venda do PDV." });
+  }
+});
+
+router.post("/session/:sessionId/remove-exchange-credit", canUseSaleBenefits, async (req, res) => {
+  try {
+    res.json(removeExchangeCreditFromSession(req.params.sessionId, req.user || {}));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao remover Credito de Troca da venda do PDV." });
+  }
+});
+
+router.post("/gift-cards/issue", canIssueGiftCard, async (req, res) => {
   try {
     res.json(issueGiftCard(req.body || {}, req.user || {}));
   } catch (error) {
@@ -223,7 +313,7 @@ router.post("/gift-cards/issue", async (req, res) => {
   }
 });
 
-router.get("/gift-cards/:code", async (req, res) => {
+router.get("/gift-cards/:code", canUseSaleBenefits, async (req, res) => {
   try {
     const giftCard = getGiftCardByCode(req.params.code);
     if (!giftCard) {
@@ -235,7 +325,7 @@ router.get("/gift-cards/:code", async (req, res) => {
   }
 });
 
-router.post("/exchanges", async (req, res) => {
+router.post("/exchanges", canCreateExchange, async (req, res) => {
   try {
     res.json(createExchange(req.body || {}, req.user || {}));
   } catch (error) {
