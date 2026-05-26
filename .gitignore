@@ -89,3 +89,4 @@ config/instance*.json
 
 # External/local UI skill package
 ui-ux-pro-max-skill/
+.codex/skills/ui-ux-pro-max/
