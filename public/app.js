@@ -980,17 +980,55 @@ function syncLoginOverlayForAuthShell(authShell = document.body.dataset.authShel
   }
 
   if (authShell === "authenticated") {
-    overlay.classList.remove("active");
-    overlay.dataset.mode = "authenticated";
-    overlay.style.display = "none";
-    overlay.style.pointerEvents = "none";
-    overlay.setAttribute("aria-hidden", "true");
+    if (overlay.classList.contains("active")) {
+      overlay.classList.remove("active");
+    }
+    if (overlay.dataset.mode !== "authenticated") {
+      overlay.dataset.mode = "authenticated";
+    }
+    if (overlay.style.display !== "none") {
+      overlay.style.display = "none";
+    }
+    if (overlay.style.pointerEvents !== "none") {
+      overlay.style.pointerEvents = "none";
+    }
+    if (overlay.getAttribute("aria-hidden") !== "true") {
+      overlay.setAttribute("aria-hidden", "true");
+    }
     return;
   }
 
   overlay.style.removeProperty("display");
   overlay.style.removeProperty("pointer-events");
   overlay.setAttribute("aria-hidden", overlay.classList.contains("active") ? "false" : "true");
+}
+
+let loginOverlayAuthGuard = null;
+
+function ensureLoginOverlayAuthGuard() {
+  if (loginOverlayAuthGuard || typeof MutationObserver === "undefined") {
+    return;
+  }
+
+  const overlay = document.getElementById("login-overlay");
+  if (!overlay) {
+    return;
+  }
+
+  loginOverlayAuthGuard = new MutationObserver(() => {
+    if (document.body.dataset.authShell === "authenticated") {
+      syncLoginOverlayForAuthShell("authenticated");
+    }
+  });
+
+  loginOverlayAuthGuard.observe(document.body, {
+    attributes: true,
+    attributeFilter: ["data-auth-shell", "class"]
+  });
+  loginOverlayAuthGuard.observe(overlay, {
+    attributes: true,
+    attributeFilter: ["class", "style", "data-mode"]
+  });
 }
 
 function setAuthSession(token, user) {
@@ -3269,6 +3307,7 @@ function buildPdvSaleCartItems(session = null) {
                 <option value="amount"${discountDraft.mode === "amount" ? " selected" : ""}>R$</option>
                 <option value="percent"${discountDraft.mode === "percent" ? " selected" : ""}>%</option>
               </select>
+              <small>${escapeHtml(storeOptions.length ? "A previa e a aplicacao ficam travadas nesta loja." : "Seu perfil nao possui loja permitida para importacao Tiny.")}</small>
             </label>
             <label>Desconto no item
               <input type="text" inputmode="decimal" data-pdv-sale-item-discount-value="${escapeHtml(item.item_id)}" value="${escapeHtml(discountDraft.value || "")}" placeholder="0,00"${isDiscountBusy ? " disabled" : ""} />
@@ -11693,6 +11732,17 @@ function getPdvImportStoreOverrideOptions() {
   ];
 }
 
+const PDV_TINY_IMPORT_DESTINATION_STORE_IDS = ["vila_masc", "botanico"];
+
+function getPdvImportDestinationStoreOptions() {
+  const allowedStores = toArray(state.currentUser?.allowed_stores || state.currentUser?.allowedStores || [])
+    .map((item) => normalizeText(item).toLowerCase())
+    .filter(Boolean);
+  return PDV_TINY_IMPORT_DESTINATION_STORE_IDS
+    .filter((storeId) => canViewAllStores() || allowedStores.includes(storeId) || normalizeText(getCurrentPdvStoreId()).toLowerCase() === storeId)
+    .map((storeId) => ({ value: storeId, label: formatStoreIdLabel(storeId) }));
+}
+
 function ensurePdvImportsState() {
   state.pdvImports = state.pdvImports && typeof state.pdvImports === "object" ? state.pdvImports : {};
   state.pdvImports.loading = Boolean(state.pdvImports.loading);
@@ -11782,7 +11832,10 @@ function renderPdvImportsFront(container) {
   ensurePdvImportsState();
   const importState = state.pdvImports;
   const summary = importState.summary || null;
-  const storeOptions = getPdvImportStoreOverrideOptions();
+  const storeOptions = getPdvImportDestinationStoreOptions();
+  if (!storeOptions.some((option) => normalizeText(option.value || "") === normalizeText(importState.storeOverride || ""))) {
+    importState.storeOverride = storeOptions.length === 1 ? storeOptions[0].value : "";
+  }
   const previewWarning = summary?.manualStoreOverrideLabel
     ? `<div class="pdv-import-callout warning"><strong>Override manual ativo</strong><span>${escapeHtml(summary.detectedStoreLabel ? `Atenção: você está substituindo a loja detectada por ${summary.manualStoreOverrideLabel}.` : `Loja definida manualmente para este arquivo: ${summary.manualStoreOverrideLabel}.`)}</span></div>`
     : "";
@@ -11804,12 +11857,13 @@ function renderPdvImportsFront(container) {
           <form class="pdv-import-form" data-pdv-import-preview-form="true">
             <label>Arquivo Tiny/Olist<input type="file" name="file" accept=".xlsx,.xls,.csv" /></label>
             <label>Loja/depósito deste arquivo
-              <select name="storeOverride">
+              <select name="storeOverride" required${storeOptions.length ? "" : " disabled"}>
+                ${storeOptions.length > 1 ? `<option value="">Selecione a loja destino</option>` : ""}
                 ${storeOptions.map((option) => `<option value="${escapeHtml(option.value)}"${normalizeText(importState.storeOverride || "") === normalizeText(option.value) ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
               </select>
             </label>
             <div class="action-row">
-              <button class="secondary-button" type="submit"${importState.loading ? " disabled" : ""}>${importState.loading ? "Gerando preview..." : "Gerar preview"}</button>
+              <button class="secondary-button" type="submit"${importState.loading || !storeOptions.length ? " disabled" : ""}>${importState.loading ? "Gerando preview..." : "Gerar preview"}</button>
               <button class="primary-button" type="button" data-pdv-import-commit="true"${importState.commitLoading || !importState.previewId ? " disabled" : ""}>${importState.commitLoading ? "Importando..." : "Confirmar importação"}</button>
             </div>
           </form>
@@ -11860,9 +11914,14 @@ async function submitPdvTinyImportPreview(formElement) {
     showFeedback("Selecione um arquivo .xlsx, .xls ou .csv do Tiny/Olist.", "error");
     return;
   }
+  const selectedStore = normalizeText(storeOverrideField?.value || "").toLowerCase();
+  if (!selectedStore) {
+    showFeedback("Selecione a loja destino da importacao antes de gerar a previa.", "error");
+    return;
+  }
   state.pdvImports.loading = true;
   state.pdvImports.error = "";
-  state.pdvImports.storeOverride = normalizeText(storeOverrideField?.value || "").toLowerCase();
+  state.pdvImports.storeOverride = selectedStore;
   state.pdvImports.fileName = normalizeText(selectedFile.name || "");
   const formData = new FormData(formElement || undefined);
   formData.set("file", selectedFile);
@@ -26230,6 +26289,7 @@ function initApp() {
   sectionTitle = document.getElementById("section-title");
   feedback = document.getElementById("feedback");
   loadSavedTheme();
+  ensureLoginOverlayAuthGuard();
   initSidebarToggle();
   bindEvents();
   ensureMojibakeObserver();

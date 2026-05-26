@@ -12176,6 +12176,74 @@ function requireStoreAccess(options = {}) {
   };
 }
 
+const PDV_TINY_IMPORT_DESTINATION_STORES = new Set(["vila_masc", "botanico"]);
+
+function resolvePdvTinyImportDestinationStore(value = "") {
+  const storeId = normalizeStoreKey(value || "");
+  if (!storeId) {
+    return {
+      ok: false,
+      status: 400,
+      storeId: "",
+      error: "Selecione a loja destino da importacao antes de gerar a previa."
+    };
+  }
+  if (!PDV_TINY_IMPORT_DESTINATION_STORES.has(storeId)) {
+    return {
+      ok: false,
+      status: 400,
+      storeId,
+      error: "Loja destino invalida para importacao Tiny. Use Vila Masc. ou Botanico."
+    };
+  }
+  return {
+    ok: true,
+    status: 200,
+    storeId,
+    storeLabel: formatStoreLabel(storeId)
+  };
+}
+
+async function assertPdvTinyImportStoreAccess(req, rawStoreValue = "") {
+  const resolution = resolvePdvTinyImportDestinationStore(rawStoreValue);
+  if (!resolution.ok) {
+    await recordAuditEvent({
+      req,
+      module: "pdv_inventory",
+      action: "tiny_import_store_rejected",
+      entityType: "pdv_tiny_import",
+      storeId: resolution.storeId || "",
+      result: "blocked",
+      message: resolution.error,
+      includeBody: false,
+      metadata: { requested_store: rawStoreValue || "" }
+    });
+    return resolution;
+  }
+  if (!userCanAccessStore(req.user || {}, resolution.storeId)) {
+    await recordAuditEvent({
+      req,
+      module: "pdv_inventory",
+      action: "tiny_import_store_denied",
+      entityType: "pdv_tiny_import",
+      storeId: resolution.storeId,
+      storeName: resolution.storeLabel,
+      result: "blocked",
+      message: "Usuario sem permissao para importar nesta loja.",
+      includeBody: false,
+      metadata: { requested_store: rawStoreValue || "", allowed_stores: req.user?.allowed_stores || [] }
+    });
+    return {
+      ok: false,
+      status: 403,
+      storeId: resolution.storeId,
+      storeLabel: resolution.storeLabel,
+      error: "Voce nao tem permissao para importar dados nesta loja."
+    };
+  }
+  return resolution;
+}
+
 function resolveAuditMutationMeta(req = {}) {
   const pathName = getRequestPathname(req.originalUrl || req.path || "");
   const method = String(req.method || "").toUpperCase();
@@ -22266,14 +22334,21 @@ app.get("/api/ia/vitrine-import/history", requireManager, async (req, res) => {
   }
 });
 
-app.post("/api/pdv/inventory/import/tiny/preview", requireManager, tinyImportUpload.single("file"), async (req, res) => {
+app.post("/api/pdv/inventory/import/tiny/preview", requireAnyPermission(["can_manage_products"], "Seu perfil nao pode importar produtos ou estoque."), tinyImportUpload.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "Formato não suportado. Envie uma planilha .xlsx, .xls ou .csv exportada do Tiny." });
   }
 
   try {
     cleanupPdvTinyProductImportPreviews();
-    const manualStoreOverride = String(req.body?.storeOverride || "").trim();
+    const storeAccess = await assertPdvTinyImportStoreAccess(req, req.body?.storeOverride || req.body?.store_id || req.body?.storeId || "");
+    if (!storeAccess.ok) {
+      if (req.file?.path && fs.existsSync(req.file.path)) {
+        moveTinyImportFile(req.file.path, tinyVitrineImportErrorsDir);
+      }
+      return res.status(storeAccess.status || 400).json({ error: storeAccess.error, store_id: storeAccess.storeId || "" });
+    }
+    const manualStoreOverride = storeAccess.storeId;
     const parsed = readTinyVitrineWorkbookFromFile(req.file.path);
     const mapping = parseTinyPdvImportMapping(req.body?.mapping || "", parsed.headerAnalysis || {});
     const mappedRows = applyTinyPdvImportMapping(parsed.rows || [], mapping);
@@ -22296,8 +22371,29 @@ app.post("/api/pdv/inventory/import/tiny/preview", requireManager, tinyImportUpl
       delimiter: parsed.delimiter || "",
       groupedItems,
       manualStoreOverride,
+      storeId: storeAccess.storeId,
+      storeLabel: storeAccess.storeLabel,
       mapping,
       summary: previewPayload.summary
+    });
+
+    await recordAuditEvent({
+      req,
+      module: "pdv_inventory",
+      action: "tiny_import_preview_generated",
+      entityType: "pdv_tiny_import_preview",
+      entityId: previewId,
+      storeId: storeAccess.storeId,
+      storeName: storeAccess.storeLabel,
+      result: "success",
+      includeBody: false,
+      metadata: {
+        filename: sanitizeFilename(req.file.originalname),
+        source_type: parsed.sourceType || "spreadsheet",
+        total_rows: Number(previewPayload.summary?.totalRows || 0),
+        valid_rows: Number(previewPayload.summary?.validRows || 0),
+        products_bound_to_store: Number(previewPayload.summary?.productsBoundToAppliedStore || 0)
+      }
     });
 
     res.json({
@@ -22314,6 +22410,8 @@ app.post("/api/pdv/inventory/import/tiny/preview", requireManager, tinyImportUpl
       summary: previewPayload.summary,
       preview: (previewPayload.preview || []).slice(0, 300),
       storeOverride: manualStoreOverride,
+      store_id: storeAccess.storeId,
+      store_label: storeAccess.storeLabel,
       diagnostics: {
         selectedSheet: parsed.worksheetName || "",
         missingMinimum: parsed.headerAnalysis?.missingMinimum || []
@@ -22331,7 +22429,7 @@ app.post("/api/pdv/inventory/import/tiny/preview", requireManager, tinyImportUpl
   }
 });
 
-app.post("/api/pdv/inventory/import/tiny/commit", requireManager, async (req, res) => {
+app.post("/api/pdv/inventory/import/tiny/commit", requireAnyPermission(["can_manage_products"], "Seu perfil nao pode importar produtos ou estoque."), async (req, res) => {
   let filePath = "";
   try {
     cleanupPdvTinyProductImportPreviews();
@@ -22343,14 +22441,39 @@ app.post("/api/pdv/inventory/import/tiny/commit", requireManager, async (req, re
     if (!preview) {
       return res.status(404).json({ error: "Preview da importação Tiny não encontrado ou expirado." });
     }
+    const storeAccess = await assertPdvTinyImportStoreAccess(req, preview.manualStoreOverride || preview.storeId || "");
+    if (!storeAccess.ok) {
+      return res.status(storeAccess.status || 400).json({ error: storeAccess.error, store_id: storeAccess.storeId || "" });
+    }
     filePath = preview.filePath;
     const payload = commitTinyInventoryImport(preview.groupedItems || [], req.user || {}, {
-      manualStoreOverride: preview.manualStoreOverride || ""
+      manualStoreOverride: storeAccess.storeId
     });
     if (filePath && fs.existsSync(filePath)) {
       moveTinyImportFile(filePath, payload.errors ? tinyVitrineImportErrorsDir : tinyVitrineImportProcessedDir);
     }
     pdvTinyProductImportPreviews.delete(previewId);
+    await recordAuditEvent({
+      req,
+      module: "pdv_inventory",
+      action: "tiny_import_committed",
+      entityType: "pdv_tiny_import_preview",
+      entityId: previewId,
+      storeId: storeAccess.storeId,
+      storeName: storeAccess.storeLabel,
+      result: payload.errors ? "failed" : "success",
+      includeBody: false,
+      metadata: {
+        filename: preview.originalFilename || preview.filename || "",
+        source_type: preview.sourceType || "",
+        import_batch_id: previewId,
+        total_rows: Number(payload.totalRows || 0),
+        imported: Number(payload.imported || 0),
+        pending: Number(payload.pending || 0),
+        duplicates: Number(payload.duplicates || 0),
+        errors: Number(payload.errors || 0)
+      }
+    });
     res.json({
       success: true,
       summary: {

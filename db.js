@@ -623,6 +623,17 @@ async function ensureSeedData() {
     allowedStores: ["vila_masc"]
   });
   await ensureUserAccount({
+    email: "gestor.botanico@aerostore.local",
+    password: "123456",
+    roleLegacy: "gerente",
+    roleKey: "manager",
+    name: "Gestor Botanico",
+    username: "gestor.botanico",
+    store: "Botanico",
+    storeId: "botanico",
+    allowedStores: ["botanico"]
+  });
+  await ensureUserAccount({
     email: "vendedor.vila@aerostore.local",
     password: "123456",
     roleLegacy: "vendedor",
