@@ -26,6 +26,9 @@ const {
   removeExchangeCreditFromSession
 } = require("../sales/pdvSalesService");
 const { validateAuthorizationPin, getPdvUserRole } = require("../services/pdvControlService");
+const { getSessionById } = require("../services/pdvOperationalService");
+const { normalizeStoreKey } = require("../utils/pdvStoreUtils");
+const { ensureOpenCashRegisterForStore } = require("../utils/pdvCashRegisterGuard");
 
 const router = express.Router();
 
@@ -62,6 +65,21 @@ function ensureSaleAccess(req, res, sale = null) {
   return false;
 }
 
+function getSaleStoreId(sale = {}) {
+  return normalizeStoreKey(sale.loja || sale.loja_venda || sale.store_id || sale.store_context?.store_id || "");
+}
+
+async function ensureSaleCashRegister(req, sale = {}, options = {}) {
+  return ensureOpenCashRegisterForStore(req, getSaleStoreId(sale), {
+    module: options.module || "pdv_sales",
+    action: options.action || "cash_register_required",
+    entityType: options.entityType || "sale",
+    entityId: options.entityId || sale.sale_id || sale.id || "",
+    saleId: options.saleId || sale.sale_id || sale.id || "",
+    message: options.message
+  });
+}
+
 router.get("/summary", canViewOrders, async (req, res) => {
   try {
     res.json(getSalesSummary());
@@ -89,7 +107,19 @@ router.get("/orders", canViewOrders, async (req, res) => {
 
 router.post("/orders/bulk/payment-link-refresh", canManagePaymentLinks, async (req, res) => {
   try {
-    res.json(await bulkRefreshPdvSalesOrdersPaymentLinks(req.body?.sale_ids || req.body?.saleIds || [], req.user || {}));
+    const saleIds = req.body?.sale_ids || req.body?.saleIds || [];
+    for (const saleId of Array.isArray(saleIds) ? saleIds : []) {
+      const sale = getSaleById(saleId);
+      if (sale) {
+        await ensureSaleCashRegister(req, sale, {
+          action: "payment_link_blocked_without_open_cash",
+          entityId: saleId,
+          saleId,
+          message: "Caixa fechado. Abra o caixa da loja antes de atualizar link de pagamento."
+        });
+      }
+    }
+    res.json(await bulkRefreshPdvSalesOrdersPaymentLinks(saleIds, req.user || {}));
   } catch (error) {
     const statusCode = error.statusCode || 400;
     res.status(statusCode).json({ error: error.message || "Falha ao atualizar links PagBank em lote." });
@@ -111,9 +141,19 @@ router.get("/orders/:saleId", canViewOrders, async (req, res) => {
 
 router.post("/finalize/:sessionId", canFinalizeSale, async (req, res) => {
   try {
+    const session = getSessionById(req.params.sessionId);
+    if (session) {
+      await ensureOpenCashRegisterForStore(req, req.body?.loja || session.loja || session.store_id || "", {
+        module: "pdv_sales",
+        action: "sale_blocked_without_open_cash",
+        entityType: "sale_session",
+        entityId: req.params.sessionId,
+        message: "Caixa fechado. Abra o caixa da loja antes de finalizar vendas."
+      });
+    }
     res.json(await finalizeSaleFromSession(req.params.sessionId, req.body || {}, req.user || {}));
   } catch (error) {
-    res.status(400).json({ error: error.message || "Falha ao finalizar a venda operacional do PDV." });
+    res.status(error.statusCode || 400).json({ error: error.message || "Falha ao finalizar a venda operacional do PDV." });
   }
 });
 
@@ -126,6 +166,11 @@ router.post("/cancel/:saleId", canCancelSale, async (req, res) => {
     if (!ensureSaleAccess(req, res, sale)) {
       return;
     }
+
+    await ensureSaleCashRegister(req, sale, {
+      action: "sale_cancel_blocked_without_open_cash",
+      message: "Caixa fechado. Abra o caixa da loja antes de cancelar vendas."
+    });
 
     const reason = String(req.body?.reason || "").trim();
     if (!reason) {
@@ -212,6 +257,10 @@ router.post("/sale/:saleId/payment-link/generate", canManagePaymentLinks, async 
     if (!ensureSaleAccess(req, res, currentSale)) {
       return;
     }
+    await ensureSaleCashRegister(req, currentSale, {
+      action: "payment_link_blocked_without_open_cash",
+      message: "Caixa fechado. Abra o caixa da loja antes de gerar link de pagamento."
+    });
     const sale = await generateSalePaymentLink(req.params.saleId, req.user || {}, {
       forceGenerate: Boolean(req.body?.forceGenerate || req.body?.force_generate)
     });
@@ -234,6 +283,10 @@ router.post("/sale/:saleId/payment-link/refresh", canManagePaymentLinks, async (
     if (!ensureSaleAccess(req, res, currentSale)) {
       return;
     }
+    await ensureSaleCashRegister(req, currentSale, {
+      action: "payment_link_blocked_without_open_cash",
+      message: "Caixa fechado. Abra o caixa da loja antes de atualizar link de pagamento."
+    });
     const sale = await refreshSalePaymentLinkStatus(req.params.saleId, req.user || {});
     res.json({
       sale,
@@ -275,9 +328,19 @@ router.get("/customer/:customerId/exchange-credits", canUseSaleBenefits, async (
 
 router.post("/session/:sessionId/apply-cashback", canUseSaleBenefits, async (req, res) => {
   try {
+    const session = getSessionById(req.params.sessionId);
+    if (session) {
+      await ensureOpenCashRegisterForStore(req, session.store_id || session.loja || "", {
+        module: "cashback",
+        action: "cashback_blocked_without_open_cash",
+        entityType: "sale_session",
+        entityId: req.params.sessionId,
+        message: "Caixa fechado. Abra o caixa antes de aplicar cashback."
+      });
+    }
     res.json(applyCashbackToSession(req.params.sessionId, req.body || {}, req.user || {}));
   } catch (error) {
-    res.status(400).json({ error: error.message || "Falha ao aplicar cashback na venda do PDV." });
+    res.status(error.statusCode || 400).json({ error: error.message || "Falha ao aplicar cashback na venda do PDV." });
   }
 });
 
@@ -291,9 +354,19 @@ router.post("/session/:sessionId/remove-cashback", canUseSaleBenefits, async (re
 
 router.post("/session/:sessionId/apply-exchange-credit", canUseSaleBenefits, async (req, res) => {
   try {
+    const session = getSessionById(req.params.sessionId);
+    if (session) {
+      await ensureOpenCashRegisterForStore(req, session.store_id || session.loja || "", {
+        module: "exchange_credit",
+        action: "exchange_credit_blocked_without_open_cash",
+        entityType: "sale_session",
+        entityId: req.params.sessionId,
+        message: "Caixa fechado. Abra o caixa antes de aplicar Credito de Troca."
+      });
+    }
     res.json(applyExchangeCreditToSession(req.params.sessionId, req.body || {}, req.user || {}));
   } catch (error) {
-    res.status(400).json({ error: error.message || "Falha ao aplicar Credito de Troca na venda do PDV." });
+    res.status(error.statusCode || 400).json({ error: error.message || "Falha ao aplicar Credito de Troca na venda do PDV." });
   }
 });
 

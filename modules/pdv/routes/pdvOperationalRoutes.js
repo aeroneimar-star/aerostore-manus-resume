@@ -34,6 +34,7 @@ const {
   listCustomersCatalog,
   debugUnifiedSearch
 } = require("../services/pdvOperationalService");
+const { ensureOpenCashRegisterForStore } = require("../utils/pdvCashRegisterGuard");
 
 ensureOperationalDirs();
 
@@ -384,9 +385,16 @@ router.post("/cart/:sessionId/payment-plan", canOperatePaymentPlan, async (req, 
     if (!ensureStoreAccess(req, res, session.store_id || session.loja || "")) {
       return;
     }
+    await ensureOpenCashRegisterForStore(req, session.store_id || session.loja || "", {
+      module: "pdv_sales",
+      action: "payment_blocked_without_open_cash",
+      entityType: "sale_session",
+      entityId: req.params.sessionId,
+      message: "Caixa fechado. Abra o caixa antes de lançar pagamento."
+    });
     res.json(updatePaymentPlan(req.params.sessionId, req.body?.methods || []));
   } catch (error) {
-    res.status(400).json({ error: error.message || "Falha ao preparar os meios de pagamento do PDV." });
+    res.status(error.statusCode || 400).json({ error: error.message || "Falha ao preparar os meios de pagamento do PDV." });
   }
 });
 

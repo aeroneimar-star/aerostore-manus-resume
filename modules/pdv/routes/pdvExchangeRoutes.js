@@ -15,6 +15,8 @@ const {
   listExchanges,
   listExchangeCredits
 } = require("../exchanges/pdvExchangeService");
+const { ensureOpenCashRegisterForStore } = require("../utils/pdvCashRegisterGuard");
+const { normalizeStoreKey } = require("../utils/pdvStoreUtils");
 
 const router = express.Router();
 
@@ -131,8 +133,27 @@ router.patch("/:exchangeId/reason", canViewExchange, (req, res) => {
   }
 });
 
-router.post("/:exchangeId/finalize", canGenerateExchangeCredit, (req, res) => {
+router.post("/:exchangeId/finalize", canGenerateExchangeCredit, async (req, res) => {
   try {
+    const exchange = getExchange(req.params.exchangeId, req.user || {});
+    const storeId = normalizeStoreKey(
+      exchange?.store_id
+      || exchange?.origin_store
+      || exchange?.original_sale_summary?.store_id
+      || req.body?.store_id
+      || req.body?.loja
+      || req.user?.store_id
+      || req.user?.store
+      || ""
+    );
+    await ensureOpenCashRegisterForStore(req, storeId, {
+      module: "exchange_credit",
+      action: "exchange_blocked_without_open_cash",
+      entityType: "exchange",
+      entityId: req.params.exchangeId,
+      saleId: exchange?.original_sale_id || exchange?.origin_sale_id || "",
+      message: "Caixa fechado. Abra o caixa da loja antes de finalizar troca."
+    });
     res.json(finalizeExchange(req.params.exchangeId, req.body || {}, req.user || {}));
   } catch (error) {
     sendRouteError(res, error, "Falha ao finalizar troca.");

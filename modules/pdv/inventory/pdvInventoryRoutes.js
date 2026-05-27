@@ -114,7 +114,9 @@ router.get("/products", canViewInventory, async (req, res) => {
       q: req.query.q || "",
       storeId: storeScope,
       status: req.query.status || "",
-      alert: req.query.alert || ""
+      alert: req.query.alert || "",
+      page: req.query.page || 1,
+      limit: req.query.limit || req.query.pageSize || req.query.page_size || 100
     });
     res.json(await projectInventoryPayloadPhotos(payload));
   } catch (error) {

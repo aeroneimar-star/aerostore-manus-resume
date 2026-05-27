@@ -14,6 +14,7 @@ const {
   issueAuthorizationPin,
   listCashRegisters,
   getCashRegisterById,
+  getOpenCashRegisterByStore,
   getCashDashboard,
   computeCashRegisterExpected,
   loadAuditLogs,
@@ -56,6 +57,10 @@ function getAllowedStores(user = {}) {
 
 function hasPermission(user = {}, permission = "") {
   return Boolean(user?.permissions?.[permission]);
+}
+
+function hasAnyPermission(user = {}, permissions = []) {
+  return permissions.some((permission) => hasPermission(user, permission));
 }
 
 function ensureStoreAccess(req, res, storeValue = "") {
@@ -136,6 +141,30 @@ router.get("/registers", async (req, res) => {
   }
 });
 
+router.get("/open-status", async (req, res) => {
+  try {
+    if (!hasAnyPermission(req.user || {}, ["can_sell", "can_view_cash_register", "can_view_orders", "can_open_close_register"])) {
+      return res.status(403).json({ error: "Seu perfil nao pode consultar o status operacional do caixa." });
+    }
+    const requestedStore = req.query.store || req.query.store_id || req.user?.store_id || req.user?.store || "";
+    if (!ensureStoreAccess(req, res, requestedStore)) {
+      return;
+    }
+    const normalizedStore = normalizeStoreScope(requestedStore);
+    const openRegister = getOpenCashRegisterByStore(normalizedStore);
+    res.json({
+      store_id: normalizedStore,
+      is_open: Boolean(openRegister),
+      cash_register_id: openRegister?.cash_register_id || "",
+      status: openRegister?.status || "CLOSED",
+      opened_at: openRegister?.criado_em || "",
+      operator: openRegister?.operador || ""
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Falha ao consultar status do caixa da loja." });
+  }
+});
+
 router.post("/registers/open", async (req, res) => {
   try {
     if (!hasPermission(req.user || {}, "can_open_close_register")) {
@@ -146,7 +175,7 @@ router.post("/registers/open", async (req, res) => {
     }
     res.json(openCashRegister(req.body || {}, req.user || {}));
   } catch (error) {
-    res.status(400).json({ error: error.message || "Falha ao abrir o caixa operacional do PDV." });
+    res.status(error.statusCode || 400).json({ error: error.message || "Falha ao abrir o caixa operacional do PDV." });
   }
 });
 
@@ -190,10 +219,10 @@ router.post("/registers/:cashRegisterId/movements", async (req, res) => {
       reason: req.body?.reason,
       observation: req.body?.observation,
       payload: req.body?.payload || {},
-      requireManager: ["SANGRIA", "SUPRIMENTO", "DESPESA", "AJUSTE"].includes(String(req.body?.type || "").toUpperCase())
+      requireManager: false
     }, req.user || {}));
   } catch (error) {
-    res.status(400).json({ error: error.message || "Falha ao registrar movimentação de caixa do PDV." });
+    res.status(error.statusCode || 400).json({ error: error.message || "Falha ao registrar movimentação de caixa do PDV." });
   }
 });
 
@@ -215,7 +244,7 @@ router.post("/registers/:cashRegisterId/close", async (req, res) => {
       observacao: req.body?.observacao
     }, req.user || {}));
   } catch (error) {
-    res.status(400).json({ error: error.message || "Falha ao fechar o caixa operacional do PDV." });
+    res.status(error.statusCode || 400).json({ error: error.message || "Falha ao fechar o caixa operacional do PDV." });
   }
 });
 

@@ -1604,7 +1604,11 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
   const deliveryStoreKey = normalizeStoreKey(payload.loja_entrega_retirada || payload.delivery_store || session.loja_entrega_retirada || saleStoreKey);
   const cashRegister = getOpenCashRegisterByStore(saleStoreKey);
   if (!cashRegister) {
-    throw new Error("Ã‰ obrigatÃ³rio ter um caixa aberto para concluir a venda operacional.");
+    const error = new Error("Caixa fechado. Abra o caixa da loja antes de finalizar vendas.");
+    error.statusCode = 409;
+    error.code = "CASH_REGISTER_REQUIRED";
+    error.store_id = saleStoreKey;
+    throw error;
   }
   const controlValidation = validateSaleControls({
     saleContext: {

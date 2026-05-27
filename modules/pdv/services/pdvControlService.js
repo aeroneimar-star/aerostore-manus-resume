@@ -18,6 +18,8 @@ const controlFiles = {
 const USER_ROLES = {
   vendedor: "VENDEDOR",
   seller: "VENDEDOR",
+  caixa: "CAIXA",
+  cashier: "CAIXA",
   gerente: "GERENTE",
   manager: "GERENTE",
   admin: "ADMIN"
@@ -1133,7 +1135,10 @@ function registerCashMovement({ cashRegisterId = "", type = "", value = 0, reaso
     throw new Error("Caixa do PDV não encontrado.");
   }
   if (register.status !== CASH_REGISTER_STATUS.OPEN && register.status !== CASH_REGISTER_STATUS.REOPENED) {
-    throw new Error("Movimentação permitida apenas em caixa aberto.");
+    const error = new Error("Caixa fechado. Abra o caixa antes de lançar movimentação.");
+    error.statusCode = 409;
+    error.code = "CASH_REGISTER_REQUIRED";
+    throw error;
   }
   const movement = {
     movement_id: buildId("MOV"),
@@ -1196,7 +1201,10 @@ function closeCashRegister({ cashRegisterId = "", dinheiro_informado = 0, observ
     throw new Error("Caixa do PDV não encontrado.");
   }
   if (register.status !== CASH_REGISTER_STATUS.OPEN && register.status !== CASH_REGISTER_STATUS.REOPENED) {
-    throw new Error("Somente caixas abertos podem ser fechados.");
+    const error = new Error("Caixa fechado. Abra o caixa da loja antes de fechar caixa.");
+    error.statusCode = 409;
+    error.code = "CASH_REGISTER_REQUIRED";
+    throw error;
   }
   const expected = computeCashRegisterExpected(register);
   const countedCash = roundMoney(dinheiro_informado);
