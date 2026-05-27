@@ -65,10 +65,10 @@ const INSTANCE_CONFIG_PATH = INSTANCE_CONFIG_ENV_PATH
   ? path.resolve(__dirname, INSTANCE_CONFIG_ENV_PATH)
   : path.join(CONFIG_DIR, "instance.json");
 const DEFAULT_INSTANCE_CONFIG = {
-  instance_id: "vila_masc",
+  instance_id: "vila",
   store: {
-    id: "vila_masc",
-    label: "Vila Masc.",
+    id: "vila",
+    label: "Vila",
     phone: "(47) 99622-3644",
     address: "Rua exemplo, Vila — Joinville/SC"
   },
@@ -11198,6 +11198,36 @@ function moveTinyImportFile(sourcePath = "", targetDir = tinyVitrineImportProces
   return destination;
 }
 
+function listTinyImportDirectoryFiles(dirPath = "", status = "") {
+  if (!dirPath || !fs.existsSync(dirPath)) {
+    return [];
+  }
+  return fs.readdirSync(dirPath, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => {
+      const filePath = path.join(dirPath, entry.name);
+      const stats = fs.statSync(filePath);
+      return {
+        file: entry.name,
+        status,
+        status_label: status === "incoming" ? "Recebida" : status === "processed" ? "Processada" : "Erro",
+        size: stats.size,
+        size_kb: Math.round((stats.size / 1024) * 10) / 10,
+        uploaded_at: stats.mtime.toISOString(),
+        extension: path.extname(entry.name).replace(".", "").toLowerCase()
+      };
+    })
+    .sort((left, right) => new Date(right.uploaded_at).getTime() - new Date(left.uploaded_at).getTime());
+}
+
+function parseAuditMetadataJson(value = "") {
+  try {
+    return value ? JSON.parse(value) : {};
+  } catch (error) {
+    return {};
+  }
+}
+
 function detectCsvDelimiter(text = "") {
   const lines = String(text || "")
     .split(/\r?\n/)
@@ -11815,8 +11845,7 @@ const USER_ROLE_PROFILES = [
 ];
 
 const STORE_ACCESS_OPTIONS = [
-  { id: "vila_masc", label: "Vila Masc." },
-  { id: "vila_fem", label: "Vila Fem/Infant." },
+  { id: "vila", label: "Vila" },
   { id: "botanico", label: "Botanico" },
   { id: "sul", label: "Sul" }
 ];
@@ -11943,14 +11972,15 @@ function normalizePermissionSet(value, role = "seller") {
 
 function getStoreLabelFromUser(user = {}) {
   const explicitLabel = String(user.store_label || "").trim();
-  if (explicitLabel) {
-    return explicitLabel;
+  const normalizedStoreId = normalizeStoreKey(user.active_store_id || user.activeStoreId || user.active_store || user.store_id || user.storeId || user.store || "");
+  const canonicalLabel = formatStoreLabel(normalizedStoreId);
+  if (canonicalLabel && canonicalLabel !== normalizedStoreId) {
+    return canonicalLabel;
   }
-  const normalizedStoreId = normalizeStoreKey(user.store_id || user.storeId || user.store || "");
   const fallbackLabel = {
-    vila_masc: "Vila Masc.",
-    vila_fem: "Vila Fem.",
-    vila_fem_infant: "Vila Fem.",
+    vila_masc: "Vila",
+    vila_fem: "Vila",
+    vila_fem_infant: "Vila",
     botanico: "Botânico",
     sul: "Sul"
   }[normalizedStoreId];
@@ -11966,15 +11996,25 @@ function enrichUserRecord(user = {}) {
     return null;
   }
   const roleKey = normalizeSystemRole(user.role || user.role_key || "");
-  const storeId = getStoreIdFromUser(user);
-  const allowedStores = normalizeAllowedStores(user.allowed_stores_json || user.allowed_stores || [], storeId);
+  const primaryStoreId = getStoreIdFromUser(user);
+  const allowedStores = normalizeAllowedStores(user.allowed_stores_json || user.allowed_stores || [], primaryStoreId);
   const permissions = normalizePermissionSet(user.permissions_json || user.permissions || {}, roleKey);
+  const hasAllStores = Boolean(permissions.can_view_all_stores) || roleKey === "admin";
+  const effectiveAllowedStores = hasAllStores
+    ? Array.from(new Set([...allowedStores, "vila", "botanico", "sul"].filter(Boolean)))
+    : allowedStores;
+  const activeStoreCandidate = normalizeStoreKey(user.active_store_id || user.activeStoreId || user.active_store || "");
+  const activeStoreId = activeStoreCandidate && (hasAllStores || effectiveAllowedStores.includes(activeStoreCandidate))
+    ? activeStoreCandidate
+    : (primaryStoreId || effectiveAllowedStores[0] || "");
   return {
     ...user,
     role_key: roleKey,
-    store_id: storeId,
+    primary_store_id: primaryStoreId,
+    active_store_id: activeStoreId,
+    store_id: activeStoreId,
     store_label: getStoreLabelFromUser(user),
-    allowed_stores: allowedStores,
+    allowed_stores: effectiveAllowedStores,
     permissions
   };
 }
@@ -11987,7 +12027,7 @@ function serializeAuthUser(user = {}) {
   const allowedStores = (enriched.allowed_stores || []).length
     ? enriched.allowed_stores
     : (enriched.permissions?.can_view_all_stores
-      ? ["vila_masc", "vila_fem", "botanico", "sul"]
+      ? ["vila", "botanico", "sul"]
       : []);
   return {
     id: enriched.id,
@@ -11999,6 +12039,8 @@ function serializeAuthUser(user = {}) {
     legacyRole: enriched.role || "",
     status: enriched.status || "",
     store_id: enriched.store_id || null,
+    active_store_id: enriched.active_store_id || enriched.store_id || null,
+    primary_store_id: enriched.primary_store_id || enriched.store_id || null,
     store_label: enriched.store_label || "",
     allowed_stores: allowedStores,
     permissions: enriched.permissions || {},
@@ -12083,7 +12125,7 @@ async function getUserByToken(token) {
   }
 
   const row = await get(
-    `SELECT u.*
+    `SELECT u.*, s.active_store_id AS active_store_id
      FROM users u
      INNER JOIN user_sessions s ON s.user_id = u.id
      WHERE s.token = ?
@@ -12240,7 +12282,7 @@ function requireStoreAccess(options = {}) {
   };
 }
 
-const PDV_TINY_IMPORT_DESTINATION_STORES = new Set(["vila_masc", "botanico"]);
+const PDV_TINY_IMPORT_DESTINATION_STORES = new Set(["vila", "botanico", "sul"]);
 
 function resolvePdvTinyImportDestinationStore(value = "") {
   const storeId = normalizeStoreKey(value || "");
@@ -12257,7 +12299,7 @@ function resolvePdvTinyImportDestinationStore(value = "") {
       ok: false,
       status: 400,
       storeId,
-      error: "Loja destino invalida para importacao Tiny. Use Vila Masc. ou Botanico."
+      error: "Loja destino invalida para importacao Tiny. Use Vila, Botanico ou Sul."
     };
   }
   return {
@@ -12420,7 +12462,7 @@ function serializeAdminUser(row = {}) {
 
 function normalizeAdminUserPayload(body = {}, existing = null) {
   const role = normalizeSystemRole(body.role || body.role_key || existing?.role || "seller");
-  const storeId = normalizeStoreKey(body.store_id || body.storeId || body.store || existing?.store_id || "vila_masc") || "vila_masc";
+  const storeId = normalizeStoreKey(body.store_id || body.storeId || body.store || existing?.store_id || "vila") || "vila";
   const storeLabel = getStoreOption(storeId)?.label || String(body.store_label || body.store || existing?.store || "").trim() || storeId;
   const defaultPermissions = buildDefaultPermissions(role);
   const explicitPermissions = body.permissions && typeof body.permissions === "object" && !Array.isArray(body.permissions)
@@ -13938,9 +13980,18 @@ async function listManualProducts(filters = {}) {
     clauses.push("p.status = ?");
     params.push(normalizeAiProductVisibilityStatus(status));
   }
-  if (normalizeText(filters.store || "") && normalizeLookup(filters.store || "") !== "all") {
-    clauses.push("LOWER(COALESCE(p.store, '')) = ?");
-    params.push(normalizeText(filters.store || "").toLowerCase());
+  const normalizedStoreFilter = normalizeStoreKey(filters.store || "");
+  if (!query && normalizedStoreFilter && normalizedStoreFilter !== "all") {
+    if (normalizedStoreFilter === "vila") {
+      clauses.push("(LOWER(COALESCE(p.store, '')) IN (?, ?, ?, ?) OR COALESCE(p.store, '') = '')");
+      params.push("vila", "vila masc.", "vila fem/infant.", "vila fem.");
+    } else if (normalizedStoreFilter === "botanico") {
+      clauses.push("LOWER(REPLACE(COALESCE(p.store, ''), 'â', 'a')) IN (?, ?)");
+      params.push("botanico", "botânico");
+    } else {
+      clauses.push("LOWER(COALESCE(p.store, '')) = ?");
+      params.push(normalizedStoreFilter);
+    }
   }
   if (normalizeText(filters.brand || "")) {
     clauses.push("(LOWER(COALESCE(p.marca, '')) = ? OR LOWER(COALESCE(ab.brand, '')) = ?)");
@@ -17546,8 +17597,8 @@ async function handleAuthLogin(req, res) {
     const token = createSessionToken();
     const expiresAt = new Date(Date.now() + AUTH_SESSION_MAX_AGE_MS).toISOString();
     await run(
-      "INSERT INTO user_sessions (user_id, token, expires_at, created_at) VALUES (?, ?, ?, datetime('now'))",
-      [user.id, token, expiresAt]
+      "INSERT INTO user_sessions (user_id, token, expires_at, active_store_id, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+      [user.id, token, expiresAt, normalizeStoreKey(user.store_id || user.primary_store_id || "")]
     );
     await run("UPDATE users SET last_access_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [user.id]);
     setAuthSessionCookie(res, token);
@@ -17632,8 +17683,55 @@ function handleAuthMe(req, res) {
   });
 }
 
+async function handleAuthActiveStore(req, res) {
+  const requestedStoreId = normalizeStoreKey(req.body?.store_id || req.body?.storeId || req.body?.store || "");
+  const storeOption = STORE_ACCESS_OPTIONS.find((item) => item.id === requestedStoreId);
+  if (!requestedStoreId || !storeOption) {
+    return res.status(400).json({ error: "Loja ativa invalida.", store_id: requestedStoreId || "" });
+  }
+  if (!userCanAccessStore(req.user || {}, requestedStoreId)) {
+    await recordAuditEvent({
+      req,
+      module: "auth",
+      action: "active_store_denied",
+      entityType: "store",
+      entityId: requestedStoreId,
+      storeId: requestedStoreId,
+      storeName: storeOption.label,
+      result: "blocked",
+      message: "Usuario sem permissao para trocar para esta loja.",
+      metadata: { requested_store: requestedStoreId, allowed_stores: req.user?.allowed_stores || [] }
+    });
+    return res.status(403).json({ error: "Seu perfil nao tem permissao para operar esta loja.", store_id: requestedStoreId });
+  }
+  const token = getSessionTokenFromRequest(req);
+  await run(
+    "UPDATE user_sessions SET active_store_id = ? WHERE token = ?",
+    [requestedStoreId, token]
+  );
+  const refreshedUser = await getUserByToken(token);
+  await recordAuditEvent({
+    req: { ...req, user: refreshedUser || req.user },
+    module: "auth",
+    action: "active_store_changed",
+    entityType: "store",
+    entityId: requestedStoreId,
+    storeId: requestedStoreId,
+    storeName: storeOption.label,
+    result: "success",
+    message: `Loja ativa alterada para ${storeOption.label}.`
+  });
+  res.json({
+    success: true,
+    store_id: requestedStoreId,
+    store_label: storeOption.label,
+    user: serializeAuthUser(refreshedUser || { ...req.user, active_store_id: requestedStoreId })
+  });
+}
+
 app.get("/api/me", handleAuthMe);
 app.get("/api/auth/me", handleAuthMe);
+app.post("/api/auth/active-store", handleAuthActiveStore);
 app.get("/api/admin/users", requirePermission("can_manage_users"), listAdminUsers);
 app.post("/api/admin/users", requirePermission("can_manage_users"), createAdminUser);
 app.patch("/api/admin/users/:id", requirePermission("can_manage_users"), updateAdminUser);
@@ -22528,6 +22626,60 @@ app.get("/api/ia/vitrine-import/history", requireManager, async (req, res) => {
   }
 });
 
+app.get("/api/pdv/inventory/import/tiny/uploads", requireAnyPermission(["can_manage_products"], "Seu perfil nao pode consultar importacoes Tiny."), async (req, res) => {
+  try {
+    const limit = Math.min(200, Math.max(20, Number(req.query.limit || 80)));
+    const files = [
+      ...listTinyImportDirectoryFiles(tinyVitrineImportIncomingDir, "incoming"),
+      ...listTinyImportDirectoryFiles(tinyVitrineImportProcessedDir, "processed"),
+      ...listTinyImportDirectoryFiles(tinyVitrineImportErrorsDir, "error")
+    ].sort((left, right) => new Date(right.uploaded_at).getTime() - new Date(left.uploaded_at).getTime());
+    const rows = await all(
+      `SELECT created_at, action, result, entity_id, store_name, metadata_json
+         FROM audit_logs
+        WHERE module = ?
+          AND action IN (?, ?)
+        ORDER BY datetime(created_at) DESC, id DESC
+        LIMIT ?`,
+      ["pdv_inventory", "tiny_import_preview_generated", "tiny_import_applied", limit]
+    );
+    const history = rows.map((row) => {
+      const metadata = parseAuditMetadataJson(row.metadata_json || "");
+      return {
+        created_at: row.created_at,
+        action: row.action,
+        result: row.result || "",
+        preview_id: row.entity_id || "",
+        store_name: row.store_name || "",
+        filename: metadata.filename || "",
+        filenames: Array.isArray(metadata.filenames) ? metadata.filenames : [metadata.filename].filter(Boolean),
+        total_rows: Number(metadata.total_rows || 0),
+        valid_rows: Number(metadata.valid_rows || 0),
+        imported: Number(metadata.imported || 0),
+        errors: Number(metadata.errors || 0),
+        duplicates: Number(metadata.duplicates || 0),
+        negative_stock_rows: Number(metadata.negative_stock_rows || 0),
+        import_batch_id: metadata.import_batch_id || row.entity_id || "",
+        import_mode: metadata.import_mode || ""
+      };
+    });
+    res.json({
+      success: true,
+      files: files.slice(0, limit),
+      summary: {
+        incoming: files.filter((item) => item.status === "incoming").length,
+        processed: files.filter((item) => item.status === "processed").length,
+        error: files.filter((item) => item.status === "error").length,
+        total: files.length
+      },
+      history
+    });
+  } catch (error) {
+    console.error("Erro ao listar uploads Tiny/Olist:", error);
+    res.status(500).json({ error: "Nao foi possivel listar as planilhas enviadas." });
+  }
+});
+
 app.post("/api/pdv/inventory/import/tiny/preview", requireAnyPermission(["can_manage_products"], "Seu perfil nao pode importar produtos ou estoque."), tinyImportUpload.fields([{ name: "file", maxCount: 20 }, { name: "files", maxCount: 20 }]), async (req, res) => {
   const uploadedFiles = [
     ...(req.files?.file || []),
@@ -22598,6 +22750,7 @@ app.post("/api/pdv/inventory/import/tiny/preview", requireAnyPermission(["can_ma
       storeId: storeAccess.storeId,
       storeLabel: storeAccess.storeLabel,
       mapping,
+      previewRows: previewPayload.preview || [],
       summary: previewPayload.summary
     });
 
@@ -22679,11 +22832,13 @@ app.post("/api/pdv/inventory/import/tiny/commit", requireAnyPermission(["can_man
     }
     filePath = preview.filePath;
     filePaths = Array.isArray(preview.filePaths) && preview.filePaths.length ? preview.filePaths : [filePath].filter(Boolean);
-    const payload = commitTinyInventoryImport(preview.groupedItems || [], req.user || {}, {
+    const payload = await commitTinyInventoryImport(preview.groupedItems || [], req.user || {}, {
       manualStoreOverride: storeAccess.storeId,
       importBatchId: previewId,
       importedBy: req.user?.name || req.user?.email || "",
-      importMode: preview.importMode || ""
+      importMode: preview.importMode || "",
+      previewRows: preview.previewRows || [],
+      previewSummary: preview.summary || null
     });
     filePaths.forEach((targetPath) => {
       if (targetPath && fs.existsSync(targetPath)) {

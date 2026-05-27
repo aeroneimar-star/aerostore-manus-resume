@@ -837,6 +837,13 @@ function buildProductSearchText(product) {
   return normalizeLookup([
     product.codigo,
     product.sku,
+    product.codigo_tiny,
+    product.codigo_etiqueta,
+    product.codigo_interno,
+    product.ean,
+    product.codigo_barras,
+    product.gtin,
+    product.gtin_ean,
     product.nome,
     product.descricao,
     product.marca,
@@ -869,26 +876,28 @@ function searchProducts(query = "", { storeId = "" } = {}) {
     const { searchInventoryProducts } = require("../inventory/pdvInventoryService");
     const items = searchInventoryProducts(query, { storeId });
     if (items.length) {
-      const products = loadProductsDataset();
       const priceByReference = new Map();
-      products.forEach((product) => {
-        const keys = [
-          normalizeText(product.product_id || ""),
-          normalizeText(product.sku || ""),
-          normalizeText(product.codigo || ""),
-          normalizeText(product.codigo_tiny || ""),
-          normalizeText(product.codigo_etiqueta || ""),
-          normalizeDigits(product.ean || product.codigo_barras || ""),
-          normalizeText(product.codigo_interno || "")
-        ].filter(Boolean);
-        const nextPrice = toNumber(product.preco_venda || product.price || 0);
-        keys.forEach((key) => {
-          const currentPrice = toNumber(priceByReference.get(key) || 0);
-          if (!priceByReference.has(key) || (currentPrice <= 0 && nextPrice > 0)) {
-            priceByReference.set(key, nextPrice);
-          }
+      if (items.some((item) => toNumber(item.preco_venda || item.price || 0) <= 0)) {
+        const products = loadProductsDataset();
+        products.forEach((product) => {
+          const keys = [
+            normalizeText(product.product_id || ""),
+            normalizeText(product.sku || ""),
+            normalizeText(product.codigo || ""),
+            normalizeText(product.codigo_tiny || ""),
+            normalizeText(product.codigo_etiqueta || ""),
+            normalizeDigits(product.ean || product.codigo_barras || ""),
+            normalizeText(product.codigo_interno || "")
+          ].filter(Boolean);
+          const nextPrice = toNumber(product.preco_venda || product.price || 0);
+          keys.forEach((key) => {
+            const currentPrice = toNumber(priceByReference.get(key) || 0);
+            if (!priceByReference.has(key) || (currentPrice <= 0 && nextPrice > 0)) {
+              priceByReference.set(key, nextPrice);
+            }
+          });
         });
-      });
+      }
       return items.map((item) => {
         const lookupKeys = [
           normalizeText(item.product_id || ""),
@@ -1273,6 +1282,12 @@ function cloneOperationalSourceOption(option = null) {
     sku: normalizeText(option.sku || ""),
     codigo: normalizeText(option.codigo || ""),
     available_qty: toNumber(option.available_qty || 0),
+    tiny_stock_quantity: toNumber(option.tiny_stock_quantity || 0),
+    estoque_status: normalizeText(option.estoque_status || ""),
+    inventory_status: normalizeText(option.inventory_status || ""),
+    needs_physical_confirmation: Boolean(option.needs_physical_confirmation),
+    is_provisional: Boolean(option.is_provisional),
+    is_divergent: Boolean(option.is_divergent),
     logistics_group: normalizeText(option.logistics_group || ""),
     logistics_relation: normalizeText(option.logistics_relation || "")
   };
@@ -1286,13 +1301,13 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
       status: fallbackQty > 0 ? "AVAILABLE_LOCAL" : "UNAVAILABLE",
       summary: fallbackQty > 0
         ? `Disponivel na ${saleStoreLabel || "loja atual"} - ${fallbackQty} un.`
-        : "Sem estoque disponivel",
-      detail: fallbackQty > 0 ? "Venda liberada na loja atual." : "Produto indisponivel em todas as lojas.",
-      button_label: fallbackQty > 0 ? "Adicionar" : "Indisponivel",
+        : "Sem saldo conhecido - conferir fisicamente",
+      detail: fallbackQty > 0 ? "Venda liberada na loja atual." : "Produto cadastrado, mas sem saldo confirmado em loja.",
+      button_label: fallbackQty > 0 ? "Adicionar" : "Conferir",
       can_add_directly: fallbackQty > 0,
-      requires_resolution: false,
+      requires_resolution: fallbackQty <= 0,
       requires_logistics_review: false,
-      is_unavailable: fallbackQty <= 0
+      is_unavailable: false
     };
   }
   if (availability.status === "AVAILABLE_LOCAL") {
@@ -1336,6 +1351,38 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
       is_unavailable: false
     };
   }
+  if (availability.status === "PENDING_LOCAL_CONFIRMATION" || availability.status === "PROVISIONAL_DIVERGENT_LOCAL") {
+    const localLabel = normalizeText(availability.local_option?.store_name || saleStoreLabel || "loja atual");
+    return {
+      status: availability.status,
+      summary: availability.status === "PROVISIONAL_DIVERGENT_LOCAL"
+        ? `Divergente/provisorio na ${localLabel}`
+        : `Pendente de conferencia na ${localLabel}`,
+      detail: "Estoque em inventario. Confirme fisicamente a peca antes de vender.",
+      button_label: "Confirmar fisicamente",
+      can_add_directly: false,
+      requires_resolution: true,
+      requires_logistics_review: false,
+      is_unavailable: false
+    };
+  }
+  if (availability.status === "PENDING_OTHER_STORE_CONFIRMATION") {
+    const origin = availability.pending_other_store_options?.[0] || availability.source_options?.[0] || {};
+    const originLabel = normalizeText(origin.store_name || "outra loja");
+    const divergent = Boolean(origin.is_divergent);
+    return {
+      status: availability.status,
+      summary: `Consultar ${originLabel}`,
+      detail: divergent
+        ? `${originLabel} com estoque divergente/provisorio - confirmar fisicamente.`
+        : `${originLabel} sem saldo confirmado - consultar e confirmar fisicamente.`,
+      button_label: "Consultar loja",
+      can_add_directly: false,
+      requires_resolution: true,
+      requires_logistics_review: false,
+      is_unavailable: false
+    };
+  }
   if (availability.status === "LOGISTICS_REVIEW_REQUIRED") {
     const originLabel = normalizeText(availability.other_region_options?.[0]?.store_name || "outra loja");
     return {
@@ -1350,14 +1397,14 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     };
   }
   return {
-    status: "UNAVAILABLE",
-    summary: "Sem estoque disponivel",
-    detail: "Produto indisponivel em todas as lojas.",
-    button_label: "Indisponivel",
+    status: "NO_KNOWN_STOCK",
+    summary: "Sem saldo conhecido",
+    detail: "Produto cadastrado no catalogo global - conferir fisicamente antes de vender.",
+    button_label: "Conferir",
     can_add_directly: false,
-    requires_resolution: false,
+    requires_resolution: true,
     requires_logistics_review: false,
-    is_unavailable: true
+    is_unavailable: false
   };
 }
 
@@ -1407,6 +1454,7 @@ function enrichProductOperationalAvailability(item = {}, saleStoreId = "") {
       resolved_product_id: normalizeText(stockSource?.product_id || item.product_id || ""),
       same_city_options: (availability.same_city_options || []).map((option) => cloneOperationalSourceOption(option)).filter(Boolean),
       other_region_options: (availability.other_region_options || []).map((option) => cloneOperationalSourceOption(option)).filter(Boolean),
+      pending_other_store_options: (availability.pending_other_store_options || []).map((option) => cloneOperationalSourceOption(option)).filter(Boolean),
       source_options: (availability.source_options || []).map((option) => cloneOperationalSourceOption(option)).filter(Boolean),
       operational_stock_status: presentation.status,
       operational_summary: presentation.summary,

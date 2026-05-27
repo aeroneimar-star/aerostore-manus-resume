@@ -574,7 +574,7 @@ async function ensureSeedData() {
       roleKey: "admin",
       name: "Admin AEROSTORE",
       username: "admin",
-      allowedStores: ["vila_masc", "vila_fem", "botanico", "sul"]
+      allowedStores: ["vila", "botanico", "sul"]
     });
     await ensureUserAccount({
       email: "gerente@aerostore.local",
@@ -583,9 +583,9 @@ async function ensureSeedData() {
       roleKey: "manager",
       name: "Gerente AEROSTORE",
       username: "gerente",
-      store: "Vila Masc.",
-      storeId: "vila_masc",
-      allowedStores: ["vila_masc"]
+      store: "Vila",
+      storeId: "vila",
+      allowedStores: ["vila"]
     });
     await ensureUserAccount({
       email: "vendedor@aerostore.local",
@@ -594,9 +594,9 @@ async function ensureSeedData() {
       roleKey: "seller",
       name: "Vendedor AEROSTORE",
       username: "vendedor",
-      store: firstSeller?.store || "Vila Masc.",
-      storeId: "vila_masc",
-      allowedStores: ["vila_masc"],
+      store: "Vila",
+      storeId: "vila",
+      allowedStores: ["vila"],
       sellerId: firstSeller?.id || null
     });
   }
@@ -609,18 +609,18 @@ async function ensureSeedData() {
     roleKey: "admin",
     name: "Admin AEROSTORE",
     username: "admin",
-    allowedStores: ["vila_masc", "vila_fem", "botanico", "sul"]
+    allowedStores: ["vila", "botanico", "sul"]
   });
   await ensureUserAccount({
     email: "gestor.vila@aerostore.local",
     password: "123456",
     roleLegacy: "gerente",
     roleKey: "manager",
-    name: "Gestor Vila Masc.",
+    name: "Gestor Vila",
     username: "gestor.vila",
-    store: "Vila Masc.",
-    storeId: "vila_masc",
-    allowedStores: ["vila_masc"]
+    store: "Vila",
+    storeId: "vila",
+    allowedStores: ["vila"]
   });
   await ensureUserAccount({
     email: "gestor.botanico@aerostore.local",
@@ -638,11 +638,11 @@ async function ensureSeedData() {
     password: "123456",
     roleLegacy: "vendedor",
     roleKey: "seller",
-    name: "Vendedor Vila Masc.",
+    name: "Vendedor Vila",
     username: "vendedor.vila",
-    store: firstSeller?.store || "Vila Masc.",
-    storeId: "vila_masc",
-    allowedStores: ["vila_masc"],
+    store: "Vila",
+    storeId: "vila",
+    allowedStores: ["vila"],
     sellerId: firstSeller?.id || null
   });
   await ensureUserAccount({
@@ -652,9 +652,9 @@ async function ensureSeedData() {
     roleKey: "cashier",
     name: "Caixa AEROSTORE",
     username: "caixa",
-    store: "Vila Masc.",
-    storeId: "vila_masc",
-    allowedStores: ["vila_masc"]
+    store: "Vila",
+    storeId: "vila",
+    allowedStores: ["vila"]
   });
   await ensureUserAccount({
     email: "consulta@aerostore.local",
@@ -663,9 +663,9 @@ async function ensureSeedData() {
     roleKey: "consult",
     name: "Consulta AEROSTORE",
     username: "consulta",
-    store: "Vila Masc.",
-    storeId: "vila_masc",
-    allowedStores: ["vila_masc"]
+    store: "Vila",
+    storeId: "vila",
+    allowedStores: ["vila"]
   });
 }
 
@@ -1798,6 +1798,7 @@ async function initializeDatabase() {
       FOREIGN KEY (user_id) REFERENCES users(id)
     )
   `);
+  await ensureColumn("user_sessions", "active_store_id", "TEXT DEFAULT ''");
 
   await run(`
     CREATE TABLE IF NOT EXISTS audit_logs (

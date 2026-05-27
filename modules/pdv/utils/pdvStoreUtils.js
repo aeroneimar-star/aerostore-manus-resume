@@ -5,9 +5,8 @@ function normalizeText(value = "") {
 }
 
 const ACTIVE_OPERATIONAL_STORE_OPTIONS = [
-  { value: "vila_masc", label: "Vila Masc.", active: true },
-  { value: "vila_fem_infant", label: "Vila Fem/Infant.", active: true },
-  { value: "botanico", label: "Botanico", active: true },
+  { value: "vila", label: "Vila", active: true },
+  { value: "botanico", label: "Botânico", active: true },
   { value: "sul", label: "Sul", active: true }
 ];
 
@@ -15,12 +14,10 @@ const ACTIVE_OPERATIONAL_STORE_KEYS = new Set(
   ACTIVE_OPERATIONAL_STORE_OPTIONS.map((item) => item.value)
 );
 
-const ADJACENT_STORE_GROUPS = [
-  ["vila_masc", "vila_fem_infant"]
-];
+const ADJACENT_STORE_GROUPS = [];
 
 const SAME_CITY_STORE_GROUPS = {
-  ribeirao_preto: ["vila_masc", "vila_fem_infant", "botanico", "loja_geral"],
+  ribeirao_preto: ["vila", "botanico", "loja_geral"],
   sul: ["sul", "camboriu"]
 };
 
@@ -42,18 +39,29 @@ function normalizeStoreKey(value = "") {
   if (ascii === "loja geral" || ascii === "loja_geral" || ascii === "geral") return "loja_geral";
   if (ascii === "sul" || ascii.includes("loja sul") || ascii.includes("aerostore sul")) return "sul";
   if (
-    ascii.includes("vila masc")
+    ascii === "vila"
+    || ascii === "vila masc"
+    || ascii === "vila_masc"
+    || ascii === "vila masculino"
+    || ascii === "vila masculina"
+    || ascii === "vila fem"
+    || ascii === "vila_fem"
+    || ascii === "vila infantil"
+    || ascii === "vila infant"
+    || ascii === "vila_infant"
+    || ascii === "vila fem infant"
+    || ascii === "vila_fem_infant"
+    || ascii === "vila feminina"
+    || ascii === "vila infantil feminina"
+    || ascii === "vila feminina infantil"
+    || ascii.includes("vila masc")
     || ascii.includes("vila masculino")
-    || ascii.includes("vila masc.")
-  ) return "vila_masc";
-  if (
-    ascii.includes("vila fem")
+    || ascii.includes("vila feminina")
     || ascii.includes("vila infantil")
-    || ascii.includes("vila fem infant")
-    || ascii.includes("vila femin")
-  ) return "vila_fem_infant";
-  if (ascii.includes("vila")) return "vila";
+    || ascii.includes("vila fem")
+  ) return "vila";
   if (ascii.includes("botanico")) return "botanico";
+  if (ascii.includes("vila")) return "vila";
   if (ascii.includes("bonfim")) return "bonfim";
   if (ascii.includes("camboriu")) return "camboriu";
   return ascii
@@ -66,10 +74,12 @@ function normalizeStoreKey(value = "") {
 function formatStoreLabel(value = "") {
   const key = normalizeStoreKey(value);
   const predefined = {
-    vila_masc: "Vila Masc.",
-    vila_fem_infant: "Vila Fem/Infant.",
-    vila: "Vila (legado)",
-    botanico: "Botanico",
+    vila_masc: "Vila",
+    vila_fem: "Vila",
+    vila_fem_infant: "Vila",
+    vila_infant: "Vila",
+    vila: "Vila",
+    botanico: "Botânico",
     bonfim: "Bonfim (legado)",
     camboriu: "Camboriu / Sul",
     sul: "Sul",
@@ -111,7 +121,7 @@ function isLegacyOperationalStore(value = "") {
 
 function getStoreLookupKey(value = "") {
   const key = normalizeStoreKey(value);
-  if (["vila", "vila_masc", "vila_fem_infant"].includes(key)) {
+  if (["vila", "vila_masc", "vila_fem", "vila_fem_infant", "vila_infant"].includes(key)) {
     return "vila";
   }
   return key;

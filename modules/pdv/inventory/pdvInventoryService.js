@@ -25,6 +25,10 @@ const inventoryFiles = {
 };
 const pdvProductsDatasetPath = path.join(process.cwd(), "data", "imports", "pdv", "datasets", "produtos.json");
 const reservationsFilePath = path.join(process.cwd(), "data", "pdv", "operational", "reservations.json");
+const inventorySeedCache = {
+  key: "",
+  records: null
+};
 
 const DEFAULT_STORE_ID = "LOJA_GERAL";
 const INVENTORY_MOVEMENT_TYPES = [
@@ -102,9 +106,46 @@ function readJson(filePath, fallback = []) {
   }
 }
 
+const jsonFileCache = new Map();
+
+function readJsonCached(filePath, fallback = []) {
+  ensureInventoryDirs();
+  try {
+    if (!fs.existsSync(filePath)) {
+      jsonFileCache.delete(filePath);
+      return fallback;
+    }
+    const stats = fs.statSync(filePath);
+    const cached = jsonFileCache.get(filePath);
+    if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+      return cached.value;
+    }
+    const value = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    jsonFileCache.set(filePath, {
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+      value
+    });
+    return value;
+  } catch (error) {
+    jsonFileCache.delete(filePath);
+    return fallback;
+  }
+}
+
 function writeJson(filePath, value) {
   ensureInventoryDirs();
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
+  try {
+    const stats = fs.statSync(filePath);
+    jsonFileCache.set(filePath, {
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+      value
+    });
+  } catch (error) {
+    jsonFileCache.delete(filePath);
+  }
 }
 
 function normalizeText(value = "") {
@@ -228,23 +269,27 @@ function getProductAvailabilityLabel(availableQty = 0) {
 }
 
 function loadProductsDataset() {
-  return readJson(pdvProductsDatasetPath, []);
+  return readJsonCached(pdvProductsDatasetPath, []);
 }
 
 function saveProductsDataset(rows) {
   writeJson(pdvProductsDatasetPath, rows);
+  inventorySeedCache.key = "";
+  inventorySeedCache.records = null;
 }
 
 function loadInventoryRecords() {
-  return readJson(inventoryFiles.inventory, []);
+  return readJsonCached(inventoryFiles.inventory, []);
 }
 
 function saveInventoryRecords(rows) {
   writeJson(inventoryFiles.inventory, rows);
+  inventorySeedCache.key = "";
+  inventorySeedCache.records = null;
 }
 
 function loadInventoryMovements() {
-  return readJson(inventoryFiles.movements, []);
+  return readJsonCached(inventoryFiles.movements, []);
 }
 
 function saveInventoryMovements(rows) {
@@ -260,7 +305,16 @@ function saveTransfers(rows) {
 }
 
 function loadReservationsSnapshot() {
-  return readJson(reservationsFilePath, []);
+  return readJsonCached(reservationsFilePath, []);
+}
+
+function getFileCacheSignature(filePath) {
+  try {
+    const stats = fs.statSync(filePath);
+    return `${stats.mtimeMs}:${stats.size}`;
+  } catch (error) {
+    return "missing";
+  }
 }
 
 function buildInventoryRecordFromProduct(product = {}, storeId = DEFAULT_STORE_ID) {
@@ -378,16 +432,33 @@ function dedupeInventoryRecords(records = []) {
 
 function ensureInventorySeeded() {
   ensureInventoryDirs();
+  const cacheKey = [
+    getFileCacheSignature(inventoryFiles.inventory),
+    getFileCacheSignature(pdvProductsDatasetPath)
+  ].join("|");
+  if (inventorySeedCache.key === cacheKey && Array.isArray(inventorySeedCache.records)) {
+    return inventorySeedCache.records;
+  }
   const dedupeResult = dedupeInventoryRecords(loadInventoryRecords());
   const inventory = dedupeResult.records;
   const products = loadProductsDataset();
   let changed = dedupeResult.changed;
+  const inventoryByProductStore = new Map();
+  inventory.forEach((item) => {
+    const key = `${normalizeStoreId(item.store_id || DEFAULT_STORE_ID)}::${normalizeText(item.product_id || "")}`;
+    if (key !== `${normalizeStoreId(item.store_id || DEFAULT_STORE_ID)}::`) {
+      inventoryByProductStore.set(key, item);
+    }
+  });
   products.forEach((product) => {
     const productId = buildProductIdentity(product);
     const preferredStoreId = getDatasetProductStoreId(product);
-    const existing = inventory.find((item) => item.product_id === productId && normalizeStoreId(item.store_id) === preferredStoreId);
+    const existingKey = `${preferredStoreId}::${productId}`;
+    const existing = inventoryByProductStore.get(existingKey);
     if (!existing) {
-      inventory.push(buildInventoryRecordFromProduct(product, preferredStoreId));
+      const nextRecord = buildInventoryRecordFromProduct(product, preferredStoreId);
+      inventory.push(nextRecord);
+      inventoryByProductStore.set(existingKey, nextRecord);
       changed = true;
     } else {
       const beforeSignature = JSON.stringify([existing.nome, existing.descricao, existing.marca, existing.categoria, existing.tipo, existing.cor, existing.tamanho, existing.preco_venda]);
@@ -440,6 +511,11 @@ function ensureInventorySeeded() {
   if (changed) {
     saveInventoryRecords(inventory);
   }
+  inventorySeedCache.key = [
+    getFileCacheSignature(inventoryFiles.inventory),
+    getFileCacheSignature(pdvProductsDatasetPath)
+  ].join("|");
+  inventorySeedCache.records = inventory;
   return inventory;
 }
 
@@ -582,6 +658,11 @@ function findCrossStoreInventoryCandidates(records, item = {}) {
 
 function buildOperationalSourceOption(record = {}, saleStoreId = DEFAULT_STORE_ID) {
   const storeId = normalizeStoreId(record.store_id || DEFAULT_STORE_ID);
+  const availableQty = roundQty(record.available_qty || 0);
+  const stockStatus = normalizeLookup(record.estoque_status || record.stock_status || "");
+  const inventoryStatus = normalizeLookup(record.inventory_status || "");
+  const isProvisional = stockStatus.startsWith("provisional") || inventoryStatus === "pending_count";
+  const isDivergent = stockStatus.includes("divergent") || availableQty < 0 || roundQty(record.tiny_stock_quantity || record.imported_quantity_original || 0) < 0;
   return {
     store_id: storeId,
     store_name: formatStoreLabel(storeId),
@@ -589,7 +670,13 @@ function buildOperationalSourceOption(record = {}, saleStoreId = DEFAULT_STORE_I
     product_id: normalizeText(record.product_id || ""),
     sku: normalizeText(record.sku || ""),
     codigo: normalizeText(record.codigo || ""),
-    available_qty: roundQty(record.available_qty || 0),
+    available_qty: availableQty,
+    tiny_stock_quantity: roundQty(record.tiny_stock_quantity || record.imported_quantity_original || availableQty || 0),
+    estoque_status: normalizeText(record.estoque_status || record.stock_status || ""),
+    inventory_status: normalizeText(record.inventory_status || ""),
+    needs_physical_confirmation: isProvisional || availableQty <= 0,
+    is_provisional: isProvisional,
+    is_divergent: isDivergent,
     logistics_group: getStoreLogisticsGroup(storeId),
     logistics_relation: getStoreLogisticsRelation(saleStoreId, storeId)
   };
@@ -606,10 +693,10 @@ function getProductOperationalAvailability(item = {}, saleStoreId = DEFAULT_STOR
     || options.preferredOriginStore
     || ""
   );
+  const allCandidates = findCrossStoreInventoryCandidates(records, item)
+    .filter((record) => isSelectableStockOriginStore(record.store_id || ""));
   const candidates = sortFulfillmentCandidates(
-    findCrossStoreInventoryCandidates(records, item)
-      .filter((record) => roundQty(record.available_qty || 0) > 0)
-      .filter((record) => isSelectableStockOriginStore(record.store_id || "")),
+    allCandidates.filter((record) => roundQty(record.available_qty || 0) > 0),
     normalizedSaleStore,
     preferredOriginStore
   );
@@ -623,33 +710,51 @@ function getProductOperationalAvailability(item = {}, saleStoreId = DEFAULT_STOR
   });
   const sourceOptions = Array.from(uniqueByStore.values());
   const localOption = sourceOptions.find((option) => option.store_id === normalizedSaleStore) || null;
+  const allSourceOptionsByStore = new Map();
+  allCandidates.forEach((record) => {
+    const storeId = normalizeStoreId(record.store_id || DEFAULT_STORE_ID);
+    if (!storeId || allSourceOptionsByStore.has(storeId)) {
+      return;
+    }
+    allSourceOptionsByStore.set(storeId, buildOperationalSourceOption(record, normalizedSaleStore));
+  });
+  const allSourceOptions = Array.from(allSourceOptionsByStore.values());
+  const localAnyOption = allSourceOptions.find((option) => option.store_id === normalizedSaleStore) || null;
+  const otherPendingOptions = allSourceOptions
+    .filter((option) => option.store_id !== normalizedSaleStore)
+    .filter((option) => option.needs_physical_confirmation || option.available_qty <= 0);
   const adjacentOption = sourceOptions.find((option) => option.logistics_relation === "adjacent") || null;
   const sameCityOptions = sourceOptions.filter((option) => option.logistics_relation === "same_city");
   const otherRegionOptions = sourceOptions.filter((option) => ["same_region", "other_region"].includes(option.logistics_relation));
-  const preferredOption = localOption || adjacentOption || sameCityOptions[0] || otherRegionOptions[0] || null;
+  const preferredOption = localOption || adjacentOption || sameCityOptions[0] || otherRegionOptions[0] || localAnyOption || otherPendingOptions[0] || null;
   const status = localOption
     ? "AVAILABLE_LOCAL"
-    : adjacentOption
-      ? "AVAILABLE_ADJACENT_STORE"
-      : sameCityOptions.length
-        ? "AVAILABLE_SAME_CITY"
-        : otherRegionOptions.length
-          ? "LOGISTICS_REVIEW_REQUIRED"
-          : "UNAVAILABLE";
+    : localAnyOption
+      ? (localAnyOption.is_divergent ? "PROVISIONAL_DIVERGENT_LOCAL" : "PENDING_LOCAL_CONFIRMATION")
+      : adjacentOption
+        ? "AVAILABLE_ADJACENT_STORE"
+        : sameCityOptions.length
+          ? "AVAILABLE_SAME_CITY"
+          : otherRegionOptions.length
+            ? "LOGISTICS_REVIEW_REQUIRED"
+            : otherPendingOptions.length
+              ? "PENDING_OTHER_STORE_CONFIRMATION"
+              : "NO_KNOWN_STOCK";
   return {
     sale_store_id: normalizedSaleStore,
     sale_store_name: formatStoreLabel(normalizedSaleStore),
-    local_option: localOption,
+    local_option: localOption || localAnyOption,
     adjacent_option: adjacentOption,
     same_city_options: sameCityOptions,
     other_region_options: otherRegionOptions,
+    pending_other_store_options: otherPendingOptions,
     preferred_option: preferredOption,
-    source_options: sourceOptions,
+    source_options: sourceOptions.length ? sourceOptions : allSourceOptions,
     status,
     can_add_directly: status === "AVAILABLE_LOCAL" || status === "AVAILABLE_ADJACENT_STORE",
-    requires_resolution: status === "AVAILABLE_SAME_CITY",
+    requires_resolution: ["AVAILABLE_SAME_CITY", "PENDING_LOCAL_CONFIRMATION", "PROVISIONAL_DIVERGENT_LOCAL", "PENDING_OTHER_STORE_CONFIRMATION"].includes(status),
     requires_logistics_review: status === "LOGISTICS_REVIEW_REQUIRED",
-    is_unavailable: status === "UNAVAILABLE",
+    is_unavailable: false,
     ideal_source_store_id: preferredOption?.store_id || "",
     ideal_source_store_name: preferredOption?.store_name || ""
   };
@@ -991,9 +1096,8 @@ function ensureInventoryRecord(records, payload = {}) {
   return record;
 }
 
-function appendInventoryMovement(payload = {}, user = {}) {
-  const movements = loadInventoryMovements();
-  const movement = {
+function buildInventoryMovementRecord(payload = {}, user = {}) {
+  return {
     movement_id: buildId("MOV"),
     inventory_id: normalizeText(payload.inventory_id || ""),
     type: normalizeText(payload.type || ""),
@@ -1017,6 +1121,11 @@ function appendInventoryMovement(payload = {}, user = {}) {
     loja: normalizeStoreId(payload.store_id || payload.storeId || DEFAULT_STORE_ID),
     metadata: payload.metadata || {}
   };
+}
+
+function appendInventoryMovement(payload = {}, user = {}) {
+  const movements = loadInventoryMovements();
+  const movement = buildInventoryMovementRecord(payload, user);
   movements.unshift(movement);
   saveInventoryMovements(movements);
   appendEvent("INVENTORY_MOVEMENT", {
@@ -1151,27 +1260,86 @@ function buildInventorySearchText(record = {}) {
   ].join(" "));
 }
 
-function listInventoryProducts({ q = "", storeId = "", status = "", alert = "" } = {}) {
+function isInventoryCodeLikeQuery(query = "") {
+  const normalized = normalizeText(query || "");
+  const digits = normalizeDigits(normalized);
+  return Boolean(digits && digits.length >= 3 && /^[\d\s.\-_/]+$/.test(normalized));
+}
+
+function inventoryRecordMatchesExactCode(record = {}, query = "") {
+  const normalizedQuery = normalizeText(query || "");
+  const normalizedDigitsQuery = normalizeDigits(query || "");
+  const textFields = [
+    record.sku,
+    record.codigo,
+    record.codigo_tiny,
+    record.codigo_etiqueta,
+    record.codigo_interno
+  ].map((value) => normalizeText(value || ""));
+  const digitFields = [
+    record.ean,
+    record.codigo_barras,
+    record.barcode,
+    record.gtin,
+    record.gtin_ean
+  ].map((value) => normalizeDigits(value || ""));
+  return textFields.includes(normalizedQuery) || (normalizedDigitsQuery && digitFields.includes(normalizedDigitsQuery));
+}
+
+function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", page = 1, limit = 300 } = {}) {
   const records = ensureInventorySeeded();
   const normalizedQuery = normalizeLookup(q);
+  const codeLikeQuery = isInventoryCodeLikeQuery(q);
   const normalizedStore = normalizeStoreLookup(storeId || DEFAULT_STORE_ID);
+  const shouldScopeToStore = Boolean(storeId && !normalizedQuery);
   const normalizedStatus = normalizeText(status || "").toUpperCase();
   const normalizedAlert = normalizeText(alert || "").toLowerCase();
+  const safePage = Math.max(1, Number(page || 1));
+  const safeLimit = Math.max(1, Math.min(300, Number(limit || 300)));
+  const offset = Math.max(0, (safePage - 1) * safeLimit);
   const rows = records.filter((item) => {
-    if (storeId && normalizeStoreLookup(item.store_id) !== normalizedStore) return false;
+    if (shouldScopeToStore && normalizeStoreLookup(item.store_id) !== normalizedStore) return false;
     if (normalizedStatus && normalizeText(item.status).toUpperCase() !== normalizedStatus) return false;
-    if (normalizedQuery && !buildInventorySearchText(item).includes(normalizedQuery)) return false;
+    if (normalizedQuery) {
+      if (codeLikeQuery && !inventoryRecordMatchesExactCode(item, q)) return false;
+      if (!codeLikeQuery && !buildInventorySearchText(item).includes(normalizedQuery)) return false;
+    }
     if (normalizedAlert === "out" && toNumber(item.available_qty) > 0) return false;
     if (normalizedAlert === "low" && toNumber(item.available_qty) !== 1) return false;
     if (normalizedAlert === "negative" && toNumber(item.available_qty) >= 0) return false;
     return true;
-  }).map((item) => ({
-    ...item,
-    availability_label: getProductAvailabilityLabel(item.available_qty)
-  }));
+  }).map((item) => {
+    const itemStore = normalizeStoreLookup(item.store_id || "");
+    const isOtherStoreResult = Boolean(storeId && normalizedQuery && itemStore && itemStore !== normalizedStore);
+    const stockStatus = normalizeLookup(item.estoque_status || item.stock_status || "");
+    const inventoryStatus = normalizeLookup(item.inventory_status || "");
+    const qty = roundQty(item.available_qty || 0);
+    let availabilityLabel = getProductAvailabilityLabel(qty);
+    if (isOtherStoreResult) {
+      availabilityLabel = qty > 0
+        ? `Consultar ${formatStoreLabel(item.store_id)}`
+        : `${formatStoreLabel(item.store_id)} em conferencia`;
+    } else if (stockStatus.includes("divergent") || qty < 0) {
+      availabilityLabel = "Divergente/provisorio - confirmar fisicamente";
+    } else if (stockStatus.startsWith("provisional") || inventoryStatus === "pending_count") {
+      availabilityLabel = "Pendente de conferencia";
+    }
+    return {
+      ...item,
+      active_store_context: storeId ? normalizeStoreId(storeId) : "",
+      cross_store_result: isOtherStoreResult,
+      availability_label: availabilityLabel
+    };
+  });
   return {
-    items: rows.slice(0, 300),
-    total: rows.length
+    items: rows.slice(offset, offset + safeLimit),
+    total: rows.length,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total: rows.length,
+      totalPages: Math.max(1, Math.ceil(rows.length / safeLimit))
+    }
   };
 }
 
@@ -1978,26 +2146,27 @@ function convertReservationById(reservationId, saleId, user = {}) {
 
 function searchInventoryProducts(query = "", { storeId = "" } = {}) {
   const rows = listInventoryProducts({ q: query, storeId }).items;
-  const dataset = readJson(pdvProductsDatasetPath, []);
   const priceByReference = new Map();
-  dataset.forEach((product) => {
-    const keys = [
-      normalizeText(product.product_id || ""),
-      normalizeText(product.sku || ""),
-      normalizeText(product.codigo || ""),
-      normalizeText(product.codigo_tiny || ""),
-      normalizeText(product.codigo_etiqueta || ""),
-      normalizeText(product.codigo_interno || ""),
-      normalizeDigits(product.ean || product.codigo_barras || "")
-    ].filter(Boolean);
-    const nextPrice = roundQty(product.preco_venda || product.price || 0);
-    keys.forEach((key) => {
-      const currentPrice = roundQty(priceByReference.get(key) || 0);
-      if (!priceByReference.has(key) || (currentPrice <= 0 && nextPrice > 0)) {
-        priceByReference.set(key, nextPrice);
-      }
+  if (rows.some((item) => roundQty(item.preco_venda || 0) <= 0)) {
+    loadProductsDataset().forEach((product) => {
+      const keys = [
+        normalizeText(product.product_id || ""),
+        normalizeText(product.sku || ""),
+        normalizeText(product.codigo || ""),
+        normalizeText(product.codigo_tiny || ""),
+        normalizeText(product.codigo_etiqueta || ""),
+        normalizeText(product.codigo_interno || ""),
+        normalizeDigits(product.ean || product.codigo_barras || "")
+      ].filter(Boolean);
+      const nextPrice = roundQty(product.preco_venda || product.price || 0);
+      keys.forEach((key) => {
+        const currentPrice = roundQty(priceByReference.get(key) || 0);
+        if (!priceByReference.has(key) || (currentPrice <= 0 && nextPrice > 0)) {
+          priceByReference.set(key, nextPrice);
+        }
+      });
     });
-  });
+  }
   return rows.slice(0, 40).map((item) => {
     const lookupKeys = [
       normalizeText(item.product_id || ""),
@@ -2053,7 +2222,9 @@ function searchInventoryProducts(query = "", { storeId = "" } = {}) {
       ncm: item.ncm || "",
       origem_fiscal: item.origem_fiscal || "",
       import_batch_id: item.import_batch_id || "",
-      availability_label: getProductAvailabilityLabel(item.available_qty),
+      active_store_context: item.active_store_context || "",
+      cross_store_result: Boolean(item.cross_store_result),
+      availability_label: item.availability_label || getProductAvailabilityLabel(item.available_qty),
       media_id: item.media_id || null,
       photo_preview_url: item.photo_preview_url || "",
       media_url: item.media_url || "",
@@ -2180,6 +2351,48 @@ function findDuplicateProductByIdentifiers(datasetRows = [], inventoryRows = [],
           existing_source: candidate._source
         };
       }
+    }
+  }
+  return null;
+}
+
+function buildProductIdentifierLookup(datasetRows = [], inventoryRows = []) {
+  const lookup = new Map();
+  const addRecord = (record = {}, source = "") => {
+    buildProductComparableIdentifiers(record).forEach((identifier) => {
+      if (!identifier.value || lookup.has(identifier.value)) {
+        return;
+      }
+      lookup.set(identifier.value, {
+        field: identifier.field,
+        label: identifier.label,
+        value: identifier.value,
+        existing_product_id: normalizeText(record.product_id || ""),
+        existing_inventory_id: normalizeText(record.inventory_id || ""),
+        existing_name: normalizeText(record.nome || record.name || ""),
+        existing_source: source
+      });
+    });
+  };
+  (Array.isArray(datasetRows) ? datasetRows : []).forEach((row) => addRecord(row, "dataset"));
+  (Array.isArray(inventoryRows) ? inventoryRows : []).forEach((row) => addRecord(row, "inventory"));
+  return lookup;
+}
+
+function findDuplicateProductByIdentifierLookup(identifierLookup, payload = {}) {
+  if (!(identifierLookup instanceof Map)) {
+    return null;
+  }
+  const incomingIdentifiers = buildProductComparableIdentifiers(payload);
+  for (const incoming of incomingIdentifiers) {
+    const duplicate = identifierLookup.get(incoming.value);
+    if (duplicate) {
+      return {
+        ...duplicate,
+        field: incoming.field,
+        label: incoming.label,
+        value: incoming.value
+      };
     }
   }
   return null;
@@ -2714,7 +2927,9 @@ function buildTinyInventoryPreviewRow(item = {}, options = {}) {
   const mapped = mapTinyGroupedItemToInventoryPayload(item, options);
   const normalizedPayload = normalizeManualProductPayload(mapped.payload);
   const comparableIdentifiers = buildProductComparableIdentifiers(normalizedPayload);
-  const duplicate = findDuplicateProductByIdentifiers(datasetRows, inventoryRows, normalizedPayload);
+  const duplicate = options.identifierLookup instanceof Map
+    ? findDuplicateProductByIdentifierLookup(options.identifierLookup, normalizedPayload)
+    : findDuplicateProductByIdentifiers(datasetRows, inventoryRows, normalizedPayload);
   const currentLineNumber = item.lineNumbers?.[0] || item.line || 0;
   const requestedImportMode = normalizeTinyImportMode(options.importMode || "");
   const currentSourceFiles = normalizeArray(item.source_files).filter(Boolean);
@@ -2838,9 +3053,11 @@ function previewTinyInventoryImport(groupedItems = [], options = {}) {
   const datasetRows = loadProductsDataset();
   const inventoryRows = ensureInventorySeeded();
   const fileIdentifierMap = new Map();
+  const identifierLookup = buildProductIdentifierLookup(datasetRows, inventoryRows);
   const preview = normalizeArray(groupedItems).map((item) => buildTinyInventoryPreviewRow(item, {
     datasetRows,
     inventoryRows,
+    identifierLookup,
     fileIdentifierMap,
     manualStoreOverride: options.manualStoreOverride || "",
     importBatchId: options.importBatchId || "",
@@ -2943,12 +3160,325 @@ function previewTinyInventoryImport(groupedItems = [], options = {}) {
   };
 }
 
-function commitTinyInventoryImport(groupedItems = [], user = {}, options = {}) {
-  const { preview, summary: previewSummary } = previewTinyInventoryImport(groupedItems, {
-    ...options,
-    importedBy: options.importedBy || user?.name || user?.email || "",
-    importBatchId: options.importBatchId || ""
+const MAX_TINY_IMPORT_RESPONSE_PRODUCTS = 250;
+const TINY_IMPORT_COMMIT_CHUNK_SIZE = 50;
+
+function waitForNextImportChunk() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function getInventoryProductStoreKey(productId = "", storeId = "") {
+  return `${normalizeText(productId || "")}::${normalizeStoreId(storeId || DEFAULT_STORE_ID)}`;
+}
+
+function buildTinyCommitIndexes(datasetRows = [], inventoryRows = []) {
+  const datasetByProductId = new Map();
+  const inventoryById = new Map();
+  const inventoryByProductStore = new Map();
+  datasetRows.forEach((row) => {
+    const productId = normalizeText(row.product_id || "");
+    if (productId) {
+      datasetByProductId.set(productId, row);
+    }
   });
+  inventoryRows.forEach((row) => {
+    const inventoryId = normalizeText(row.inventory_id || "");
+    const productId = normalizeText(row.product_id || "");
+    if (inventoryId) {
+      inventoryById.set(inventoryId, row);
+    }
+    if (productId) {
+      inventoryByProductStore.set(getInventoryProductStoreKey(productId, row.store_id), row);
+    }
+  });
+  return {
+    datasetByProductId,
+    inventoryById,
+    inventoryByProductStore
+  };
+}
+
+function indexTinyCommitInventoryRecord(indexes, record = {}) {
+  const inventoryId = normalizeText(record.inventory_id || "");
+  const productId = normalizeText(record.product_id || "");
+  if (inventoryId) {
+    indexes.inventoryById.set(inventoryId, record);
+  }
+  if (productId) {
+    indexes.inventoryByProductStore.set(getInventoryProductStoreKey(productId, record.store_id), record);
+  }
+}
+
+function createTinyCommitInventoryRecord(inventoryRows = [], indexes, payload = {}) {
+  const productId = normalizeText(payload.product_id || payload.productId || "") || buildProductIdentity(payload);
+  const storeId = normalizeStoreId(payload.store_id || payload.storeId || DEFAULT_STORE_ID);
+  const record = {
+    inventory_id: buildId("INV"),
+    product_id: productId,
+    sku: normalizeText(payload.sku || payload.codigo || ""),
+    codigo: normalizeText(payload.codigo || ""),
+    nome: normalizeText(payload.nome || ""),
+    descricao: normalizeText(payload.descricao || ""),
+    marca: normalizeText(payload.marca || ""),
+    categoria: normalizeText(payload.categoria || ""),
+    tipo: normalizeText(payload.tipo || ""),
+    cor: normalizeText(payload.cor || ""),
+    tamanho: normalizeText(payload.tamanho || ""),
+    preco_venda: roundQty(payload.preco_venda || 0),
+    store_id: storeId,
+    available_qty: roundQty(payload.available_qty || payload.estoque || 0),
+    reserved_qty: roundQty(payload.reserved_qty || 0),
+    unavailable_qty: roundQty(payload.unavailable_qty || 0),
+    exchange_qty: roundQty(payload.exchange_qty || 0),
+    consumption_qty: roundQty(payload.consumption_qty || 0),
+    last_movement_at: nowIso(),
+    status: normalizeText(payload.status || "ACTIVE") || "ACTIVE",
+    source: normalizeText(payload.source || "PDV_OPERATIONAL")
+  };
+  inventoryRows.push(record);
+  indexTinyCommitInventoryRecord(indexes, record);
+  return record;
+}
+
+function assignTinyCommitProductToInventory(record = {}, datasetRow = {}, desiredStoreId = "", timestamp = nowIso(), availableQty = null) {
+  Object.assign(record, {
+    product_id: datasetRow.product_id,
+    sku: datasetRow.sku || datasetRow.codigo,
+    codigo: datasetRow.codigo,
+    codigo_tiny: datasetRow.codigo_tiny,
+    codigo_etiqueta: datasetRow.codigo_etiqueta,
+    ean: datasetRow.ean,
+    codigo_barras: datasetRow.codigo_barras,
+    codigo_interno: datasetRow.codigo_interno,
+    nome: datasetRow.nome,
+    descricao: datasetRow.descricao,
+    marca: datasetRow.marca,
+    categoria: datasetRow.categoria,
+    linha_genero: datasetRow.linha_genero,
+    tipo: datasetRow.tipo,
+    cor: datasetRow.cor,
+    tamanho: datasetRow.tamanho,
+    grade: datasetRow.grade,
+    preco_venda: datasetRow.preco_venda,
+    original_price: datasetRow.original_price,
+    sale_price: datasetRow.sale_price,
+    preco_custo: datasetRow.preco_custo,
+    store_id: normalizeStoreId(desiredStoreId || datasetRow.store_id || DEFAULT_STORE_ID),
+    available_qty: availableQty === null ? roundQty(datasetRow.estoque || 0) : roundQty(availableQty),
+    tiny_stock_quantity: datasetRow.tiny_stock_quantity,
+    imported_quantity_original: datasetRow.imported_quantity_original,
+    observacao: datasetRow.observacao,
+    media_id: datasetRow.media_id,
+    photo_preview_url: datasetRow.photo_preview_url,
+    media_url: datasetRow.media_url,
+    foto: datasetRow.foto,
+    source: datasetRow.source,
+    origem: datasetRow.origem,
+    estoque_status: datasetRow.estoque_status,
+    inventory_status: datasetRow.inventory_status,
+    import_batch_id: datasetRow.import_batch_id,
+    imported_at: datasetRow.imported_at,
+    imported_by: datasetRow.imported_by,
+    import_mode: datasetRow.import_mode,
+    stock_import_enabled: datasetRow.stock_import_enabled,
+    sale_enabled: datasetRow.sale_enabled,
+    parent_sku: datasetRow.parent_sku,
+    gtin_tributavel: datasetRow.gtin_tributavel,
+    unidade: datasetRow.unidade,
+    ncm: datasetRow.ncm,
+    origem_fiscal: datasetRow.origem_fiscal,
+    cest: datasetRow.cest,
+    loja_confirmacao: datasetRow.loja_confirmacao,
+    usuario_confirmacao: datasetRow.usuario_confirmacao,
+    data_confirmacao: datasetRow.data_confirmacao,
+    status: datasetRow.status,
+    last_movement_at: timestamp
+  });
+  updateRecordAvailabilityStatus(record);
+  return record;
+}
+
+function pushTinyCommitMovement(movements = [], payload = {}, user = {}) {
+  const movement = buildInventoryMovementRecord(payload, user);
+  movements.unshift(movement);
+  return movement;
+}
+
+function persistTinyNewProductInMemory(entry = {}, context = {}) {
+  const { datasetRows, inventoryRows, movements, indexes, user, timestamp } = context;
+  const normalized = normalizeManualProductPayload(entry.payload || {});
+  if (!normalized.nome) {
+    throw new Error("Informe o nome do produto para continuar.");
+  }
+  if (normalized.preco_venda <= 0) {
+    throw new Error("Informe o preco de venda do produto.");
+  }
+  if (!buildProductComparableIdentifiers(normalized).length) {
+    throw new Error("Informe pelo menos um identificador para o PDV reconhecer este produto.");
+  }
+
+  const productId = normalizeText(normalized.product_id || "");
+  const existingDataset = productId ? indexes.datasetByProductId.get(productId) || null : null;
+  const nextDatasetRow = {
+    ...(existingDataset || {}),
+    ...normalized,
+    estoque: normalized.estoque,
+    created_at: existingDataset?.created_at || timestamp,
+    updated_at: timestamp,
+    is_seed_data: existingDataset?.is_seed_data || false,
+    batch_id: existingDataset?.batch_id || ""
+  };
+  if (existingDataset) {
+    const datasetIndex = datasetRows.indexOf(existingDataset);
+    if (datasetIndex >= 0) {
+      datasetRows[datasetIndex] = nextDatasetRow;
+    }
+  } else {
+    datasetRows.unshift(nextDatasetRow);
+  }
+  indexes.datasetByProductId.set(normalizeText(nextDatasetRow.product_id || ""), nextDatasetRow);
+
+  const desiredStoreId = normalizeStoreId(normalized.store_id || DEFAULT_STORE_ID);
+  let targetInventoryRecord = indexes.inventoryByProductStore.get(getInventoryProductStoreKey(nextDatasetRow.product_id, desiredStoreId)) || null;
+  if (!targetInventoryRecord) {
+    targetInventoryRecord = createTinyCommitInventoryRecord(inventoryRows, indexes, {
+      ...nextDatasetRow,
+      store_id: desiredStoreId,
+      available_qty: normalized.estoque,
+      source: normalized.source
+    });
+  }
+  const beforeSnapshot = cloneInventorySnapshot(targetInventoryRecord);
+  assignTinyCommitProductToInventory(targetInventoryRecord, nextDatasetRow, desiredStoreId, timestamp, normalized.estoque);
+  indexTinyCommitInventoryRecord(indexes, targetInventoryRecord);
+
+  if (!existingDataset && normalized.estoque > 0) {
+    pushTinyCommitMovement(movements, {
+      inventory_id: targetInventoryRecord.inventory_id,
+      type: "IMPORT_INITIAL",
+      product_id: targetInventoryRecord.product_id,
+      sku: targetInventoryRecord.sku,
+      codigo: targetInventoryRecord.codigo,
+      nome: targetInventoryRecord.nome,
+      store_id: targetInventoryRecord.store_id,
+      quantity: normalized.estoque,
+      direction: "IN",
+      reference_type: "PRODUCT_CREATE",
+      reference_id: targetInventoryRecord.product_id,
+      reason: "Cadastro inicial do produto importado do Tiny no PDV.",
+      before_qty: beforeSnapshot.available_qty,
+      after_qty: targetInventoryRecord.available_qty,
+      before_snapshot: beforeSnapshot,
+      after_snapshot: cloneInventorySnapshot(targetInventoryRecord)
+    }, user);
+  }
+
+  return {
+    product: {
+      ...targetInventoryRecord,
+      availability_label: getProductAvailabilityLabel(targetInventoryRecord.available_qty)
+    },
+    duplicate: null
+  };
+}
+
+function applyTinyDuplicateImportToStoreInMemory(entry = {}, context = {}) {
+  const { datasetRows, inventoryRows, movements, indexes, user, timestamp } = context;
+  const duplicate = entry.duplicate || null;
+  if (!duplicate) {
+    throw new Error("Produto duplicado sem referencia existente para sincronizar o estoque.");
+  }
+  const existingDataset = indexes.datasetByProductId.get(normalizeText(duplicate.existing_product_id || "")) || null;
+  const existingInventory = indexes.inventoryById.get(normalizeText(duplicate.existing_inventory_id || "")) || null;
+  const sourceRecord = existingDataset || existingInventory;
+  if (!sourceRecord) {
+    throw new Error("Nao foi possivel localizar o produto base para aplicar o estoque na nova loja.");
+  }
+  const desiredStoreId = normalizeStoreId(entry.payload?.store_id || entry.payload?.origem_estoque || DEFAULT_STORE_ID);
+  let targetInventoryRecord = indexes.inventoryByProductStore.get(getInventoryProductStoreKey(sourceRecord.product_id, desiredStoreId)) || null;
+  if (!targetInventoryRecord) {
+    targetInventoryRecord = createTinyCommitInventoryRecord(inventoryRows, indexes, {
+      ...sourceRecord,
+      ...entry.payload,
+      productId: sourceRecord.product_id,
+      product_id: sourceRecord.product_id,
+      storeId: desiredStoreId,
+      store_id: desiredStoreId
+    });
+  }
+  const beforeSnapshot = cloneInventorySnapshot(targetInventoryRecord);
+  const shouldImportStock = entry.payload?.stock_import_enabled !== false;
+  const nextAvailableQty = shouldImportStock
+    ? roundQty(entry.payload?.estoque || 0)
+    : roundQty(targetInventoryRecord.available_qty ?? sourceRecord.available_qty ?? sourceRecord.estoque ?? 0);
+  const mergedRecord = {
+    ...sourceRecord,
+    ...entry.payload,
+    product_id: normalizeText(sourceRecord.product_id || targetInventoryRecord.product_id || ""),
+    sku: normalizeText(entry.payload?.sku || sourceRecord.sku || sourceRecord.codigo || ""),
+    codigo: normalizeText(sourceRecord.codigo || entry.payload?.codigo || ""),
+    codigo_tiny: normalizeText(entry.payload?.codigo_tiny || sourceRecord.codigo_tiny || ""),
+    codigo_etiqueta: normalizeText(entry.payload?.codigo_etiqueta || sourceRecord.codigo_etiqueta || ""),
+    ean: normalizeDigits(entry.payload?.ean || sourceRecord.ean || sourceRecord.codigo_barras || ""),
+    codigo_barras: normalizeDigits(entry.payload?.ean || sourceRecord.codigo_barras || sourceRecord.ean || ""),
+    codigo_interno: normalizeText(entry.payload?.codigo_interno || sourceRecord.codigo_interno || sourceRecord.codigo || ""),
+    nome: normalizeText(entry.payload?.nome || sourceRecord.nome || ""),
+    preco_venda: roundQty(entry.payload?.preco_venda || sourceRecord.preco_venda || 0),
+    preco_custo: roundQty(entry.payload?.preco_custo || sourceRecord.preco_custo || 0),
+    estoque: nextAvailableQty,
+    store_id: desiredStoreId,
+    tiny_stock_quantity: roundQty(entry.payload?.tiny_stock_quantity ?? sourceRecord.tiny_stock_quantity ?? entry.payload?.estoque ?? 0),
+    imported_quantity_original: roundQty(entry.payload?.imported_quantity_original ?? sourceRecord.imported_quantity_original ?? entry.payload?.estoque ?? 0),
+    media_id: Number(entry.payload?.media_id || sourceRecord.media_id || 0) || null,
+    source: normalizeText(entry.payload?.source || sourceRecord.source || "TINY_IMPORT") || "TINY_IMPORT",
+    origem: normalizeText(entry.payload?.origem || sourceRecord.origem || "tiny_import") || "tiny_import",
+    estoque_status: normalizeText(entry.payload?.estoque_status || sourceRecord.estoque_status || "provisional") || "provisional",
+    inventory_status: normalizeText(entry.payload?.inventory_status || sourceRecord.inventory_status || "pending_count") || "pending_count",
+    imported_at: normalizeText(entry.payload?.imported_at || sourceRecord.imported_at || timestamp),
+    imported_by: normalizeText(entry.payload?.imported_by || sourceRecord.imported_by || user?.name || user?.email || ""),
+    stock_import_enabled: shouldImportStock,
+    sale_enabled: typeof entry.payload?.sale_enabled === "boolean" ? entry.payload.sale_enabled : sourceRecord.sale_enabled,
+    status: normalizeText(entry.payload?.status || sourceRecord.status || "ACTIVE") || "ACTIVE"
+  };
+  assignTinyCommitProductToInventory(targetInventoryRecord, mergedRecord, desiredStoreId, timestamp, nextAvailableQty);
+  indexTinyCommitInventoryRecord(indexes, targetInventoryRecord);
+  pushTinyCommitMovement(movements, {
+    inventory_id: targetInventoryRecord.inventory_id,
+    type: "IMPORT_STORE_SYNC",
+    product_id: targetInventoryRecord.product_id,
+    sku: targetInventoryRecord.sku,
+    codigo: targetInventoryRecord.codigo,
+    nome: targetInventoryRecord.nome,
+    store_id: targetInventoryRecord.store_id,
+    quantity: shouldImportStock ? roundQty(entry.payload?.estoque || 0) : 0,
+    direction: "IN",
+    reference_type: "TINY_IMPORT",
+    reference_id: targetInventoryRecord.product_id,
+    reason: "Sincronizacao de estoque Tiny para loja operacional especifica.",
+    before_qty: beforeSnapshot.available_qty,
+    after_qty: targetInventoryRecord.available_qty,
+    before_snapshot: beforeSnapshot,
+    after_snapshot: cloneInventorySnapshot(targetInventoryRecord)
+  }, user);
+  return targetInventoryRecord;
+}
+
+async function commitTinyInventoryImport(groupedItems = [], user = {}, options = {}) {
+  const hasPreparedPreview = Array.isArray(options.previewRows) && options.previewRows.length;
+  const preparedPreviewPayload = hasPreparedPreview
+    ? {
+        preview: options.previewRows,
+        summary: options.previewSummary || {
+          totalRows: options.previewRows.length,
+          validRows: options.previewRows.filter((item) => item.can_import).length
+        }
+      }
+    : previewTinyInventoryImport(groupedItems, {
+        ...options,
+        importedBy: options.importedBy || user?.name || user?.email || "",
+        importBatchId: options.importBatchId || ""
+      });
+  const { preview, summary: previewSummary } = preparedPreviewPayload;
   const result = {
     totalRows: previewSummary.totalRows,
     imported: 0,
@@ -2959,9 +3489,25 @@ function commitTinyInventoryImport(groupedItems = [], user = {}, options = {}) {
     importedProducts: [],
     ignoredRows: [],
     errorRows: [],
+    importedProductsTruncated: false,
     previewSummary
   };
-  preview.forEach((entry) => {
+  const datasetRows = loadProductsDataset();
+  const inventoryRows = ensureInventorySeeded();
+  const movements = loadInventoryMovements();
+  const initialMovementCount = movements.length;
+  const indexes = buildTinyCommitIndexes(datasetRows, inventoryRows);
+  const batchContext = {
+    datasetRows,
+    inventoryRows,
+    movements,
+    indexes,
+    user,
+    timestamp: nowIso()
+  };
+  let processedRows = 0;
+  for (const entry of preview) {
+    processedRows += 1;
     if (entry.action === "duplicate") {
       result.duplicates += 1;
       result.ignored += 1;
@@ -2974,7 +3520,13 @@ function commitTinyInventoryImport(groupedItems = [], user = {}, options = {}) {
         ean: entry.ean,
         motivo: "Produto já encontrado por este identificador. Revise antes de importar."
       });
-      return;
+      if (processedRows % TINY_IMPORT_COMMIT_CHUNK_SIZE === 0) {
+        if (typeof options.onProgress === "function") {
+          options.onProgress({ processedRows, totalRows: preview.length, result });
+        }
+        await waitForNextImportChunk();
+      }
+      continue;
     }
     if (entry.action === "error") {
       result.errors += 1;
@@ -2987,17 +3539,27 @@ function commitTinyInventoryImport(groupedItems = [], user = {}, options = {}) {
         ean: entry.ean,
         motivo: entry.pendencias.join(", ") || "Linha inválida para importação."
       });
-      return;
+      if (processedRows % TINY_IMPORT_COMMIT_CHUNK_SIZE === 0) {
+        if (typeof options.onProgress === "function") {
+          options.onProgress({ processedRows, totalRows: preview.length, result });
+        }
+        await waitForNextImportChunk();
+      }
+      continue;
     }
     try {
       const created = entry.import_mode === "update" && entry.duplicate
-        ? applyTinyDuplicateImportToStore(entry, user)
-        : createInventoryProduct(entry.payload, user);
+        ? applyTinyDuplicateImportToStoreInMemory(entry, batchContext)
+        : persistTinyNewProductInMemory(entry, batchContext);
       result.imported += 1;
       if (entry.action === "pending") {
         result.pending += 1;
       }
-      result.importedProducts.push(created.product || created);
+      if (result.importedProducts.length < MAX_TINY_IMPORT_RESPONSE_PRODUCTS) {
+        result.importedProducts.push(created.product || created);
+      } else {
+        result.importedProductsTruncated = true;
+      }
     } catch (error) {
       result.errors += 1;
       result.errorRows.push({
@@ -3009,7 +3571,30 @@ function commitTinyInventoryImport(groupedItems = [], user = {}, options = {}) {
         motivo: error.message || "Não foi possível salvar o produto importado."
       });
     }
-  });
+    if (processedRows % TINY_IMPORT_COMMIT_CHUNK_SIZE === 0) {
+      if (typeof options.onProgress === "function") {
+        options.onProgress({ processedRows, totalRows: preview.length, result });
+      }
+      await waitForNextImportChunk();
+    }
+  }
+  if (result.imported > 0) {
+    saveProductsDataset(datasetRows);
+    saveInventoryRecords(inventoryRows);
+    saveInventoryMovements(movements);
+    appendEvent("INVENTORY_MOVEMENT", {
+      loja: resolveTinyImportManualStoreOverride(options.manualStoreOverride || "")?.store_id || DEFAULT_STORE_ID,
+      reference_type: "TINY_IMPORT",
+      reference_id: options.importBatchId || ""
+    }, {
+      type: "TINY_IMPORT_BATCH_COMMIT",
+      import_batch_id: options.importBatchId || "",
+      imported: result.imported,
+      pending: result.pending,
+      errors: result.errors,
+      movements_added: Math.max(0, movements.length - initialMovementCount)
+    }, user);
+  }
   saveInventoryAudit("TINY_IMPORT_COMMIT", {
     store_id: resolveTinyImportManualStoreOverride(options.manualStoreOverride || "")?.store_id || DEFAULT_STORE_ID,
     reason: "Importação Tiny concluída para a base operacional de produtos do PDV.",

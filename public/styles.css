@@ -3571,9 +3571,11 @@ body.theme-dark .pdv-action-chip:hover { border-color: rgba(200,155,60,0.4); bac
 }
 .pdv-product-card-stock-ready strong { color: #1f8f65; }
 .pdv-product-card-stock-adjacent strong { color: #3d8bff; }
+.pdv-product-card-stock-pending strong { color: #2DD4BF; }
 .pdv-product-card-stock-warning strong { color: #c79a2b; }
 .pdv-product-card-stock-logistics strong { color: #c36b26; }
 .pdv-product-card-stock-blocked strong { color: #b44c4c; }
+.pdv-product-card-btn-pending,
 .pdv-product-card-btn-warning,
 .pdv-product-card-btn-logistics {
   background: rgba(255, 255, 255, 0.9);
@@ -7316,6 +7318,25 @@ tbody tr {
   padding-top: 10px;
 }
 
+.pdv-active-store-select {
+  width: 100%;
+  min-width: 138px;
+  height: 38px;
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  border-radius: 12px;
+  background: rgba(15, 20, 27, 0.92);
+  color: #F4F7FA;
+  font: inherit;
+  font-weight: 800;
+  padding: 0 34px 0 12px;
+  outline: none;
+}
+
+.pdv-active-store-select:focus {
+  border-color: rgba(45, 212, 191, 0.65);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+}
+
 .pdv-sale-shell {
   gap: 14px;
 }
@@ -9223,6 +9244,64 @@ tbody tr {
 .pdv-register-inline-warning.info {
   border-color: rgba(59, 130, 246, 0.2);
   background: rgba(59, 130, 246, 0.08);
+}
+
+.pdv-register-open-card {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(150px, 0.8fr) minmax(130px, 0.7fr) minmax(180px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(45, 212, 191, 0.22);
+  background: rgba(45, 212, 191, 0.08);
+}
+
+.pdv-register-open-card > div,
+.pdv-register-open-card label {
+  display: grid;
+  gap: 6px;
+}
+
+.pdv-register-open-card strong {
+  color: var(--text);
+  font-size: 0.98rem;
+}
+
+.pdv-register-open-card span,
+.pdv-register-open-card label {
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
+.pdv-register-open-card input,
+.pdv-register-open-card select {
+  min-height: 38px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0f141b;
+  color: var(--text);
+  padding: 0 12px;
+}
+
+.pdv-register-open-card input:focus,
+.pdv-register-open-card select:focus {
+  outline: none;
+  border-color: rgba(45, 212, 191, 0.42);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.1);
+}
+
+@media (max-width: 1100px) {
+  .pdv-register-open-card {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .pdv-register-open-card {
+    grid-template-columns: 1fr;
+  }
 }
 
 .pdv-register-label-cell {
@@ -13627,6 +13706,49 @@ body.theme-light .eyebrow {
 .pdv-import-shell {
   display: grid;
   gap: 20px;
+  --import-bg-app: #0B0F14;
+  --import-bg-shell: #0F141B;
+  --import-bg-panel: #131A23;
+  --import-bg-card: #171F2A;
+  --import-border-soft: rgba(255, 255, 255, 0.07);
+  --import-border-strong: rgba(255, 255, 255, 0.12);
+  --import-divider: rgba(255, 255, 255, 0.06);
+  --import-text-main: #F4F7FA;
+  --import-text-muted: #AAB4C0;
+  --import-text-subtle: #7F8A99;
+  --import-accent: #2DD4BF;
+  --import-accent-strong: #14B8A6;
+  --import-accent-soft: rgba(45, 212, 191, 0.12);
+  --import-accent-border: rgba(45, 212, 191, 0.35);
+  color: var(--import-text-main);
+}
+
+#pdv-imports-content .pdv-front-shell,
+#pdv-imports-content .pdv-shell-body,
+#pdv-imports-content .pdv-front-content {
+  background: var(--import-bg-app);
+}
+
+.pdv-import-shell > .panel,
+.pdv-import-shell .panel {
+  border: 1px solid var(--import-border-soft);
+  background:
+    radial-gradient(circle at top left, rgba(45, 212, 191, 0.06), transparent 34%),
+    linear-gradient(145deg, var(--import-bg-panel), var(--import-bg-shell));
+  color: var(--import-text-main);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.24);
+}
+
+.pdv-import-shell .panel-header {
+  gap: 14px;
+  border-bottom: 1px solid var(--import-divider);
+  padding-bottom: 12px;
+}
+
+.pdv-import-shell .panel-header h3 {
+  color: var(--import-text-main);
+  font-size: 1.08rem;
+  letter-spacing: -0.02em;
 }
 
 .pdv-import-form {
@@ -13636,18 +13758,373 @@ body.theme-light .eyebrow {
   align-items: end;
 }
 
+.pdv-import-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--import-text-muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.pdv-import-form input,
+.pdv-import-form select {
+  min-height: 46px;
+  border: 1px solid var(--import-border-soft);
+  border-radius: 14px;
+  background: #0B0F14;
+  color: var(--import-text-main);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.pdv-import-form input:focus,
+.pdv-import-form select:focus {
+  border-color: var(--import-accent-border);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--import-accent-soft);
+}
+
+.pdv-import-form input[type="file"]::file-selector-button {
+  margin-right: 10px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--import-bg-card);
+  color: var(--import-text-main);
+  font-weight: 800;
+}
+
+.pdv-import-file-picker {
+  position: relative;
+}
+
+.pdv-import-file-picker input[type="file"] {
+  position: absolute;
+  inset: 22px 0 0;
+  width: 100%;
+  height: calc(100% - 22px);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.pdv-import-file-control {
+  display: grid;
+  gap: 4px;
+  min-height: 54px;
+  padding: 12px 14px;
+  border: 1px dashed rgba(45, 212, 191, 0.3);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(45, 212, 191, 0.08), rgba(20, 184, 166, 0.025)),
+    #0B0F14;
+  color: var(--import-text-main);
+  cursor: pointer;
+}
+
+.pdv-import-file-control strong {
+  color: var(--import-text-main);
+  font-size: 0.92rem;
+}
+
+.pdv-import-file-control small {
+  color: var(--import-text-subtle);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.pdv-import-file-picker:hover .pdv-import-file-control {
+  border-color: var(--import-accent-border);
+  background:
+    linear-gradient(135deg, rgba(45, 212, 191, 0.14), rgba(20, 184, 166, 0.04)),
+    #0B0F14;
+}
+
 .pdv-import-form .action-row {
   grid-column: 1 / -1;
 }
 
+.pdv-import-shell .primary-button,
+.pdv-import-shell .secondary-button {
+  min-height: 42px;
+  border-radius: 12px;
+  font-weight: 850;
+}
+
+.pdv-import-shell .primary-button {
+  border: 1px solid rgba(45, 212, 191, 0.22);
+  background: linear-gradient(135deg, var(--import-accent-strong), var(--import-accent));
+  color: #06201D;
+}
+
+.pdv-import-shell .secondary-button {
+  border: 1px solid var(--import-border-strong);
+  background: var(--import-bg-card);
+  color: var(--import-text-main);
+}
+
+.pdv-import-shell .secondary-button:hover {
+  border-color: var(--import-accent-border);
+  background: linear-gradient(135deg, var(--import-accent-soft), rgba(23, 31, 42, 0.94));
+}
+
+.pdv-import-shell .primary-button:disabled,
+.pdv-import-shell .secondary-button:disabled {
+  opacity: 0.52;
+}
+
 .pdv-import-meta {
   margin-top: 12px;
-  color: var(--text-soft);
+  color: var(--import-text-muted);
   font-size: 0.92rem;
+}
+
+.pdv-import-progress-card {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(45, 212, 191, 0.28);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(45, 212, 191, 0.12), rgba(20, 184, 166, 0.04)),
+    rgba(15, 20, 27, 0.94);
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.2);
+}
+
+.pdv-import-progress-card.is-complete {
+  border-color: rgba(52, 211, 153, 0.26);
+  background:
+    linear-gradient(135deg, rgba(52, 211, 153, 0.1), rgba(45, 212, 191, 0.04)),
+    rgba(15, 20, 27, 0.94);
+}
+
+.pdv-import-progress-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.pdv-import-progress-head strong {
+  display: block;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.pdv-import-progress-head span {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
+.pdv-import-progress-head b {
+  color: #2dd4bf;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.pdv-import-progress-track {
+  height: 8px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.pdv-import-progress-track span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #14b8a6, #2dd4bf);
+  box-shadow: 0 0 18px rgba(45, 212, 191, 0.35);
+  transition: width 240ms ease;
 }
 
 .pdv-import-summary-grid {
   margin-top: 18px;
+}
+
+.pdv-uploaded-files-panel {
+  border-color: rgba(45, 212, 191, 0.18);
+}
+
+.pdv-uploaded-files-panel .panel-header {
+  align-items: flex-start;
+}
+
+.pdv-uploaded-files-panel .panel-header p {
+  margin: 4px 0 0;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+}
+
+.pdv-uploaded-files-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.pdv-uploaded-files-stats article {
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  background: rgba(15, 20, 27, 0.76);
+}
+
+.pdv-uploaded-files-stats span,
+.pdv-uploaded-file-row span,
+.pdv-uploaded-files-table small {
+  color: var(--text-soft);
+  font-size: 0.74rem;
+}
+
+.pdv-uploaded-files-stats strong {
+  display: block;
+  margin-top: 3px;
+  color: #2DD4BF;
+  font-size: 1.2rem;
+}
+
+.pdv-uploaded-files-history {
+  margin-top: 12px;
+}
+
+.pdv-uploaded-files-history h4 {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.pdv-uploaded-files-list {
+  display: grid;
+  gap: 8px;
+  max-height: 250px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.pdv-uploaded-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  background: rgba(23, 31, 42, 0.72);
+}
+
+.pdv-uploaded-file-row strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdv-uploaded-file-meta {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.pdv-uploaded-file-meta small {
+  color: var(--text-soft);
+  font-size: 0.72rem;
+}
+
+.pdv-uploaded-file-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: 5px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  background: rgba(23, 31, 42, 0.9);
+  color: var(--text-soft);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pdv-uploaded-file-badge.accent {
+  border-color: rgba(45, 212, 191, 0.35);
+  background: rgba(45, 212, 191, 0.12);
+  color: #2DD4BF;
+}
+
+.pdv-uploaded-file-badge.success {
+  border-color: rgba(52, 211, 153, 0.28);
+  background: rgba(52, 211, 153, 0.12);
+  color: #34D399;
+}
+
+.pdv-uploaded-file-badge.danger {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.12);
+  color: #EF4444;
+}
+
+.pdv-uploaded-files-table-wrap {
+  margin-top: 14px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.pdv-uploaded-files-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.pdv-uploaded-files-table th,
+.pdv-uploaded-files-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 0.8rem;
+  vertical-align: top;
+}
+
+.pdv-uploaded-files-table th {
+  color: var(--text-soft);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pdv-uploaded-files-table strong {
+  display: block;
+  max-width: 520px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body:is([data-route-section="pdv-imports"], [data-section="pdv-imports"]) .pdv-import-shell,
+body:is([data-route-section="pdv-imports"], [data-section="pdv-imports"]) .pdv-import-shell * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(170,180,192,0.16) transparent;
+}
+
+body:is([data-route-section="pdv-imports"], [data-section="pdv-imports"]) .pdv-import-shell ::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+body:is([data-route-section="pdv-imports"], [data-section="pdv-imports"]) .pdv-import-shell ::-webkit-scrollbar-track,
+body:is([data-route-section="pdv-imports"], [data-section="pdv-imports"]) .pdv-import-shell ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+body:is([data-route-section="pdv-imports"], [data-section="pdv-imports"]) .pdv-import-shell ::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(170,180,192,0.16);
+}
+
+body:is([data-route-section="pdv-imports"], [data-section="pdv-imports"]) .pdv-import-shell ::-webkit-scrollbar-thumb:hover {
+  background: rgba(45,212,191,0.28);
 }
 
 .pdv-import-store-banner {
@@ -13712,31 +14189,40 @@ body.theme-light .eyebrow {
 }
 
 .pdv-import-file-table,
-.pdv-import-preview-table {
+.pdv-import-preview-table,
+.pdv-uploaded-files-table {
   width: 100%;
   border-collapse: collapse;
+  background: rgba(11, 15, 20, 0.5);
+  border-radius: 14px;
+  overflow: hidden;
 }
 
 .pdv-import-file-table th,
 .pdv-import-file-table td,
 .pdv-import-preview-table th,
-.pdv-import-preview-table td {
+.pdv-import-preview-table td,
+.pdv-uploaded-files-table th,
+.pdv-uploaded-files-table td {
   padding: 10px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--import-divider, rgba(255, 255, 255, 0.06));
   vertical-align: top;
 }
 
 .pdv-import-file-table th,
-.pdv-import-preview-table th {
-  color: var(--text-soft);
+.pdv-import-preview-table th,
+.pdv-uploaded-files-table th {
+  background: rgba(15, 20, 27, 0.9);
+  color: var(--import-text-muted, var(--text-soft));
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .pdv-import-file-table td,
-.pdv-import-preview-table td {
-  color: var(--text);
+.pdv-import-preview-table td,
+.pdv-uploaded-files-table td {
+  color: var(--import-text-main, var(--text));
   font-size: 0.82rem;
 }
 
@@ -13890,6 +14376,7 @@ body[data-route-section="pdv-cash-register"] .pdv-hero-card,
 body[data-route-section="pdv-stock"] .pdv-hero-card,
 body[data-route-section="pdv-products"] .pdv-hero-card,
 body[data-route-section="pdv-customers"] .pdv-hero-card,
+body[data-route-section="pdv-imports"] .pdv-hero-card,
 body[data-route-section="pdv-reservations"] .pdv-hero-card,
 body[data-route-section="pdv-exchanges"] .pdv-hero-card {
   padding: 12px 22px;
@@ -13903,6 +14390,7 @@ body[data-route-section="pdv-cash-register"] .pdv-hero-card h3,
 body[data-route-section="pdv-stock"] .pdv-hero-card h3,
 body[data-route-section="pdv-products"] .pdv-hero-card h3,
 body[data-route-section="pdv-customers"] .pdv-hero-card h3,
+body[data-route-section="pdv-imports"] .pdv-hero-card h3,
 body[data-route-section="pdv-reservations"] .pdv-hero-card h3,
 body[data-route-section="pdv-exchanges"] .pdv-hero-card h3 {
   margin: 2px 0 0;
@@ -13917,6 +14405,7 @@ body[data-route-section="pdv-cash-register"] .pdv-hero-card .helper-text,
 body[data-route-section="pdv-stock"] .pdv-hero-card .helper-text,
 body[data-route-section="pdv-products"] .pdv-hero-card .helper-text,
 body[data-route-section="pdv-customers"] .pdv-hero-card .helper-text,
+body[data-route-section="pdv-imports"] .pdv-hero-card .helper-text,
 body[data-route-section="pdv-reservations"] .pdv-hero-card .helper-text,
 body[data-route-section="pdv-exchanges"] .pdv-hero-card .helper-text,
 body[data-route-section="pdv-sale"] .pdv-hero-card .pdv-route-summary,
@@ -13924,6 +14413,7 @@ body[data-route-section="pdv-cash-register"] .pdv-hero-card .pdv-route-summary,
 body[data-route-section="pdv-stock"] .pdv-hero-card .pdv-route-summary,
 body[data-route-section="pdv-products"] .pdv-hero-card .pdv-route-summary,
 body[data-route-section="pdv-customers"] .pdv-hero-card .pdv-route-summary,
+body[data-route-section="pdv-imports"] .pdv-hero-card .pdv-route-summary,
 body[data-route-section="pdv-reservations"] .pdv-hero-card .pdv-route-summary,
 body[data-route-section="pdv-exchanges"] .pdv-hero-card .pdv-route-summary {
   display: none;
@@ -15369,6 +15859,20 @@ body[data-route-section="pdv-sales-orders"] .pdv-hero-card h3 {
   line-height: 1.2;
 }
 
+body[data-route-section="pdv-imports"] .pdv-hero-card {
+  border-color: rgba(255, 255, 255, 0.07);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(45, 212, 191, 0.08), transparent 34%),
+    linear-gradient(145deg, #131A23, #0F141B);
+}
+
+body[data-route-section="pdv-imports"] .pdv-hero-card .eyebrow {
+  margin-bottom: 2px;
+  color: #AAB4C0;
+  font-size: 0.64rem;
+  letter-spacing: 0.18em;
+}
+
 body[data-route-section="pdv-sales-orders"] .pdv-hero-card .helper-text {
   font-size: 0.95rem;
   max-width: 90%;
@@ -16707,6 +17211,51 @@ body[data-route-section="pdv-sale"] .pdv-payment-finalize-btn {
   border-color: var(--sale-accent-border);
   color: #06211F;
   box-shadow: 0 16px 30px rgba(20, 184, 166, 0.2);
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-cash-lock {
+  align-items: center;
+  background: rgba(19, 26, 35, 0.92);
+  border: 1px solid var(--sale-border-soft);
+  border-radius: 18px;
+  color: var(--sale-text-muted);
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  margin: 10px 0 12px;
+  padding: 12px 16px;
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-cash-lock strong {
+  color: var(--sale-text-main);
+  display: block;
+  font-size: 0.9rem;
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-cash-lock span,
+body[data-route-section="pdv-sale"] .pdv-sale-cash-lock small {
+  color: var(--sale-text-muted);
+  font-size: 0.78rem;
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-cash-lock.is-open {
+  background: rgba(52, 211, 153, 0.08);
+  border-color: rgba(52, 211, 153, 0.24);
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-cash-lock.is-open strong {
+  color: var(--success, #34D399);
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-cash-lock.is-closed,
+body[data-route-section="pdv-sale"] .pdv-sale-cash-lock.is-loading {
+  background: rgba(245, 158, 11, 0.09);
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-cash-lock.is-closed strong,
+body[data-route-section="pdv-sale"] .pdv-sale-cash-lock.is-loading strong {
+  color: var(--warning, #F59E0B);
 }
 
 body[data-route-section="pdv-sale"] .pdv-sale-zone,
