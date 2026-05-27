@@ -903,6 +903,19 @@ function getActiveStoreOptionsForCurrentUser() {
   return getOfficialStoreOptions().filter((item) => allowedSet.has(item.value));
 }
 
+function buildActiveStoreSelectMarkup({ compact = false } = {}) {
+  const activeStoreOptions = getActiveStoreOptionsForCurrentUser();
+  if (activeStoreOptions.length <= 1) {
+    return "";
+  }
+  const currentStoreId = getCurrentPdvStoreId();
+  return `
+    <select class="pdv-active-store-select${compact ? " is-compact" : ""}" data-active-store-select aria-label="Loja ativa">
+      ${activeStoreOptions.map((option) => `<option value="${escapeHtml(option.value)}"${option.value === currentStoreId ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+    </select>
+  `;
+}
+
 function getCurrentUserDisplayName() {
   return normalizeVisibleText(state.currentUser?.name || state.currentUser?.username || state.currentUser?.email || "Usuario");
 }
@@ -1505,14 +1518,7 @@ function buildPdvFrontShell({ sectionId, title, subtitle, eyebrow = "PDV AEROSTO
   const currentStoreContext = getPdvStorePublicContext(getCurrentPdvStoreId(), getCurrentUserStoreLabel());
   const currentStoreLabel = currentStoreContext.display_name || getCurrentUserStoreLabel();
   const currentTerminalLabel = normalizeText(currentStoreContext?.terminal?.default_terminal_label || "");
-  const activeStoreOptions = getActiveStoreOptionsForCurrentUser();
-  const activeStoreSelectHtml = activeStoreOptions.length > 1
-    ? `
-          <select class="pdv-active-store-select" data-active-store-select aria-label="Loja ativa">
-            ${activeStoreOptions.map((option) => `<option value="${escapeHtml(option.value)}"${option.value === getCurrentPdvStoreId() ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-          </select>
-        `
-    : `<strong>${escapeHtml(currentStoreLabel)}</strong>`;
+  const activeStoreSelectHtml = buildActiveStoreSelectMarkup() || `<strong>${escapeHtml(currentStoreLabel)}</strong>`;
   return `
     <div class="hero-card pdv-hero-card">
       <div>
@@ -16743,18 +16749,51 @@ function renderGlobalSidebarIdentity() {
   if (!state.currentUser) {
     if (userName) userName.textContent = "Sessao nao iniciada";
     if (userMeta) userMeta.textContent = "Faca login para continuar";
-    if (userStore) userStore.textContent = "AEROSTORE OS";
+    if (userStore) {
+      userStore.classList.remove("sidebar-user-store-switcher");
+      userStore.textContent = "AEROSTORE OS";
+    }
     if (userAvatar) userAvatar.textContent = "AE";
     if (logoutButton) logoutButton.style.display = "none";
     return;
   }
   const roleLabel = getRoleLabel(getCurrentRole());
   const storeLabel = getCurrentUserStoreLabel();
+  const storeSelector = buildActiveStoreSelectMarkup({ compact: true });
   if (userName) userName.textContent = getCurrentUserDisplayName();
   if (userMeta) userMeta.textContent = `Perfil: ${roleLabel}`;
-  if (userStore) userStore.textContent = `Loja: ${storeLabel || "-"}`;
+  if (userStore) {
+    if (storeSelector) {
+      userStore.classList.add("sidebar-user-store-switcher");
+      userStore.innerHTML = `<span class="sidebar-store-label">Loja ativa</span>${storeSelector}`;
+    } else {
+      userStore.classList.remove("sidebar-user-store-switcher");
+      userStore.textContent = `Loja ativa: ${storeLabel || "-"}`;
+    }
+  }
   if (userAvatar) userAvatar.textContent = getCurrentUserInitials();
   if (logoutButton) logoutButton.style.display = "";
+}
+
+function renderTopbarActiveStoreSelector() {
+  const actions = document.querySelector(".topbar-actions");
+  if (!actions) {
+    return;
+  }
+  let wrapper = document.getElementById("topbar-active-store-switcher");
+  const storeSelector = buildActiveStoreSelectMarkup({ compact: true });
+  if (!state.currentUser || !storeSelector) {
+    if (wrapper) wrapper.remove();
+    return;
+  }
+  if (!wrapper) {
+    wrapper = document.createElement("div");
+    wrapper.id = "topbar-active-store-switcher";
+    wrapper.className = "topbar-active-store-switcher";
+    const userChip = document.getElementById("current-user-label");
+    actions.insertBefore(wrapper, userChip || actions.firstChild);
+  }
+  wrapper.innerHTML = `<span>Loja ativa</span>${storeSelector}`;
 }
 
 function getSidebarMenuGroups() {
@@ -19949,6 +19988,7 @@ function applyAerointelFiltersFromForm(form) {
 function applyRolePermissions() {
   const role = getCurrentRole();
   renderSidebarMenu();
+  renderTopbarActiveStoreSelector();
   const userLabel = document.getElementById("current-user-label");
   if (userLabel) {
     if (!state.currentUser) {
@@ -19968,6 +20008,7 @@ function applyRolePermissions() {
         refreshedLabel.textContent = `${state.currentUser.name || state.currentUser.email || "Usuario"} - ${getRoleLabel(role)}${storeLabel && storeLabel !== "-" ? ` - ${storeLabel}` : ""}${terminalLabel ? ` / ${terminalLabel}` : ""}`;
       }
       renderGlobalSidebarIdentity();
+      renderTopbarActiveStoreSelector();
     }).catch(() => {});
   }
   document.getElementById("logout-button").style.display = state.currentUser ? "" : "none";
