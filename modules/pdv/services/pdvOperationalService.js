@@ -1500,8 +1500,9 @@ function filterUnifiedProducts(items = [], { storeId = "", status = "", pendingO
   });
 }
 
-async function searchProductsDetailed(query = "", { storeId = "", limit = 20 } = {}) {
-  const safeLimit = normalizeSearchLimit(limit, 20, 20);
+async function searchProductsDetailed(query = "", { storeId = "", page = 1, limit = 24 } = {}) {
+  const safePage = Math.max(1, Number(page || 1));
+  const safeLimit = normalizeSearchLimit(limit, 24, 100);
   if (!canRunPdvProductSearch(query)) {
     return {
       sources_consulted: [],
@@ -1511,7 +1512,15 @@ async function searchProductsDetailed(query = "", { storeId = "", limit = 20 } =
         crm_catalog: []
       },
       discarded: [],
-      unified: []
+      unified: [],
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total: 0,
+        totalPages: 1,
+        total_pages: 1,
+        has_more: false
+      }
     };
   }
   const normalizedQuery = normalizeLookup(query);
@@ -1521,10 +1530,13 @@ async function searchProductsDetailed(query = "", { storeId = "", limit = 20 } =
     crm_catalog: []
   };
   const discarded = [];
+  let inventoryPagination = null;
 
   try {
-    const { searchInventoryProducts } = require("../inventory/pdvInventoryService");
-    resultsBySource.inventory = searchInventoryProducts(query, { storeId }).map((item) => ({
+    const { listInventoryProducts } = require("../inventory/pdvInventoryService");
+    const inventoryPayload = listInventoryProducts({ q: query, storeId, page: safePage, limit: safeLimit });
+    inventoryPagination = inventoryPayload.pagination || null;
+    resultsBySource.inventory = (inventoryPayload.items || []).map((item) => ({
       ...item,
       id: normalizeText(item.id || item.product_id || item.sku || item.codigo || ""),
       estoque: toNumber(item.available_qty ?? item.estoque ?? 0),
@@ -1540,7 +1552,7 @@ async function searchProductsDetailed(query = "", { storeId = "", limit = 20 } =
   const datasetProducts = loadProductsDataset();
   resultsBySource.pdv_dataset = datasetProducts
     .filter((product) => !normalizedQuery || buildUnifiedProductSearchText(product).includes(normalizedQuery))
-    .slice(0, safeLimit)
+    .slice((safePage - 1) * safeLimit, safePage * safeLimit)
     .map((product) => ({
       id: normalizeText(product.product_id || product.sku || product.codigo || product.nome || buildId("PRD")),
       product_id: normalizeText(product.product_id || ""),
@@ -1593,8 +1605,8 @@ async function searchProductsDetailed(query = "", { storeId = "", limit = 20 } =
              OR COALESCE(gtin_ean, '') LIKE ?
            )
          ORDER BY updated_at DESC, id DESC
-         LIMIT ?`,
-        [lookup, lookup, lookup, lookup, lookup, lookup, digitLookup, digitLookup, digitLookup, safeLimit]
+         LIMIT ? OFFSET ?`,
+        [lookup, lookup, lookup, lookup, lookup, lookup, digitLookup, digitLookup, digitLookup, safeLimit, (safePage - 1) * safeLimit]
       );
       resultsBySource.crm_catalog = crmCatalogRows
         .filter((product) => buildUnifiedProductSearchText(product).includes(normalizedQuery))
@@ -1652,24 +1664,36 @@ async function searchProductsDetailed(query = "", { storeId = "", limit = 20 } =
     });
   });
 
+  const unified = Array.from(mergedMap.values())
+    .map((item) => enrichProductOperationalAvailability(item, storeId))
+    .sort((left, right) => {
+      const matchDelta = scoreProductSearchMatch(right, query) - scoreProductSearchMatch(left, query);
+      if (matchDelta !== 0) {
+        return matchDelta;
+      }
+      const availabilityDelta = toNumber(right.available_qty || right.estoque || 0) - toNumber(left.available_qty || left.estoque || 0);
+      if (availabilityDelta !== 0) {
+        return availabilityDelta;
+      }
+      return toNumber(right.preco_venda || 0) - toNumber(left.preco_venda || 0);
+    })
+    .slice(0, safeLimit);
+  const inventoryTotal = Number(inventoryPagination?.total || 0);
+  const total = Math.max(inventoryTotal, (safePage - 1) * safeLimit + unified.length);
+  const totalPages = Math.max(1, Math.ceil(total / safeLimit));
   return {
     sources_consulted: ["inventory", "pdv_dataset", "crm_catalog"],
     results_by_source: resultsBySource,
     discarded,
-    unified: Array.from(mergedMap.values())
-      .map((item) => enrichProductOperationalAvailability(item, storeId))
-      .sort((left, right) => {
-        const matchDelta = scoreProductSearchMatch(right, query) - scoreProductSearchMatch(left, query);
-        if (matchDelta !== 0) {
-          return matchDelta;
-        }
-        const availabilityDelta = toNumber(right.available_qty || right.estoque || 0) - toNumber(left.available_qty || left.estoque || 0);
-        if (availabilityDelta !== 0) {
-          return availabilityDelta;
-        }
-        return toNumber(right.preco_venda || 0) - toNumber(left.preco_venda || 0);
-      })
-      .slice(0, safeLimit)
+    unified,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages,
+      total_pages: totalPages,
+      has_more: safePage < totalPages
+    }
   };
 }
 
@@ -2229,8 +2253,8 @@ async function debugUnifiedSearch(query = "", type = "all", { storeId = "" } = {
   };
 }
 
-async function searchProducts(query = "", { storeId = "", limit = 20 } = {}) {
-  const result = await searchProductsDetailed(query, { storeId, limit });
+async function searchProducts(query = "", { storeId = "", page = 1, limit = 24 } = {}) {
+  const result = await searchProductsDetailed(query, { storeId, page, limit });
   return result.unified;
 }
 

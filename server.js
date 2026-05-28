@@ -51,7 +51,7 @@ const { createPdvWhatsappRouter } = require("./modules/pdv/routes/pdvWhatsappRou
 const { applyPagBankWebhookToSale } = require("./modules/pdv/sales/pdvSalesService");
 const { getActiveOperationalStoreOptions } = require("./modules/pdv/utils/pdvStoreUtils");
 const { normalizeStoreKey, formatStoreLabel, storesMatch } = require("./modules/pdv/utils/pdvStoreUtils");
-const { searchInventoryProducts } = require("./modules/pdv/inventory/pdvInventoryService");
+const { searchInventoryProducts, listInventoryProducts } = require("./modules/pdv/inventory/pdvInventoryService");
 const {
   searchProductsDetailed: searchOperationalProductsDetailed,
   searchCustomersDetailed: searchOperationalCustomersDetailed,
@@ -13963,7 +13963,7 @@ async function findDuplicateManualProductBySku(sku = "", exceptId = null) {
 async function listManualProducts(filters = {}) {
   const catalogs = await getAiCatalogBundle({ includeInactive: true });
   const page = Math.max(1, Number(filters.page || 1));
-  const limit = Math.max(1, Math.min(500, Number(filters.limit || filters.pageSize || filters.page_size || 60)));
+  const limit = Math.max(1, Math.min(200, Number(filters.limit || filters.pageSize || filters.page_size || 50)));
   const offset = Math.max(0, Number(filters.offset || ((page - 1) * limit)));
   const clauses = ["COALESCE(p.deleted_at, '') = ''"];
   const params = [];
@@ -14054,13 +14054,20 @@ async function listManualProducts(filters = {}) {
   }, new Map());
   let items = rows.map((row) => serializeAiProduct(row, catalogs, mediaByProductId.get(Number(row.id || 0)) || []));
   let operationalMatches = [];
+  let operationalPagination = null;
   if (query) {
     try {
-      operationalMatches = searchInventoryProducts(query, {
-        storeId: normalizeText(filters.store || "") && normalizeLookup(filters.store || "") !== "all" ? filters.store : ""
-      }).map(mapInventoryProductToManualProduct);
+      const operationalPayload = listInventoryProducts({
+        q: query,
+        storeId: normalizeText(filters.store || "") && normalizeLookup(filters.store || "") !== "all" ? filters.store : "",
+        page: Math.max(1, Math.floor(offset / limit) + 1),
+        limit
+      });
+      operationalPagination = operationalPayload.pagination || null;
+      operationalMatches = (Array.isArray(operationalPayload.items) ? operationalPayload.items : []).map(mapInventoryProductToManualProduct);
     } catch (error) {
       operationalMatches = [];
+      operationalPagination = null;
     }
     if (operationalMatches.length) {
       const merged = new Map();
@@ -14087,7 +14094,8 @@ async function listManualProducts(filters = {}) {
     }
   }
   const total = Number(totalRow?.total || 0);
-  const effectiveTotal = Math.max(total, offset + items.length);
+  const operationalTotal = Number(operationalPagination?.total || 0);
+  const effectiveTotal = Math.max(total, operationalTotal, offset + items.length);
   return {
     items,
     summary: {
@@ -14105,7 +14113,9 @@ async function listManualProducts(filters = {}) {
       page: Math.max(1, Math.floor(offset / limit) + 1),
       limit,
       total: effectiveTotal,
-      totalPages: Math.max(1, Math.ceil(effectiveTotal / limit))
+      totalPages: Math.max(1, Math.ceil(effectiveTotal / limit)),
+      total_pages: Math.max(1, Math.ceil(effectiveTotal / limit)),
+      has_more: Math.max(1, Math.floor(offset / limit) + 1) < Math.max(1, Math.ceil(effectiveTotal / limit))
     }
   };
 }

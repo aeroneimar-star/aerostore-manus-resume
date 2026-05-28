@@ -209,6 +209,7 @@ const state = {
     customerCreateExistingCustomer: null,
     productQuery: "",
     productResults: [],
+    productPagination: { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false },
     productSearching: false,
     productAddingKey: "",
     labelProductDrawerOpen: false,
@@ -3350,6 +3351,7 @@ function buildPdvSaleResolutionModal() {
 
 function buildPdvSaleProductResults() {
   const rows = toArray(state.pdvSale.productResults);
+  const pagination = state.pdvSale.productPagination || {};
   if (!rows.length) {
     const searchedQuery = normalizeText(state.pdvSale.productQuery || "");
     if (searchedQuery.length >= 2 && !state.pdvSale.productSearching) {
@@ -3411,10 +3413,18 @@ function buildPdvSaleProductResults() {
   }).join("");
   return `
     <div class="pdv-sale-product-results-head">
-      <span>Resultados da busca</span>
+      <span>${escapeHtml(pagination.total ? `Exibindo ${rows.length} de ${pagination.total} produtos encontrados` : "Resultados da busca")}</span>
       <button class="pdv-product-results-close" type="button" data-pdv-sale-product-results-close="true" aria-label="Fechar resultados da busca">×</button>
     </div>
     ${resultsHtml}
+    ${pagination.hasMore ? `
+      <div class="pdv-sale-product-load-more">
+        <button class="secondary-button" type="button" data-pdv-sale-product-load-more="true"${state.pdvSale.productSearching ? " disabled" : ""}>
+          ${state.pdvSale.productSearching ? "Carregando..." : "Carregar mais"}
+        </button>
+        <small>Mostrando ${escapeHtml(String(rows.length))} de ${escapeHtml(String(pagination.total || rows.length))} resultado(s).</small>
+      </div>
+    ` : ""}
   `;
 }
 
@@ -4753,6 +4763,7 @@ async function loadPdvSaleFront({ forceNewSession = false, preserveResults = fal
   if (!preserveResults) {
     state.pdvSale.customerResults = [];
     state.pdvSale.productResults = [];
+    state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
   }
   const initialContainer = document.getElementById("pdv-sale-content");
   if (initialContainer && !state.pdvSale.session && !state.pdvSale.lastCompletedSale) {
@@ -4873,7 +4884,7 @@ async function searchPdvSaleCustomers() {
   }
 }
 
-async function searchPdvSaleProducts() {
+async function searchPdvSaleProducts({ append = false } = {}) {
   const perfToken = startAeroStorePerfMeasure("pdv.sale.product_search", {
     query_length: normalizeText(state.pdvSale.productQuery).length,
     store_id: getCurrentPdvStoreId()
@@ -4885,6 +4896,7 @@ async function searchPdvSaleProducts() {
   const query = normalizeText(state.pdvSale.productQuery);
   if (query.length < 2) {
     state.pdvSale.productResults = [];
+    state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
     renderPdvSaleSurface();
     endAeroStorePerfMeasure(perfToken, { skipped: "query_too_short" });
     return;
@@ -4893,8 +4905,31 @@ async function searchPdvSaleProducts() {
   renderPdvSaleSurface();
   try {
     const storeId = getCurrentPdvStoreId();
-    const response = await api(`/api/pdv/operational/search/products?q=${encodeURIComponent(query)}&store=${encodeURIComponent(storeId)}&limit=12`);
-    state.pdvSale.productResults = toArray(response);
+    const currentPagination = state.pdvSale.productPagination || {};
+    const limit = Math.max(1, Math.min(100, Number(currentPagination.limit || 24)));
+    const page = append ? Math.max(1, Number(currentPagination.page || 1) + 1) : 1;
+    const response = await api(`/api/pdv/operational/search/products?q=${encodeURIComponent(query)}&store=${encodeURIComponent(storeId)}&page=${encodeURIComponent(String(page))}&limit=${encodeURIComponent(String(limit))}`);
+    const nextItems = toArray(response.items || response);
+    if (append) {
+      const merged = new Map();
+      [...toArray(state.pdvSale.productResults), ...nextItems].forEach((item, index) => {
+        const key = normalizeText(item.product_id || item.inventory_id || item.sku || item.codigo || item.id || `row-${index}`);
+        if (!merged.has(key)) merged.set(key, item);
+      });
+      state.pdvSale.productResults = Array.from(merged.values());
+    } else {
+      state.pdvSale.productResults = nextItems;
+    }
+    const pagination = response.pagination || {};
+    const totalPages = Math.max(1, Number(pagination.totalPages || pagination.total_pages || 1));
+    const currentPage = Math.max(1, Number(pagination.page || page));
+    state.pdvSale.productPagination = {
+      page: currentPage,
+      limit,
+      total: Math.max(nextItems.length, Number(pagination.total || state.pdvSale.productResults.length || 0)),
+      totalPages,
+      hasMore: pagination.has_more !== undefined ? Boolean(pagination.has_more) : currentPage < totalPages
+    };
   } finally {
     state.pdvSale.productSearching = false;
     renderPdvSaleSurface();
@@ -6271,6 +6306,7 @@ async function finalizePdvSale(form) {
     state.pdvSale.productQuery = "";
     state.pdvSale.customerResults = [];
     state.pdvSale.productResults = [];
+    state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
     state.pdvSale.customerAttachingKey = "";
     state.pdvSale.productAddingKey = "";
     state.pdvSale.cartBusyItemId = "";
@@ -6588,6 +6624,7 @@ async function startNewPdvSaleSession() {
   state.pdvSale.productQuery = "";
   state.pdvSale.customerResults = [];
   state.pdvSale.productResults = [];
+  state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
   state.pdvSale.customerAttachingKey = "";
   state.pdvSale.productAddingKey = "";
   state.pdvSale.cartBusyItemId = "";
@@ -6608,6 +6645,7 @@ async function startNewPdvSaleSession() {
     state.pdvSale.productQuery = "";
     state.pdvSale.customerResults = [];
     state.pdvSale.productResults = [];
+    state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
     resetPdvSaleCashbackState();
     resetPdvSaleExchangeCreditState();
     state.pdvSale.drawerOpen = false;
@@ -6629,6 +6667,7 @@ function forcePdvSalePostSaleExitFallback() {
   state.pdvSale.productQuery = "";
   state.pdvSale.customerResults = [];
   state.pdvSale.productResults = [];
+  state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
   state.pdvSale.paymentDraft = {};
   state.pdvSale.checkoutOpenStep = "";
   state.pdvSale.drawerOpen = false;
@@ -8531,6 +8570,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
     state.pdvProducts.query = "";
     state.pdvProducts.filters.status = "";
     state.pdvProducts.filters.pending = "0";
+    state.pdvProducts.pagination = { ...(state.pdvProducts.pagination || {}), page: 1 };
     state.pdvProducts.selectedProductId = "";
     loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao limpar a busca de produtos", error));
   });
@@ -9238,7 +9278,7 @@ function buildPdvProductImageMarkup(imageUrl = "", label = "Produto", fallback =
   if (!safeImageUrl) {
     return `<span class="pdv-products-photo-fallback">${escapeHtml(fallback)}</span>`;
   }
-  return `<img data-pdv-product-image="true" data-fallback-label="${escapeHtml(fallback)}" src="${escapeHtml(safeImageUrl)}" alt="${escapeHtml(label || "Produto")}" />`;
+  return `<img data-pdv-product-image="true" data-fallback-label="${escapeHtml(fallback)}" src="${escapeHtml(safeImageUrl)}" alt="${escapeHtml(label || "Produto")}" loading="lazy" decoding="async" />`;
 }
 
 function bindPdvProductImageFallbacks(scope) {
@@ -9294,6 +9334,22 @@ function getDefaultPdvProductDraft() {
 
 function ensurePdvProductsCrudState() {
   state.pdvProducts = state.pdvProducts || {};
+  const currentPagination = state.pdvProducts.pagination && typeof state.pdvProducts.pagination === "object"
+    ? state.pdvProducts.pagination
+    : {};
+  const requestedPageSize = Number(currentPagination.limit || currentPagination.pageSize || 50);
+  const pageSize = [50, 100, 200].includes(requestedPageSize) ? requestedPageSize : 50;
+  const total = Math.max(0, Number(currentPagination.total || 0));
+  const totalPages = Math.max(1, Number(currentPagination.totalPages || currentPagination.total_pages || Math.ceil(total / pageSize) || 1));
+  const requestedPage = Number(currentPagination.page || 1);
+  const page = Math.min(totalPages, Math.max(1, Number.isFinite(requestedPage) ? requestedPage : 1));
+  state.pdvProducts.pagination = {
+    page,
+    limit: pageSize,
+    total,
+    totalPages,
+    hasMore: currentPagination.hasMore !== undefined ? Boolean(currentPagination.hasMore) : page < totalPages
+  };
   state.pdvProducts.filters = {
     store: normalizePdvStoreIdentifier(state.pdvProducts.filters?.store ?? getDefaultPdvProductsStoreFilter()),
     status: normalizeText(state.pdvProducts.filters?.status || "").toLowerCase(),
@@ -10213,6 +10269,10 @@ function applyPdvProductsFiltersFromForm(formElement) {
   state.pdvProducts.filters.withoutSku = String(formData.get("withoutSkuFilter") || "0");
   state.pdvProducts.filters.withoutPhoto = String(formData.get("withoutPhotoFilter") || "0");
   state.pdvProducts.filters.zeroStock = String(formData.get("zeroStockFilter") || "0");
+  state.pdvProducts.pagination = {
+    ...(state.pdvProducts.pagination || {}),
+    page: 1
+  };
   state.pdvProducts.selectedProductId = "";
 }
 
@@ -10319,6 +10379,10 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
   ensurePdvProductsCrudState();
   const items = toArray(state.pdvProducts.items);
   const summary = state.pdvProducts.summary || {};
+  const pagination = state.pdvProducts.pagination || { page: 1, limit: 50, total: items.length, totalPages: 1, hasMore: false };
+  const totalProducts = Math.max(items.length, Number(pagination.total || 0));
+  const visibleStart = totalProducts ? ((Number(pagination.page || 1) - 1) * Number(pagination.limit || 50)) + 1 : 0;
+  const visibleEnd = totalProducts ? Math.min(totalProducts, visibleStart + items.length - 1) : 0;
   const selectedProduct = items.find((item) => normalizeText(item.id || "") === normalizeText(state.pdvProducts.selectedProductId || "")) || items[0] || null;
   if (selectedProduct && normalizeText(state.pdvProducts.selectedProductId || "") !== normalizeText(selectedProduct.id || "")) {
     state.pdvProducts.selectedProductId = normalizeText(selectedProduct.id || "");
@@ -10356,10 +10420,23 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
         </div>
       </form>
       <div class="stats-grid pdv-products-summary-grid">
-        <article class="stat-card pdv-products-stat-card"><span>Total</span><strong>${escapeHtml(String(summary.total || items.length || 0))}</strong><small>Base manual e estrategica consolidada.</small></article>
+        <article class="stat-card pdv-products-stat-card"><span>Total</span><strong>${escapeHtml(String(summary.total || totalProducts || 0))}</strong><small>Base manual e estrategica consolidada.</small></article>
         <article class="stat-card pdv-products-stat-card"><span>Vitrine IA</span><strong>${escapeHtml(String(summary.use_in_ai || items.filter((item) => item.use_in_ai).length))}</strong><small>Elegiveis para recomendacao da IA.</small></article>
         <article class="stat-card pdv-products-stat-card"><span>PDV</span><strong>${escapeHtml(String(summary.use_in_pos || items.filter((item) => item.use_in_pos).length))}</strong><small>Prontos para operacao futura da loja.</small></article>
         <article class="stat-card pdv-products-stat-card"><span>Sem preco</span><strong>${escapeHtml(String(summary.without_price || items.filter((item) => Number(item.price || 0) <= 0).length))}</strong><small>${escapeHtml(state.pdvProducts.error || "Use filtros para localizar gaps de cadastro antes da importacao global.")}</small></article>
+      </div>
+      <div class="pdv-stock-pagination-row pdv-products-pagination-row">
+        <span>${escapeHtml(totalProducts ? `${totalProducts} produtos encontrados` : "Nenhum produto encontrado")}</span>
+        <span>${escapeHtml(totalProducts ? `Mostrando ${visibleStart}-${visibleEnd} de ${totalProducts}` : "Ajuste a busca ou os filtros para localizar produtos.")}</span>
+        <label>
+          <span>Visualizar</span>
+          <select data-pdv-products-page-size="true">
+            ${[50, 100, 200].map((option) => `<option value="${option}"${Number(pagination.limit || 50) === option ? " selected" : ""}>${option} por pagina</option>`).join("")}
+          </select>
+        </label>
+        <span class="pdv-stock-page-indicator">Pagina ${escapeHtml(String(pagination.page || 1))} de ${escapeHtml(String(pagination.totalPages || 1))}</span>
+        <button class="ghost-button small" type="button" data-pdv-products-page-prev="true"${Number(pagination.page || 1) <= 1 || state.pdvProducts.loading ? " disabled" : ""}>Anterior</button>
+        <button class="ghost-button small" type="button" data-pdv-products-page-next="true"${!pagination.hasMore || state.pdvProducts.loading ? " disabled" : ""}>Proximo</button>
       </div>
       <div class="split-grid">
         <article class="panel"><div class="table-wrap"><table class="pdv-products-table"><thead><tr><th>Foto</th><th>Produto</th><th>SKU</th><th>Preco</th><th>Estoque</th><th>Status</th><th>Acoes</th></tr></thead><tbody>${rowsHtml}</tbody></table></div></article>
@@ -10385,7 +10462,31 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
   container.querySelector("[data-pdv-products-clear-search='true']")?.addEventListener("click", () => {
     state.pdvProducts.query = "";
     state.pdvProducts.filters = { ...state.pdvProducts.filters, status: "", useInAi: "0", useInPos: "0", withoutPrice: "0", withoutSku: "0", withoutPhoto: "0", zeroStock: "0" };
+    state.pdvProducts.pagination = { ...(state.pdvProducts.pagination || {}), page: 1 };
     loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao limpar filtros de produtos", error));
+  });
+  container.querySelector("[data-pdv-products-page-size='true']")?.addEventListener("change", (event) => {
+    const nextLimit = Number(event.currentTarget.value || 50);
+    state.pdvProducts.pagination = {
+      ...(state.pdvProducts.pagination || {}),
+      page: 1,
+      limit: [50, 100, 200].includes(nextLimit) ? nextLimit : 50
+    };
+    loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao ajustar a pagina de produtos", error));
+  });
+  container.querySelector("[data-pdv-products-page-prev='true']")?.addEventListener("click", () => {
+    state.pdvProducts.pagination = {
+      ...(state.pdvProducts.pagination || {}),
+      page: Math.max(1, Number(state.pdvProducts.pagination?.page || 1) - 1)
+    };
+    loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao voltar pagina de produtos", error));
+  });
+  container.querySelector("[data-pdv-products-page-next='true']")?.addEventListener("click", () => {
+    state.pdvProducts.pagination = {
+      ...(state.pdvProducts.pagination || {}),
+      page: Math.max(1, Number(state.pdvProducts.pagination?.page || 1) + 1)
+    };
+    loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao avancar pagina de produtos", error));
   });
   container.querySelector("[data-pdv-product-create-open='true']")?.addEventListener("click", () => openPdvProductDrawer("create"));
   Array.from(container.querySelectorAll("[data-pdv-product-detail]")).forEach((button) => button.addEventListener("click", () => {
@@ -10439,10 +10540,24 @@ async function loadPdvProductsFront(options = {}) {
     Object.entries(state.pdvProducts.filters || {}).forEach(([key, value]) => {
       if (normalizeText(value || "") && value !== "0") params.set(key, value);
     });
-    params.set("limit", "500");
+    const page = Math.max(1, Number(state.pdvProducts.pagination?.page || 1));
+    const requestedLimit = Number(state.pdvProducts.pagination?.limit || 50);
+    const limit = [50, 100, 200].includes(requestedLimit) ? requestedLimit : 50;
+    params.set("page", String(page));
+    params.set("limit", String(limit));
     const response = await api(`/api/products?${params.toString()}`);
     state.pdvProducts.items = toArray(response.items);
     state.pdvProducts.summary = response.summary || null;
+    const responsePagination = response.pagination || {};
+    const totalPages = Math.max(1, Number(responsePagination.totalPages || responsePagination.total_pages || 1));
+    const currentPage = Math.min(totalPages, Math.max(1, Number(responsePagination.page || page)));
+    state.pdvProducts.pagination = {
+      page: currentPage,
+      limit: [50, 100, 200].includes(Number(responsePagination.limit || limit)) ? Number(responsePagination.limit || limit) : limit,
+      total: Math.max(0, Number(responsePagination.total || state.pdvProducts.items.length || 0)),
+      totalPages,
+      hasMore: responsePagination.has_more !== undefined ? Boolean(responsePagination.has_more) : currentPage < totalPages
+    };
     const nextSelected = preserveSelection
       ? state.pdvProducts.items.find((item) => normalizeText(item.id || "") === normalizeText(state.pdvProducts.selectedProductId || ""))
       : null;
@@ -10966,7 +11081,7 @@ function applyPdvStockFiltersFromForm(formElement) {
   state.pdvStock.pagination = { ...(state.pdvStock.pagination || {}), page: 1 };
 }
 
-const PDV_STOCK_PAGE_SIZE_OPTIONS = [25, 50, 100];
+const PDV_STOCK_PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
 
 function ensurePdvStockPagination(totalItems = 0) {
   const pagination = state.pdvStock.pagination && typeof state.pdvStock.pagination === "object"
@@ -10974,16 +11089,20 @@ function ensurePdvStockPagination(totalItems = 0) {
     : {};
   const requestedPageSize = Number(pagination.pageSize || 25);
   const pageSize = PDV_STOCK_PAGE_SIZE_OPTIONS.includes(requestedPageSize) ? requestedPageSize : 25;
-  const totalPages = Math.max(1, Math.ceil(Number(totalItems || 0) / pageSize));
+  const total = Math.max(0, Number(pagination.total ?? totalItems ?? 0));
+  const totalPages = Math.max(1, Number(pagination.totalPages || Math.ceil(total / pageSize) || 1));
   const requestedPage = Number(pagination.page || 1);
   const page = Math.min(totalPages, Math.max(1, Number.isFinite(requestedPage) ? requestedPage : 1));
-  state.pdvStock.pagination = { page, pageSize };
+  const hasMore = pagination.hasMore !== undefined ? Boolean(pagination.hasMore) : page < totalPages;
+  state.pdvStock.pagination = { page, pageSize, total, totalPages, hasMore };
   return {
     page,
     pageSize,
+    total,
     totalPages,
-    startIndex: totalItems ? (page - 1) * pageSize : 0,
-    endIndex: totalItems ? Math.min(totalItems, page * pageSize) : 0
+    hasMore,
+    startIndex: total ? (page - 1) * pageSize : 0,
+    endIndex: total ? Math.min(total, ((page - 1) * pageSize) + totalItems) : 0
   };
 }
 
@@ -10996,7 +11115,8 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
   const filters = state.pdvStock.filters || {};
   const storeOptions = getPdvStockStoreOptions();
   const pagination = ensurePdvStockPagination(items.length);
-  const visibleItems = items.slice(pagination.startIndex, pagination.endIndex);
+  const isServerPaginated = pagination.total !== items.length || pagination.page > 1;
+  const visibleItems = isServerPaginated ? items : items.slice(pagination.startIndex, pagination.endIndex);
   const selectedItem = items.find((item) => normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "") === normalizeText(state.pdvStock.selectedInventoryId || "")) || items[0] || null;
 
   if (selectedItem && normalizeText(state.pdvStock.selectedInventoryId || "") !== normalizeText(selectedItem.inventory_id || selectedItem.product_id || selectedItem.sku || selectedItem.codigo || "")) {
@@ -11052,14 +11172,15 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
       </td>
     </tr>
   `;
-  const paginationStart = items.length ? pagination.startIndex + 1 : 0;
-  const paginationEnd = pagination.endIndex;
+  const paginationStart = visibleItems.length ? pagination.startIndex + 1 : 0;
+  const paginationEnd = visibleItems.length ? Math.min(pagination.startIndex + visibleItems.length, pagination.total || visibleItems.length) : 0;
+  const totalFound = pagination.total || items.length || 0;
   const paginationHtml = `
     <div class="pdv-stock-results-toolbar">
       <div class="pdv-stock-results-count">
-        <strong>${escapeHtml(String(items.length || 0))}</strong>
-        <span>${items.length === 1 ? "produto encontrado" : "produtos encontrados"}</span>
-        <small>Mostrando ${escapeHtml(String(paginationStart))}-${escapeHtml(String(paginationEnd))} de ${escapeHtml(String(items.length || 0))}</small>
+        <strong>${escapeHtml(String(totalFound))}</strong>
+        <span>${totalFound === 1 ? "produto encontrado" : "produtos encontrados"}</span>
+        <small>${state.pdvStock.query ? `Busca: ${escapeHtml(state.pdvStock.query)} • ` : ""}Mostrando ${escapeHtml(String(paginationStart))}-${escapeHtml(String(paginationEnd))} de ${escapeHtml(String(totalFound))}</small>
       </div>
       <div class="pdv-stock-results-controls">
         <label>
@@ -11069,8 +11190,8 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
           </select>
         </label>
         <span class="pdv-stock-page-indicator">Pagina ${escapeHtml(String(pagination.page))} de ${escapeHtml(String(pagination.totalPages))}</span>
-        <button class="ghost-button small" type="button" data-pdv-stock-page-prev="true"${pagination.page <= 1 ? " disabled" : ""}>Anterior</button>
-        <button class="secondary-button small" type="button" data-pdv-stock-page-next="true"${pagination.page >= pagination.totalPages ? " disabled" : ""}>Proximo</button>
+        <button class="ghost-button small" type="button" data-pdv-stock-page-prev="true"${pagination.page <= 1 || state.pdvStock.loading ? " disabled" : ""}>Anterior</button>
+        <button class="secondary-button small" type="button" data-pdv-stock-page-next="true"${pagination.page >= pagination.totalPages || state.pdvStock.loading ? " disabled" : ""}>Proximo</button>
       </div>
     </div>
   `;
@@ -11122,7 +11243,7 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
       <div class="stats-grid pdv-products-summary-grid">
         <article class="stat-card pdv-products-stat-card">
           <span>Itens listados</span>
-          <strong>${escapeHtml(String(items.length || 0))}</strong>
+          <strong>${escapeHtml(String(totalFound))}</strong>
           <small>Leitura atual para ${escapeHtml(getPdvStockActiveStoreLabel())}.</small>
         </article>
         <article class="stat-card pdv-products-stat-card">
@@ -11207,13 +11328,27 @@ async function loadPdvStockFront(options = {}) {
     if (normalizeText(state.pdvStock.filters.alert || "")) {
       params.set("alert", normalizeText(state.pdvStock.filters.alert || ""));
     }
-    params.set("limit", "80");
+    const page = Math.max(1, Number(state.pdvStock.pagination?.page || 1));
+    const requestedPageSize = Number(state.pdvStock.pagination?.pageSize || 100);
+    const pageSize = PDV_STOCK_PAGE_SIZE_OPTIONS.includes(requestedPageSize) ? requestedPageSize : 100;
+    params.set("page", String(page));
+    params.set("limit", String(pageSize));
     const [summaryResponse, productsResponse] = await Promise.all([
       api(`/api/pdv/inventory/summary?${params.toString()}`),
       api(`/api/pdv/inventory/products?${params.toString()}`)
     ]);
     state.pdvStock.summary = summaryResponse || null;
     state.pdvStock.items = toArray(productsResponse.items);
+    const responsePagination = productsResponse.pagination || {};
+    state.pdvStock.pagination = {
+      page: Math.max(1, Number(responsePagination.page || page)),
+      pageSize: PDV_STOCK_PAGE_SIZE_OPTIONS.includes(Number(responsePagination.limit || pageSize)) ? Number(responsePagination.limit || pageSize) : pageSize,
+      total: Math.max(0, Number(responsePagination.total || state.pdvStock.items.length || 0)),
+      totalPages: Math.max(1, Number(responsePagination.totalPages || responsePagination.total_pages || 1)),
+      hasMore: responsePagination.has_more !== undefined
+        ? Boolean(responsePagination.has_more)
+        : Math.max(1, Number(responsePagination.page || page)) < Math.max(1, Number(responsePagination.totalPages || responsePagination.total_pages || 1))
+    };
     const nextSelected = preserveSelection
       ? state.pdvStock.items.find((item) => normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "") === normalizeText(state.pdvStock.selectedInventoryId || ""))
       : null;
@@ -12371,6 +12506,41 @@ function buildPdvImportProgressPanel() {
   `;
 }
 
+function formatPdvImportFileSize(bytes = 0) {
+  const size = Number(bytes || 0);
+  if (!Number.isFinite(size) || size <= 0) return "0 KB";
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1).replace(".", ",")} MB`;
+  return `${Math.max(1, Math.round(size / 1024))} KB`;
+}
+
+function describePdvImportSelectedFiles(files = []) {
+  const selectedFiles = Array.from(files || []);
+  if (!selectedFiles.length) {
+    return {
+      title: "Nenhuma planilha selecionada",
+      detail: "Escolha um ou varios arquivos XLS, XLSX ou CSV para gerar a previa."
+    };
+  }
+  const totalSize = selectedFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
+  const names = selectedFiles.map((file) => normalizeText(file.name || "")).filter(Boolean);
+  return {
+    title: `${selectedFiles.length} planilha(s) selecionada(s)`,
+    detail: `${names.slice(0, 4).join(", ")}${names.length > 4 ? ` +${names.length - 4} arquivo(s)` : ""} • ${formatPdvImportFileSize(totalSize)}`
+  };
+}
+
+function updatePdvImportSelectedFilesUi(fileInput = null) {
+  const form = fileInput?.closest?.("[data-pdv-import-preview-form]");
+  const target = form?.querySelector?.("[data-pdv-import-selected-files]");
+  if (!target) return;
+  const selected = describePdvImportSelectedFiles(fileInput?.files || []);
+  target.innerHTML = `
+    <strong>${escapeHtml(selected.title)}</strong>
+    <small>${escapeHtml(selected.detail)}</small>
+  `;
+  target.classList.toggle("has-files", Boolean(fileInput?.files?.length));
+}
+
 function requestPdvImportPreviewWithProgress(url = "", formData = null, onProgress = () => {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -12508,13 +12678,20 @@ function buildPdvImportSummaryCards(summary = {}) {
   const brands = toArray(summary.detectedBrands).slice(0, 6);
   const uniqueSkus = summary.uniqueSkus ?? summary.uniqueSkuCount ?? summary.productsWithSku ?? 0;
   const duplicates = toArray(summary.duplicatedSkusAcrossFiles).length || summary.duplicateRows || summary.duplicatedRows || 0;
+  const destinationStoreLabel = summary.appliedStoreLabel || summary.manualStoreOverrideLabel || "loja destino";
+  const catalogNewRows = summary.catalogNewRows ?? summary.newRows ?? 0;
+  const catalogExistingRows = summary.catalogExistingRows ?? summary.updateRows ?? 0;
+  const destinationStockCreateRows = summary.destinationStockCreateRows ?? Math.max(0, Number(summary.validRows || 0) - Number(summary.destinationStockExistingRows || 0));
+  const destinationStockUpdateRows = summary.destinationStockUpdateRows ?? summary.destinationStockExistingRows ?? 0;
+  const destinationStockUpsertRows = summary.destinationStockUpsertRows ?? summary.validRows ?? 0;
   return `
     <div class="stats-grid pdv-import-summary-grid">
       <article class="stat-card"><span>Total de linhas</span><strong>${escapeHtml(String(summary.totalRows || 0))}</strong><small>${escapeHtml(String(summary.validRows || 0))} validas para conferencia.</small></article>
       <article class="stat-card"><span>SKUs unicos</span><strong>${escapeHtml(String(uniqueSkus || 0))}</strong><small>Base consolidada do lote.</small></article>
       <article class="stat-card"><span>Duplicados</span><strong>${escapeHtml(String(duplicates || 0))}</strong><small>SKUs repetidos entre arquivos ou linhas.</small></article>
-      <article class="stat-card"><span>Produtos novos</span><strong>${escapeHtml(String(summary.newRows || 0))}</strong><small>Itens que ainda nao existem.</small></article>
-      <article class="stat-card"><span>Produtos existentes</span><strong>${escapeHtml(String(summary.updateRows || 0))}</strong><small>Itens que entram como atualizacao.</small></article>
+      <article class="stat-card"><span>Novos no catalogo</span><strong>${escapeHtml(String(catalogNewRows || 0))}</strong><small>SKUs que ainda nao existem no cadastro global.</small></article>
+      <article class="stat-card"><span>Ja no catalogo global</span><strong>${escapeHtml(String(catalogExistingRows || 0))}</strong><small>Podem ter vindo de outra loja/lote; nao significa estoque duplicado.</small></article>
+      <article class="stat-card"><span>Estoque ${escapeHtml(destinationStoreLabel)}</span><strong>${escapeHtml(String(destinationStockUpsertRows || 0))}</strong><small>${escapeHtml(`${destinationStockCreateRows || 0} criados; ${destinationStockUpdateRows || 0} atualizados na loja destino.`)}</small></article>
       <article class="stat-card"><span>Estoque positivo</span><strong>${escapeHtml(String(summary.productsWithPositiveStock || 0))}</strong><small>Saldo Tiny acima de zero.</small></article>
       <article class="stat-card"><span>Estoque zero</span><strong>${escapeHtml(String(summary.productsWithZeroStock || 0))}</strong><small>Importavel como estoque provisorio.</small></article>
       <article class="stat-card"><span>Estoque negativo</span><strong>${escapeHtml(String(summary.productsWithNegativeStock || 0))}</strong><small>${escapeHtml(`${summary.negativeStockImportableRows || 0} importavel(is) como divergencia.`)}</small></article>
@@ -12522,6 +12699,7 @@ function buildPdvImportSummaryCards(summary = {}) {
       <article class="stat-card"><span>Sem preco</span><strong>${escapeHtml(String(summary.productsWithoutPrice || 0))}</strong><small>Conferencia antes do commit.</small></article>
       ${brands.length ? `<article class="stat-card pdv-import-brand-card"><span>Marcas detectadas</span><strong>${escapeHtml(String(toArray(summary.detectedBrands).length))}</strong><small>${escapeHtml(brands.join(", "))}</small></article>` : ""}
     </div>
+    ${catalogExistingRows ? `<div class="pdv-import-callout"><strong>Produto global x estoque da loja</strong><span>${escapeHtml(`${catalogExistingRows} SKU(s) ja existem no catalogo global. Neste lote, o sistema vai criar ou atualizar o estoque da loja ${destinationStoreLabel}, sem criar produto duplicado.`)}</span></div>` : ""}
     ${summary.negativeStockMessage ? `<div class="pdv-import-callout warning"><strong>Estoque negativo importavel</strong><span>${escapeHtml(summary.negativeStockMessage)}</span></div>` : ""}
   `;
   return `
@@ -12717,6 +12895,11 @@ function exportPdvImportPreviewReport() {
     ["resumo", "duplicados", toArray(summary.duplicatedSkusAcrossFiles).length || summary.duplicateRows || summary.duplicatedRows || 0],
     ["resumo", "produtos_novos", summary.newRows || 0],
     ["resumo", "produtos_existentes", summary.updateRows || 0],
+    ["resumo", "catalogo_global_novos", summary.catalogNewRows ?? summary.newRows ?? 0],
+    ["resumo", "catalogo_global_existentes", summary.catalogExistingRows ?? summary.updateRows ?? 0],
+    ["resumo", "estoque_loja_destino_criar", summary.destinationStockCreateRows ?? 0],
+    ["resumo", "estoque_loja_destino_atualizar", summary.destinationStockUpdateRows ?? summary.destinationStockExistingRows ?? 0],
+    ["resumo", "estoque_loja_destino_criar_ou_atualizar", summary.destinationStockUpsertRows ?? summary.validRows ?? 0],
     ["resumo", "estoque_positivo", summary.productsWithPositiveStock || 0],
     ["resumo", "estoque_zero", summary.productsWithZeroStock || 0],
     ["resumo", "estoque_negativo", summary.productsWithNegativeStock || 0],
@@ -12873,6 +13056,10 @@ function renderPdvImportsFront(container) {
                 <strong>Selecionar planilhas Tiny/Olist</strong>
                 <small>Um unico campo para enviar varios arquivos XLS, XLSX ou CSV no mesmo lote.</small>
               </span>
+              <span class="pdv-import-file-selection" data-pdv-import-selected-files>
+                <strong>Nenhuma planilha selecionada</strong>
+                <small>Escolha um arquivo para a tela reconhecer antes da previa.</small>
+              </span>
             </label>
             <label>Loja/depósito deste arquivo
               <select name="storeOverride" required${storeOptions.length ? "" : " disabled"}>
@@ -12918,6 +13105,9 @@ function renderPdvImportsFront(container) {
     `
   });
   const previewForm = container.querySelector('[data-pdv-import-preview-form="true"]');
+  const fileInput = previewForm?.querySelector('input[name="file"]');
+  fileInput?.addEventListener("change", () => updatePdvImportSelectedFilesUi(fileInput));
+  updatePdvImportSelectedFilesUi(fileInput);
   previewForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     await submitPdvTinyImportPreview(previewForm);
@@ -20523,6 +20713,7 @@ function buildPdvDashboardPremiumPanel(data = state.dashboard || {}) {
   const routes = getPdvDashboardActionRoutes();
   const storeContext = getPdvStorePublicContext(getCurrentPdvStoreId(), getCurrentUserStoreLabel());
   const storeLabel = storeContext.display_name || getCurrentUserStoreLabel();
+  const activeStoreControl = buildActiveStoreSelectMarkup({ compact: true });
   const roleLabel = getRoleLabel(getCurrentRole());
   const whatsappMeta = getWhatsappCrmStatusMeta();
   const whatsappLabel = normalizeText(whatsappMeta.label || state.whatsappStatus || "desconectado");
@@ -20550,7 +20741,7 @@ function buildPdvDashboardPremiumPanel(data = state.dashboard || {}) {
           <span>Painel</span>
         </div>
         <div class="pdv-dashboard-top-status">
-          <span>Loja: <strong>${escapeHtml(storeLabel)}</strong></span>
+          <span class="pdv-dashboard-store-switcher">Loja: ${activeStoreControl || `<strong>${escapeHtml(storeLabel)}</strong>`}</span>
           <span>Perfil: <strong>${escapeHtml(roleLabel)}</strong></span>
           <span>WhatsApp: <strong class="${whatsappDisconnected ? "is-danger" : "is-accent"}">${escapeHtml(whatsappLabel || "-")}</strong></span>
         </div>
@@ -24906,6 +25097,14 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const loadMorePdvSaleProductsButton = event.target.closest("[data-pdv-sale-product-load-more]");
+  if (loadMorePdvSaleProductsButton) {
+    searchPdvSaleProducts({ append: true }).catch((error) => {
+      handleUiError("Erro ao carregar mais produtos da venda", error);
+    });
+    return;
+  }
+
   const openPdvSaleLabelProductButton = event.target.closest("[data-pdv-sale-label-product-open]");
   if (openPdvSaleLabelProductButton) {
     openPdvSaleLabelProductDrawer();
@@ -24922,6 +25121,7 @@ function handleDocumentClick(event) {
   if (closePdvSaleProductResultsButton) {
     state.pdvSale.productQuery = "";
     state.pdvSale.productResults = [];
+    state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
     state.pdvSale.productSearching = false;
     state.pdvSale.productAddingKey = "";
     renderPdvSaleSurface();
@@ -25263,17 +25463,17 @@ function handleDocumentClick(event) {
 
   const pdvStockPrevPageButton = event.target.closest("[data-pdv-stock-page-prev]");
   if (pdvStockPrevPageButton) {
-    const pagination = ensurePdvStockPagination(toArray(state.pdvStock.items).length);
+    const pagination = ensurePdvStockPagination(state.pdvStock.pagination?.total || toArray(state.pdvStock.items).length);
     state.pdvStock.pagination.page = Math.max(1, pagination.page - 1);
-    renderPdvStockOfficialFront();
+    loadPdvStockFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao voltar a pagina do estoque", error));
     return;
   }
 
   const pdvStockNextPageButton = event.target.closest("[data-pdv-stock-page-next]");
   if (pdvStockNextPageButton) {
-    const pagination = ensurePdvStockPagination(toArray(state.pdvStock.items).length);
+    const pagination = ensurePdvStockPagination(state.pdvStock.pagination?.total || toArray(state.pdvStock.items).length);
     state.pdvStock.pagination.page = Math.min(pagination.totalPages, pagination.page + 1);
-    renderPdvStockOfficialFront();
+    loadPdvStockFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao avancar a pagina do estoque", error));
     return;
   }
 
@@ -26294,7 +26494,7 @@ function handleDocumentChange(event) {
       page: 1,
       pageSize: PDV_STOCK_PAGE_SIZE_OPTIONS.includes(nextPageSize) ? nextPageSize : 25
     };
-    renderPdvStockOfficialFront();
+    loadPdvStockFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao paginar o estoque", error));
     return;
   }
 

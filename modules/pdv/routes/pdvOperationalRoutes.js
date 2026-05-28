@@ -5,6 +5,7 @@ const {
   ensureOperationalDirs,
   getPdvOperationalManifest,
   searchProducts,
+  searchProductsDetailed,
   searchCustomers,
   createQuickCustomer,
   openCustomerSession,
@@ -129,11 +130,21 @@ router.get("/search/products", async (req, res) => {
     if (!ensureStoreAccess(req, res, req.query.store || req.query.storeId || "")) {
       return;
     }
+    const detailed = await searchProductsDetailed(req.query.q || "", {
+      storeId: req.query.store || req.query.storeId || "",
+      page: req.query.page || 1,
+      limit: req.query.limit || 24
+    });
     res.json({
-      items: await searchProducts(req.query.q || "", {
-        storeId: req.query.store || req.query.storeId || "",
-        limit: req.query.limit || 20
-      })
+      items: detailed.unified || [],
+      pagination: detailed.pagination || {
+        page: Math.max(1, Number(req.query.page || 1)),
+        limit: Math.max(1, Math.min(100, Number(req.query.limit || 24))),
+        total: (detailed.unified || []).length,
+        totalPages: 1,
+        total_pages: 1,
+        has_more: false
+      }
     });
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao buscar produtos operacionais do PDV." });

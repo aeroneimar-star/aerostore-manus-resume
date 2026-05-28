@@ -1295,7 +1295,7 @@ function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", 
   const normalizedStatus = normalizeText(status || "").toUpperCase();
   const normalizedAlert = normalizeText(alert || "").toLowerCase();
   const safePage = Math.max(1, Number(page || 1));
-  const safeLimit = Math.max(1, Math.min(300, Number(limit || 300)));
+  const safeLimit = Math.max(1, Math.min(1000, Number(limit || 300)));
   const offset = Math.max(0, (safePage - 1) * safeLimit);
   const rows = records.filter((item) => {
     if (shouldScopeToStore && normalizeStoreLookup(item.store_id) !== normalizedStore) return false;
@@ -1331,6 +1331,7 @@ function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", 
       availability_label: availabilityLabel
     };
   });
+  const totalPages = Math.max(1, Math.ceil(rows.length / safeLimit));
   return {
     items: rows.slice(offset, offset + safeLimit),
     total: rows.length,
@@ -1338,7 +1339,9 @@ function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", 
       page: safePage,
       limit: safeLimit,
       total: rows.length,
-      totalPages: Math.max(1, Math.ceil(rows.length / safeLimit))
+      totalPages,
+      total_pages: totalPages,
+      has_more: safePage < totalPages
     }
   };
 }
@@ -2144,8 +2147,9 @@ function convertReservationById(reservationId, saleId, user = {}) {
   };
 }
 
-function searchInventoryProducts(query = "", { storeId = "" } = {}) {
-  const rows = listInventoryProducts({ q: query, storeId }).items;
+function searchInventoryProducts(query = "", { storeId = "", limit = 80 } = {}) {
+  const safeLimit = Math.max(1, Math.min(1000, Number(limit || 80)));
+  const rows = listInventoryProducts({ q: query, storeId, limit: safeLimit }).items;
   const priceByReference = new Map();
   if (rows.some((item) => roundQty(item.preco_venda || 0) <= 0)) {
     loadProductsDataset().forEach((product) => {
@@ -2167,7 +2171,7 @@ function searchInventoryProducts(query = "", { storeId = "" } = {}) {
       });
     });
   }
-  return rows.slice(0, 40).map((item) => {
+  return rows.slice(0, safeLimit).map((item) => {
     const lookupKeys = [
       normalizeText(item.product_id || ""),
       normalizeText(item.sku || ""),
@@ -3068,6 +3072,30 @@ function previewTinyInventoryImport(groupedItems = [], options = {}) {
   const detectedStoreSet = new Set();
   const appliedStoreSet = new Set();
   const fileSummaryMap = new Map();
+  const hasDestinationInventory = (item = {}) => {
+    const targetStoreId = normalizeStoreId(item.store_id || DEFAULT_STORE_ID);
+    const duplicate = item.duplicate && typeof item.duplicate === "object" ? item.duplicate : null;
+    const productId = normalizeText(
+      duplicate?.existing_product_id
+      || item.payload?.product_id
+      || item.product_id
+      || ""
+    );
+    const inventoryId = normalizeText(duplicate?.existing_inventory_id || item.inventory_id || "");
+    if (!productId && !inventoryId) {
+      return false;
+    }
+    return inventoryRows.some((row) => {
+      const sameStore = normalizeStoreId(row.store_id || row.loja || DEFAULT_STORE_ID) === targetStoreId;
+      const sameProduct = productId && normalizeText(row.product_id || "") === productId;
+      const sameInventory = inventoryId && normalizeText(row.inventory_id || "") === inventoryId;
+      return sameStore && (sameProduct || sameInventory);
+    });
+  };
+  const importablePreview = preview.filter((item) => item.can_import);
+  const destinationStockExistingRows = importablePreview.filter((item) => hasDestinationInventory(item)).length;
+  const destinationStockCreateRows = Math.max(0, importablePreview.length - destinationStockExistingRows);
+  const destinationStockUpsertRows = importablePreview.length;
   preview.forEach((item) => {
     if (normalizeText(item.marca || "")) brandSet.add(normalizeText(item.marca || ""));
     if (normalizeText(item.detected_store_label || "")) detectedStoreSet.add(normalizeText(item.detected_store_label || ""));
@@ -3103,6 +3131,12 @@ function previewTinyInventoryImport(groupedItems = [], options = {}) {
     validRows: preview.filter((item) => item.can_import).length,
     newRows: preview.filter((item) => item.can_import && item.import_mode === "create").length,
     updateRows: preview.filter((item) => item.can_import && item.import_mode === "update").length,
+    catalogNewRows: preview.filter((item) => item.can_import && item.import_mode === "create").length,
+    catalogExistingRows: preview.filter((item) => item.can_import && item.import_mode === "update").length,
+    destinationStockExistingRows,
+    destinationStockCreateRows,
+    destinationStockUpdateRows: destinationStockExistingRows,
+    destinationStockUpsertRows,
     readyRows: preview.filter((item) => item.action === "ready").length,
     pendingRows: preview.filter((item) => item.action === "pending").length,
     duplicateRows: preview.filter((item) => item.action === "duplicate").length,
