@@ -839,6 +839,7 @@ function buildProductSearchText(product) {
     product.codigo,
     product.sku,
     product.codigo_tiny,
+    product.tiny_id,
     product.codigo_etiqueta,
     product.codigo_interno,
     product.ean,
@@ -1159,6 +1160,7 @@ function buildProductSearchIdentifiers(product = {}) {
     textCodes: [
       product.sku,
       product.codigo_tiny,
+      product.tiny_id,
       product.codigo_etiqueta,
       product.codigo_interno,
       product.codigo,
@@ -1190,6 +1192,32 @@ function scoreProductSearchMatch(product = {}, query = "") {
   if (normalizedTextQuery && identifiers.name === normalizedTextQuery) score = Math.max(score, 820);
   if (normalizedTextQuery && identifiers.text.includes(normalizedTextQuery)) score = Math.max(score, 420);
   return score;
+}
+
+function isStrictProductCodeSearch(query = "") {
+  const raw = normalizeText(query || "");
+  if (!raw || /\s/.test(raw)) {
+    return false;
+  }
+  const code = normalizeCodeLookup(raw);
+  const digits = normalizeDigits(raw);
+  if (digits && digits.length >= 5 && /^[\d.\-_/]+$/.test(raw)) {
+    return true;
+  }
+  if (/[a-z]/i.test(raw) && /\d/.test(raw) && code.length >= 6) {
+    return true;
+  }
+  return /^(sku|cod|codigo|qa|prd|codex)[a-z0-9._-]+$/i.test(raw);
+}
+
+function productMatchesExactIdentifier(product = {}, query = "") {
+  const textQuery = normalizeCodeLookup(query);
+  const digitsQuery = normalizeDigits(query);
+  const identifiers = buildProductSearchIdentifiers(product);
+  return Boolean(
+    (textQuery && identifiers.textCodes.includes(textQuery))
+    || (digitsQuery && identifiers.digitCodes.includes(digitsQuery))
+  );
 }
 
 function buildProductMatchKey(product = {}) {
@@ -1331,7 +1359,7 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     const qty = toNumber(availability.adjacent_option?.available_qty || 0);
     return {
       status: availability.status,
-      summary: `Nao disponivel ${saleStoreText.in || "na loja atual"}`,
+      summary: `Não disponível ${saleStoreText.in || "na loja atual"}`,
       detail: `Disponivel ${adjacentText.in || `em ${adjacentLabel}`} - ${qty} un. para consulta/transferencia.`,
       button_label: `Consultar ${adjacentText.name || adjacentLabel}`,
       can_add_directly: true,
@@ -1347,7 +1375,7 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     const qty = toNumber(availability.same_city_options?.[0]?.available_qty || 0);
     return {
       status: availability.status,
-      summary: `Nao disponivel ${saleStoreText.in || "na loja atual"}`,
+      summary: `Não disponível ${saleStoreText.in || "na loja atual"}`,
       detail: `Disponivel ${originText.in || `em ${originLabel}`} - ${qty} un. para consulta/transferencia.`,
       button_label: `Consultar ${originText.name || originLabel}`,
       can_add_directly: false,
@@ -1533,6 +1561,7 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
     };
   }
   const normalizedQuery = normalizeLookup(query);
+  const strictCodeSearch = isStrictProductCodeSearch(query);
   const resultsBySource = {
     inventory: [],
     pdv_dataset: [],
@@ -1560,7 +1589,11 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
 
   const datasetProducts = loadProductsDataset();
   resultsBySource.pdv_dataset = datasetProducts
-    .filter((product) => !normalizedQuery || buildUnifiedProductSearchText(product).includes(normalizedQuery))
+    .filter((product) => {
+      if (!normalizedQuery) return true;
+      if (strictCodeSearch) return productMatchesExactIdentifier(product, query);
+      return buildUnifiedProductSearchText(product).includes(normalizedQuery);
+    })
     .slice((safePage - 1) * safeLimit, safePage * safeLimit)
     .map((product) => ({
       id: normalizeText(product.product_id || product.sku || product.codigo || product.nome || buildId("PRD")),
@@ -1618,7 +1651,9 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
         [lookup, lookup, lookup, lookup, lookup, lookup, digitLookup, digitLookup, digitLookup, safeLimit, (safePage - 1) * safeLimit]
       );
       resultsBySource.crm_catalog = crmCatalogRows
-        .filter((product) => buildUnifiedProductSearchText(product).includes(normalizedQuery))
+        .filter((product) => strictCodeSearch
+          ? productMatchesExactIdentifier(product, query)
+          : buildUnifiedProductSearchText(product).includes(normalizedQuery))
         .map((product) => ({
           id: normalizeText(product.sku || product.codigo || `AI_${product.id}`),
           product_id: normalizeText(`AI_${product.id}`),
@@ -1675,7 +1710,12 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
 
   const unified = Array.from(mergedMap.values())
     .map((item) => enrichProductOperationalAvailability(item, storeId))
+    .filter((item) => !strictCodeSearch || productMatchesExactIdentifier(item, query))
     .sort((left, right) => {
+      const exactDelta = Number(productMatchesExactIdentifier(right, query)) - Number(productMatchesExactIdentifier(left, query));
+      if (exactDelta !== 0) {
+        return exactDelta;
+      }
       const matchDelta = scoreProductSearchMatch(right, query) - scoreProductSearchMatch(left, query);
       if (matchDelta !== 0) {
         return matchDelta;

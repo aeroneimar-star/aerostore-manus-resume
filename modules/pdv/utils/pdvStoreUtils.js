@@ -36,7 +36,7 @@ function normalizeStoreKey(value = "") {
   if (!ascii) {
     return "";
   }
-  if (ascii === "loja geral" || ascii === "loja_geral" || ascii === "geral") return "loja_geral";
+  if (ascii === "loja geral" || ascii === "loja_geral" || ascii === "geral" || ascii.includes("estoque geral") || ascii.includes("estoque interno")) return "loja_geral";
   if (ascii === "sul" || ascii.includes("loja sul") || ascii.includes("aerostore sul")) return "sul";
   if (
     ascii === "vila"
@@ -83,7 +83,7 @@ function formatStoreLabel(value = "") {
     bonfim: "Bonfim (legado)",
     camboriu: "Camboriu / Sul",
     sul: "Sul",
-    loja_geral: "Estoque geral interno"
+    loja_geral: "Estoque geral"
   };
   if (predefined[key]) {
     return predefined[key];
@@ -102,6 +102,9 @@ function formatStoreLabel(value = "") {
 function getStoreDisplayText(value = "") {
   const key = normalizeStoreKey(value);
   const name = formatStoreLabel(value || key);
+  if (key === "loja_geral") {
+    return { name: "Estoque geral", in: "no Estoque geral", from: "do Estoque geral", to: "para o Estoque geral" };
+  }
   if (key === "botanico") {
     return { name, in: `no ${name}`, from: `do ${name}`, to: `para o ${name}` };
   }

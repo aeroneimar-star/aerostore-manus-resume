@@ -12152,11 +12152,16 @@ function normalizePermissionSet(value, role = "seller") {
 }
 
 function getStoreLabelFromUser(user = {}) {
-  const explicitLabel = String(user.store_label || "").trim();
   const normalizedStoreId = normalizeStoreKey(user.active_store_id || user.activeStoreId || user.active_store || user.store_id || user.storeId || user.store || "");
   const canonicalLabel = formatStoreLabel(normalizedStoreId);
-  if (canonicalLabel && canonicalLabel !== normalizedStoreId) {
+  if (canonicalLabel && canonicalLabel !== "Loja" && canonicalLabel !== normalizedStoreId) {
     return canonicalLabel;
+  }
+  const explicitLabel = String(user.store_label || "").trim();
+  const explicitStoreId = normalizeStoreKey(explicitLabel);
+  const explicitCanonicalLabel = formatStoreLabel(explicitStoreId);
+  if (explicitStoreId && explicitCanonicalLabel && explicitCanonicalLabel !== "Loja" && explicitCanonicalLabel !== explicitStoreId) {
+    return explicitCanonicalLabel;
   }
   const fallbackLabel = {
     vila_masc: "Vila",
@@ -12165,7 +12170,7 @@ function getStoreLabelFromUser(user = {}) {
     botanico: "Botânico",
     sul: "Sul"
   }[normalizedStoreId];
-  return explicitLabel || fallbackLabel || String(user.store || "").trim();
+  return fallbackLabel || explicitLabel || String(user.store || "").trim();
 }
 
 function getStoreIdFromUser(user = {}) {
@@ -12188,13 +12193,14 @@ function enrichUserRecord(user = {}) {
   const activeStoreId = activeStoreCandidate && (hasAllStores || effectiveAllowedStores.includes(activeStoreCandidate))
     ? activeStoreCandidate
     : (primaryStoreId || effectiveAllowedStores[0] || "");
+  const activeStoreLabel = formatStoreLabel(activeStoreId);
   return {
     ...user,
     role_key: roleKey,
     primary_store_id: primaryStoreId,
     active_store_id: activeStoreId,
     store_id: activeStoreId,
-    store_label: getStoreLabelFromUser(user),
+    store_label: activeStoreLabel && activeStoreLabel !== "Loja" ? activeStoreLabel : getStoreLabelFromUser({ ...user, active_store_id: activeStoreId }),
     allowed_stores: effectiveAllowedStores,
     permissions
   };

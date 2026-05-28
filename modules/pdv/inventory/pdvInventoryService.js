@@ -1293,11 +1293,15 @@ function buildInventorySearchText(record = {}) {
 function isInventoryCodeLikeQuery(query = "") {
   const normalized = normalizeText(query || "");
   const digits = normalizeDigits(normalized);
-  return Boolean(digits && digits.length >= 3 && /^[\d\s.\-_/]+$/.test(normalized));
+  const compact = normalized.replace(/\s+/g, "");
+  return Boolean(
+    (digits && digits.length >= 5 && /^[\d.\-_/]+$/.test(compact))
+    || (/[a-z]/i.test(compact) && /\d/.test(compact) && compact.length >= 6)
+  );
 }
 
 function inventoryRecordMatchesExactCode(record = {}, query = "") {
-  const normalizedQuery = normalizeText(query || "");
+  const normalizedQuery = normalizeText(query || "").toLowerCase();
   const normalizedDigitsQuery = normalizeDigits(query || "");
   const textFields = [
     record.sku,
@@ -1305,7 +1309,7 @@ function inventoryRecordMatchesExactCode(record = {}, query = "") {
     record.codigo_tiny,
     record.codigo_etiqueta,
     record.codigo_interno
-  ].map((value) => normalizeText(value || ""));
+  ].map((value) => normalizeText(value || "").toLowerCase());
   const digitFields = [
     record.ean,
     record.codigo_barras,

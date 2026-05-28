@@ -92,6 +92,16 @@ function filterByStore(req, items = []) {
   });
 }
 
+function filterItemsByStoreValue(items = [], storeValue = "") {
+  const targetStore = normalizeStoreScope(storeValue);
+  if (!targetStore) {
+    return Array.isArray(items) ? items : [];
+  }
+  return (Array.isArray(items) ? items : []).filter((item) =>
+    isCashStoreMatch(item?.loja || item?.store_id || item?.store || "", targetStore)
+  );
+}
+
 router.get("/manifest", async (req, res) => {
   try {
     if (!hasPermission(req.user || {}, "can_view_cash_register")) {
@@ -115,15 +125,33 @@ router.get("/dashboard", async (req, res) => {
     if (!hasPermission(req.user || {}, "can_view_cash_register")) {
       return res.status(403).json({ error: "Seu perfil não pode acessar o dashboard do caixa." });
     }
+    const requestedStore = req.query.store || req.query.store_id || "";
+    if (requestedStore && !ensureStoreAccess(req, res, requestedStore)) {
+      return;
+    }
+    const normalizedRequestedStore = normalizeStoreScope(requestedStore);
     const dashboard = getCashDashboard();
+    const scopedRegisters = normalizedRequestedStore
+      ? filterItemsByStoreValue(listCashRegisters(), normalizedRequestedStore)
+      : filterByStore(req, listCashRegisters());
+    const scopedActiveRegisters = scopedRegisters.filter((item) => ["OPEN", "REOPENED"].includes(String(item?.status || "").toUpperCase()));
+    const scopedRecentAudits = normalizedRequestedStore
+      ? filterItemsByStoreValue(dashboard.recentAudits || [], normalizedRequestedStore)
+      : filterByStore(req, dashboard.recentAudits || []);
+    const scopedAuthorizations = normalizedRequestedStore
+      ? filterItemsByStoreValue(dashboard.authorizations || [], normalizedRequestedStore)
+      : filterByStore(req, dashboard.authorizations || []);
     res.json({
       ...dashboard,
-      activeRegisters: filterByStore(req, dashboard.activeRegisters || []),
-      recentAudits: filterByStore(req, dashboard.recentAudits || []),
-      authorizations: filterByStore(req, dashboard.authorizations || []),
-      latestRegister: ensureStoreAccess(req, { status() { return { json() {} }; } }, dashboard.latestRegister?.loja || "")
-        ? dashboard.latestRegister
-        : null
+      metrics: {
+        ...(dashboard.metrics || {}),
+        caixas_abertos: scopedActiveRegisters.length,
+        caixas_fechados: scopedRegisters.filter((item) => String(item?.status || "").toUpperCase() === "CLOSED").length
+      },
+      activeRegisters: scopedActiveRegisters,
+      recentAudits: scopedRecentAudits,
+      authorizations: scopedAuthorizations,
+      latestRegister: scopedRegisters[0] || null
     });
   } catch (error) {
     res.status(500).json({ error: "Falha ao carregar o dashboard do caixa operacional do PDV." });
@@ -135,7 +163,15 @@ router.get("/registers", async (req, res) => {
     if (!hasPermission(req.user || {}, "can_view_cash_register")) {
       return res.status(403).json({ error: "Seu perfil não pode acessar os caixas operacionais." });
     }
-    res.json({ items: filterByStore(req, listCashRegisters()).slice(0, 120) });
+    const requestedStore = req.query.store || req.query.store_id || "";
+    if (requestedStore && !ensureStoreAccess(req, res, requestedStore)) {
+      return;
+    }
+    const normalizedRequestedStore = normalizeStoreScope(requestedStore);
+    const scopedRegisters = normalizedRequestedStore
+      ? listCashRegisters().filter((item) => isCashStoreMatch(item?.loja || item?.store_id || "", normalizedRequestedStore))
+      : filterByStore(req, listCashRegisters());
+    res.json({ items: scopedRegisters.slice(0, 120) });
   } catch (error) {
     res.status(500).json({ error: "Falha ao carregar os caixas operacionais do PDV." });
   }

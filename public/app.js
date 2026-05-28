@@ -214,6 +214,10 @@ const state = {
     customerQuery: "",
     customerResults: [],
     customerSearching: false,
+    customerSearchError: "",
+    customerSearchHasRun: false,
+    customerSearchRequestId: 0,
+    customerSearchLastQuery: "",
     customerAttachingKey: "",
     customerRemoving: false,
     customerCreateOpen: false,
@@ -900,8 +904,11 @@ function getRoleLabel(role) {
 
 function getCurrentUserStoreLabel() {
   const currentStoreId = getCurrentPdvStoreId();
-  const fallback = state.currentUser?.store_label || state.currentUser?.store || state.currentUser?.store_id || "-";
-  return getPdvStoreDisplayName(currentStoreId || state.currentUser?.store_id || state.currentUser?.store || "", fallback);
+  if (currentStoreId) {
+    return getPdvStoreDisplayName(currentStoreId, formatStoreIdLabel(currentStoreId));
+  }
+  const fallbackStoreId = normalizePdvStoreIdentifier(state.currentUser?.store_label || state.currentUser?.store || state.currentUser?.store_id || "");
+  return fallbackStoreId ? formatStoreIdLabel(fallbackStoreId) : "-";
 }
 
 function getOfficialStoreOptions() {
@@ -910,6 +917,40 @@ function getOfficialStoreOptions() {
     { value: "botanico", label: "Botânico" },
     { value: "sul", label: "Sul" }
   ];
+}
+
+function normalizeAuthUserStoreContext(user = null) {
+  if (!user || typeof user !== "object") {
+    return user;
+  }
+  const allowedStores = toArray(user.allowed_stores || user.allowedStores)
+    .map((item) => normalizePdvStoreIdentifier(item))
+    .filter(Boolean);
+  const activeStoreId = normalizePdvStoreIdentifier(
+    user.active_store_id
+    || user.activeStoreId
+    || user.active_store
+    || user.store_id
+    || user.store
+    || user.loja
+    || user.store_label
+    || allowedStores[0]
+    || ""
+  );
+  const primaryStoreId = normalizePdvStoreIdentifier(user.primary_store_id || user.primaryStoreId || user.store_id || user.store || activeStoreId || "");
+  const roleKey = normalizeText(user.role || user.role_key || user.profile || "").toLowerCase();
+  const hasAllStores = Boolean(user.permissions?.can_view_all_stores) || roleKey === "admin";
+  const normalizedAllowedStores = hasAllStores
+    ? Array.from(new Set([...allowedStores, "vila", "botanico", "sul"]))
+    : Array.from(new Set([activeStoreId, ...allowedStores].filter(Boolean)));
+  return {
+    ...user,
+    active_store_id: activeStoreId || null,
+    store_id: activeStoreId || primaryStoreId || null,
+    primary_store_id: primaryStoreId || activeStoreId || null,
+    store_label: activeStoreId ? formatStoreIdLabel(activeStoreId) : (primaryStoreId ? formatStoreIdLabel(primaryStoreId) : normalizeText(user.store_label || "")),
+    allowed_stores: normalizedAllowedStores
+  };
 }
 
 function getActiveStoreOptionsForCurrentUser() {
@@ -1124,8 +1165,9 @@ function setAuthSession(token, user) {
     localStorage.removeItem("aerostore_auth_token");
   }
   if (user) {
-    localStorage.setItem("aerostore_auth_user", JSON.stringify(user));
-    state.currentUser = user;
+    const normalizedUser = normalizeAuthUserStoreContext(user);
+    localStorage.setItem("aerostore_auth_user", JSON.stringify(normalizedUser));
+    state.currentUser = normalizedUser;
   } else {
     localStorage.removeItem("aerostore_auth_user");
     state.currentUser = null;
@@ -1545,7 +1587,7 @@ function buildPdvRouteTabs(activeSection = "") {
 
 function buildPdvFrontShell({ sectionId, title, subtitle, eyebrow = "PDV AEROSTORE", contentHtml = "", compactTabs = false }) {
   const currentStoreContext = getPdvStorePublicContext(getCurrentPdvStoreId(), getCurrentUserStoreLabel());
-  const currentStoreLabel = currentStoreContext.display_name || getCurrentUserStoreLabel();
+  const currentStoreLabel = getPdvStoreDisplayName(getCurrentPdvStoreId(), currentStoreContext.display_name || getCurrentUserStoreLabel());
   const currentTerminalLabel = normalizeText(currentStoreContext?.terminal?.default_terminal_label || "");
   const activeStoreSelectHtml = buildActiveStoreSelectMarkup() || `<strong>${escapeHtml(currentStoreLabel)}</strong>`;
   return `
@@ -1601,7 +1643,7 @@ function formatStoreIdLabel(storeId = "") {
     vila: "Vila",
     botanico: "Botânico",
     sul: "Sul",
-    loja_geral: "Estoque geral interno"
+    loja_geral: "Estoque geral"
   };
   if (labels[normalized]) return labels[normalized];
   const raw = normalizeText(storeId || "");
@@ -1615,6 +1657,9 @@ function formatStoreIdLabel(storeId = "") {
 function getStoreDisplayText(storeIdOrName = "") {
   const normalized = normalizePdvStoreIdentifier(storeIdOrName || "");
   const name = formatStoreIdLabel(storeIdOrName || normalized || "");
+  if (normalized === "loja_geral") {
+    return { name: "Estoque geral", in: "no Estoque geral", from: "do Estoque geral", to: "para o Estoque geral" };
+  }
   if (normalized === "botanico") {
     return { name, in: `no ${name}`, from: `do ${name}`, to: `para o ${name}` };
   }
@@ -1627,6 +1672,19 @@ function getStoreDisplayText(storeIdOrName = "") {
   return { name, in: `na ${name || "loja atual"}`, from: `da ${name || "loja"}`, to: `para a ${name || "loja"}` };
 }
 
+function normalizePdvSaleProductCopy(text = "") {
+  let value = normalizeVisibleText(normalizeText(text || ""));
+  value = value.replace(/\bNao disponivel\b/gi, "Não disponível");
+  value = value.replace(/\bNao disponível\b/gi, "Não disponível");
+  value = value.replace(/\bDisponivel\b/g, "Disponível");
+  value = value.replace(/\bdisponivel\b/g, "disponível");
+  value = value.replace(/\bna Estoque geral interno\b/gi, "no Estoque geral");
+  value = value.replace(/\bna Estoque geral\b/gi, "no Estoque geral");
+  value = value.replace(/\bno Estoque geral interno\b/gi, "no Estoque geral");
+  value = value.replace(/\bConsultar Estoque geral interno\b/gi, "Consultar Estoque geral");
+  return value;
+}
+
 function getCurrentPdvStoreId() {
   const explicitStore = normalizePdvStoreIdentifier(
     state.currentUser?.active_store_id
@@ -1635,6 +1693,7 @@ function getCurrentPdvStoreId() {
     || state.currentUser?.store_id
     || state.currentUser?.store
     || state.currentUser?.loja
+    || state.currentUser?.store_label
     || ""
   );
   if (explicitStore) {
@@ -1645,7 +1704,7 @@ function getCurrentPdvStoreId() {
 }
 
 function getPdvSaleCashRegisterStoreId() {
-  return normalizeText(state.pdvSale.session?.store_id || state.pdvSale.session?.loja || getCurrentPdvStoreId()).toLowerCase();
+  return normalizePdvStoreIdentifier(getCurrentPdvStoreId() || state.pdvSale.session?.store_id || state.pdvSale.session?.loja || "");
 }
 
 function getPdvSaleCashRegisterStatus() {
@@ -3008,6 +3067,10 @@ async function attachCreatedCustomerToPdvSale(customer = null, options = {}) {
     state.pdvSale.customerQuery = normalizeText(officialCustomer?.name || "");
     state.pdvSale.customerResults = [];
     state.pdvSale.customerSearching = false;
+    state.pdvSale.customerSearchError = "";
+    state.pdvSale.customerSearchHasRun = false;
+    state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
+    state.pdvSale.customerSearchLastQuery = "";
     state.pdvSale.customerCreateError = "";
     state.pdvSale.customerCreateExistingCustomer = null;
     resetPdvSaleCashbackState();
@@ -3100,6 +3163,14 @@ async function ensurePdvSaleSession({ forceNew = false } = {}) {
   if (sessionId) {
     try {
       const existingSession = await api(`/api/pdv/operational/session/${encodeURIComponent(sessionId)}`);
+      const existingStoreId = normalizePdvStoreIdentifier(existingSession?.store_id || existingSession?.loja || "");
+      if (existingStoreId && existingStoreId !== storeId) {
+        state.pdvSale.session = null;
+        state.pdvSale.sessionId = "";
+        persistPdvSaleSessionId("");
+        sessionId = "";
+        throw new Error("Sessao de venda pertence a outra loja ativa.");
+      }
       state.pdvSale.session = existingSession;
       state.pdvSale.sessionId = existingSession.session_id || sessionId;
       state.pdvSale.paymentDraft = getDefaultPdvSalePaymentDraft(existingSession);
@@ -3184,7 +3255,7 @@ function buildPdvSaleCustomerCard(customer = null) {
       <div class="pdv-customer-profile-stats">
         <div class="pdv-customer-profile-stat"><span>Cashback</span><strong>${currency(customer.cashback || customer.saldo_cashback || behavior.cashback_operacional || 0)}</strong></div>
         <div class="pdv-customer-profile-stat"><span>Ticket medio</span><strong>${currency(behavior.ticket_medio || customer.ticket_medio || 0)}</strong></div>
-        <div class="pdv-customer-profile-stat"><span>Última compra</span><strong>${formatDateBR(behavior.ultima_compra || customer.ultima_compra || "-") || "-"}</strong></div>
+        <div class="pdv-customer-profile-stat"><span>Última compra</span><strong>${formatBrazilianDateSafe(behavior.ultima_compra || customer.ultima_compra || customer.last_purchase_at || customer.last_purchase || "")}</strong></div>
       </div>
       ${categories ? `<div class="pdv-sale-action-chips">${categories}</div>` : ""}
     </article>
@@ -3341,6 +3412,24 @@ function buildPdvSaleCustomerRegistrationDrawer() {
 
 function buildPdvSaleCustomerCard(customer = null) {
   if (!customer) {
+    if (state.pdvSale.customerSearching) {
+      return `
+        <div class="pdv-customer-search-loading" role="status" aria-live="polite">
+          <span class="pdv-mini-spinner" aria-hidden="true"></span>
+          <div>
+            <strong>Buscando cliente...</strong>
+            <span>Procurando na base de clientes da AEROSTORE.</span>
+          </div>
+        </div>
+      `;
+    }
+    if (
+      state.pdvSale.customerSearchHasRun
+      || toArray(state.pdvSale.customerResults).length
+      || state.pdvSale.customerSearchError
+    ) {
+      return "";
+    }
     return `
       <div class="pdv-sale-empty-state compact">
         <strong>Sem cliente identificado</strong>
@@ -3389,7 +3478,7 @@ function buildPdvSaleCustomerCard(customer = null) {
       </div>
       <div class="pdv-customer-profile-stats">
         <div class="pdv-customer-profile-stat"><span>Ticket medio</span><strong>${currency(behavior.ticket_medio || customer.ticket_medio || 0)}</strong></div>
-        <div class="pdv-customer-profile-stat"><span>Ultima compra</span><strong>${formatDateBR(behavior.ultima_compra || customer.ultima_compra || "-") || "-"}</strong></div>
+        <div class="pdv-customer-profile-stat"><span>Ultima compra</span><strong>${formatBrazilianDateSafe(behavior.ultima_compra || customer.ultima_compra || customer.last_purchase_at || customer.last_purchase || "")}</strong></div>
       </div>
       ${buildPdvSaleCustomerProfilePrompt(customer)}
       ${categories ? `<div class="pdv-sale-action-chips">${categories}</div>` : ""}
@@ -3403,6 +3492,17 @@ function buildPdvSaleCustomerCard(customer = null) {
 
 function buildPdvSaleCustomerResults() {
   const rows = toArray(state.pdvSale.customerResults);
+  if (state.pdvSale.customerSearching) {
+    return "";
+  }
+  if (state.pdvSale.customerSearchError) {
+    return `
+      <div class="pdv-customer-empty-state is-error">
+        <strong>Não foi possível buscar clientes agora</strong>
+        <span>${escapeHtml(state.pdvSale.customerSearchError || "Tente novamente em alguns instantes.")}</span>
+      </div>
+    `;
+  }
   if (!rows.length) {
     if (state.pdvSale.session?.customer) {
       return `
@@ -3412,10 +3512,14 @@ function buildPdvSaleCustomerResults() {
         </div>
       `;
     }
+    const query = normalizeText(state.pdvSale.customerQuery || "");
+    if (!state.pdvSale.customerSearchHasRun || query.length < 2) {
+      return "";
+    }
     return `
-      <div class="pdv-sale-empty-state compact">
-        <strong>${normalizeText(state.pdvSale.customerQuery || "").length >= 2 ? "Nenhum cliente encontrado" : "Nenhum cliente carregado"}</strong>
-        <span>${normalizeText(state.pdvSale.customerQuery || "").length >= 2 ? "Verifique nome, telefone ou CPF, ou use Novo cadastro para criar na base oficial." : "Use a busca acima para identificar o cliente da venda."}</span>
+      <div class="pdv-customer-empty-state">
+        <strong>Nenhum cliente encontrado</strong>
+        <span>Verifique nome, telefone ou CPF, ou use Novo cadastro para criar na base oficial.</span>
       </div>
     `;
   }
@@ -3503,7 +3607,7 @@ function getPdvSaleProductOperationalPresentation(item = null) {
   if (status === "AVAILABLE_ADJACENT_STORE") {
     return {
       tone: "adjacent",
-      summary: item?.operational_summary || `Nao disponivel ${saleStoreText.in || "na loja atual"}`,
+      summary: item?.operational_summary || `Não disponível ${saleStoreText.in || "na loja atual"}`,
       detail: item?.operational_detail || `Disponivel ${sourceStoreText.in || "em outra loja"} para consulta/transferencia.`,
       buttonLabel: item?.action_label || (sourceStoreText.name ? `Consultar ${sourceStoreText.name}` : "Consultar loja"),
       disabled: false
@@ -3658,7 +3762,10 @@ function buildPdvSaleProductResults() {
   const resultsHtml = rows.map((item, index) => {
     const presentation = getPdvSaleProductOperationalPresentation(item);
     const disabled = Boolean(presentation.disabled);
-    const rawLookup = item.product_id || item.sku || item.codigo || `${index}`;
+    const presentationSummary = normalizePdvSaleProductCopy(presentation.summary);
+    const presentationDetail = normalizePdvSaleProductCopy(presentation.detail);
+    const presentationButtonLabel = normalizePdvSaleProductCopy(presentation.buttonLabel);
+    const rawLookup = item.inventory_id || item.product_id || item.sku || item.codigo || `${index}`;
     const lookup = escapeHtml(rawLookup);
     const isBusy = normalizeText(state.pdvSale.productAddingKey || "") === normalizeText(rawLookup || "");
     const imageUrl = normalizeText(item.photo_preview_url || item.preview_url || item.foto || item.image || "");
@@ -3688,10 +3795,10 @@ function buildPdvSaleProductResults() {
         <div class="pdv-product-card-action">
           <div class="pdv-product-card-price">${currency(item.preco_venda || item.price || 0)}</div>
           <div class="pdv-product-card-stock pdv-product-card-stock-${escapeHtml(presentation.tone)}">
-            <strong>${escapeHtml(presentation.summary)}</strong>
-            <span>${escapeHtml(presentation.detail)}</span>
+            <strong>${escapeHtml(presentationSummary)}</strong>
+            <span>${escapeHtml(presentationDetail)}</span>
           </div>
-          <button class="pdv-product-card-btn pdv-product-card-btn-${escapeHtml(presentation.tone)}" type="button" data-pdv-sale-product-add="${lookup}" ${(disabled || isBusy) ? "disabled" : ""}>${isBusy ? "Adicionando..." : escapeHtml(presentation.buttonLabel)}</button>
+          <button class="pdv-product-card-btn pdv-product-card-btn-${escapeHtml(presentation.tone)}" type="button" data-pdv-sale-product-add="${lookup}" ${(disabled || isBusy) ? "disabled" : ""}>${isBusy ? "Adicionando..." : escapeHtml(presentationButtonLabel)}</button>
         </div>
       </article>
     `;
@@ -4599,7 +4706,7 @@ function buildPdvSaleSuccessState(sale = null) {
         <div class="pdv-payment-success-card"><span>Data</span><strong>${escapeHtml(formatDateTimeBR(sale.created_at || sale.updated_at || ""))}</strong></div>
         <div class="pdv-payment-success-card"><span>Cliente</span><strong>${escapeHtml(getPdvSalePostSaleCustomerName(sale))}</strong></div>
         <div class="pdv-payment-success-card"><span>Vendedor</span><strong>${escapeHtml(sale.vendedor || getCurrentPdvSellerName())}</strong></div>
-        <div class="pdv-payment-success-card"><span>Loja</span><strong>${escapeHtml(storeContext.display_name || formatStoreIdLabel(sale.loja || getCurrentPdvStoreId()))}</strong></div>
+        <div class="pdv-payment-success-card"><span>Loja</span><strong>${escapeHtml(getPdvStoreDisplayName(sale.loja || sale.store_id || getCurrentPdvStoreId(), storeContext.display_name || ""))}</strong></div>
         <div class="pdv-payment-success-card"><span>Terminal</span><strong>${escapeHtml(normalizeText(storeContext?.terminal?.default_terminal_label || "") || "-")}</strong></div>
         <div class="pdv-payment-success-card"><span>Pagamento</span><strong>${escapeHtml(paymentSummary)}</strong></div>
       </div>
@@ -4831,6 +4938,7 @@ function buildPdvSaleActiveContent() {
   const session = state.pdvSale.session;
   const storeId = getCurrentPdvStoreId();
   const storeContext = getPdvStorePublicContext(storeId, getCurrentUserStoreLabel());
+  const saleStoreLabel = getPdvStoreDisplayName(storeId, storeContext.display_name || getCurrentUserStoreLabel());
   const totals = getPdvSaleCartTotals(session);
   const projectedCashback = getPdvSaleProjectedCashback(totals);
   const finalizeState = getPdvSaleFinalizeState(session);
@@ -4848,7 +4956,7 @@ function buildPdvSaleActiveContent() {
           <span class="store-label">AEROSTORE PDV &nbsp;|&nbsp; <strong>Venda</strong></span>
         </div>
         <div class="pdv-sale-header-center">
-          <span class="store-label">Loja: <strong>${escapeHtml(storeContext.display_name || formatStoreIdLabel(storeId || getCurrentUserStoreLabel()))}</strong></span>
+          <span class="store-label">Loja: <strong>${escapeHtml(saleStoreLabel)}</strong></span>
           <span class="seller-label">Vendedor: <strong>${escapeHtml(getCurrentPdvSellerName())}</strong></span>
         </div>
         <div class="pdv-sale-header-right">
@@ -5099,23 +5207,33 @@ async function searchPdvSaleCustomers() {
   const perfToken = startAeroStorePerfMeasure("pdv.sale.customer_search", {
     query_length: normalizeText(state.pdvSale.customerQuery).length
   });
-  if (state.pdvSale.customerSearching) {
-    endAeroStorePerfMeasure(perfToken, { skipped: "already_searching" });
-    return;
-  }
   const query = normalizeText(state.pdvSale.customerQuery);
   state.pdvSale.customerCreateError = "";
   state.pdvSale.customerCreateExistingCustomer = null;
   if (query.length < 2) {
+    state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
     state.pdvSale.customerResults = [];
+    state.pdvSale.customerSearching = false;
+    state.pdvSale.customerSearchError = "";
+    state.pdvSale.customerSearchHasRun = false;
+    state.pdvSale.customerSearchLastQuery = "";
     renderPdvSaleSurface();
     endAeroStorePerfMeasure(perfToken, { skipped: "query_too_short" });
     return;
   }
+  const requestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
+  state.pdvSale.customerSearchRequestId = requestId;
   state.pdvSale.customerSearching = true;
+  state.pdvSale.customerSearchError = "";
+  state.pdvSale.customerSearchHasRun = true;
+  state.pdvSale.customerSearchLastQuery = query;
+  state.pdvSale.customerResults = [];
   renderPdvSaleSurface();
   try {
     const response = await api(`/api/customers?search=${encodeURIComponent(query)}&limit=10`);
+    if (requestId !== state.pdvSale.customerSearchRequestId || query !== normalizeText(state.pdvSale.customerQuery || "")) {
+      return;
+    }
     const baseResults = toArray(response.items).map((item) => ({
       customer_lookup: String(item.id || item.mobile_normalized || item.phone || item.name || ""),
       master_customer_id: String(item.id || ""),
@@ -5174,14 +5292,27 @@ async function searchPdvSaleCustomers() {
         return item;
       }
     }));
+    if (requestId !== state.pdvSale.customerSearchRequestId || query !== normalizeText(state.pdvSale.customerQuery || "")) {
+      return;
+    }
     state.pdvSale.customerResults = enrichedResults;
+    state.pdvSale.customerSearchError = "";
+  } catch (error) {
+    if (requestId === state.pdvSale.customerSearchRequestId) {
+      state.pdvSale.customerResults = [];
+      state.pdvSale.customerSearchError = "Tente novamente.";
+    }
   } finally {
-    state.pdvSale.customerSearching = false;
-    renderPdvSaleSurface();
-    endAeroStorePerfMeasure(perfToken, {
-      results: toArray(state.pdvSale.customerResults).length,
-      cashback_enriched: toArray(state.pdvSale.customerResults).filter((item) => toNumber(item.cashback_available || 0) > 0).length
-    });
+    if (requestId === state.pdvSale.customerSearchRequestId) {
+      state.pdvSale.customerSearching = false;
+      renderPdvSaleSurface();
+      endAeroStorePerfMeasure(perfToken, {
+        results: toArray(state.pdvSale.customerResults).length,
+        cashback_enriched: toArray(state.pdvSale.customerResults).filter((item) => toNumber(item.cashback_available || 0) > 0).length
+      });
+    } else {
+      endAeroStorePerfMeasure(perfToken, { skipped: "stale_customer_search" });
+    }
   }
 }
 
@@ -5214,7 +5345,18 @@ async function searchPdvSaleProducts({ append = false } = {}) {
     if (append) {
       const merged = new Map();
       [...toArray(state.pdvSale.productResults), ...nextItems].forEach((item, index) => {
-        const key = normalizeText(item.product_id || item.inventory_id || item.sku || item.codigo || item.id || `row-${index}`);
+        const key = [
+          item.inventory_id,
+          item.product_id,
+          item.sku,
+          item.codigo,
+          item.codigo_tiny,
+          item.codigo_etiqueta,
+          item.store_id,
+          item.cor,
+          item.tamanho,
+          item.id
+        ].map((value) => normalizeText(value || "")).filter(Boolean).join("::") || `row-${index}`;
         if (!merged.has(key)) merged.set(key, item);
       });
       state.pdvSale.productResults = Array.from(merged.values());
@@ -5338,7 +5480,7 @@ async function addPdvSaleProductByLookup(lookupValue = "") {
     endAeroStorePerfMeasure(perfToken, { skipped: "already_adding" });
     return;
   }
-  const selected = toArray(state.pdvSale.productResults).find((item) => [item.product_id, item.sku, item.codigo].map((value) => String(value || "")).includes(String(lookupValue || "")));
+  const selected = toArray(state.pdvSale.productResults).find((item) => [item.inventory_id, item.product_id, item.sku, item.codigo].map((value) => String(value || "")).includes(String(lookupValue || "")));
   if (!selected || !state.pdvSale.sessionId) {
     endAeroStorePerfMeasure(perfToken, { skipped: "missing_selection_or_session" });
     return;
@@ -6354,6 +6496,10 @@ async function detachPdvSaleCustomer() {
     state.pdvSale.customerQuery = "";
     state.pdvSale.customerResults = [];
     state.pdvSale.customerSearching = false;
+    state.pdvSale.customerSearchError = "";
+    state.pdvSale.customerSearchHasRun = false;
+    state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
+    state.pdvSale.customerSearchLastQuery = "";
     resetPdvSaleCashbackState();
     resetPdvSaleExchangeCreditState();
     closePdvSaleCustomerRegistration();
@@ -7078,6 +7224,12 @@ function storesMatch(left = "", right = "") {
 function normalizePdvStoreIdentifier(value = "") {
   const normalized = normalizeStoreScope(value);
   if (!normalized) return "";
+  if (
+    normalized === "loja geral"
+    || normalized === "geral"
+    || normalized.includes("estoque geral")
+    || normalized.includes("estoque interno")
+  ) return "loja_geral";
   if (normalized === "vila") return "vila";
   if (
     normalized === "vila_masc"
@@ -7110,9 +7262,12 @@ function normalizePdvStorePublicContext(context = {}, fallback = {}) {
     || fallback.display_name
     || formatStoreIdLabel(normalizedStoreId || fallback.store_id || "")
   );
+  const canonicalDisplayName = ["vila", "botanico", "sul"].includes(normalizedStoreId)
+    ? formatStoreIdLabel(normalizedStoreId)
+    : displayName;
   return {
     store_id: normalizedStoreId,
-    display_name: displayName || formatStoreIdLabel(normalizedStoreId || fallback.store_id || ""),
+    display_name: canonicalDisplayName || formatStoreIdLabel(normalizedStoreId || fallback.store_id || ""),
     internal_name: normalizeText(context?.internal_name || ""),
     type: normalizeText(context?.type || ""),
     status: normalizeText(context?.status || ""),
@@ -7207,7 +7362,15 @@ async function loadPdvStorePublicContext(storeIdOrAlias = "", { force = false, s
 }
 
 function getPdvStoreDisplayName(storeIdOrAlias = "", fallback = "") {
+  const normalizedStoreId = normalizePdvStoreIdentifier(storeIdOrAlias || fallback || "");
+  if (["vila", "botanico", "sul"].includes(normalizedStoreId)) {
+    return formatStoreIdLabel(normalizedStoreId);
+  }
   const context = getPdvStorePublicContext(storeIdOrAlias, fallback);
+  const fallbackStoreId = normalizePdvStoreIdentifier(fallback || "");
+  if (fallbackStoreId && ["vila", "botanico", "sul"].includes(fallbackStoreId)) {
+    return formatStoreIdLabel(fallbackStoreId);
+  }
   return context.display_name || fallback || formatStoreIdLabel(storeIdOrAlias || "");
 }
 
@@ -7387,21 +7550,23 @@ function summarizePdvCashRegister(register = null) {
 function findPreferredPdvCashRegister(registers = [], focusSale = null) {
   const rows = toArray(registers);
   if (!rows.length) return null;
+  const currentStore = getCurrentPdvStoreId();
   if (focusSale?.cash_register_id) {
     const focusRegister = rows.find((item) => String(item?.cash_register_id || "") === String(focusSale.cash_register_id || ""));
-    if (focusRegister) {
+    if (focusRegister && (!currentStore || storesMatch(focusRegister?.loja || focusRegister?.store_id || "", currentStore))) {
       return focusRegister;
     }
   }
-  const currentStore = getCurrentPdvStoreId();
-  const openRegister = rows.find((item) =>
+  const sameStoreRows = currentStore
+    ? rows.filter((item) => storesMatch(item?.loja || item?.store_id || "", currentStore))
+    : rows;
+  const openRegister = sameStoreRows.find((item) =>
     ["OPEN", "REOPENED"].includes(String(item?.status || "").toUpperCase())
-    && storesMatch(item?.loja || item?.store_id || "", currentStore)
   );
   if (openRegister) {
     return openRegister;
   }
-  return rows.find((item) => ["OPEN", "REOPENED"].includes(String(item?.status || "").toUpperCase())) || null;
+  return sameStoreRows[0] || null;
 }
 
 function canManagePdvAuthorizers() {
@@ -8074,9 +8239,10 @@ async function loadPdvCashRegisterFront() {
 
   try {
     const highlightSaleId = getPdvCashHighlightSaleId();
+    const activeStoreId = getCurrentPdvStoreId();
     const [dashboardResponse, registersResponse, highlightSale, authorizersResponse, authorizationAuditResponse, pendingPaymentLinksResponse] = await Promise.all([
-      api("/api/pdv/control/dashboard"),
-      api("/api/pdv/control/registers"),
+      api(`/api/pdv/control/dashboard${activeStoreId ? `?store=${encodeURIComponent(activeStoreId)}` : ""}`),
+      api(`/api/pdv/control/registers${activeStoreId ? `?store=${encodeURIComponent(activeStoreId)}` : ""}`),
       highlightSaleId ? api(`/api/pdv/sales/sale/${encodeURIComponent(highlightSaleId)}`).catch(() => null) : Promise.resolve(null),
       canManagePdvAuthorizers() ? api("/api/pdv/control/authorizers").catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
       canViewPdvAuthorizationAudit() ? api("/api/pdv/control/authorizations/audit").catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
@@ -16397,6 +16563,7 @@ function renderWhatsAppRouteFront() {
   const statusData = state.whatsappCrm.statusData || {};
   const statusMeta = getWhatsappCrmStatusMeta(statusData);
   const connectedNumber = normalizeText(statusData.connectedNumber || state.whatsappConnectedNumber || "");
+  const whatsappStoreLabel = getPdvStoreDisplayName(statusData.store?.store_id || statusData.store?.id || statusData.store?.label || getCurrentPdvStoreId(), statusData.store?.label || getCurrentUserStoreLabel());
   const hasQr = Boolean(state.whatsappCrm.qrData?.qrBase64 || statusData.qrBase64 || statusData.hasQr || state.whatsappHasQr);
   const showQrActions = canReconnectWhatsappCrm();
   const logsVisible = canViewWhatsappLogs();
@@ -16414,7 +16581,7 @@ function renderWhatsAppRouteFront() {
         <div class="stats-grid pdv-route-summary">
           <div class="stat-card">
             <span>Loja ativa</span>
-            <strong>${escapeHtml(statusData.store?.label || getCurrentUserStoreLabel())}</strong>
+            <strong>${escapeHtml(whatsappStoreLabel)}</strong>
           </div>
           <div class="stat-card">
             <span>Perfil</span>
@@ -18010,29 +18177,56 @@ function api(path, options = {}) {
   });
 }
 
+function resetPdvStoreScopedStateForActiveStoreChange() {
+  state.pdvStorePublicContext = {};
+  state.pdvSale.session = null;
+  state.pdvSale.sessionId = "";
+  persistPdvSaleSessionId("");
+  state.pdvSale.cashRegisterStatus = null;
+  state.pdvSale.cashRegisterStatusStore = "";
+  state.pdvSale.customerResults = [];
+  state.pdvSale.productResults = [];
+  state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
+  state.pdvSale.productSearching = false;
+  state.pdvSale.productAddingKey = "";
+  state.pdvCash.currentRegister = null;
+  state.pdvCash.registers = [];
+  state.pdvCash.dashboard = null;
+  state.pdvCash.saleDetails = {};
+  state.pdvCash.pendingPaymentLinks = [];
+  state.pdvCash.error = "";
+  state.pdvStock.filters.store = getCurrentPdvStoreId() || getDefaultPdvStockStoreFilter();
+  state.pdvProducts.filters.store = getCurrentPdvStoreId() || getDefaultPdvProductsStoreFilter();
+}
+
 async function changeActiveStore(storeId = "") {
   const normalizedStoreId = normalizePdvStoreIdentifier(storeId);
   if (!normalizedStoreId) {
     showFeedback("Selecione uma loja valida.", "error");
     return;
   }
+  const previousStoreId = getCurrentPdvStoreId();
   const response = await api("/api/auth/active-store", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ store_id: normalizedStoreId })
   });
   if (response?.user) {
-    state.currentUser = response.user;
-    localStorage.setItem("aerostore_auth_user", JSON.stringify(response.user));
+    state.currentUser = normalizeAuthUserStoreContext(response.user);
+    localStorage.setItem("aerostore_auth_user", JSON.stringify(state.currentUser));
   } else {
-    state.currentUser = {
+    state.currentUser = normalizeAuthUserStoreContext({
       ...(state.currentUser || {}),
       active_store_id: normalizedStoreId,
       store_id: normalizedStoreId,
       store_label: formatStoreIdLabel(normalizedStoreId)
-    };
+    });
   }
-  state.pdvStorePublicContext = {};
+  if (previousStoreId !== normalizedStoreId) {
+    resetPdvStoreScopedStateForActiveStoreChange();
+  } else {
+    state.pdvStorePublicContext = {};
+  }
   await loadPdvStorePublicContext(getCurrentPdvStoreId(), { silent: true }).catch(() => {});
   applyRolePermissions();
   setActiveSection(getSectionFromPathname(window.location.pathname) || state.activeSection || "dashboard");
@@ -18690,7 +18884,7 @@ function createPdvCashPendingPaymentLinkItemFromSale(sale = null) {
     customer_name: normalizeText(sale?.customer?.name || sale?.customer_name || "Venda balcão"),
     customer_phone: normalizeText(sale?.customer?.phone || sale?.customer?.whatsapp || sale?.customer_phone || ""),
     store_id: normalizeText(sale?.loja || sale?.store_id || ""),
-    store_label: storeContext.display_name || formatStoreIdLabel(sale?.loja || sale?.store_id || ""),
+    store_label: getPdvStoreDisplayName(sale?.loja || sale?.store_id || "", storeContext.display_name || ""),
     store_context: storeContext,
     seller_name: normalizeText(sale?.vendedor || sale?.seller_name || ""),
     total: toNumber(sale?.total_final || sale?.total || 0),
@@ -18786,7 +18980,7 @@ function buildPdvCashPendingPaymentPanel(items = []) {
                       </div>
                     </td>
                     <td>${escapeHtml(item?.customer_name || "Venda balcao")}</td>
-                    <td>${escapeHtml(storeContext.display_name || item?.store_label || formatStoreIdLabel(item?.store_id || ""))}</td>
+                    <td>${escapeHtml(getPdvStoreDisplayName(item?.store_id || item?.store_label || "", storeContext.display_name || item?.store_label || ""))}</td>
                     <td><strong>${currency(item?.total || 0)}</strong></td>
                     <td>
                       <div class="pdv-register-label-cell">
@@ -20866,6 +21060,46 @@ function addDays(dateString, days) {
   return date.toISOString().slice(0, 10);
 }
 
+function isValidDateParts(year, month, day) {
+  const date = new Date(Number(year), Number(month) - 1, Number(day));
+  return date.getFullYear() === Number(year)
+    && date.getMonth() === Number(month) - 1
+    && date.getDate() === Number(day);
+}
+
+function formatBrazilianDateSafe(value, fallback = "Sem compra registrada") {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? fallback : value.toLocaleDateString("pt-BR");
+  }
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    const timestamp = value < 1000000000000 ? value * 1000 : value;
+    const parsed = new Date(timestamp);
+    return Number.isNaN(parsed.getTime()) ? fallback : parsed.toLocaleDateString("pt-BR");
+  }
+  const raw = String(value || "").trim();
+  if (!raw || raw === "-") {
+    return fallback;
+  }
+  const brMatch = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (brMatch) {
+    const [, day, month, year] = brMatch;
+    return isValidDateParts(year, month, day) ? `${day}/${month}/${year}` : fallback;
+  }
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return isValidDateParts(year, month, day) ? `${day}/${month}/${year}` : fallback;
+  }
+  const numericTimestamp = raw.match(/^\d{10,13}$/);
+  if (numericTimestamp) {
+    const timestampValue = Number(raw);
+    const timestamp = raw.length === 10 ? timestampValue * 1000 : timestampValue;
+    const parsed = new Date(timestamp);
+    return Number.isNaN(parsed.getTime()) ? fallback : parsed.toLocaleDateString("pt-BR");
+  }
+  return fallback;
+}
+
 function formatDateBR(dateString) {
   const value = String(dateString || "").trim();
   if (!value || !value.includes("-")) {
@@ -21510,7 +21744,7 @@ function buildPdvDashboardOperationCard({ icon = "", title = "", detail = "", bu
 function buildPdvDashboardPremiumPanel(data = state.dashboard || {}) {
   const routes = getPdvDashboardActionRoutes();
   const storeContext = getPdvStorePublicContext(getCurrentPdvStoreId(), getCurrentUserStoreLabel());
-  const storeLabel = storeContext.display_name || getCurrentUserStoreLabel();
+  const storeLabel = getPdvStoreDisplayName(getCurrentPdvStoreId(), storeContext.display_name || getCurrentUserStoreLabel());
   const activeStoreControl = buildActiveStoreSelectMarkup({ compact: true });
   const roleLabel = getRoleLabel(getCurrentRole());
   const whatsappMeta = getWhatsappCrmStatusMeta();
@@ -23925,7 +24159,10 @@ async function restoreSession() {
       throw new Error("Não foi possível verificar a sessão agora.");
     }
     const authPayload = await response.json();
-    state.currentUser = authPayload?.user || authPayload || null;
+    state.currentUser = normalizeAuthUserStoreContext(authPayload?.user || authPayload || null);
+    if (state.currentUser) {
+      localStorage.setItem("aerostore_auth_user", JSON.stringify(state.currentUser));
+    }
     state.isAuthenticated = Boolean(state.currentUser);
     state.authLoading = false;
     loadSavedTheme(state.currentUser);
@@ -23976,6 +24213,10 @@ async function logoutUser() {
     customerQuery: "",
     customerResults: [],
     customerSearching: false,
+    customerSearchError: "",
+    customerSearchHasRun: false,
+    customerSearchRequestId: 0,
+    customerSearchLastQuery: "",
     customerAttachingKey: "",
     customerRemoving: false,
     customerCreateOpen: false,
@@ -27673,6 +27914,26 @@ function handleDocumentInput(event) {
   const cashbackInput = event.target.closest("[data-pdv-sale-cashback-input]");
   if (cashbackInput) {
     state.pdvSale.cashbackInput = String(cashbackInput.value || "");
+    return;
+  }
+
+  const pdvSaleCustomerSearchInput = event.target.closest("#pdv-sale-customer-search");
+  if (pdvSaleCustomerSearchInput) {
+    const nextQuery = normalizeText(pdvSaleCustomerSearchInput.value || "");
+    if (nextQuery !== normalizeText(state.pdvSale.customerQuery || "")) {
+      state.pdvSale.customerQuery = nextQuery;
+      state.pdvSale.customerSearchError = "";
+      if (state.pdvSale.customerSearching) {
+        state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
+        state.pdvSale.customerSearching = false;
+        state.pdvSale.customerResults = [];
+        state.pdvSale.customerSearchHasRun = false;
+        renderPdvSaleSurface();
+      } else if (nextQuery.length < 2) {
+        state.pdvSale.customerResults = [];
+        state.pdvSale.customerSearchHasRun = false;
+      }
+    }
     return;
   }
 
