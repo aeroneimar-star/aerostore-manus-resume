@@ -403,9 +403,52 @@ async function getUnifiedCustomerById(id = "") {
   return item ? serializeUnifiedCustomer(item) : null;
 }
 
+async function getUnifiedCustomerRawById(id = "") {
+  const sourceRecords = await loadUnifiedSourceRecords();
+  const unified = buildUnifiedCustomers(sourceRecords);
+  return unified.find((record) => record.unified_id === id) || null;
+}
+
 async function getUnifiedCustomerStats(filters = {}) {
   const payload = await listUnifiedCustomers({ ...filters, page: 1, limit: 1 });
   return payload.stats;
+}
+
+function getDuplicateMatchReason(item = {}, lookup = {}) {
+  if (lookup.document && item.document === lookup.document) return "document";
+  if (lookup.phone && item.phone_normalized === lookup.phone) return "phone";
+  if (lookup.email && item.email === lookup.email) return "email";
+  return "";
+}
+
+async function findUnifiedCustomerDuplicateCandidates(input = {}) {
+  const lookup = {
+    document: normalizeCustomerDocument(input.document || input.cpf || ""),
+    phone: normalizeCustomerPhone(input.mobile || input.phone || input.telefone || input.celular || "").normalized,
+    email: normalizeCustomerEmail(input.email || "")
+  };
+  if (!lookup.document && !lookup.phone && !lookup.email) {
+    return [];
+  }
+
+  const sourceRecords = await loadUnifiedSourceRecords();
+  const unified = buildUnifiedCustomers(sourceRecords);
+  return unified
+    .map((item) => ({
+      item,
+      match_reason: getDuplicateMatchReason(item, lookup)
+    }))
+    .filter((entry) => entry.match_reason)
+    .map((entry) => ({
+      ...serializeUnifiedCustomer(entry.item),
+      match_reason: entry.match_reason,
+      match_confidence: entry.match_reason === "document"
+        ? "high_document"
+        : entry.match_reason === "phone"
+          ? "high_phone"
+          : "medium_email"
+    }))
+    .slice(0, 10);
 }
 
 module.exports = {
@@ -416,5 +459,7 @@ module.exports = {
   mergeCustomerRecordsReadOnly,
   listUnifiedCustomers,
   getUnifiedCustomerById,
-  getUnifiedCustomerStats
+  getUnifiedCustomerRawById,
+  getUnifiedCustomerStats,
+  findUnifiedCustomerDuplicateCandidates
 };

@@ -58,7 +58,11 @@ const {
   buildCustomerBehaviorSnapshot
 } = require("./modules/pdv/services/pdvOperationalService");
 const { recordAuditEvent, listAuditLogs } = require("./modules/audit/auditService");
-const { listUnifiedCustomers } = require("./modules/customers/customerUnifiedService");
+const {
+  listUnifiedCustomers,
+  getUnifiedCustomerRawById,
+  findUnifiedCustomerDuplicateCandidates
+} = require("./modules/customers/customerUnifiedService");
 const { getNotificationService, getNotificationDryRunDefault } = require("./src/notification/NotificationService");
 const { startCashbackReminderScheduler } = require("./src/notification/CashbackScheduler");
 const {
@@ -13384,6 +13388,9 @@ function buildCustomerPayload(payload = {}, current = null) {
     mobile_normalized: mobileNormalized,
     document: normalizeDocumentValue(payload.document || payload.cpf || current?.document || "")
   });
+  if (!current && mobileNormalized && !qualityFlags.includes("whatsapp_probable")) {
+    qualityFlags.push("whatsapp_probable");
+  }
   return {
     name: name || "Contato sem nome",
     first_name: getCleanFirstName(name || "Contato"),
@@ -14003,6 +14010,16 @@ function canManageCustomersCrud(user = {}) {
 
 function canCreateCustomersCrud(user = {}) {
   return canManageCustomersCrud(user) || userHasPermission(user, "can_create_customers");
+}
+
+function canEditCustomerCommercialProfile(user = {}) {
+  return canCreateCustomersCrud(user)
+    || userHasPermission(user, "can_view_customers")
+    || userHasPermission(user, "can_sell");
+}
+
+function canForceCustomerDuplicate(user = {}) {
+  return isManager(user) || isAdmin(user);
 }
 
 function canViewProductsCrud(user = {}) {
@@ -19230,6 +19247,168 @@ app.get("/api/customers/:id", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: "Falha ao carregar o cliente." });
+  }
+});
+
+app.patch("/api/customers/:id/profile", async (req, res) => {
+  try {
+    if (!canEditCustomerCommercialProfile(req.user)) {
+      await recordAuditEvent({
+        req,
+        module: "customers",
+        action: "customer_sensitive_edit_blocked",
+        entityType: "customer",
+        entityId: req.params.id,
+        metadata: { reason: "commercial_profile_permission_denied" }
+      });
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode editar o perfil comercial deste cliente." });
+    }
+    const current = await get("SELECT * FROM contacts WHERE id = ? AND COALESCE(deleted_at, '') = ''", [req.params.id]);
+    if (!current) {
+      return res.status(404).json({ success: false, error: "Cliente operacional nao encontrado." });
+    }
+    const beforeScore = calculateCustomerProfileCompleteness(serializeCustomer(current));
+    const profilePayload = buildCustomerCommercialProfilePayload(req.body || {}, current);
+    const changedFields = getChangedCustomerProfileFields(current, profilePayload);
+    await run(
+      `UPDATE contacts SET
+       top_size = ?, bottom_size = ?, shoe_size = ?, size_profile_json = ?, size_profile_source = ?,
+       size_profile_confidence = ?, size_profile_updated_at = ?, preferences_json = ?,
+       favorite_brands_json = ?, favorite_colors_json = ?, favorite_categories_json = ?, notes = ?,
+       updated_at = datetime('now')
+       WHERE id = ? AND COALESCE(deleted_at, '') = ''`,
+      [
+        profilePayload.top_size,
+        profilePayload.bottom_size,
+        profilePayload.shoe_size,
+        profilePayload.size_profile_json,
+        profilePayload.size_profile_source,
+        profilePayload.size_profile_confidence,
+        profilePayload.size_profile_updated_at,
+        profilePayload.preferences_json,
+        profilePayload.favorite_brands_json,
+        profilePayload.favorite_colors_json,
+        profilePayload.favorite_categories_json,
+        profilePayload.notes,
+        req.params.id
+      ]
+    );
+    const row = await get("SELECT * FROM contacts WHERE id = ?", [req.params.id]);
+    const customer = serializeCustomer(row);
+    const afterScore = calculateCustomerProfileCompleteness(customer);
+    await recordAuditEvent({
+      req,
+      module: "customers",
+      action: "customer_profile_updated",
+      entityType: "customer",
+      entityId: req.params.id,
+      metadata: {
+        fields_updated: changedFields,
+        profile_score_before: beforeScore.score,
+        profile_score_after: afterScore.score
+      }
+    });
+    if (changedFields.some((field) => ["top_size", "bottom_size", "shoe_size", "size_profile_json"].includes(field))) {
+      await recordAuditEvent({
+        req,
+        module: "customers",
+        action: "customer_size_profile_updated",
+        entityType: "customer",
+        entityId: req.params.id,
+        metadata: {
+          fields_updated: changedFields.filter((field) => ["top_size", "bottom_size", "shoe_size", "size_profile_json"].includes(field)),
+          profile_score_before: beforeScore.score,
+          profile_score_after: afterScore.score
+        }
+      });
+    }
+    res.json({ success: true, customer, profile_completeness: afterScore });
+  } catch (error) {
+    console.error("Erro ao atualizar perfil comercial do cliente:", error);
+    res.status(500).json({ success: false, error: "Falha ao salvar o perfil comercial do cliente." });
+  }
+});
+
+app.post("/api/customers/unified/:id/activate", async (req, res) => {
+  try {
+    if (!canCreateCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode ativar clientes consolidados para atendimento." });
+    }
+    const unified = await getUnifiedCustomerRawById(req.params.id);
+    if (!unified) {
+      return res.status(404).json({ success: false, error: "Cliente consolidado nao encontrado." });
+    }
+    if (unified.contact_id) {
+      const existing = await get("SELECT * FROM contacts WHERE id = ? AND COALESCE(deleted_at, '') = ''", [unified.contact_id]);
+      if (existing) {
+        return res.json({ success: true, customer: serializeCustomer(existing), activated_existing: true });
+      }
+    }
+    const activationPayload = buildCustomerPayload({
+      name: unified.name || "Cliente consolidado",
+      mobile: unified.phone_normalized || "",
+      document: unified.document || "",
+      email: unified.email || "",
+      city: unified.city || "",
+      state: unified.state || "",
+      address: unified.address || "",
+      preferred_store: normalizeStoreKey(req.body?.store_id || req.user?.active_store_id || req.user?.store_id || unified.store || ""),
+      source: "importacao",
+      notes: "Perfil operacional ativado a partir da visao consolidada read-only."
+    });
+    const validationError = validateCustomerPayload(activationPayload);
+    if (validationError) {
+      return res.status(400).json({ success: false, error: "Este cliente consolidado nao tem telefone ou CPF/CNPJ suficiente para ativacao segura." });
+    }
+    const duplicate = await findDuplicateCustomer(activationPayload);
+    if (duplicate) {
+      return res.json({ success: true, customer: serializeCustomer(duplicate), activated_existing: true, duplicate_matched: true });
+    }
+    const qualityFlags = uniqueStrings([activationPayload.quality_flags, "activated_from_unified", unified.crm_contact_id ? `crm_contact:${unified.crm_contact_id}` : ""].join(",").split(",")).join(", ");
+    const result = await run(
+      `INSERT INTO contacts
+      (name, first_name, phone, mobile, mobile_normalized, phone_fixed, document, email, birth_date, gender, city, state, address, neighborhood, zipcode, preferred_store, store, seller_id, seller_name, preferred_seller, status, source, notes, quality_flags, top_size, bottom_size, shoe_size, size_profile_json, size_profile_source, size_profile_confidence, size_profile_updated_at, preferences_json, behavior_signals_json, favorite_brands_json, favorite_colors_json, favorite_categories_json, average_ticket, last_purchase_at, ai_notes, aerointel_last_enriched_at, aerointel_confidence_score, tags, cashback, validity, deleted_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', '', 'ativo', ?, ?, ?, '', '', '', '{}', 'manual', 'media', '', '{}', '{}', '[]', '[]', '[]', 0, '', '', '', 0, '', 0, '', '', datetime('now'), datetime('now'))`,
+      [
+        activationPayload.name,
+        activationPayload.first_name,
+        activationPayload.phone,
+        activationPayload.mobile,
+        activationPayload.mobile_normalized,
+        activationPayload.phone_fixed,
+        activationPayload.document,
+        activationPayload.email,
+        activationPayload.birth_date,
+        activationPayload.gender,
+        activationPayload.city,
+        activationPayload.state,
+        activationPayload.address,
+        activationPayload.neighborhood,
+        activationPayload.zipcode,
+        activationPayload.preferred_store,
+        activationPayload.store,
+        activationPayload.source,
+        activationPayload.notes,
+        qualityFlags
+      ]
+    );
+    const row = await get("SELECT * FROM contacts WHERE id = ?", [result.lastID]);
+    await recordAuditEvent({
+      req,
+      module: "customers",
+      action: "customer_unified_activated_to_contacts",
+      entityType: "customer",
+      entityId: String(result.lastID),
+      metadata: {
+        unified_id: req.params.id,
+        crm_contact_id: unified.crm_contact_id || null,
+        source_tables: unified.source_tables || []
+      }
+    });
+    res.status(201).json({ success: true, customer: serializeCustomer(row), activated_existing: false });
+  } catch (error) {
+    console.error("Erro ao ativar cliente consolidado:", error);
+    res.status(500).json({ success: false, error: "Falha ao ativar cliente consolidado para atendimento." });
   }
 });
 
