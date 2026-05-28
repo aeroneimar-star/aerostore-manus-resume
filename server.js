@@ -6613,14 +6613,14 @@ function buildCrmContactImportHash(contact = {}) {
 
 function buildCrmContactNameMobileKey(name = "", mobile = "") {
   const normalizedName = normalizeSearchText(name).replace(/\s+/g, " ").trim();
-  const normalizedMobile = normalizePhone(mobile);
+  const normalizedMobile = normalizeCrmContactPhone(mobile);
   return normalizedName && normalizedMobile ? `${normalizedName}|${normalizedMobile}` : "";
 }
 
 function buildCrmContactMatchCandidates(contact = {}) {
   return {
     document: normalizeDocumentValue(contact.document),
-    mobile: normalizePhone(contact.mobile || contact.phone),
+    mobile: normalizeCrmContactPhone(contact.mobile || contact.phone),
     email: normalizeEmailValue(contact.email),
     external_code: normalizeWhitespace(contact.external_code),
     name_mobile: buildCrmContactNameMobileKey(contact.name, contact.mobile || contact.phone)
@@ -6637,6 +6637,48 @@ function choosePreferredValue(currentValue, incomingValue) {
   return incomingTrimmed.length > currentTrimmed.length ? incomingTrimmed : currentTrimmed;
 }
 
+function chooseExistingIdentityValue(currentValue, incomingValue) {
+  const current = currentValue === null || currentValue === undefined ? "" : String(currentValue).trim();
+  const incoming = incomingValue === null || incomingValue === undefined ? "" : String(incomingValue).trim();
+  return current || incoming;
+}
+
+function normalizeCrmContactPhone(value = "") {
+  const digits = sanitizePhone(value);
+  if (!digits) return "";
+  if (digits.startsWith("55") && /^55\d{10,11}$/.test(digits)) return digits;
+  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith("55")) {
+    return `55${digits}`;
+  }
+  return "";
+}
+
+function maskCrmContactSensitiveValue(value = "", visibleTail = 4) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const digits = raw.replace(/\D+/g, "");
+  if (digits.length >= visibleTail) {
+    return `${"*".repeat(Math.max(3, digits.length - visibleTail))}${digits.slice(-visibleTail)}`;
+  }
+  if (raw.includes("@")) {
+    const [local, domain] = raw.split("@");
+    return `${String(local || "").slice(0, 2)}***@${domain || "***"}`;
+  }
+  return "***";
+}
+
+function sanitizeCrmContactImportRowForAudit(row = {}) {
+  return {
+    ...row,
+    document: maskCrmContactSensitiveValue(row.document),
+    mobile: maskCrmContactSensitiveValue(row.mobile || row.phone),
+    phone: maskCrmContactSensitiveValue(row.phone),
+    email: maskCrmContactSensitiveValue(row.email),
+    raw_json: undefined,
+    merged_contact: undefined
+  };
+}
+
 function mergeCrmContactRecords(base = {}, incoming = {}) {
   const merged = {
     ...base,
@@ -6645,11 +6687,11 @@ function mergeCrmContactRecords(base = {}, incoming = {}) {
     external_code: choosePreferredValue(base.external_code, incoming.external_code),
     name: choosePreferredValue(base.name, incoming.name),
     fantasy_name: choosePreferredValue(base.fantasy_name, incoming.fantasy_name),
-    document: choosePreferredValue(base.document, incoming.document),
+    document: chooseExistingIdentityValue(base.document, incoming.document),
     person_type: choosePreferredValue(base.person_type, incoming.person_type),
-    phone: choosePreferredValue(base.phone, incoming.phone),
-    mobile: choosePreferredValue(base.mobile, incoming.mobile),
-    email: choosePreferredValue(base.email, incoming.email),
+    phone: chooseExistingIdentityValue(base.phone, incoming.phone),
+    mobile: chooseExistingIdentityValue(base.mobile, incoming.mobile),
+    email: chooseExistingIdentityValue(base.email, incoming.email),
     address: choosePreferredValue(base.address, incoming.address),
     number: choosePreferredValue(base.number, incoming.number),
     complement: choosePreferredValue(base.complement, incoming.complement),
@@ -6752,8 +6794,8 @@ function buildCrmContactCandidate(row = {}, sourceFile = "", sourceRow = 0) {
     fantasy_name: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.fantasy_name)),
     document: normalizeDocumentValue(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.document)),
     person_type: normalizeCrmPersonType(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.person_type)),
-    phone: normalizePhone(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.phone)),
-    mobile: normalizePhone(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.mobile)),
+    phone: normalizeCrmContactPhone(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.phone)),
+    mobile: normalizeCrmContactPhone(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.mobile)),
     email: normalizeEmailValue(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.email)),
     address: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.address)),
     number: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.number)),
@@ -6914,7 +6956,7 @@ function hasCrmContactEnoughIdentity(contact = {}) {
     normalizeWhitespace(contact.name) &&
     (
       normalizeDocumentValue(contact.document) ||
-      normalizePhone(contact.mobile || contact.phone) ||
+      normalizeCrmContactPhone(contact.mobile || contact.phone) ||
       normalizeEmailValue(contact.email) ||
       normalizeWhitespace(contact.external_code)
     )
@@ -6952,6 +6994,11 @@ async function parseCrmContactImportFiles(files = []) {
   const fileDiagnostics = [];
   let totalRows = 0;
   let duplicatesDetected = 0;
+  let rowsWithoutName = 0;
+  let rowsWithoutPhone = 0;
+  let rowsWithoutDocument = 0;
+  let rowsWithInvalidPhone = 0;
+  let rowsWithValidEmail = 0;
 
   for (const file of files) {
     const parsedFile = buildCrmContactRawRows(file.path, sanitizeFilename(file.originalname));
@@ -6967,6 +7014,15 @@ async function parseCrmContactImportFiles(files = []) {
 
     for (const row of parsedFile.rows) {
       const candidate = buildCrmContactCandidate(row, sanitizeFilename(file.originalname), Number(row.__line || 0));
+      const rawPhoneValue = normalizeWhitespace([
+        getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.phone),
+        getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.mobile)
+      ].filter(Boolean).join(" "));
+      if (!candidate.name) rowsWithoutName += 1;
+      if (!candidate.mobile && !candidate.phone) rowsWithoutPhone += 1;
+      if (!candidate.document) rowsWithoutDocument += 1;
+      if (rawPhoneValue && !candidate.mobile && !candidate.phone) rowsWithInvalidPhone += 1;
+      if (candidate.email) rowsWithValidEmail += 1;
       if (!hasCrmContactEnoughIdentity(candidate)) {
         invalidRows.push({
           source_file: candidate.source_file,
@@ -7041,6 +7097,11 @@ async function parseCrmContactImportFiles(files = []) {
     contactsWithMobile,
     contactsWithEmail,
     duplicatesDetected,
+    rowsWithoutName,
+    rowsWithoutPhone,
+    rowsWithoutDocument,
+    rowsWithInvalidPhone,
+    rowsWithValidEmail,
     newContacts,
     contactsToUpdate,
     skippedDuplicates,
@@ -7064,6 +7125,11 @@ function buildCrmContactImportPreview(parsed = {}) {
       contactsWithDocument: Number(parsed.contactsWithDocument || 0),
       contactsWithMobile: Number(parsed.contactsWithMobile || 0),
       contactsWithEmail: Number(parsed.contactsWithEmail || 0),
+      rowsWithoutName: Number(parsed.rowsWithoutName || 0),
+      rowsWithoutPhone: Number(parsed.rowsWithoutPhone || 0),
+      rowsWithoutDocument: Number(parsed.rowsWithoutDocument || 0),
+      rowsWithInvalidPhone: Number(parsed.rowsWithInvalidPhone || 0),
+      rowsWithValidEmail: Number(parsed.rowsWithValidEmail || 0),
       duplicatesDetected: Number(parsed.duplicatesDetected || 0),
       newContacts: Number(parsed.newContacts || 0),
       contactsToUpdate: Number(parsed.contactsToUpdate || 0),
@@ -18201,6 +18267,25 @@ app.post("/api/crm_contacts/import/preview", requireManager, crmContactImportUpl
       parsed
     });
 
+    await recordAuditEvent({
+      req,
+      module: "crm_contacts",
+      action: "crm_contacts_import_preview_generated",
+      entityType: "crm_contacts_import",
+      entityId: previewId,
+      result: "success",
+      message: "Preview de importacao de clientes gerado.",
+      includeBody: false,
+      metadata: {
+        total_linhas: payload.summary.totalRows,
+        clientes_novos: payload.summary.newContacts,
+        clientes_atualizar: payload.summary.contactsToUpdate,
+        duplicados: payload.summary.duplicatesDetected,
+        invalidos: payload.summary.invalidContacts,
+        arquivos: req.files.map((file) => sanitizeFilename(file.originalname))
+      }
+    });
+
     res.json({
       success: true,
       previewId,
@@ -18228,18 +18313,18 @@ app.post("/api/crm_contacts/import/commit", requireManager, crmContactImportUplo
   try {
     cleanupCrmContactImportPreviews();
     previewId = String(req.body.previewId || "").trim();
-    if (previewId) {
-      const preview = crmContactImportPreviews.get(previewId);
-      if (!preview) {
-        return res.status(404).json({ error: "Preview da base consolidada de clientes não encontrado ou expirado." });
-      }
-      parsed = preview.parsed;
-      files = preview.files || [];
-    } else if (files.length) {
-      parsed = await parseCrmContactImportFiles(files);
-    } else {
-      return res.status(400).json({ error: "Envie arquivos ou informe um previewId para concluir a importação." });
+    if (!previewId) {
+      return res.status(400).json({ error: "Gere a prévia da importação de clientes antes de confirmar." });
     }
+    if (!normalizeBooleanFlag(req.body.confirm, false)) {
+      return res.status(400).json({ error: "Confirme explicitamente a importação de clientes com confirm=true." });
+    }
+    const preview = crmContactImportPreviews.get(previewId);
+    if (!preview) {
+      return res.status(404).json({ error: "Preview da base consolidada de clientes não encontrado ou expirado." });
+    }
+    parsed = preview.parsed;
+    files = preview.files || [];
 
     const summary = {
       filesProcessed: Number(parsed.filesProcessed || 0),
@@ -18273,11 +18358,11 @@ app.post("/api/crm_contacts/import/commit", requireManager, crmContactImportUplo
           invalidRow.source_file || "",
           Number(invalidRow.source_row || 0),
           invalidRow.name || "",
-          invalidRow.document || "",
-          invalidRow.mobile || "",
-          invalidRow.email || "",
+          maskCrmContactSensitiveValue(invalidRow.document || ""),
+          maskCrmContactSensitiveValue(invalidRow.mobile || ""),
+          maskCrmContactSensitiveValue(invalidRow.email || ""),
           invalidRow.reason || "Contato inválido.",
-          JSON.stringify(invalidRow || {})
+          JSON.stringify(sanitizeCrmContactImportRowForAudit(invalidRow || {}))
         ]
       );
     }
@@ -18385,11 +18470,11 @@ app.post("/api/crm_contacts/import/commit", requireManager, crmContactImportUplo
             row.source_file || "",
             Number(row.source_row || 0),
             row.name || "",
-            row.document || "",
-            row.mobile || row.phone || "",
-            row.email || "",
+            maskCrmContactSensitiveValue(row.document || ""),
+            maskCrmContactSensitiveValue(row.mobile || row.phone || ""),
+            maskCrmContactSensitiveValue(row.email || ""),
             error.message || "Falha ao importar contato.",
-            JSON.stringify(row || {})
+            JSON.stringify(sanitizeCrmContactImportRowForAudit(row || {}))
           ]
         );
       }
@@ -18404,6 +18489,27 @@ app.post("/api/crm_contacts/import/commit", requireManager, crmContactImportUplo
       batchId,
       filenames: (files || []).map((file) => sanitizeFilename(file.originalname || file.filename || "")),
       summary
+    });
+
+    await recordAuditEvent({
+      req,
+      module: "crm_contacts",
+      action: "crm_contacts_import_committed",
+      entityType: "crm_contacts_import_batch",
+      entityId: String(batchId || previewId),
+      result: summary.errors ? "partial_success" : "success",
+      message: "Importacao de clientes concluida a partir de preview confirmado.",
+      includeBody: false,
+      metadata: {
+        batch_id: batchId,
+        preview_id: previewId,
+        total_linhas: summary.totalRows,
+        clientes_criados: summary.created,
+        clientes_atualizados: summary.updated,
+        duplicados_ignorados: summary.skippedDuplicates,
+        erros: summary.errors,
+        arquivos: (files || []).map((file) => sanitizeFilename(file.originalname || file.filename || ""))
+      }
     });
 
     (files || []).forEach((file) => {
