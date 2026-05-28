@@ -109,3 +109,4 @@ scripts/**/reports/
 scripts/**/exports/
 scripts/**/backups/
 docs/
+modules/pdv/services/historicalSalesImportService.js
