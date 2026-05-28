@@ -6510,9 +6510,9 @@ const CRM_CONTACT_HEADER_ALIASES = {
   city: ["cidade"],
   state: ["estado", "uf"],
   contact_notes: ["observacoes do contato", "observações do contato", "observacoes", "observações", "obs"],
-  phone: ["fone", "telefone", "telefone fixo"],
+  phone: ["fone", "fone 1", "telefone", "telefone 1", "telefone fixo"],
   fax: ["fax"],
-  mobile: ["celular", "whatsapp", "telefone celular"],
+  mobile: ["celular", "celular 1", "whatsapp", "whats app", "telefone celular"],
   email: ["e-mail", "email"],
   website: ["web site", "website", "site"],
   person_type: ["tipo pessoa", "tipo de pessoa"],
@@ -6649,14 +6649,90 @@ function chooseExistingIdentityValue(currentValue, incomingValue) {
   return current || incoming;
 }
 
-function normalizeCrmContactPhone(value = "") {
-  const digits = sanitizePhone(value);
-  if (!digits) return "";
-  if (digits.startsWith("55") && /^55\d{10,11}$/.test(digits)) return digits;
-  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith("55")) {
-    return `55${digits}`;
+function hasInvalidRepeatedPhoneDigits(digits = "") {
+  if (!digits) return true;
+  const national = digits.startsWith("55") ? digits.slice(2) : digits;
+  return /^(\d)\1+$/.test(national) || ["1234567890", "12345678901", "0123456789", "01234567890"].includes(national);
+}
+
+function normalizeBrazilianPhone(input = "", source = "") {
+  const raw = normalizeWhitespace(input);
+  let digits = sanitizePhone(raw);
+  if (!raw || !digits) {
+    return { raw, normalized: "", isValid: false, isMobile: false, isLandline: false, reason: "empty", source };
   }
-  return "";
+
+  digits = digits.replace(/^0+/, "");
+  if (digits.startsWith("55")) {
+    digits = `55${digits.slice(2).replace(/^0+/, "")}`;
+  }
+
+  const national = digits.startsWith("55") ? digits.slice(2) : digits;
+  if (hasInvalidRepeatedPhoneDigits(digits)) {
+    return { raw, normalized: "", isValid: false, isMobile: false, isLandline: false, reason: "placeholder", source };
+  }
+  if (!/^\d{10,11}$/.test(national)) {
+    return { raw, normalized: "", isValid: false, isMobile: false, isLandline: false, reason: "invalid_length", source };
+  }
+
+  const ddd = national.slice(0, 2);
+  const subscriber = national.slice(2);
+  if (!/^[1-9]\d$/.test(ddd)) {
+    return { raw, normalized: "", isValid: false, isMobile: false, isLandline: false, reason: "invalid_ddd", source };
+  }
+
+  const isMobile = subscriber.length === 9 && subscriber.startsWith("9");
+  const isLandline = subscriber.length === 8 && /^[2-5]/.test(subscriber);
+  if (!isMobile && !isLandline) {
+    return { raw, normalized: "", isValid: false, isMobile: false, isLandline: false, reason: "invalid_pattern", source };
+  }
+
+  return {
+    raw,
+    normalized: `55${national}`,
+    isValid: true,
+    isMobile,
+    isLandline,
+    reason: "",
+    source
+  };
+}
+
+function normalizeCrmContactPhone(value = "") {
+  return normalizeBrazilianPhone(value).normalized;
+}
+
+function resolveCrmContactPhoneFields(row = {}) {
+  const rawMobile = normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.mobile));
+  const rawPhone = normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.phone));
+  const mobileResult = normalizeBrazilianPhone(rawMobile, "celular");
+  const phoneResult = normalizeBrazilianPhone(rawPhone, "fone");
+  const validCandidates = [mobileResult, phoneResult].filter((item) => item.isValid);
+  const preferred = validCandidates.find((item) => item.isMobile) || validCandidates[0] || null;
+  const hasRawMobile = Boolean(rawMobile);
+  const hasRawPhone = Boolean(rawPhone);
+  const hasRawAnyPhone = hasRawMobile || hasRawPhone;
+  const invalidSources = [mobileResult, phoneResult].filter((item) => item.raw && !item.isValid);
+  const phoneStatus = preferred
+    ? (preferred.isMobile ? "celular_valido" : "fixo_valido")
+    : (hasRawAnyPhone ? "telefone_invalido" : "sem_telefone");
+
+  return {
+    raw_phone: rawPhone,
+    raw_mobile: rawMobile,
+    phone: phoneResult.isValid ? phoneResult.normalized : "",
+    mobile: mobileResult.isValid ? mobileResult.normalized : "",
+    primary_phone_normalized: preferred?.normalized || "",
+    phone_source_used: preferred?.source || "none",
+    phone_status: phoneStatus,
+    phone_invalid_reason: preferred ? "" : (invalidSources[0]?.reason || ""),
+    has_raw_phone: hasRawPhone,
+    has_raw_mobile: hasRawMobile,
+    has_raw_any_phone: hasRawAnyPhone,
+    phone_normalized_valid: Boolean(preferred),
+    phone_is_mobile: Boolean(preferred?.isMobile),
+    phone_is_landline: Boolean(preferred?.isLandline)
+  };
 }
 
 function maskCrmContactSensitiveValue(value = "", visibleTail = 4) {
@@ -6679,6 +6755,9 @@ function sanitizeCrmContactImportRowForAudit(row = {}) {
     document: maskCrmContactSensitiveValue(row.document),
     mobile: maskCrmContactSensitiveValue(row.mobile || row.phone),
     phone: maskCrmContactSensitiveValue(row.phone),
+    raw_phone: maskCrmContactSensitiveValue(row.raw_phone),
+    raw_mobile: maskCrmContactSensitiveValue(row.raw_mobile),
+    primary_phone_normalized: maskCrmContactSensitiveValue(row.primary_phone_normalized),
     email: maskCrmContactSensitiveValue(row.email),
     raw_json: undefined,
     merged_contact: undefined
@@ -6793,6 +6872,7 @@ function parseCrmContactFileMatrix(filePath = "") {
 }
 
 function buildCrmContactCandidate(row = {}, sourceFile = "", sourceRow = 0) {
+  const phoneFields = resolveCrmContactPhoneFields(row);
   const candidate = {
     external_id: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.external_id)),
     external_code: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.external_code)),
@@ -6800,8 +6880,20 @@ function buildCrmContactCandidate(row = {}, sourceFile = "", sourceRow = 0) {
     fantasy_name: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.fantasy_name)),
     document: normalizeDocumentValue(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.document)),
     person_type: normalizeCrmPersonType(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.person_type)),
-    phone: normalizeCrmContactPhone(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.phone)),
-    mobile: normalizeCrmContactPhone(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.mobile)),
+    phone: phoneFields.phone,
+    mobile: phoneFields.mobile || (!phoneFields.mobile && phoneFields.phone_is_mobile ? phoneFields.primary_phone_normalized : ""),
+    raw_phone: phoneFields.raw_phone,
+    raw_mobile: phoneFields.raw_mobile,
+    primary_phone_normalized: phoneFields.primary_phone_normalized,
+    phone_source_used: phoneFields.phone_source_used,
+    phone_status: phoneFields.phone_status,
+    phone_invalid_reason: phoneFields.phone_invalid_reason,
+    has_raw_phone: phoneFields.has_raw_phone,
+    has_raw_mobile: phoneFields.has_raw_mobile,
+    has_raw_any_phone: phoneFields.has_raw_any_phone,
+    phone_normalized_valid: phoneFields.phone_normalized_valid,
+    phone_is_mobile: phoneFields.phone_is_mobile,
+    phone_is_landline: phoneFields.phone_is_landline,
     email: normalizeEmailValue(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.email)),
     address: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.address)),
     number: normalizeWhitespace(getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.number)),
@@ -7005,6 +7097,10 @@ async function parseCrmContactImportFiles(files = []) {
   let rowsWithoutDocument = 0;
   let rowsWithInvalidPhone = 0;
   let rowsWithValidEmail = 0;
+  let rowsWithRawPhone = 0;
+  let rowsWithValidPhone = 0;
+  let rowsWithLikelyWhatsapp = 0;
+  let rowsWithLandlineOnly = 0;
 
   for (const file of files) {
     const parsedFile = buildCrmContactRawRows(file.path, sanitizeFilename(file.originalname));
@@ -7020,14 +7116,14 @@ async function parseCrmContactImportFiles(files = []) {
 
     for (const row of parsedFile.rows) {
       const candidate = buildCrmContactCandidate(row, sanitizeFilename(file.originalname), Number(row.__line || 0));
-      const rawPhoneValue = normalizeWhitespace([
-        getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.phone),
-        getImportCellValue(row, CRM_CONTACT_HEADER_ALIASES.mobile)
-      ].filter(Boolean).join(" "));
       if (!candidate.name) rowsWithoutName += 1;
-      if (!candidate.mobile && !candidate.phone) rowsWithoutPhone += 1;
+      if (!candidate.has_raw_any_phone) rowsWithoutPhone += 1;
+      if (candidate.has_raw_any_phone) rowsWithRawPhone += 1;
       if (!candidate.document) rowsWithoutDocument += 1;
-      if (rawPhoneValue && !candidate.mobile && !candidate.phone) rowsWithInvalidPhone += 1;
+      if (candidate.has_raw_any_phone && !candidate.phone_normalized_valid) rowsWithInvalidPhone += 1;
+      if (candidate.phone_normalized_valid) rowsWithValidPhone += 1;
+      if (candidate.phone_is_mobile) rowsWithLikelyWhatsapp += 1;
+      if (candidate.phone_is_landline && !candidate.phone_is_mobile) rowsWithLandlineOnly += 1;
       if (candidate.email) rowsWithValidEmail += 1;
       if (!hasCrmContactEnoughIdentity(candidate)) {
         invalidRows.push({
@@ -7105,6 +7201,10 @@ async function parseCrmContactImportFiles(files = []) {
     duplicatesDetected,
     rowsWithoutName,
     rowsWithoutPhone,
+    rowsWithRawPhone,
+    rowsWithValidPhone,
+    rowsWithLikelyWhatsapp,
+    rowsWithLandlineOnly,
     rowsWithoutDocument,
     rowsWithInvalidPhone,
     rowsWithValidEmail,
@@ -7133,6 +7233,10 @@ function buildCrmContactImportPreview(parsed = {}) {
       contactsWithEmail: Number(parsed.contactsWithEmail || 0),
       rowsWithoutName: Number(parsed.rowsWithoutName || 0),
       rowsWithoutPhone: Number(parsed.rowsWithoutPhone || 0),
+      rowsWithRawPhone: Number(parsed.rowsWithRawPhone || 0),
+      rowsWithValidPhone: Number(parsed.rowsWithValidPhone || 0),
+      rowsWithLikelyWhatsapp: Number(parsed.rowsWithLikelyWhatsapp || 0),
+      rowsWithLandlineOnly: Number(parsed.rowsWithLandlineOnly || 0),
       rowsWithoutDocument: Number(parsed.rowsWithoutDocument || 0),
       rowsWithInvalidPhone: Number(parsed.rowsWithInvalidPhone || 0),
       rowsWithValidEmail: Number(parsed.rowsWithValidEmail || 0),
@@ -13505,7 +13609,7 @@ async function listManualCustomers(filters = {}) {
     clauses.push("COALESCE(mobile_normalized, '') <> '' AND mobile_normalized IN (SELECT mobile_normalized FROM contacts WHERE COALESCE(deleted_at, '') = '' AND COALESCE(mobile_normalized, '') <> '' GROUP BY mobile_normalized HAVING COUNT(*) > 1)");
   }
   const whereClause = clauses.join(" AND ");
-  const totalRow = await get(`SELECT COUNT(*) AS total FROM contacts WHERE ${whereClause}`, params);
+  const summary = await getManualCustomersSummary(whereClause, params);
   const rows = await all(`SELECT * FROM contacts WHERE ${whereClause} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
   const duplicateMap = rows.reduce((acc, row) => {
     const key = normalizeText(row.mobile_normalized || "");
@@ -13520,15 +13624,62 @@ async function listManualCustomers(filters = {}) {
     }
     return customer;
   });
-  const total = Number(totalRow?.total || 0);
+  const total = Number(summary?.total || 0);
   return {
     items,
+    summary,
     pagination: {
       page,
       limit,
       total,
       totalPages: Math.max(1, Math.ceil(total / limit))
     }
+  };
+}
+
+async function getManualCustomersSummary(whereClause = "1 = 1", params = []) {
+  const row = await get(
+    `SELECT
+       COUNT(*) AS total,
+       SUM(CASE WHEN status = 'ativo' THEN 1 ELSE 0 END) AS active,
+       SUM(CASE WHEN status = 'inativo' THEN 1 ELSE 0 END) AS inactive,
+       SUM(CASE WHEN COALESCE(phone, '') <> '' OR COALESCE(mobile, '') <> '' OR COALESCE(phone_fixed, '') <> '' THEN 1 ELSE 0 END) AS with_raw_phone,
+       SUM(CASE WHEN COALESCE(mobile_normalized, '') <> '' THEN 1 ELSE 0 END) AS with_phone,
+       SUM(CASE WHEN COALESCE(mobile_normalized, '') LIKE '55%' AND length(COALESCE(mobile_normalized, '')) = 13 AND substr(COALESCE(mobile_normalized, ''), 5, 1) = '9' THEN 1 ELSE 0 END) AS with_whatsapp_valid,
+       SUM(CASE WHEN COALESCE(mobile_normalized, '') <> '' AND NOT (COALESCE(mobile_normalized, '') LIKE '55%' AND length(COALESCE(mobile_normalized, '')) = 13 AND substr(COALESCE(mobile_normalized, ''), 5, 1) = '9') THEN 1 ELSE 0 END) AS with_landline_or_non_mobile,
+       SUM(CASE WHEN NOT (COALESCE(mobile_normalized, '') LIKE '55%' AND length(COALESCE(mobile_normalized, '')) = 13 AND substr(COALESCE(mobile_normalized, ''), 5, 1) = '9') THEN 1 ELSE 0 END) AS without_whatsapp_valid,
+       SUM(CASE WHEN COALESCE(document, '') <> '' THEN 1 ELSE 0 END) AS with_document,
+       SUM(CASE WHEN COALESCE(email, '') <> '' THEN 1 ELSE 0 END) AS with_email,
+       SUM(CASE WHEN COALESCE(top_size, '') <> '' OR COALESCE(bottom_size, '') <> '' OR COALESCE(shoe_size, '') <> '' THEN 1 ELSE 0 END) AS with_size_profile,
+       SUM(CASE WHEN COALESCE(mobile, '') <> '' AND COALESCE(mobile_normalized, '') = '' THEN 1 ELSE 0 END) AS invalid_mobile,
+       SUM(CASE WHEN COALESCE(mobile_normalized, '') <> '' AND mobile_normalized IN (
+         SELECT mobile_normalized
+         FROM contacts
+         WHERE COALESCE(deleted_at, '') = '' AND COALESCE(mobile_normalized, '') <> ''
+         GROUP BY mobile_normalized
+         HAVING COUNT(*) > 1
+       ) THEN 1 ELSE 0 END) AS duplicates
+     FROM contacts
+     WHERE ${whereClause}`,
+    params
+  );
+  const total = Number(row?.total || 0);
+  const withWhatsappValid = Number(row?.with_whatsapp_valid || 0);
+  return {
+    total,
+    current_page_count: 0,
+    active: Number(row?.active || 0),
+    inactive: Number(row?.inactive || 0),
+    with_raw_phone: Number(row?.with_raw_phone || 0),
+    with_phone: Number(row?.with_phone || 0),
+    with_whatsapp_valid: withWhatsappValid,
+    with_landline_or_non_mobile: Number(row?.with_landline_or_non_mobile || 0),
+    without_whatsapp_valid: Math.max(0, Number(row?.without_whatsapp_valid ?? (total - withWhatsappValid))),
+    with_document: Number(row?.with_document || 0),
+    with_email: Number(row?.with_email || 0),
+    with_size_profile: Number(row?.with_size_profile || 0),
+    invalid_mobile: Number(row?.invalid_mobile || 0),
+    duplicates: Number(row?.duplicates || 0)
   };
 }
 
@@ -18885,7 +19036,7 @@ app.get("/api/customers", async (req, res) => {
     res.json({
       success: true,
       items: payload.items,
-      summary: buildCustomersSummary(payload.items, payload.pagination),
+      summary: payload.summary || buildCustomersSummary(payload.items, payload.pagination),
       pagination: payload.pagination
     });
   } catch (error) {

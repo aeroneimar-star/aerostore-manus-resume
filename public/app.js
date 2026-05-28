@@ -10801,9 +10801,13 @@ function renderPdvCustomersOfficialFront(container = document.getElementById("pd
       ${state.pdvCustomers.loadingHint ? `<div class="pdv-customers-callout"><strong>${escapeHtml(state.pdvCustomers.loadingHint)}</strong><span>${escapeHtml(pagination.total ? `Mostrando a pagina ${pagination.page} de ${pagination.totalPages} enquanto a busca atualiza os resultados.` : "A listagem sera atualizada assim que a consulta terminar.")}</span></div>` : ""}
       <div class="stats-grid pdv-customers-summary-grid">
         <article class="stat-card pdv-customers-stat-card"><span>Total</span><strong>${escapeHtml(String(summary.total || items.length || 0))}</strong><small>Base manual pronta para atendimento e campanhas futuras.</small></article>
-        <article class="stat-card pdv-customers-stat-card"><span>Com celular valido</span><strong>${escapeHtml(String(summary.with_phone || items.filter((item) => normalizeText(item.mobile_normalized || "")).length))}</strong><small>Normalizados para CRM, IA e AEROINTEL.</small></article>
-        <article class="stat-card pdv-customers-stat-card"><span>Com perfil de tamanhos</span><strong>${escapeHtml(String(summary.with_size_profile || items.filter((item) => item.has_size_profile).length))}</strong><small>Prontos para cruzamento futuro com produtos.</small></article>
-        <article class="stat-card pdv-customers-stat-card"><span>Alertas</span><strong>${escapeHtml(String(summary.invalid_mobile || 0))}</strong><small>${escapeHtml(state.pdvCustomers.error || "Duplicidade de celular e nome vazio ficam sinalizados no cadastro.")}</small></article>
+        <article class="stat-card pdv-customers-stat-card"><span>Com telefone bruto</span><strong>${escapeHtml(String(summary.with_raw_phone || 0))}</strong><small>Algum telefone/celular informado.</small></article>
+        <article class="stat-card pdv-customers-stat-card"><span>WhatsApp valido</span><strong>${escapeHtml(String(summary.with_whatsapp_valid ?? summary.with_phone ?? 0))}</strong><small>Celular normalizado para CRM e campanhas.</small></article>
+        <article class="stat-card pdv-customers-stat-card"><span>Sem WhatsApp valido</span><strong>${escapeHtml(String(summary.without_whatsapp_valid ?? 0))}</strong><small>Tem cadastro, mas exige higienizacao antes de disparos.</small></article>
+        <article class="stat-card pdv-customers-stat-card"><span>Com CPF/CNPJ</span><strong>${escapeHtml(String(summary.with_document || 0))}</strong><small>Chave forte para dedupe.</small></article>
+        <article class="stat-card pdv-customers-stat-card"><span>Com e-mail</span><strong>${escapeHtml(String(summary.with_email || 0))}</strong><small>Apoio para remarketing.</small></article>
+        <article class="stat-card pdv-customers-stat-card"><span>Duplicados/conflitos</span><strong>${escapeHtml(String(summary.duplicates || 0))}</strong><small>Mesmo telefone normalizado em mais de um cadastro.</small></article>
+        <article class="stat-card pdv-customers-stat-card"><span>Alertas</span><strong>${escapeHtml(String(summary.invalid_mobile || 0))}</strong><small>${escapeHtml(state.pdvCustomers.error || "Telefones invalidos e conflitos ficam sinalizados no cadastro.")}</small></article>
       </div>
       <div class="split-grid">
         <article class="panel">
@@ -13059,6 +13063,26 @@ function maskCrmImportIdentity(value = "") {
   return "***";
 }
 
+function getCrmImportPhoneStatusMeta(row = {}) {
+  const status = normalizeText(row.phone_status || "");
+  const labels = {
+    celular_valido: "Celular válido",
+    fixo_valido: "Fixo válido",
+    telefone_invalido: "Telefone inválido",
+    sem_telefone: "Sem telefone"
+  };
+  const classes = {
+    celular_valido: "ready",
+    fixo_valido: "update",
+    telefone_invalido: "danger",
+    sem_telefone: "duplicate"
+  };
+  return {
+    label: labels[status] || "Telefone não classificado",
+    className: classes[status] || "duplicate"
+  };
+}
+
 function getCrmImportPreviewRowsPage(importState) {
   const rows = toArray(importState.preview);
   const pageSize = Number(importState.pageSize || 50);
@@ -13090,6 +13114,12 @@ function buildCrmContactsImportSummaryCards(summary = {}) {
     ["Telefone inválido", summary.rowsWithInvalidPhone || 0, "Não virou 55 + DDD + número."],
     ["E-mails válidos", summary.rowsWithValidEmail || summary.contactsWithEmail || 0, "Apoio para dedupe/remarketing."]
   ];
+  cards.splice(7, 0,
+    ["Com telefone bruto", summary.rowsWithRawPhone || 0, "Existe valor em Fone ou Celular."],
+    ["Telefone valido", summary.rowsWithValidPhone || 0, "Normalizado com DDD."],
+    ["Celular/WhatsApp", summary.rowsWithLikelyWhatsapp || 0, "Movel provavel para campanhas."],
+    ["Apenas fixo", summary.rowsWithLandlineOnly || 0, "Fixo valido, nao ideal para WhatsApp."]
+  );
   return `<div class="crm-client-import-kpi-grid">${cards.map(([label, value, help]) => `
     <article class="stat-card crm-client-import-stat">
       <span>${escapeHtml(label)}</span>
@@ -13105,11 +13135,21 @@ function buildCrmContactsImportPreviewTable(importState) {
     const action = normalizeText(row.action || "create");
     const actionLabel = action === "update" ? "Atualizar" : action === "skip_duplicate" ? "Duplicado" : "Novo";
     const actionClass = action === "update" ? "update" : action === "skip_duplicate" ? "duplicate" : "ready";
+    const phoneMeta = getCrmImportPhoneStatusMeta(row);
+    const rawPhoneLabel = [
+      row.raw_mobile ? `Cel: ${maskCrmImportIdentity(row.raw_mobile)}` : "",
+      row.raw_phone ? `Fone: ${maskCrmImportIdentity(row.raw_phone)}` : ""
+    ].filter(Boolean).join(" / ") || "-";
+    const normalizedPhone = row.primary_phone_normalized || row.mobile || row.phone || "";
     return `
       <tr>
         <td><span class="preview-badge ${actionClass}">${escapeHtml(actionLabel)}</span><small>${escapeHtml(row.match_reason || "")}</small></td>
         <td><strong>${escapeHtml(row.name || "-")}</strong><small>${escapeHtml(row.contact_type || row.status || "")}</small></td>
-        <td>${escapeHtml(maskCrmImportIdentity(row.mobile || row.phone || ""))}</td>
+        <td>
+          <span class="preview-badge ${phoneMeta.className}">${escapeHtml(phoneMeta.label)}</span>
+          <small>${escapeHtml(rawPhoneLabel)}</small>
+          <small>${escapeHtml(normalizedPhone ? `Normalizado: ${maskCrmImportIdentity(normalizedPhone)}` : row.phone_invalid_reason ? `Motivo: ${row.phone_invalid_reason}` : "")}</small>
+        </td>
         <td>${escapeHtml(maskCrmImportIdentity(row.document || ""))}</td>
         <td>${escapeHtml(maskCrmImportIdentity(row.email || ""))}</td>
         <td>${escapeHtml([row.city, row.state].filter(Boolean).join(" / ") || "-")}</td>
@@ -13337,19 +13377,25 @@ function exportCrmContactsImportPreviewReport() {
     showFeedback("Gere a prévia antes de exportar.", "error");
     return;
   }
-  const headers = ["status", "match_reason", "nome", "telefone_mascarado", "documento_mascarado", "email_mascarado", "cidade", "uf", "vendedor", "arquivo", "linha"];
+  const headers = ["status", "match_reason", "nome", "telefone_mascarado", "documento_mascarado", "email_mascarado", "cidade", "uf", "vendedor", "arquivo", "linha", "has_raw_phone", "has_raw_mobile", "phone_normalized_valid", "phone_status", "phone_source_used", "phone_invalid_reason"];
   const csvRows = rows.map((row) => [
     row.action || "",
     row.match_reason || "",
     row.name || "",
-    maskCrmImportIdentity(row.mobile || row.phone || ""),
+    maskCrmImportIdentity(row.primary_phone_normalized || row.mobile || row.phone || ""),
     maskCrmImportIdentity(row.document || ""),
     maskCrmImportIdentity(row.email || ""),
     row.city || "",
     row.state || "",
     row.seller_name || "",
     row.source_file || "",
-    row.source_row || ""
+    row.source_row || "",
+    row.has_raw_phone ? "1" : "0",
+    row.has_raw_mobile ? "1" : "0",
+    row.phone_normalized_valid ? "1" : "0",
+    row.phone_status || "",
+    row.phone_source_used || "",
+    row.phone_invalid_reason || ""
   ]);
   const csv = [headers, ...csvRows].map((line) => line.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
