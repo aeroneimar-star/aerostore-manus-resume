@@ -3914,6 +3914,58 @@ body.theme-dark .pdv-customer-result-btn-v2 {
   color: rgba(248,241,228,0.85);
 }
 
+.pdv-customer-search-loading,
+.pdv-customer-empty-state {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(45, 212, 191, 0.18);
+  background: linear-gradient(145deg, rgba(45, 212, 191, 0.08), rgba(255, 255, 255, 0.035));
+}
+
+.pdv-customer-empty-state {
+  grid-template-columns: minmax(0, 1fr);
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.pdv-customer-empty-state.is-error {
+  border-color: rgba(248, 113, 113, 0.24);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.pdv-customer-search-loading strong,
+.pdv-customer-empty-state strong {
+  display: block;
+  color: #f4f7fa;
+  font-size: 0.95rem;
+  line-height: 1.2;
+}
+
+.pdv-customer-search-loading span,
+.pdv-customer-empty-state span {
+  display: block;
+  color: #aab4c0;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.pdv-mini-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid rgba(45, 212, 191, 0.18);
+  border-top-color: rgba(45, 212, 191, 0.92);
+  animation: pdvMiniSpin 0.75s linear infinite;
+}
+
+@keyframes pdvMiniSpin {
+  to { transform: rotate(360deg); }
+}
+
 /* Payment — grade 2 colunas compacta */
 .pdv-payment-group-v2 {
   display: grid;
@@ -9072,6 +9124,7 @@ tbody tr {
   gap: 10px;
   max-height: min(62vh, 680px);
   overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 4px;
 }
 
@@ -18808,10 +18861,10 @@ body[data-route-section="pdv-sale"] .pdv-sale-search-results::-webkit-scrollbar-
 
 /* --- 3. ALINHAMENTO DO CARD DE RESULTADO --- */
 body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card {
-  display: flex !important;
-  flex-direction: row !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 220px) !important;
   align-items: center !important;
-  gap: 20px !important;
+  gap: 18px !important;
   min-height: auto !important;
   height: auto !important;
   padding: 16px !important;
@@ -18819,6 +18872,7 @@ body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card {
   background: linear-gradient(135deg, rgba(26, 32, 44, 0.9), rgba(18, 24, 34, 0.95)) !important;
   border: 1px solid rgba(255, 255, 255, 0.05) !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+  overflow: hidden !important;
   transition: transform 0.2s ease, border-color 0.2s !important;
 }
 body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card:hover {
@@ -18828,8 +18882,8 @@ body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card:h
 
 /* --- 4. ZONAS DO CARD: ESQUERDA (THUMBNAIL) & CENTRO (INFO) --- */
 body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-body {
-  display: flex !important;
-  flex: 1 !important;
+  display: grid !important;
+  grid-template-columns: 64px minmax(0, 1fr) !important;
   align-items: center !important;
   gap: 16px !important;
   min-width: 0 !important; /* Fundamental para text ellipsis interno */
@@ -18896,14 +18950,13 @@ body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-t
 
 /* --- 5. ZONAS DO CARD: DIREITA (PREÇO, ESTOQUE E BOTÃO) --- */
 body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-action {
-  display: flex !important;
-  flex-direction: column !important;
+  display: grid !important;
   align-items: flex-end !important;
   justify-content: center !important;
-  gap: 8px !important;
-  width: 140px !important; /* Largura fixa garante simetria visual absoluta */
-  min-width: 140px !important;
-  flex-shrink: 0 !important;
+  gap: 7px !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: 220px !important;
   text-align: right !important;
 }
 
@@ -18916,37 +18969,74 @@ body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-p
 
 body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-stock {
   font-size: 0.75rem !important;
-  display: flex !important;
-  flex-direction: column !important;
+  display: grid !important;
   align-items: flex-end !important;
   line-height: 1.3 !important;
   max-width: 100% !important;
+  min-width: 0 !important;
+  gap: 3px !important;
 }
 
 body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-stock strong {
+  display: block !important;
   font-weight: 700 !important;
   font-size: 0.8rem !important;
+  line-height: 1.2 !important;
+  max-width: 100% !important;
+  overflow-wrap: anywhere !important;
 }
 
 body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-stock span {
   color: rgba(255, 255, 255, 0.4) !important;
-  white-space: nowrap !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
   max-width: 100% !important;
   font-size: 0.7rem !important;
+  line-height: 1.25 !important;
+  overflow-wrap: anywhere !important;
 }
 
 body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-btn {
-  padding: 8px 16px !important;
-  font-size: 0.8rem !important;
+  padding: 8px 12px !important;
+  font-size: 0.76rem !important;
   font-weight: 700 !important;
   border-radius: 8px !important;
   min-height: 34px !important;
-  margin-top: 4px !important;
+  margin-top: 2px !important;
   width: 100% !important; /* Força o botão a ocupar o bloco da direita uniformemente */
+  max-width: 100% !important;
   text-align: center !important;
+  white-space: normal !important;
+  line-height: 1.15 !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+}
+
+@media (max-width: 720px) {
+  body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card {
+    grid-template-columns: 1fr !important;
+  }
+
+  body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-body {
+    grid-template-columns: 58px minmax(0, 1fr) !important;
+  }
+
+  body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-media {
+    width: 58px !important;
+    height: 58px !important;
+    min-width: 58px !important;
+  }
+
+  body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-action {
+    align-items: stretch !important;
+    max-width: none !important;
+    text-align: left !important;
+  }
+
+  body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-stock {
+    align-items: flex-start !important;
+    text-align: left !important;
+  }
 }
 
 /* =========================================
