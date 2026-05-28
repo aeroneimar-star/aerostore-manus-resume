@@ -95,6 +95,20 @@ const state = {
       detail: ""
     }
   },
+  crmContactsImport: {
+    loading: false,
+    commitLoading: false,
+    previewId: "",
+    summary: null,
+    preview: [],
+    invalidRows: [],
+    diagnostics: [],
+    filesLabel: "",
+    page: 1,
+    pageSize: 50,
+    lastResult: null,
+    error: ""
+  },
   currentAssistant: null,
   assistantCampaignContacts: [],
   assistantOffset: 0,
@@ -1211,6 +1225,10 @@ function canImportPdvTinyFrontend() {
   return getCurrentUserRole() === "admin" || hasPermission("can_manage_products");
 }
 
+function canImportCrmContactsFrontend() {
+  return getCurrentUserRole() === "admin" || hasAnyPermission("can_export_data", "can_manage_campaigns");
+}
+
 function canViewPdvOrdersFrontend() {
   return isCurrentUserManagerProfile() || hasAnyPermission("can_sell", "can_view_cash_register", "can_view_orders");
 }
@@ -1333,6 +1351,7 @@ const PATHNAME_SECTION_MAP = {
   "/pdv/trocas": "pdv-exchanges",
   "/pdv/orcamentos": "pdv-quotes",
   "/pdv/importacoes": "pdv-imports",
+  "/pdv/importacoes/clientes": "pdv-imports",
   "/pdv/importações": "pdv-imports",
   "/pdv/testes": "pdv-dashboard",
   "/pdv/consumo": "pdv-dashboard",
@@ -1413,7 +1432,7 @@ const PDV_ROUTE_ITEMS = [
   { section: "pdv-products", label: "Produtos", route: "/pdv/produtos", visible: () => canViewPdvProductsFrontend() },
   { section: "pdv-customers", label: "Clientes", route: "/pdv/clientes", visible: () => canViewPdvCustomersFrontend() },
   { section: "pdv-stock", label: "Estoque", route: "/pdv/estoque", visible: () => canViewPdvStockFrontend() },
-  { section: "pdv-imports", label: "ImportaÃ§Ãµes", route: "/pdv/importacoes", visible: () => canImportPdvTinyFrontend() },
+  { section: "pdv-imports", label: "ImportaÃ§Ãµes", route: "/pdv/importacoes", visible: () => canImportPdvTinyFrontend() || canImportCrmContactsFrontend() },
   { section: "pdv-reports", label: "Relatórios", route: "/pdv/relatorios", visible: () => canViewReports() || hasPermission("can_view_store_reports") },
   { section: "pdv-consolidation", label: "Consolidação", route: "/pdv/consolidacao", visible: () => canViewConsolidationMenu() },
   { section: "pdv-reservations", label: "Reservas", route: "/pdv/reservas", visible: () => canViewPdvReservationsFrontend() },
@@ -1473,7 +1492,7 @@ function canAccessOfficialSection(sectionId = "") {
     return canViewPdvProductsFrontend();
   }
   if (sectionId === "pdv-imports") {
-    return canImportPdvTinyFrontend();
+    return canImportPdvTinyFrontend() || canImportCrmContactsFrontend();
   }
   if (sectionId === "pdv-customers") {
     return canViewPdvCustomersFrontend();
@@ -13011,7 +13030,342 @@ function buildPdvImportUploadedFilesPanel(importState = state.pdvImports) {
   `;
 }
 
+function isCrmContactsImportRoute() {
+  return normalizePathname(window.location.pathname || "") === "/pdv/importacoes/clientes";
+}
+
+function ensureCrmContactsImportState() {
+  state.crmContactsImport = state.crmContactsImport && typeof state.crmContactsImport === "object" ? state.crmContactsImport : {};
+  state.crmContactsImport.preview = toArray(state.crmContactsImport.preview);
+  state.crmContactsImport.invalidRows = toArray(state.crmContactsImport.invalidRows);
+  state.crmContactsImport.diagnostics = toArray(state.crmContactsImport.diagnostics);
+  state.crmContactsImport.page = Math.max(1, Number(state.crmContactsImport.page || 1));
+  state.crmContactsImport.pageSize = [25, 50, 100].includes(Number(state.crmContactsImport.pageSize || 50))
+    ? Number(state.crmContactsImport.pageSize)
+    : 50;
+}
+
+function maskCrmImportIdentity(value = "") {
+  const raw = normalizeText(value || "");
+  if (!raw) return "-";
+  const digits = raw.replace(/\D+/g, "");
+  if (digits.length >= 4) {
+    return `${"*".repeat(Math.min(8, Math.max(3, digits.length - 4)))}${digits.slice(-4)}`;
+  }
+  if (raw.includes("@")) {
+    const [local, domain] = raw.split("@");
+    return `${escapeHtml((local || "").slice(0, 2))}***@${escapeHtml(domain || "***")}`;
+  }
+  return "***";
+}
+
+function getCrmImportPreviewRowsPage(importState) {
+  const rows = toArray(importState.preview);
+  const pageSize = Number(importState.pageSize || 50);
+  const page = Math.max(1, Number(importState.page || 1));
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * pageSize;
+  return {
+    rows: rows.slice(start, start + pageSize),
+    page: safePage,
+    pageSize,
+    total: rows.length,
+    totalPages,
+    start: rows.length ? start + 1 : 0,
+    end: Math.min(rows.length, start + pageSize)
+  };
+}
+
+function buildCrmContactsImportSummaryCards(summary = {}) {
+  const cards = [
+    ["Total de linhas", summary.totalRows || 0, "Linhas lidas nos arquivos."],
+    ["Contatos válidos", summary.validContacts || 0, "Entram no preview seguro."],
+    ["Novos", summary.newContacts || 0, "Sem match forte no CRM."],
+    ["Atualizações", summary.contactsToUpdate || 0, "Preenchem lacunas sem apagar dados bons."],
+    ["Duplicados", summary.duplicatesDetected || 0, "Repetidos entre arquivos/linhas."],
+    ["Sem nome", summary.rowsWithoutName || 0, "Precisam atenção antes do commit."],
+    ["Sem telefone", summary.rowsWithoutPhone || 0, "Podem entrar por CPF/e-mail/código."],
+    ["Sem CPF", summary.rowsWithoutDocument || 0, "Chave forte ausente."],
+    ["Telefone inválido", summary.rowsWithInvalidPhone || 0, "Não virou 55 + DDD + número."],
+    ["E-mails válidos", summary.rowsWithValidEmail || summary.contactsWithEmail || 0, "Apoio para dedupe/remarketing."]
+  ];
+  return `<div class="crm-client-import-kpi-grid">${cards.map(([label, value, help]) => `
+    <article class="stat-card crm-client-import-stat">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(String(value))}</strong>
+      <small>${escapeHtml(help)}</small>
+    </article>
+  `).join("")}</div>`;
+}
+
+function buildCrmContactsImportPreviewTable(importState) {
+  const pageData = getCrmImportPreviewRowsPage(importState);
+  const rowsHtml = pageData.rows.length ? pageData.rows.map((row) => {
+    const action = normalizeText(row.action || "create");
+    const actionLabel = action === "update" ? "Atualizar" : action === "skip_duplicate" ? "Duplicado" : "Novo";
+    const actionClass = action === "update" ? "update" : action === "skip_duplicate" ? "duplicate" : "ready";
+    return `
+      <tr>
+        <td><span class="preview-badge ${actionClass}">${escapeHtml(actionLabel)}</span><small>${escapeHtml(row.match_reason || "")}</small></td>
+        <td><strong>${escapeHtml(row.name || "-")}</strong><small>${escapeHtml(row.contact_type || row.status || "")}</small></td>
+        <td>${escapeHtml(maskCrmImportIdentity(row.mobile || row.phone || ""))}</td>
+        <td>${escapeHtml(maskCrmImportIdentity(row.document || ""))}</td>
+        <td>${escapeHtml(maskCrmImportIdentity(row.email || ""))}</td>
+        <td>${escapeHtml([row.city, row.state].filter(Boolean).join(" / ") || "-")}</td>
+        <td>${escapeHtml(row.seller_name || "-")}</td>
+        <td>${escapeHtml(row.source_file || "-")}<small>Linha ${escapeHtml(String(row.source_row || "-"))}</small></td>
+      </tr>
+    `;
+  }).join("") : `<tr><td colspan="8">Gere uma prévia para conferir os clientes antes de aplicar.</td></tr>`;
+  return `
+    <div class="pdv-import-preview-toolbar crm-client-import-toolbar">
+      <span>${escapeHtml(`Mostrando ${pageData.start}-${pageData.end} de ${pageData.total} contato(s) do preview`)}</span>
+      <label>Itens por página
+        <select data-crm-contacts-import-page-size>
+          ${[25, 50, 100].map((size) => `<option value="${size}"${pageData.pageSize === size ? " selected" : ""}>${size}</option>`).join("")}
+        </select>
+      </label>
+      <button class="ghost-button" type="button" data-crm-contacts-import-page="${pageData.page - 1}"${pageData.page <= 1 ? " disabled" : ""}>Anterior</button>
+      <button class="ghost-button" type="button" data-crm-contacts-import-page="${pageData.page + 1}"${pageData.page >= pageData.totalPages ? " disabled" : ""}>Próximo</button>
+    </div>
+    <div class="table-wrap preview-scroll crm-client-import-table-wrap">
+      <table class="pdv-import-preview-table crm-client-import-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Cliente</th>
+            <th>Telefone</th>
+            <th>CPF/CNPJ</th>
+            <th>E-mail</th>
+            <th>Cidade/UF</th>
+            <th>Vendedor</th>
+            <th>Origem</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function buildCrmContactsImportDiagnostics(diagnostics = []) {
+  const rows = toArray(diagnostics);
+  if (!rows.length) {
+    return `<div class="empty-state compact"><strong>Sem arquivos lidos ainda</strong><span>Selecione as planilhas do Tiny/Olist e gere a prévia.</span></div>`;
+  }
+  return `
+    <div class="table-wrap preview-scroll crm-client-import-files">
+      <table class="pdv-import-preview-table">
+        <thead><tr><th>Arquivo</th><th>Linhas físicas</th><th>Formato</th><th>Colunas detectadas</th></tr></thead>
+        <tbody>${rows.map((item) => `
+          <tr>
+            <td><strong>${escapeHtml(item.filename || "-")}</strong></td>
+            <td>${escapeHtml(String(item.physicalRows || 0))}</td>
+            <td>${escapeHtml(item.delimiter || "-")}</td>
+            <td>${escapeHtml(toArray(item.headersOriginais).slice(0, 8).join(", "))}</td>
+          </tr>
+        `).join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderCrmContactsImportFront(container) {
+  ensureCrmContactsImportState();
+  const importState = state.crmContactsImport;
+  const summary = importState.summary || null;
+  const hasPreview = Boolean(importState.previewId && summary);
+  const canCommit = hasPreview && !importState.commitLoading;
+  const previewButtonLabel = importState.loading ? "Gerando prévia..." : "Gerar prévia";
+  const commitButtonLabel = importState.commitLoading ? "Aplicando..." : "Aplicar importação";
+  container.innerHTML = buildPdvFrontShell({
+    sectionId: "pdv-imports",
+    title: "Importar Clientes",
+    subtitle: "Importe contatos/clientes com prévia antes de aplicar, sem usar fluxos antigos diretos.",
+    compactTabs: true,
+    contentHtml: `
+      <div class="crm-client-import-shell">
+        <article class="panel crm-client-import-hero">
+          <div class="panel-header">
+            <div>
+              <span class="eyebrow">CRM AEROSTORE</span>
+              <h3>Importação segura de clientes</h3>
+              <p>Use arquivos .xls, .xlsx ou .csv do Tiny/Olist. A prévia não grava clientes; o commit exige confirmação explícita.</p>
+            </div>
+          </div>
+          <form class="crm-client-import-form" data-crm-contacts-import-preview-form="true">
+            <label class="pdv-import-file-picker">Arquivos de clientes
+              <input type="file" name="files" accept=".xlsx,.xls,.csv" multiple />
+              <span class="pdv-import-file-control">
+                <strong>Selecionar planilhas de clientes</strong>
+                <small>Você pode enviar vários arquivos de 500 registros no mesmo preview.</small>
+              </span>
+              <span class="pdv-import-file-selection" data-crm-contacts-import-selected-files>
+                <strong>Nenhum arquivo selecionado</strong>
+                <small>Exemplo Tiny/Olist: contatos_1-500.xlsx, contatos_501-1000.xlsx...</small>
+              </span>
+            </label>
+            <div class="action-row">
+              <button class="secondary-button" type="submit"${importState.loading ? " disabled" : ""}>${escapeHtml(previewButtonLabel)}</button>
+              <button class="secondary-button" type="button" data-crm-contacts-import-export${toArray(importState.preview).length ? "" : " disabled"}>Exportar relatório da prévia</button>
+              <button class="primary-button" type="button" data-crm-contacts-import-commit${canCommit ? "" : " disabled"}>${escapeHtml(commitButtonLabel)}</button>
+            </div>
+          </form>
+          ${importState.error ? `<div class="pdv-import-callout danger"><strong>Falha na importação</strong><span>${escapeHtml(importState.error)}</span></div>` : ""}
+          ${importState.lastResult ? `<div class="pdv-import-callout success"><strong>Importação concluída</strong><span>${escapeHtml(`${importState.lastResult.created || 0} criados, ${importState.lastResult.updated || 0} atualizados, ${importState.lastResult.skippedDuplicates || 0} duplicados ignorados.`)}</span></div>` : ""}
+          ${summary ? buildCrmContactsImportSummaryCards(summary) : `<div class="pdv-import-callout"><strong>Preview obrigatório</strong><span>O botão Aplicar só libera quando existir previewId válido. Não use /api/contacts/import antigo.</span></div>`}
+        </article>
+        <div class="split-grid">
+          <article class="panel">
+            <div class="panel-header"><h3>Preview dos clientes</h3></div>
+            ${buildCrmContactsImportPreviewTable(importState)}
+          </article>
+          <article class="panel">
+            <div class="panel-header"><h3>Arquivos da prévia</h3></div>
+            ${buildCrmContactsImportDiagnostics(importState.diagnostics)}
+          </article>
+        </div>
+      </div>
+    `
+  });
+  const form = container.querySelector('[data-crm-contacts-import-preview-form="true"]');
+  const fileInput = form?.querySelector('input[name="files"]');
+  fileInput?.addEventListener("change", () => updateCrmContactsImportSelectedFilesUi(fileInput));
+  updateCrmContactsImportSelectedFilesUi(fileInput);
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await submitCrmContactsImportPreview(form);
+  });
+  container.querySelector("[data-crm-contacts-import-export]")?.addEventListener("click", exportCrmContactsImportPreviewReport);
+  container.querySelector("[data-crm-contacts-import-commit]")?.addEventListener("click", commitCrmContactsImportPreview);
+  container.querySelector("[data-crm-contacts-import-page-size]")?.addEventListener("change", (event) => {
+    state.crmContactsImport.pageSize = Number(event.target.value || 50);
+    state.crmContactsImport.page = 1;
+    renderCrmContactsImportFront(container);
+  });
+  Array.from(container.querySelectorAll("[data-crm-contacts-import-page]")).forEach((button) => {
+    button.addEventListener("click", () => {
+      state.crmContactsImport.page = Math.max(1, Number(button.dataset.crmContactsImportPage || 1));
+      renderCrmContactsImportFront(container);
+    });
+  });
+  enhanceTableScrolls();
+}
+
+function updateCrmContactsImportSelectedFilesUi(fileInput) {
+  const target = document.querySelector("[data-crm-contacts-import-selected-files]");
+  if (!target) return;
+  const files = Array.from(fileInput?.files || []);
+  const fileNames = files.map((file) => file.name).slice(0, 6).join(", ");
+  target.innerHTML = files.length
+    ? `<strong>${escapeHtml(`${files.length} arquivo(s) selecionado(s)`)}</strong><small>${escapeHtml(`${fileNames}${files.length > 6 ? "..." : ""}`)}</small>`
+    : `<strong>Nenhum arquivo selecionado</strong><small>Escolha os arquivos exportados do Tiny/Olist.</small>`;
+}
+
+async function submitCrmContactsImportPreview(formElement) {
+  ensureCrmContactsImportState();
+  const fileInput = formElement?.querySelector('input[name="files"]');
+  const selectedFiles = Array.from(fileInput?.files || []);
+  if (!selectedFiles.length) {
+    showFeedback("Selecione ao menos uma planilha de clientes.", "error");
+    return;
+  }
+  state.crmContactsImport.loading = true;
+  state.crmContactsImport.error = "";
+  state.crmContactsImport.filesLabel = selectedFiles.map((file) => file.name).join(", ");
+  state.crmContactsImport.previewId = "";
+  state.crmContactsImport.lastResult = null;
+  const container = document.getElementById("pdv-imports-content");
+  if (container) renderCrmContactsImportFront(container);
+  const formData = new FormData();
+  selectedFiles.forEach((file) => formData.append("files", file));
+  try {
+    const response = await api("/api/crm_contacts/import/preview", { method: "POST", body: formData });
+    state.crmContactsImport.previewId = normalizeText(response.previewId || "");
+    state.crmContactsImport.summary = response.summary || null;
+    state.crmContactsImport.preview = toArray(response.preview);
+    state.crmContactsImport.invalidRows = toArray(response.invalidRows);
+    state.crmContactsImport.diagnostics = toArray(response.diagnostics);
+    state.crmContactsImport.page = 1;
+    showFeedback(`Prévia gerada: ${response.summary?.newContacts || 0} novos e ${response.summary?.contactsToUpdate || 0} atualizações.`);
+  } catch (error) {
+    state.crmContactsImport.error = error.message || "Falha ao gerar prévia de clientes.";
+  } finally {
+    state.crmContactsImport.loading = false;
+    if (container) renderCrmContactsImportFront(container);
+  }
+}
+
+async function commitCrmContactsImportPreview() {
+  ensureCrmContactsImportState();
+  const previewId = normalizeText(state.crmContactsImport.previewId || "");
+  if (!previewId) {
+    showFeedback("Gere a prévia antes de aplicar.", "error");
+    return;
+  }
+  const summary = state.crmContactsImport.summary || {};
+  const total = Number(summary.validContacts || summary.totalRows || 0);
+  if (!window.confirm(`Você está prestes a importar ${total} cliente(s) a partir da prévia validada.\n\nEsta ação grava em crm_contacts e não mexe em vendas, caixa, estoque ou cashback. Continuar?`)) {
+    showFeedback("Importação de clientes cancelada.", "info");
+    return;
+  }
+  state.crmContactsImport.commitLoading = true;
+  state.crmContactsImport.error = "";
+  const container = document.getElementById("pdv-imports-content");
+  if (container) renderCrmContactsImportFront(container);
+  try {
+    const response = await api("/api/crm_contacts/import/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ previewId, confirm: true })
+    });
+    state.crmContactsImport.lastResult = response || null;
+    state.crmContactsImport.previewId = "";
+    showFeedback(`Importação aplicada: ${response.created || 0} criados e ${response.updated || 0} atualizados.`);
+  } catch (error) {
+    state.crmContactsImport.error = error.message || "Falha ao aplicar importação de clientes.";
+  } finally {
+    state.crmContactsImport.commitLoading = false;
+    if (container) renderCrmContactsImportFront(container);
+  }
+}
+
+function exportCrmContactsImportPreviewReport() {
+  const rows = toArray(state.crmContactsImport.preview);
+  if (!rows.length) {
+    showFeedback("Gere a prévia antes de exportar.", "error");
+    return;
+  }
+  const headers = ["status", "match_reason", "nome", "telefone_mascarado", "documento_mascarado", "email_mascarado", "cidade", "uf", "vendedor", "arquivo", "linha"];
+  const csvRows = rows.map((row) => [
+    row.action || "",
+    row.match_reason || "",
+    row.name || "",
+    maskCrmImportIdentity(row.mobile || row.phone || ""),
+    maskCrmImportIdentity(row.document || ""),
+    maskCrmImportIdentity(row.email || ""),
+    row.city || "",
+    row.state || "",
+    row.seller_name || "",
+    row.source_file || "",
+    row.source_row || ""
+  ]);
+  const csv = [headers, ...csvRows].map((line) => line.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `previa-importacao-clientes-${today()}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function renderPdvImportsFront(container) {
+  if (isCrmContactsImportRoute()) {
+    renderCrmContactsImportFront(container);
+    return;
+  }
   ensurePdvImportsState();
   const importState = state.pdvImports;
   const summary = importState.summary || null;
@@ -13322,6 +13676,10 @@ async function loadPdvImportsFront() {
   ensurePdvImportsState();
   const container = document.getElementById("pdv-imports-content");
   if (!container) return;
+  if (isCrmContactsImportRoute()) {
+    renderCrmContactsImportFront(container);
+    return;
+  }
   renderPdvImportsFront(container);
   if (!state.pdvImports.uploads.loading && !toArray(state.pdvImports.uploads.files).length && !toArray(state.pdvImports.uploads.history).length) {
     await loadPdvTinyImportUploads();
@@ -17027,7 +17385,8 @@ function getSidebarMenuGroups() {
           { label: "Relatórios", route: "/pdv/relatorios" },
           { label: "Relatórios de Cashback", section: "cashback-reports" },
           { label: "Consolidação Estratégica", route: "/pdv/consolidacao", visible: canViewConsolidationMenu() },
-          { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() },
+          { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() || canImportCrmContactsFrontend() },
+          { label: "Importar clientes", route: "/pdv/importacoes/clientes", visible: canImportCrmContactsFrontend() },
           { label: "AEROINTEL", route: "/aerointel", visible: canViewAerointelMenu() }
         ]
       },
@@ -17066,7 +17425,8 @@ function getSidebarMenuGroups() {
         title: "Gestão",
         items: [
           { label: "Relatórios da loja", route: "/pdv/relatorios", visible: hasPermission("can_view_reports") || hasPermission("can_view_store_reports") },
-          { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() },
+          { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() || canImportCrmContactsFrontend() },
+          { label: "Importar clientes", route: "/pdv/importacoes/clientes", visible: canImportCrmContactsFrontend() },
           { label: "AEROINTEL", route: "/aerointel", visible: canViewAerointelMenu() },
           { label: "Loja / terminal", section: "settings", visible: hasPermission("can_manage_store_settings") || hasPermission("can_view_store_settings") }
         ]
