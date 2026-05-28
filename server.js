@@ -58,6 +58,7 @@ const {
   buildCustomerBehaviorSnapshot
 } = require("./modules/pdv/services/pdvOperationalService");
 const { recordAuditEvent, listAuditLogs } = require("./modules/audit/auditService");
+const { listUnifiedCustomers } = require("./modules/customers/customerUnifiedService");
 const { getNotificationService, getNotificationDryRunDefault } = require("./src/notification/NotificationService");
 const { startCashbackReminderScheduler } = require("./src/notification/CashbackScheduler");
 const {
@@ -19042,6 +19043,25 @@ app.get("/api/customers", async (req, res) => {
   } catch (error) {
     console.error("Erro ao listar clientes do cadastro manual:", error);
     res.status(500).json({ success: false, error: "Falha ao listar os clientes." });
+  }
+});
+
+app.get("/api/customers/unified", async (req, res) => {
+  try {
+    if (!canViewCustomersCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro consolidado de clientes." });
+    }
+    const payload = await listUnifiedCustomers(req.query || {});
+    res.json({
+      success: true,
+      readOnly: true,
+      items: payload.items,
+      pagination: payload.pagination,
+      stats: payload.stats
+    });
+  } catch (error) {
+    console.error("Erro ao listar clientes consolidados:", error.message);
+    res.status(500).json({ success: false, error: "Falha ao listar a visao consolidada de clientes." });
   }
 });
 
