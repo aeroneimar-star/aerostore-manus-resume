@@ -58,6 +58,12 @@ const {
   buildCustomerBehaviorSnapshot
 } = require("./modules/pdv/services/pdvOperationalService");
 const { recordAuditEvent, listAuditLogs } = require("./modules/audit/auditService");
+const { getNotificationService, getNotificationDryRunDefault } = require("./src/notification/NotificationService");
+const { startCashbackReminderScheduler } = require("./src/notification/CashbackScheduler");
+const {
+  registerPublicNotificationRoutes,
+  registerProtectedNotificationRoutes
+} = require("./src/routes/notificationRoutes");
 
 const CONFIG_DIR = path.join(__dirname, "config");
 const INSTANCE_CONFIG_ENV_PATH = String(process.env.AEROSTORE_INSTANCE_CONFIG || "").trim();
@@ -14335,6 +14341,48 @@ function safeCompareSecrets(received = "", expected = "") {
   return receivedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
 }
 
+async function notifyCashbackCreditedSafe(cashback, req = null) {
+  if (!cashback || !cashback.id) return null;
+  try {
+    const result = await getNotificationService().sendCashbackNotification(cashback, {
+      dryRun: getNotificationDryRunDefault()
+    });
+    await recordAuditEvent({
+      req: req || undefined,
+      module: "notifications",
+      action: "cashback_credit_notification",
+      entityType: "cashback",
+      entityId: String(cashback.id),
+      customerId: String(cashback.contact_id || ""),
+      amount: Number(cashback.generated_value || cashback.available_balance || 0),
+      result: result.success ? "success" : "failed",
+      message: result.dryRun
+        ? "Notificacao de cashback registrada em dry-run."
+        : "Notificacao de cashback processada.",
+      metadata: {
+        provider: result.provider,
+        template: result.templateName,
+        status: result.status,
+        dry_run: Boolean(result.dryRun),
+        phone: result.toMasked || ""
+      }
+    }).catch(() => {});
+    return result;
+  } catch (error) {
+    await recordAuditEvent({
+      req: req || undefined,
+      module: "notifications",
+      action: "cashback_credit_notification_failed",
+      entityType: "cashback",
+      entityId: String(cashback.id),
+      result: "failed",
+      message: "Falha ao processar notificacao WhatsApp Cloud.",
+      metadata: { error: String(error.message || error).slice(0, 160) }
+    }).catch(() => {});
+    return { success: false, status: "failed", error: "notification_failed" };
+  }
+}
+
 const PAGBANK_WEBHOOK_EVENT_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
 const pagBankWebhookEventCache = new Map();
 
@@ -15629,7 +15677,9 @@ async function validateCashbackPinForCashbackId({ cashbackId, pin, user }) {
   });
 
   await syncContactCashback(contact.id);
-  return getCashbackById(cashback.id);
+  const confirmedCashback = await getCashbackById(cashback.id);
+  notifyCashbackCreditedSafe(confirmedCashback).catch(() => {});
+  return confirmedCashback;
 }
 
 async function registerWhatsappEvent(cashback, seller = "") {
@@ -17749,6 +17799,8 @@ app.post("/api/payments/pagbank/webhook/payment", async (req, res) => {
   }
 });
 
+registerPublicNotificationRoutes(app);
+
 app.use("/api", authMiddleware);
 app.use("/api", auditSensitiveMutationMiddleware);
 
@@ -17808,6 +17860,7 @@ async function handleAuthActiveStore(req, res) {
 app.get("/api/me", handleAuthMe);
 app.get("/api/auth/me", handleAuthMe);
 app.post("/api/auth/active-store", handleAuthActiveStore);
+registerProtectedNotificationRoutes(app, { requireAnyPermission });
 app.get("/api/admin/users", requirePermission("can_manage_users"), listAdminUsers);
 app.post("/api/admin/users", requirePermission("can_manage_users"), createAdminUser);
 app.patch("/api/admin/users/:id", requirePermission("can_manage_users"), updateAdminUser);
@@ -21275,6 +21328,7 @@ app.post("/api/cashbacks", async (req, res) => {
       notes: String(req.body.notes || "Cashback gerado manualmente.")
     });
     await syncContactCashback(cashback.contact_id);
+    notifyCashbackCreditedSafe(cashback, req).catch(() => {});
 
     res.status(201).json({
       cashback,
@@ -25909,6 +25963,7 @@ initializeDatabase()
   .then(async () => {
     await expireCashbacks();
     scheduleWarmupIncrement();
+    startCashbackReminderScheduler({ dryRun: getNotificationDryRunDefault() });
     if (instanceConfig.whatsapp?.auto_connect !== false) {
       initializeWhatsAppClient().catch((error) => {
         console.error('Falha ao inicializar WhatsApp:', error);

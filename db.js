@@ -1840,6 +1840,44 @@ async function initializeDatabase() {
   await run("CREATE INDEX IF NOT EXISTS idx_audit_logs_sale ON audit_logs(sale_id)");
 
   await run(`
+    CREATE TABLE IF NOT EXISTS notification_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT '',
+      channel TEXT NOT NULL DEFAULT '',
+      template_name TEXT DEFAULT '',
+      phone_masked TEXT DEFAULT '',
+      phone_hash TEXT DEFAULT '',
+      cashback_id TEXT DEFAULT '',
+      customer_id TEXT DEFAULT '',
+      reminder_type TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT '',
+      meta_message_id TEXT DEFAULT '',
+      error_code TEXT DEFAULT '',
+      error_message TEXT DEFAULT '',
+      dry_run INTEGER NOT NULL DEFAULT 0,
+      payload_summary_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      sent_at TEXT DEFAULT '',
+      delivered_at TEXT DEFAULT '',
+      read_at TEXT DEFAULT '',
+      failed_at TEXT DEFAULT ''
+    )
+  `);
+  await run("CREATE INDEX IF NOT EXISTS idx_notification_logs_created_at ON notification_logs(created_at)");
+  await run("CREATE INDEX IF NOT EXISTS idx_notification_logs_status ON notification_logs(status)");
+  await run("CREATE INDEX IF NOT EXISTS idx_notification_logs_meta_message ON notification_logs(meta_message_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_notification_logs_cashback ON notification_logs(cashback_id, reminder_type, template_name)");
+  await run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_logs_cashback_once
+    ON notification_logs(cashback_id, reminder_type, template_name)
+    WHERE dry_run = 0
+      AND cashback_id <> ''
+      AND reminder_type <> ''
+      AND template_name <> ''
+      AND status IN ('sent', 'delivered', 'read')
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS cashback_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       cashback_id INTEGER,
