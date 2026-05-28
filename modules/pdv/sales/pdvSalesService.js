@@ -1873,6 +1873,35 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
     pagamentos: sale.pagamentos
   }, user);
 
+  const physicalConfirmedItems = (sale.items || []).filter((item) => Boolean(item.physical_confirmation_done));
+  physicalConfirmedItems.forEach((item) => {
+    const payloadSummary = {
+      sale_id: sale.sale_id,
+      item_id: item.item_id || "",
+      product_id: item.product_id || item.selected_product_id || "",
+      sku: item.sku || item.codigo || "",
+      codigo: item.codigo || "",
+      store_id: item.physical_confirmation_store_id || item.loja_venda || sale.loja,
+      confirmed_at: item.physical_confirmation_at || "",
+      reason: item.physical_confirmation_reason || "sale_item_confirmed_in_store"
+    };
+    appendEvent("SALE_ITEM_PHYSICAL_CONFIRMATION", { sale_id: sale.sale_id, loja: sale.loja }, payloadSummary, user);
+    appendAuditLog({
+      audit_id: buildId("AUD"),
+      action: "PRODUCT_SOLD_AFTER_PHYSICAL_CONFIRMATION",
+      created_at: nowIso(),
+      actor: user?.name || user?.email || "sistema",
+      actor_role: getPdvUserRole(user),
+      loja: sale.loja,
+      reason: "Item vendido apos conferencia fisica.",
+      before: {
+        item_id: item.item_id || "",
+        stock_status: item.operational_stock_status || ""
+      },
+      after: payloadSummary
+    });
+  });
+
   if (matchedReservation) {
     sale.inventory_movements = convertReservationInventory(matchedReservation, sale, user).map((item) => item.movement_id);
     matchedReservation.inventory_status = "CONVERTED";

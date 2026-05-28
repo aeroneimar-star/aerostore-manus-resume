@@ -5,7 +5,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { get, all } = require("../../../db");
 const { PDV_PAYMENT_METHODS } = require("../utils/pdvConfig");
-const { normalizeStoreKey, storesMatch, formatStoreLabel } = require("../utils/pdvStoreUtils");
+const { normalizeStoreKey, storesMatch, formatStoreLabel, getStoreDisplayText } = require("../utils/pdvStoreUtils");
 const { getDiscountPolicyForSale } = require("./pdvControlService");
 
 const GENERAL_DISCOUNT_ALLOWED_PAYMENT_METHODS = new Set(["pix", "dinheiro"]);
@@ -61,6 +61,7 @@ const EVENT_TYPES = [
   "INVENTORY_MOVEMENT",
   "STOCK_LOW",
   "STOCK_OUT",
+  "SALE_ITEM_PHYSICAL_CONFIRMATION",
   "RESERVATION_HOLD",
   "RESERVATION_RELEASED",
   "TRANSFER_CREATED",
@@ -1295,14 +1296,15 @@ function cloneOperationalSourceOption(option = null) {
 
 function buildOperationalProductSummary(item = {}, availability = null, saleStoreId = "") {
   const saleStoreLabel = formatStoreLabel(saleStoreId || "");
+  const saleStoreText = getStoreDisplayText(saleStoreId || saleStoreLabel || "");
   if (!availability) {
     const fallbackQty = toNumber(item.available_qty || item.estoque || 0);
     return {
       status: fallbackQty > 0 ? "AVAILABLE_LOCAL" : "UNAVAILABLE",
       summary: fallbackQty > 0
-        ? `Disponivel na ${saleStoreLabel || "loja atual"} - ${fallbackQty} un.`
-        : "Sem saldo conhecido - conferir fisicamente",
-      detail: fallbackQty > 0 ? "Venda liberada na loja atual." : "Produto cadastrado, mas sem saldo confirmado em loja.",
+        ? `Disponivel ${saleStoreText.in || "na loja atual"} - ${fallbackQty} un.`
+        : "Sem saldo confirmado",
+      detail: fallbackQty > 0 ? "Venda liberada na loja atual." : "Produto cadastrado no catalogo global. Confirme fisicamente antes de vender.",
       button_label: fallbackQty > 0 ? "Adicionar" : "Conferir",
       can_add_directly: fallbackQty > 0,
       requires_resolution: fallbackQty <= 0,
@@ -1314,7 +1316,7 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     const qty = toNumber(availability.local_option?.available_qty || item.available_qty || item.estoque || 0);
     return {
       status: availability.status,
-      summary: `Disponivel na ${saleStoreLabel || "loja atual"} - ${qty} un.`,
+      summary: `Disponivel ${saleStoreText.in || "na loja atual"} - ${qty} un.`,
       detail: "Venda normal com estoque da loja atual.",
       button_label: "Adicionar",
       can_add_directly: true,
@@ -1325,12 +1327,13 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
   }
   if (availability.status === "AVAILABLE_ADJACENT_STORE") {
     const adjacentLabel = normalizeText(availability.adjacent_option?.store_name || "loja vizinha");
+    const adjacentText = getStoreDisplayText(availability.adjacent_option?.store_id || adjacentLabel);
     const qty = toNumber(availability.adjacent_option?.available_qty || 0);
     return {
       status: availability.status,
-      summary: `Sem estoque na ${saleStoreLabel || "loja atual"}`,
-      detail: `Disponivel na loja vizinha ${adjacentLabel} - ${qty} un.`,
-      button_label: "Adicionar",
+      summary: `Nao disponivel ${saleStoreText.in || "na loja atual"}`,
+      detail: `Disponivel ${adjacentText.in || `em ${adjacentLabel}`} - ${qty} un. para consulta/transferencia.`,
+      button_label: `Consultar ${adjacentText.name || adjacentLabel}`,
       can_add_directly: true,
       requires_resolution: false,
       requires_logistics_review: false,
@@ -1338,13 +1341,15 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     };
   }
   if (availability.status === "AVAILABLE_SAME_CITY") {
-    const originLabel = normalizeText(availability.same_city_options?.[0]?.store_name || "outra loja da cidade");
+    const originOption = availability.same_city_options?.[0] || {};
+    const originLabel = normalizeText(originOption.store_name || "outra loja da cidade");
+    const originText = getStoreDisplayText(originOption.store_id || originLabel);
     const qty = toNumber(availability.same_city_options?.[0]?.available_qty || 0);
     return {
       status: availability.status,
-      summary: `Sem estoque na ${saleStoreLabel || "loja atual"}`,
-      detail: `Disponivel em ${originLabel} - ${qty} un.`,
-      button_label: "Resolver origem",
+      summary: `Nao disponivel ${saleStoreText.in || "na loja atual"}`,
+      detail: `Disponivel ${originText.in || `em ${originLabel}`} - ${qty} un. para consulta/transferencia.`,
+      button_label: `Consultar ${originText.name || originLabel}`,
       can_add_directly: false,
       requires_resolution: true,
       requires_logistics_review: false,
@@ -1353,11 +1358,12 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
   }
   if (availability.status === "PENDING_LOCAL_CONFIRMATION" || availability.status === "PROVISIONAL_DIVERGENT_LOCAL") {
     const localLabel = normalizeText(availability.local_option?.store_name || saleStoreLabel || "loja atual");
+    const localText = getStoreDisplayText(availability.local_option?.store_id || saleStoreId || localLabel);
     return {
       status: availability.status,
       summary: availability.status === "PROVISIONAL_DIVERGENT_LOCAL"
-        ? `Divergente/provisorio na ${localLabel}`
-        : `Pendente de conferencia na ${localLabel}`,
+        ? "Estoque em conferencia"
+        : `Pendente de conferencia ${localText.in || `na ${localLabel}`}`,
       detail: "Estoque em inventario. Confirme fisicamente a peca antes de vender.",
       button_label: "Confirmar fisicamente",
       can_add_directly: false,
@@ -1369,14 +1375,15 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
   if (availability.status === "PENDING_OTHER_STORE_CONFIRMATION") {
     const origin = availability.pending_other_store_options?.[0] || availability.source_options?.[0] || {};
     const originLabel = normalizeText(origin.store_name || "outra loja");
+    const originText = getStoreDisplayText(origin.store_id || originLabel);
     const divergent = Boolean(origin.is_divergent);
     return {
       status: availability.status,
-      summary: `Consultar ${originLabel}`,
+      summary: `Consultar ${originText.name || originLabel}`,
       detail: divergent
-        ? `${originLabel} com estoque divergente/provisorio - confirmar fisicamente.`
-        : `${originLabel} sem saldo confirmado - consultar e confirmar fisicamente.`,
-      button_label: "Consultar loja",
+        ? `Estoque em conferencia ${originText.in || `em ${originLabel}`} - confirmar fisicamente.`
+        : `${originText.name || originLabel} sem saldo confirmado - consultar e confirmar fisicamente.`,
+      button_label: `Consultar ${originText.name || originLabel}`,
       can_add_directly: false,
       requires_resolution: true,
       requires_logistics_review: false,
@@ -1384,10 +1391,12 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     };
   }
   if (availability.status === "LOGISTICS_REVIEW_REQUIRED") {
-    const originLabel = normalizeText(availability.other_region_options?.[0]?.store_name || "outra loja");
+    const originOption = availability.other_region_options?.[0] || {};
+    const originLabel = normalizeText(originOption.store_name || "outra loja");
+    const originText = getStoreDisplayText(originOption.store_id || originLabel);
     return {
       status: availability.status,
-      summary: `Disponivel em ${originLabel}`,
+      summary: `Disponivel ${originText.in || `em ${originLabel}`}`,
       detail: "Requer analise logistica antes da conclusao.",
       button_label: "Enviar para analise",
       can_add_directly: false,
@@ -2552,6 +2561,31 @@ function buildCartItemFulfillmentSnapshot(payload = {}, session = {}) {
   const requestedFulfillment = normalizeText(payload.fulfillment_type || payload.fulfillment_mode || "");
   const requestedSourceStore = normalizeStoreKey(payload.stock_source_store_id || payload.loja_origem_estoque || "");
   const { getProductOperationalAvailability, FULFILLMENT_MODES, FULFILLMENT_STATUS } = require("../inventory/pdvInventoryService");
+  if (
+    Boolean(payload.physical_confirmation_done)
+    || requestedFulfillment === "PHYSICAL_CONFIRMATION"
+    || requestedFulfillment === "venda_confirmada_fisicamente"
+  ) {
+    return {
+      sale_store_id: saleStoreId,
+      sale_store_name: formatStoreLabel(saleStoreId),
+      stock_source_store_id: saleStoreId,
+      stock_source_store_name: formatStoreLabel(saleStoreId),
+      inventory_id: normalizeText(payload.inventory_id || payload.selected_inventory_id || ""),
+      product_id: normalizeText(payload.product_id || payload.selected_product_id || payload.sku || payload.codigo || ""),
+      fulfillment_type: "PHYSICAL_CONFIRMATION",
+      fulfillment_mode: "venda_confirmada_fisicamente",
+      fulfillment_status: FULFILLMENT_STATUS.CONFIRMED,
+      logistics_group_origin: "conferencia_fisica",
+      logistics_group_destination: "conferencia_fisica",
+      requires_logistics_review: false,
+      is_adjacent_store: false,
+      operational_stock_status: normalizeText(payload.operational_stock_status || "NO_KNOWN_STOCK"),
+      destination_store_id: saleStoreId,
+      destination_store_name: formatStoreLabel(saleStoreId),
+      fulfillment_options: []
+    };
+  }
   const availability = getProductOperationalAvailability(payload, saleStoreId, {
     preferredOriginStore: requestedSourceStore
   });
@@ -2724,17 +2758,36 @@ function addProductToCart(sessionId, payload = {}, user = {}) {
     operational_stock_status: fulfillment.operational_stock_status,
     destination_store_id: normalizeStoreKey(fulfillment.destination_store_id || payload.loja_entrega_retirada || fulfillment.sale_store_id),
     destination_store_name: normalizeText(fulfillment.destination_store_name || formatStoreLabel(fulfillment.sale_store_id)),
-    fulfillment_options: Array.isArray(fulfillment.fulfillment_options) ? fulfillment.fulfillment_options : []
+    fulfillment_options: Array.isArray(fulfillment.fulfillment_options) ? fulfillment.fulfillment_options : [],
+    physical_confirmation_required: Boolean(payload.physical_confirmation_required),
+    physical_confirmation_done: Boolean(payload.physical_confirmation_done),
+    physical_confirmation_by: normalizeText(payload.physical_confirmation_by || user?.name || user?.email || ""),
+    physical_confirmation_user_id: normalizeText(payload.physical_confirmation_user_id || user?.id || user?.user_id || ""),
+    physical_confirmation_store_id: normalizeStoreKey(payload.physical_confirmation_store_id || fulfillment.sale_store_id || normalizedStoreId),
+    physical_confirmation_at: normalizeText(payload.physical_confirmation_at || (payload.physical_confirmation_done ? nowIso() : "")),
+    physical_confirmation_reason: normalizeText(payload.physical_confirmation_reason || ""),
+    physical_confirmation_note: normalizeText(payload.physical_confirmation_note || "")
   };
   item.item_discount = null;
   session.cart_items.push(item);
   session.updated_at = nowIso();
   saveSession(session);
+  if (item.physical_confirmation_done) {
+    appendEvent("SALE_ITEM_PHYSICAL_CONFIRMATION", { session_id: sessionId, loja: session.loja }, {
+      item_id: item.item_id,
+      product_id: item.product_id,
+      sku: item.sku,
+      codigo: item.codigo,
+      store_id: item.physical_confirmation_store_id,
+      confirmed_at: item.physical_confirmation_at,
+      reason: item.physical_confirmation_reason
+    }, user);
+  }
   appendEvent("PRODUCT_ADDED", { session_id: sessionId, loja: session.loja }, { item, customer: session.customer }, user);
   return session;
 }
 
-function updateCartItem(sessionId, itemId, payload = {}) {
+function updateCartItem(sessionId, itemId, payload = {}, user = {}) {
   const session = getSessionById(sessionId);
   if (!session) {
     throw new Error("SessÃ£o do atendimento nÃ£o encontrada.");
@@ -2747,7 +2800,7 @@ function updateCartItem(sessionId, itemId, payload = {}) {
   if (payload.observacao !== undefined) item.observacao = normalizeText(payload.observacao);
   if (payload.cor !== undefined) item.cor = normalizeText(payload.cor);
   if (payload.tamanho !== undefined) item.tamanho = normalizeText(payload.tamanho);
-  if (payload.fulfillment_type !== undefined || payload.fulfillment_mode !== undefined || payload.stock_source_store_id !== undefined) {
+  if (payload.fulfillment_type !== undefined || payload.fulfillment_mode !== undefined || payload.stock_source_store_id !== undefined || payload.physical_confirmation_done !== undefined) {
     const fulfillment = buildCartItemFulfillmentSnapshot({
       ...item,
       ...payload
@@ -2772,6 +2825,25 @@ function updateCartItem(sessionId, itemId, payload = {}) {
     item.destination_store_id = normalizeStoreKey(fulfillment.destination_store_id || item.destination_store_id || fulfillment.sale_store_id);
     item.destination_store_name = normalizeText(fulfillment.destination_store_name || item.destination_store_name || formatStoreLabel(fulfillment.sale_store_id));
     item.fulfillment_options = Array.isArray(fulfillment.fulfillment_options) ? fulfillment.fulfillment_options : [];
+  }
+  if (payload.physical_confirmation_done !== undefined) {
+    item.physical_confirmation_required = Boolean(payload.physical_confirmation_required || item.physical_confirmation_required);
+    item.physical_confirmation_done = Boolean(payload.physical_confirmation_done);
+    item.physical_confirmation_by = normalizeText(payload.physical_confirmation_by || user?.name || user?.email || item.physical_confirmation_by || "");
+    item.physical_confirmation_user_id = normalizeText(payload.physical_confirmation_user_id || user?.id || user?.user_id || item.physical_confirmation_user_id || "");
+    item.physical_confirmation_store_id = normalizeStoreKey(payload.physical_confirmation_store_id || item.physical_confirmation_store_id || item.loja_venda || session.loja);
+    item.physical_confirmation_at = normalizeText(payload.physical_confirmation_at || item.physical_confirmation_at || nowIso());
+    item.physical_confirmation_reason = normalizeText(payload.physical_confirmation_reason || item.physical_confirmation_reason || "sale_item_confirmed_in_store");
+    item.physical_confirmation_note = normalizeText(payload.physical_confirmation_note || item.physical_confirmation_note || "");
+    appendEvent("SALE_ITEM_PHYSICAL_CONFIRMATION", { session_id: sessionId, item_id: item.item_id, loja: session.loja }, {
+      item_id: item.item_id,
+      product_id: item.product_id,
+      sku: item.sku,
+      codigo: item.codigo,
+      store_id: item.physical_confirmation_store_id,
+      confirmed_at: item.physical_confirmation_at,
+      reason: item.physical_confirmation_reason
+    }, user);
   }
   session.updated_at = nowIso();
   saveSession(session);

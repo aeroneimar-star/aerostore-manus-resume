@@ -221,6 +221,13 @@ const state = {
     customerCreateError: "",
     customerCreateDraft: null,
     customerCreateExistingCustomer: null,
+    customerProfileDrawerOpen: false,
+    customerProfileSaving: false,
+    customerProfileError: "",
+    customerProfileDismissedSessionId: "",
+    customerProfileFinalizeBypassedSessionId: "",
+    customerProfileFinalizeReminderSessionId: "",
+    customerProfilePromptStage: "",
     productQuery: "",
     productResults: [],
     productPagination: { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false },
@@ -280,7 +287,8 @@ const state = {
     postSaleCopiedSaleId: "",
     postSalePaymentLinkCopiedSaleId: "",
     postSalePrintedSaleId: "",
-    postSaleAutoPrintedSaleId: ""
+    postSaleAutoPrintedSaleId: "",
+    postSaleProfileCustomer: null
   },
   pdvSalesOrders: {
     loading: false,
@@ -399,6 +407,7 @@ const state = {
   },
   pdvCustomers: {
     loading: false,
+    sourceMode: "operational",
     items: [],
     summary: null,
     pagination: null,
@@ -1603,6 +1612,21 @@ function formatStoreIdLabel(storeId = "") {
     .join(" ");
 }
 
+function getStoreDisplayText(storeIdOrName = "") {
+  const normalized = normalizePdvStoreIdentifier(storeIdOrName || "");
+  const name = formatStoreIdLabel(storeIdOrName || normalized || "");
+  if (normalized === "botanico") {
+    return { name, in: `no ${name}`, from: `do ${name}`, to: `para o ${name}` };
+  }
+  if (normalized === "sul") {
+    return { name, in: `no ${name}`, from: `do ${name}`, to: `para o ${name}` };
+  }
+  if (normalized === "vila") {
+    return { name, in: `na ${name}`, from: `da ${name}`, to: `para a ${name}` };
+  }
+  return { name, in: `na ${name || "loja atual"}`, from: `da ${name || "loja"}`, to: `para a ${name || "loja"}` };
+}
+
 function getCurrentPdvStoreId() {
   const explicitStore = normalizePdvStoreIdentifier(
     state.currentUser?.active_store_id
@@ -2212,17 +2236,38 @@ function getPdvSaleDiscountDraftAmount(draft = {}, session = null) {
 }
 
 function getPdvSaleGeneralDiscountBlockMessage(policy = {}) {
-  const methodsLabel = toArray(policy.blockingLabels).length
-    ? ` Esta venda possui pagamento em ${policy.blockingLabels.join(" + ")}.`
+  const labels = toArray(policy.blockingLabels).filter(Boolean);
+  const methodsLabel = labels.length
+    ? ` Esta venda possui ${labels.join(" + ")} aplicado/lancado.`
     : "";
-  return `Desconto geral permitido somente para Pix ou Dinheiro.${methodsLabel} Remova ou ajuste os pagamentos lancados antes de aplicar este desconto.`;
+  return `Desconto geral disponivel apenas para vendas pagas integralmente em PIX ou Dinheiro.${methodsLabel} Remova esses lancamentos ou finalize sem desconto geral.`;
+}
+
+function refreshPdvSaleGeneralDiscountEligibility(session = null) {
+  const policy = getPdvSaleGeneralDiscountPaymentPolicy(session || state.pdvSale.session);
+  if (policy.eligible) {
+    state.pdvSale.generalDiscountBlock = null;
+    if (state.pdvSale.discountAuthorization?.error) {
+      state.pdvSale.discountAuthorization.error = "";
+    }
+    return policy;
+  }
+  if (state.pdvSale.generalDiscountBlock) {
+    state.pdvSale.generalDiscountBlock = {
+      ...state.pdvSale.generalDiscountBlock,
+      message: getPdvSaleGeneralDiscountBlockMessage(policy),
+      labels: policy.blockingLabels,
+      updatedAt: new Date().toISOString()
+    };
+  }
+  return policy;
 }
 
 function getPdvSaleVisibleGeneralDiscountBlock(session = null, draft = null) {
   const safeDraft = draft || state.pdvSale.discountDraft || {};
   const discount = getPdvSaleSessionDiscount(session || state.pdvSale.session);
   const draftAmount = getPdvSaleDiscountDraftAmount(safeDraft, session || state.pdvSale.session);
-  const policy = getPdvSaleGeneralDiscountPaymentPolicy(session || state.pdvSale.session);
+  const policy = refreshPdvSaleGeneralDiscountEligibility(session || state.pdvSale.session);
   const hasGeneralDiscountIntent = discount.amount > 0.009 || draftAmount > 0.009 || Boolean(state.pdvSale.generalDiscountBlock);
   if (!hasGeneralDiscountIntent || policy.eligible) {
     return null;
@@ -2719,6 +2764,11 @@ function buildPdvSaleCustomerSessionPayload(customer = {}) {
     top_size: customer.top_size || customer.tshirt_size || "",
     bottom_size: customer.bottom_size || customer.pants_size || "",
     shoe_size: customer.shoe_size || "",
+    size_profile: customer.size_profile || {},
+    favorite_brands_json: customer.favorite_brands_json || [],
+    favorite_colors_json: customer.favorite_colors_json || [],
+    favorite_categories_json: customer.favorite_categories_json || [],
+    preferences_json: customer.preferences_json || {},
     cashback: toNumber(customer.cashback_operacional || customer.cashback_available || customer.cashback || 0),
     cashback_legado: toNumber(customer.cashback_legado || 0),
     cashback_pendente: toNumber(customer.cashback_pendente || customer.behavior?.cashback_pendente || 0),
@@ -2728,6 +2778,208 @@ function buildPdvSaleCustomerSessionPayload(customer = {}) {
     ultima_compra: customer.ultima_compra || customer.last_purchase_at || "",
     behavior: customer.behavior || {}
   };
+}
+
+function calculateCustomerProfileCompleteness(customer = {}) {
+  const sizeProfile = customer.size_profile || {};
+  const topSize = normalizeText(customer.top_size || sizeProfile?.tshirt?.size_value || sizeProfile?.blouse?.size_value || sizeProfile?.shirt?.size_value || "");
+  const bottomSize = normalizeText(customer.bottom_size || sizeProfile?.pants?.size_value || sizeProfile?.shorts?.size_value || "");
+  const shoeSize = normalizeText(customer.shoe_size || sizeProfile?.shoes?.size_value || "");
+  const infantSize = normalizeText(sizeProfile?.infant?.size_value || customer.infant_size || "");
+  const hasAnySize = Boolean(topSize || bottomSize || shoeSize || infantSize);
+  const hasPreference = Boolean(
+    normalizeText(sizeProfile?.fit_notes || "")
+    || toArray(customer.favorite_brands_json).length
+    || toArray(customer.favorite_colors_json).length
+    || toArray(customer.favorite_categories_json).length
+    || normalizeText(customer.notes || "")
+    || normalizeText(customer.preferences_json?.attendance_preferences || "")
+  );
+  let score = 0;
+  if (hasAnySize) score += 25;
+  if (topSize) score += 20;
+  if (bottomSize) score += 20;
+  if (shoeSize) score += 20;
+  if (hasPreference) score += 15;
+  const missingFields = [];
+  if (!topSize) missingFields.push("camiseta/blusa");
+  if (!bottomSize) missingFields.push("calca/bermuda");
+  if (!shoeSize) missingFields.push("calcado");
+  if (!hasPreference) missingFields.push("preferencia");
+  return {
+    score: Math.min(100, score),
+    missing_fields: missingFields,
+    status: score >= 85 ? "complete" : score >= 65 ? "good" : score > 0 ? "partial" : "empty"
+  };
+}
+
+function shouldShowPdvSaleCustomerProfilePrompt(customer = null) {
+  if (!customer) return false;
+  const sessionId = getActivePdvSaleSessionId();
+  if (sessionId && normalizeText(state.pdvSale.customerProfileDismissedSessionId || "") === normalizeText(sessionId)) return false;
+  return ["empty", "partial"].includes(calculateCustomerProfileCompleteness(customer).status);
+}
+
+function openPdvSaleCustomerProfileDrawer(stage = "sale_prompt") {
+  state.pdvSale.customerProfileDrawerOpen = true;
+  state.pdvSale.customerProfileError = "";
+  state.pdvSale.customerProfilePromptStage = stage;
+  document.body.classList.add("pdv-drawer-open");
+  renderPdvSaleSurface();
+}
+
+function closePdvSaleCustomerProfileDrawer() {
+  state.pdvSale.customerProfileDrawerOpen = false;
+  state.pdvSale.customerProfileError = "";
+  document.body.classList.remove("pdv-drawer-open");
+}
+
+function dismissPdvSaleCustomerProfilePrompt() {
+  state.pdvSale.customerProfileDismissedSessionId = getActivePdvSaleSessionId();
+  showFeedback("Tudo certo. Vamos lembrar so nesta venda se voce tentar finalizar sem perfil.");
+  renderPdvSaleSurface();
+}
+
+function bypassPdvSaleCustomerProfileFinalizeReminder() {
+  state.pdvSale.customerProfileFinalizeBypassedSessionId = getActivePdvSaleSessionId();
+  state.pdvSale.customerProfileFinalizeReminderSessionId = "";
+  showFeedback("Venda liberada sem preencher perfil nesta sessao.");
+  renderPdvSaleSurface();
+}
+
+function buildPdvSaleCustomerProfileFinalizeReminder(customer = null) {
+  const sessionId = getActivePdvSaleSessionId();
+  if (!customer || !sessionId || normalizeText(state.pdvSale.customerProfileFinalizeReminderSessionId || "") !== normalizeText(sessionId)) return "";
+  return `
+    <div class="pdv-sale-profile-nudge is-finalize">
+      <div>
+        <strong>Antes de finalizar</strong>
+        <span>Deseja salvar rapidamente o tamanho que o cliente usa?</span>
+      </div>
+      <div class="action-row">
+        <button class="secondary-button small" type="button" data-pdv-sale-profile-open="finalize">Salvar tamanhos</button>
+        <button class="ghost-button small" type="button" data-pdv-sale-profile-bypass="true">Finalizar sem preencher</button>
+      </div>
+    </div>
+  `;
+}
+
+function buildPdvSaleCustomerProfilePrompt(customer = null) {
+  if (!shouldShowPdvSaleCustomerProfilePrompt(customer)) return "";
+  const completeness = calculateCustomerProfileCompleteness(customer);
+  return `
+    <div class="pdv-sale-profile-nudge" data-profile-status="${escapeHtml(completeness.status)}">
+      <div>
+        <strong>Perfil do cliente incompleto</strong>
+        <span>Salve os tamanhos do cliente para facilitar o proximo atendimento.</span>
+        <small>${escapeHtml(completeness.missing_fields.length ? `Falta: ${completeness.missing_fields.join(", ")}` : "Uma dica rapida ja melhora a proxima venda.")}</small>
+      </div>
+      <div class="action-row">
+        <button class="secondary-button small" type="button" data-pdv-sale-profile-open="sale_prompt">Adicionar tamanhos</button>
+        <button class="ghost-button small" type="button" data-pdv-sale-profile-dismiss="true">Depois</button>
+      </div>
+    </div>
+  `;
+}
+
+function buildPdvSaleCustomerProfileDrawer() {
+  const customer = state.pdvSale.session?.customer || state.pdvSale.postSaleProfileCustomer || null;
+  if (!customer) return "";
+  const sizeProfile = customer.size_profile || {};
+  const preferences = customer.preferences_json || {};
+  const isOpen = Boolean(state.pdvSale.customerProfileDrawerOpen);
+  return `
+    <div class="pdv-drawer-overlay${isOpen ? "" : " hidden"}" data-pdv-sale-profile-close="overlay">
+      <aside class="pdv-drawer pdv-crud-drawer${isOpen ? " open" : ""}" role="dialog" aria-modal="true" aria-label="Perfil comercial do cliente">
+        <div class="pdv-drawer-header">
+          <div>
+            <h3>Perfil de tamanhos</h3>
+            <span class="table-meta">Campos comerciais seguros. CPF, telefone, cashback e credito seguem bloqueados.</span>
+          </div>
+          <button class="ghost-button pdv-drawer-close" type="button" data-pdv-sale-profile-close="button">Fechar</button>
+        </div>
+        <div class="pdv-drawer-body">
+          <form class="pdv-crud-form" data-pdv-sale-profile-form="true">
+            <section class="panel pdv-crud-inline-panel">
+              <div class="panel-header"><h3>O que o cliente veste</h3></div>
+              <div class="form-grid pdv-crud-grid">
+                <label>Camiseta/Blusa<input name="tamanho_camiseta" type="text" value="${escapeHtml(customer.top_size || sizeProfile?.tshirt?.size_value || sizeProfile?.blouse?.size_value || "")}" placeholder="Ex.: M, G, GG" /></label>
+                <label>Camisa<input name="tamanho_camisa" type="text" value="${escapeHtml(sizeProfile?.shirt?.size_value || "")}" placeholder="Ex.: 3, M, G" /></label>
+                <label>Calca/Bermuda<input name="tamanho_calca" type="text" value="${escapeHtml(customer.bottom_size || sizeProfile?.pants?.size_value || sizeProfile?.shorts?.size_value || "")}" placeholder="Ex.: 40, 42" /></label>
+                <label>Calcado<input name="tamanho_calcado" type="text" value="${escapeHtml(customer.shoe_size || sizeProfile?.shoes?.size_value || "")}" placeholder="Ex.: 39, 40" /></label>
+                <label>Infantil<input name="tamanho_infantil" type="text" value="${escapeHtml(sizeProfile?.infant?.size_value || "")}" placeholder="Ex.: 8, 10, 12" /></label>
+                <label>Modelagem<input name="modelagem_preferida" type="text" value="${escapeHtml(sizeProfile?.fit_notes || "")}" placeholder="Ex.: regular, slim, oversized" /></label>
+                <label>Marcas preferidas<input name="marcas_preferidas" type="text" value="${escapeHtml(toArray(customer.favorite_brands_json).join(", "))}" placeholder="Osklen, Lacoste..." /></label>
+                <label>Cores preferidas<input name="cores_preferidas" type="text" value="${escapeHtml(toArray(customer.favorite_colors_json).join(", "))}" placeholder="Azul, preto..." /></label>
+                <label>Categorias preferidas<input name="categorias_preferidas" type="text" value="${escapeHtml(toArray(customer.favorite_categories_json).join(", "))}" placeholder="Camiseta, calca..." /></label>
+                <label class="pdv-crud-wide">Preferencias de atendimento<textarea name="preferencias_atendimento" placeholder="Ex.: gosta de ser avisado por WhatsApp quando chegar novidade">${escapeHtml(preferences.attendance_preferences || "")}</textarea></label>
+                <label class="pdv-crud-wide">Observacao comercial<textarea name="observacoes_comerciais" placeholder="Observacao util para a equipe, sem dados sensiveis">${escapeHtml(customer.notes || "")}</textarea></label>
+              </div>
+              ${state.pdvSale.customerProfileError ? `<span class="login-error">${escapeHtml(state.pdvSale.customerProfileError)}</span>` : ""}
+            </section>
+            <div class="pdv-drawer-actions">
+              <button class="ghost-button" type="button" data-pdv-sale-profile-close="button"${state.pdvSale.customerProfileSaving ? " disabled" : ""}>Cancelar</button>
+              <button class="primary-button" type="submit"${state.pdvSale.customerProfileSaving ? " disabled" : ""}>${state.pdvSale.customerProfileSaving ? "Salvando..." : "Salvar perfil"}</button>
+            </div>
+          </form>
+        </div>
+      </aside>
+    </div>
+  `;
+}
+
+async function savePdvSaleCustomerCommercialProfile(formElement) {
+  const customer = state.pdvSale.session?.customer || state.pdvSale.postSaleProfileCustomer || null;
+  const customerId = normalizeText(customer?.master_customer_id || customer?.id || "");
+  if (!formElement || !customerId || state.pdvSale.customerProfileSaving) return;
+  const formData = new FormData(formElement);
+  const payload = {
+    tamanho_camiseta: normalizeText(formData.get("tamanho_camiseta") || ""),
+    tamanho_camisa: normalizeText(formData.get("tamanho_camisa") || ""),
+    tamanho_calca: normalizeText(formData.get("tamanho_calca") || ""),
+    tamanho_calcado: normalizeText(formData.get("tamanho_calcado") || ""),
+    tamanho_infantil: normalizeText(formData.get("tamanho_infantil") || ""),
+    modelagem_preferida: normalizeText(formData.get("modelagem_preferida") || ""),
+    marcas_preferidas: normalizeText(formData.get("marcas_preferidas") || ""),
+    cores_preferidas: normalizeText(formData.get("cores_preferidas") || ""),
+    categorias_preferidas: normalizeText(formData.get("categorias_preferidas") || ""),
+    preferencias_atendimento: normalizeText(formData.get("preferencias_atendimento") || ""),
+    observacoes_comerciais: normalizeText(formData.get("observacoes_comerciais") || "")
+  };
+  state.pdvSale.customerProfileSaving = true;
+  state.pdvSale.customerProfileError = "";
+  renderPdvSaleSurface();
+  try {
+    const response = await api(`/api/customers/${encodeURIComponent(customerId)}/profile`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const updatedCustomer = response.customer || null;
+    if (updatedCustomer && state.pdvSale.sessionId) {
+      await api(`/api/pdv/operational/session/${encodeURIComponent(state.pdvSale.sessionId)}/customer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPdvSaleCustomerSessionPayload(updatedCustomer))
+      });
+      await refreshPdvSaleSession();
+    } else if (updatedCustomer) {
+      state.pdvSale.postSaleProfileCustomer = buildPdvSaleCustomerSessionPayload(updatedCustomer);
+    }
+    if (state.pdvSale.customerProfilePromptStage === "after_sale") {
+      showFeedback("Perfil do cliente atualizado para os proximos atendimentos.");
+    } else {
+      showFeedback("Perfil do cliente atualizado.");
+    }
+    closePdvSaleCustomerProfileDrawer();
+  } catch (error) {
+    state.pdvSale.customerProfileError = error.message || "Falha ao salvar o perfil do cliente.";
+    renderPdvSaleSurface();
+    throw error;
+  } finally {
+    state.pdvSale.customerProfileSaving = false;
+    renderPdvSaleSurface();
+  }
 }
 
 async function loadOfficialPdvSaleCustomerPayload(customer = null) {
@@ -3139,6 +3391,7 @@ function buildPdvSaleCustomerCard(customer = null) {
         <div class="pdv-customer-profile-stat"><span>Ticket medio</span><strong>${currency(behavior.ticket_medio || customer.ticket_medio || 0)}</strong></div>
         <div class="pdv-customer-profile-stat"><span>Ultima compra</span><strong>${formatDateBR(behavior.ultima_compra || customer.ultima_compra || "-") || "-"}</strong></div>
       </div>
+      ${buildPdvSaleCustomerProfilePrompt(customer)}
       ${categories ? `<div class="pdv-sale-action-chips">${categories}</div>` : ""}
       <div class="action-row pdv-sale-customer-card-actions" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
         <button class="secondary-button small" type="button" onclick="window.open('https://wa.me/55${(customer.phone || "").replace(/\\D/g, "")}', '_blank')">WhatsApp</button>
@@ -3236,10 +3489,12 @@ function buildPdvSaleDraftsPanel() {
 
 function getPdvSaleProductOperationalPresentation(item = null) {
   const status = normalizeText(item?.operational_stock_status || "");
+  const saleStoreText = getStoreDisplayText(item?.sale_store_id || getCurrentPdvStoreId() || "");
+  const sourceStoreText = getStoreDisplayText(item?.stock_source_store_id || item?.ideal_source_store_id || item?.adjacent_store_id || item?.stock_source_store_name || "");
   if (status === "AVAILABLE_LOCAL") {
     return {
       tone: "ready",
-      summary: item?.operational_summary || `Disponivel na ${formatStoreIdLabel(item?.sale_store_name || item?.sale_store_id || getCurrentPdvStoreId() || "")}`,
+      summary: item?.operational_summary || `Disponivel ${saleStoreText.in || "na loja atual"}`,
       detail: item?.operational_detail || "Venda normal com estoque local.",
       buttonLabel: "Adicionar",
       disabled: false
@@ -3248,9 +3503,9 @@ function getPdvSaleProductOperationalPresentation(item = null) {
   if (status === "AVAILABLE_ADJACENT_STORE") {
     return {
       tone: "adjacent",
-      summary: item?.operational_summary || "Sem estoque na loja atual",
-      detail: item?.operational_detail || `Disponivel na loja vizinha ${item?.adjacent_store_name || item?.stock_source_store_name || ""}`,
-      buttonLabel: "Adicionar",
+      summary: item?.operational_summary || `Nao disponivel ${saleStoreText.in || "na loja atual"}`,
+      detail: item?.operational_detail || `Disponivel ${sourceStoreText.in || "em outra loja"} para consulta/transferencia.`,
+      buttonLabel: item?.action_label || (sourceStoreText.name ? `Consultar ${sourceStoreText.name}` : "Consultar loja"),
       disabled: false
     };
   }
@@ -3258,8 +3513,8 @@ function getPdvSaleProductOperationalPresentation(item = null) {
     return {
       tone: "warning",
       summary: item?.operational_summary || "Produto fora da loja atual",
-      detail: item?.operational_detail || `Disponivel em ${item?.stock_source_store_name || "outra loja da cidade"}`,
-      buttonLabel: item?.action_label || "Resolver origem",
+      detail: item?.operational_detail || `Disponivel ${sourceStoreText.in || "em outra loja"} para consulta/transferencia.`,
+      buttonLabel: item?.action_label || (sourceStoreText.name ? `Consultar ${sourceStoreText.name}` : "Solicitar origem"),
       disabled: false
     };
   }
@@ -3283,14 +3538,15 @@ function getPdvSaleProductOperationalPresentation(item = null) {
   }
   return {
     tone: "pending",
-    summary: item?.operational_summary || "Sem saldo conhecido",
-    detail: item?.operational_detail || "Produto cadastrado - conferir fisicamente antes de vender.",
+    summary: item?.operational_summary || "Sem saldo confirmado",
+    detail: item?.operational_detail || "Produto cadastrado no catalogo global. Confirme fisicamente antes de vender.",
     buttonLabel: item?.action_label || "Conferir",
     disabled: false
   };
 }
 
 function getPdvSaleCartStatusLabel(item = null) {
+  if (item?.physical_confirmation_done) return "Confirmado fisicamente";
   const status = normalizeText(item?.operational_stock_status || "");
   if (status === "AVAILABLE_LOCAL") return "Disponivel nesta loja";
   if (status === "AVAILABLE_ADJACENT_STORE") return "Estoque integrado Vila";
@@ -3317,16 +3573,18 @@ function buildPdvSaleResolutionModal() {
   const otherRegionOptions = toArray(item.other_region_options || item.fulfillment_options);
   const modalStatus = normalizeText(item.operational_stock_status || "");
   const isPendingConfirmation = ["PENDING_LOCAL_CONFIRMATION", "PROVISIONAL_DIVERGENT_LOCAL", "PENDING_OTHER_STORE_CONFIRMATION", "NO_KNOWN_STOCK"].includes(modalStatus);
+  const modalSaleStoreText = getStoreDisplayText(item.sale_store_id || getCurrentPdvStoreId() || "");
+  const modalSourceStoreText = getStoreDisplayText(item.stock_source_store_id || otherRegionOptions[0]?.store_id || item.stock_source_store_name || "");
   const title = modalStatus === "LOGISTICS_REVIEW_REQUIRED"
     ? "Produto disponivel em outro estado"
     : isPendingConfirmation
-      ? "Produto pendente de confirmacao"
+      ? "Confirmar peca fisicamente"
       : "Produto fora da loja atual";
   const intro = modalStatus === "LOGISTICS_REVIEW_REQUIRED"
-    ? `Este item esta disponivel em ${escapeHtml(item.stock_source_store_name || otherRegionOptions[0]?.store_name || "outra loja")}, mas a venda esta sendo feita em ${escapeHtml(item.sale_store_name || formatStoreIdLabel(getCurrentPdvStoreId() || ""))}.`
+    ? `Este item esta disponivel ${escapeHtml(modalSourceStoreText.in || "em outra loja")}, mas a venda esta sendo feita ${escapeHtml(modalSaleStoreText.in || "na loja ativa")}.`
     : isPendingConfirmation
-      ? escapeHtml(item.operational_detail || "Confirme fisicamente a peca ou consulte a outra loja antes de vender.")
-      : `Este item nao possui estoque em ${escapeHtml(item.sale_store_name || formatStoreIdLabel(getCurrentPdvStoreId() || ""))}.`;
+      ? "Este produto nao tem saldo confirmado na loja ativa. Antes de vender, confira a peca na mao."
+      : `Este item nao possui estoque ${escapeHtml(modalSaleStoreText.in || "na loja ativa")}.`;
   const displayOptions = pendingOtherOptions.length ? pendingOtherOptions : (sameCityOptions.length ? sameCityOptions : otherRegionOptions);
   const optionsHtml = displayOptions.map((option) => `
     <div class="pdv-sale-resolution-option">
@@ -3348,13 +3606,21 @@ function buildPdvSaleResolutionModal() {
         <div class="pdv-sale-resolution-body">
           <div class="pdv-sale-resolution-product">
             <strong>${escapeHtml(item.nome || item.name || "Produto")}</strong>
-            <span>${escapeHtml(item.sku || item.codigo || "-")}</span>
+            <span>Codigo/SKU: ${escapeHtml(item.sku || item.codigo || item.codigo_etiqueta || "-")}</span>
+            <span>Loja ativa: ${escapeHtml(modalSaleStoreText.name || formatStoreIdLabel(getCurrentPdvStoreId() || ""))}</span>
+            <span>Status: ${escapeHtml(getPdvSaleCartStatusLabel(item))}</span>
           </div>
           <div class="pdv-sale-resolution-list">${optionsHtml}</div>
+          ${isPendingConfirmation ? `
+            <label class="pdv-sale-resolution-note">
+              Observacao da conferencia (opcional)
+              <textarea data-pdv-sale-resolution-note rows="3" maxlength="180" placeholder="Ex.: peca encontrada na arara, estoque ou vitrine"${busy ? " disabled" : ""}></textarea>
+            </label>
+          ` : ""}
         </div>
         <div class="pdv-sale-resolution-actions">
           ${isPendingConfirmation ? `
-            <button class="secondary-button" type="button" data-pdv-sale-resolution-close="true"${busy ? " disabled" : ""}>Entendi, vou confirmar fisicamente</button>
+            <button class="primary-button" type="button" data-pdv-sale-resolution-action="physical_confirmation"${busy ? " disabled" : ""}>${busy ? "Adicionando..." : "Achei a peca e quero adicionar"}</button>
           ` : modalStatus === "AVAILABLE_SAME_CITY" ? `
             <button class="secondary-button" type="button" data-pdv-sale-resolution-action="transfer"${busy ? " disabled" : ""}>Transferir para esta loja</button>
             <button class="secondary-button" type="button" data-pdv-sale-resolution-action="delivery"${busy ? " disabled" : ""}>Entregar direto ao cliente</button>
@@ -3549,6 +3815,8 @@ function buildPdvSaleCartItems(session = null) {
     const discountDraft = getPdvSaleItemDiscountDraft(item);
     const isBusy = normalizeText(state.pdvSale.cartBusyItemId || "") === normalizeText(item.item_id || "");
     const isDiscountBusy = normalizeText(state.pdvSale.itemDiscountApplyingId || "") === itemId;
+    const isPhysicalConfirmed = Boolean(item.physical_confirmation_done);
+    const confirmationUser = normalizeText(item.physical_confirmation_by || item.physical_confirmation_user_name || "");
     return `
       <article class="pdv-cart-item-card">
         <div class="pdv-cart-item-left">
@@ -3560,7 +3828,9 @@ function buildPdvSaleCartItems(session = null) {
               <span>Status: ${escapeHtml(getPdvSaleCartStatusLabel(item))}</span>
               <span>Origem: ${escapeHtml(item.stock_source_store_name || formatStoreIdLabel(item.loja_origem_estoque || item.stock_source_store_id || item.selected_loja || ""))}</span>
               ${["DIRECT_DELIVERY", "INTERNAL_TRANSFER", "LOGISTICS_REVIEW"].includes(normalizeText(item.fulfillment_type || "")) && item.destination_store_name ? `<span>Destino: ${escapeHtml(item.destination_store_name)}</span>` : ""}
+              ${isPhysicalConfirmed ? `<span class="pdv-cart-physical-badge" title="${escapeHtml(`Item sem saldo confirmado, incluido apos conferencia fisica${confirmationUser ? ` por ${confirmationUser}` : ""}.`)}">Confirmado fisicamente</span>` : ""}
             </div>
+            ${isPhysicalConfirmed ? `<div class="pdv-cart-item-note physical">Venda com conferencia fisica${item.physical_confirmation_note ? `: ${escapeHtml(item.physical_confirmation_note)}` : ""}</div>` : ""}
             ${item.observacao ? `<div class="pdv-cart-item-note">${escapeHtml(item.observacao)}</div>` : ""}
           </div>
         </div>
@@ -4343,6 +4613,16 @@ function buildPdvSaleSuccessState(sale = null) {
         <strong>Pós-venda do PDV</strong>
         <span>Essa tela so fecha quando voce clicar em Nova venda. Nenhuma sessao nova e aberta automaticamente.</span>
       </div>
+      ${state.pdvSale.postSaleProfileCustomer && ["empty", "partial"].includes(calculateCustomerProfileCompleteness(state.pdvSale.postSaleProfileCustomer).status) ? `
+        <div class="pdv-payment-success-helper is-neutral pdv-sale-profile-after-sale">
+          <strong>Complete o perfil do cliente</strong>
+          <span>Venda finalizada. Salve tamanhos e preferencias para melhorar as proximas recomendacoes.</span>
+          <div class="action-row">
+            <button class="secondary-button small" type="button" data-pdv-sale-profile-open="after_sale">Completar perfil</button>
+            <button class="ghost-button small" type="button" data-pdv-sale-new-session="true">Nova venda</button>
+          </div>
+        </div>
+      ` : ""}
       ${isPaymentLinkSale ? `
         <div class="pdv-payment-success-helper${paymentLinkStatusMeta?.helperClass ? ` ${paymentLinkStatusMeta.helperClass}` : ""}">
           <strong>Link de pagamento</strong>
@@ -4680,6 +4960,7 @@ function buildPdvSaleActiveContent() {
               ${buildPdvSaleFinalizeSupportFields(session)}
               
               <div class="pdv-payment-checkout-footer${effectiveFinalizeState.key === "ready" ? " is-ready" : ""}" data-finalize-state="${escapeHtml(effectiveFinalizeState.key || "unknown")}" style="margin-top:auto; padding-top:16px;">
+                ${buildPdvSaleCustomerProfileFinalizeReminder(selectedCustomer)}
                 <div class="pdv-payment-footer-actions" style="display:flex; flex-direction:column; gap:12px;">
                   <button class="primary-button pdv-payment-finalize-btn${effectiveFinalizeState.key === "ready" ? " is-ready" : ""}" type="submit"${effectiveFinalizeState.disabled ? " disabled" : ""} style="width:100%; min-height:54px; font-size:1.1rem;">
                     ${cashRegisterClosed ? "CAIXA FECHADO" : (effectiveFinalizeState.key === "ready" ? "FINALIZAR VENDA" : "🔒 FINALIZAR VENDA")}
@@ -4697,6 +4978,7 @@ function buildPdvSaleActiveContent() {
       ${buildPdvSaleResolutionModal()}
       ${buildPdvSaleLabelProductDrawer()}
       ${buildPdvSaleCustomerRegistrationDrawer()}
+      ${buildPdvSaleCustomerProfileDrawer()}
     </div>
   `;
 }
@@ -5148,6 +5430,26 @@ async function submitPdvSaleProductResolution(action = "") {
       stock_source_store_id: source?.store_id || item.stock_source_store_id || "",
       stock_source_store_name: source?.store_name || item.stock_source_store_name || "",
       fulfillment_type: "LOGISTICS_REVIEW"
+    };
+  } else if (normalizedAction === "physical_confirmation") {
+    const note = normalizeText(document.querySelector("[data-pdv-sale-resolution-note]")?.value || "");
+    payload = {
+      ...payload,
+      stock_source_store_id: getCurrentPdvStoreId(),
+      stock_source_store_name: formatStoreIdLabel(getCurrentPdvStoreId() || ""),
+      loja_origem_estoque: getCurrentPdvStoreId(),
+      fulfillment_type: "PHYSICAL_CONFIRMATION",
+      fulfillment_mode: "venda_confirmada_fisicamente",
+      fulfillment_status: "confirmado",
+      availability_label: "Confirmado fisicamente",
+      estoque_visual: "Confirmado fisicamente",
+      operational_stock_status: normalizeText(item.operational_stock_status || "NO_KNOWN_STOCK"),
+      physical_confirmation_required: true,
+      physical_confirmation_done: true,
+      physical_confirmation_store_id: getCurrentPdvStoreId(),
+      physical_confirmation_at: new Date().toISOString(),
+      physical_confirmation_reason: "sale_item_confirmed_in_store",
+      physical_confirmation_note: note
     };
   } else {
     return;
@@ -6297,6 +6599,20 @@ async function finalizePdvSale(form) {
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
   }
+  const selectedCustomer = state.pdvSale.session?.customer || null;
+  const currentSessionId = getActivePdvSaleSessionId();
+  if (
+    selectedCustomer
+    && calculateCustomerProfileCompleteness(selectedCustomer).status === "empty"
+    && normalizeText(state.pdvSale.customerProfileFinalizeBypassedSessionId || "") !== normalizeText(currentSessionId)
+  ) {
+    perfFinalizeOutcome = "customer_profile_reminder";
+    finishFinalizePerf();
+    state.pdvSale.customerProfileFinalizeReminderSessionId = currentSessionId;
+    showFeedback("Dica rapida: salve os tamanhos do cliente ou escolha finalizar sem preencher.", "warning");
+    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    return;
+  }
   state.pdvSale.drawerSubmitting = true;
   renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
   try {
@@ -6312,11 +6628,15 @@ async function finalizePdvSale(form) {
       permuta_reason: normalizeText(formData.get("permuta_reason") || ""),
       cashback_application: state.pdvSale.session?.cashback_application || null
     };
+    const profileCustomerBeforeFinalize = state.pdvSale.session?.customer || null;
     const sale = await api(`/api/pdv/sales/finalize/${encodeURIComponent(sessionId)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+    state.pdvSale.postSaleProfileCustomer = profileCustomerBeforeFinalize && ["empty", "partial"].includes(calculateCustomerProfileCompleteness(profileCustomerBeforeFinalize).status)
+      ? profileCustomerBeforeFinalize
+      : null;
     persistPdvSaleCompletedSale(sale);
     persistPdvSaleSessionId("");
     state.pdvSale.session = null;
@@ -9429,6 +9749,9 @@ function getDefaultPdvCustomerCrudDraft() {
 
 function ensurePdvCustomersCrudState() {
   state.pdvCustomers = state.pdvCustomers || {};
+  state.pdvCustomers.sourceMode = ["operational", "unified"].includes(normalizeText(state.pdvCustomers.sourceMode || "").toLowerCase())
+    ? normalizeText(state.pdvCustomers.sourceMode || "").toLowerCase()
+    : "operational";
   state.pdvCustomers.filters = {
     store: normalizeText(state.pdvCustomers.filters?.store || "").toLowerCase(),
     origin: normalizeText(state.pdvCustomers.filters?.origin || "").toLowerCase(),
@@ -10595,6 +10918,8 @@ async function loadPdvProductsFront(options = {}) {
 function applyPdvCustomersFiltersFromForm(formElement) {
   const formData = new FormData(formElement);
   ensurePdvCustomersCrudState();
+  const requestedSourceMode = normalizeText(formData.get("sourceMode") || state.pdvCustomers.sourceMode || "operational").toLowerCase();
+  state.pdvCustomers.sourceMode = requestedSourceMode === "unified" ? "unified" : "operational";
   state.pdvCustomers.query = normalizeText(formData.get("customersQuery") || "");
   state.pdvCustomers.phoneQuery = normalizeText(formData.get("customersPhoneQuery") || "");
   state.pdvCustomers.filters.store = normalizeText(formData.get("storeFilter") || "").toLowerCase();
@@ -10613,6 +10938,52 @@ function triggerPdvCustomersSearch(formElement, options = {}) {
   if (!formElement || state.pdvCustomers.loading) return;
   applyPdvCustomersFiltersFromForm(formElement);
   loadPdvCustomersFront({ preserveSelection }).catch((error) => handleUiError(errorMessage, error));
+}
+
+function getPdvCustomerRowId(customer = {}) {
+  return normalizeText(customer.id || customer.unified_id || customer.master_customer_id || customer.phone || customer.name || "");
+}
+
+function getPdvCustomerPhoneDisplay(customer = {}) {
+  return customer.phone_display || customer.phone_masked || formatPhoneBR(customer.mobile || customer.phone || "") || "-";
+}
+
+function normalizeUnifiedCustomerForFront(item = {}) {
+  const sources = toArray(item.source_tables || item.sources).join(" + ");
+  return {
+    ...item,
+    id: item.unified_id,
+    source: sources || "consolidada",
+    phone_display: item.phone_masked || "-",
+    mobile: "",
+    phone: "",
+    mobile_normalized: item.has_valid_whatsapp ? "whatsapp_valid" : "",
+    document: item.document_masked || "",
+    email: item.email_masked || "",
+    preferred_store: item.store || "",
+    status: item.conflict ? "conflito" : (item.status || "read-only"),
+    quality_flags: item.conflict ? ["conflict"] : [],
+    has_size_profile: false,
+    read_only: true
+  };
+}
+
+function normalizeUnifiedCustomerSummary(stats = {}) {
+  return {
+    total: Number(stats.total_unified || 0),
+    with_raw_phone: Number(stats.with_raw_phone || 0),
+    with_phone: Number(stats.with_valid_whatsapp || 0),
+    with_whatsapp_valid: Number(stats.with_valid_whatsapp || 0),
+    without_whatsapp_valid: Number(stats.without_valid_whatsapp || 0),
+    with_document: Number(stats.with_document || 0),
+    with_email: Number(stats.with_email || 0),
+    duplicates: Number(stats.conflicts || 0),
+    invalid_mobile: Number(stats.conflicts || 0),
+    with_size_profile: 0,
+    from_contacts_only: Number(stats.from_contacts_only || 0),
+    from_crm_contacts_only: Number(stats.from_crm_contacts_only || 0),
+    merged_records: Number(stats.merged_records || 0)
+  };
 }
 
 function bindPdvCustomersSearchForm(formElement, options = {}) {
@@ -10763,19 +11134,20 @@ function renderPdvCustomersOfficialFront(container = document.getElementById("pd
   const summary = state.pdvCustomers.summary || {};
   const pagination = state.pdvCustomers.pagination || { page: 1, limit: 50, total: items.length, totalPages: 1 };
   const activeFilterLabels = getPdvCustomersActiveFilterLabels();
-  const selectedCustomer = items.find((item) => normalizeText(item.id || "") === normalizeText(state.pdvCustomers.selectedCustomerId || "")) || items[0] || null;
-  if (selectedCustomer && normalizeText(state.pdvCustomers.selectedCustomerId || "") !== normalizeText(selectedCustomer.id || "")) {
-    state.pdvCustomers.selectedCustomerId = normalizeText(selectedCustomer.id || "");
+  const isUnifiedSource = state.pdvCustomers.sourceMode === "unified";
+  const selectedCustomer = items.find((item) => getPdvCustomerRowId(item) === normalizeText(state.pdvCustomers.selectedCustomerId || "")) || items[0] || null;
+  if (selectedCustomer && normalizeText(state.pdvCustomers.selectedCustomerId || "") !== getPdvCustomerRowId(selectedCustomer)) {
+    state.pdvCustomers.selectedCustomerId = getPdvCustomerRowId(selectedCustomer);
   }
   const storeOptions = getPdvCustomersStoreOptions();
   const rowsHtml = items.length ? items.map((item) => `
-    <tr class="${normalizeText(state.pdvCustomers.selectedCustomerId || "") === normalizeText(item.id || "") ? "is-selected" : ""}">
+    <tr class="${normalizeText(state.pdvCustomers.selectedCustomerId || "") === getPdvCustomerRowId(item) ? "is-selected" : ""}">
       <td><div class="pdv-customers-name-cell"><strong>${escapeHtml(item.name || "Cliente")}</strong><small>${escapeHtml(item.source || "manual")}</small></div></td>
-      <td><div class="pdv-customers-contact-cell"><strong>${escapeHtml(formatPhoneBR(item.mobile || item.phone || "") || "-")}</strong><small>${escapeHtml(item.document || "Documento nao informado")}</small></div></td>
+      <td><div class="pdv-customers-contact-cell"><strong>${escapeHtml(getPdvCustomerPhoneDisplay(item))}</strong><small>${escapeHtml(item.document || "Documento nao informado")}</small></div></td>
       <td><div class="pdv-customers-profile-cell"><strong>${escapeHtml(formatStoreIdLabel(item.preferred_store || "") || "-")}</strong><small>${escapeHtml(item.city ? `${item.city}/${item.state || ""}` : "Sem cidade")}</small></div></td>
       <td><div class="pdv-customers-cashback-cell"><strong>${escapeHtml(buildManualCustomerSizeSummary(item))}</strong><small>${escapeHtml(getManualCustomerStatusLabel(item.status))}</small></div></td>
       <td><div class="pdv-customers-last-sale-cell"><strong>${escapeHtml(item.mobile_normalized || "-")}</strong><small>${escapeHtml(item.quality_flags?.join(", ") || "Cadastro limpo")}</small></div></td>
-      <td><div class="action-row pdv-customers-action-row"><button class="secondary-button" type="button" data-pdv-customer-detail="${escapeHtml(String(item.id))}">Ver</button><button class="ghost-button" type="button" data-pdv-customer-edit="${escapeHtml(String(item.id))}">Editar</button></div></td>
+      <td><div class="action-row pdv-customers-action-row"><button class="secondary-button" type="button" data-pdv-customer-detail="${escapeHtml(getPdvCustomerRowId(item))}">Ver</button>${isUnifiedSource ? "" : `<button class="ghost-button" type="button" data-pdv-customer-edit="${escapeHtml(String(item.id))}">Editar</button>`}</div></td>
     </tr>
   `).join("") : `<tr><td colspan="6"><div class="empty-state compact"><strong>${activeFilterLabels.length ? "Nenhum cliente encontrado com os filtros atuais." : "Nenhum cliente cadastrado ainda."}</strong><span>${activeFilterLabels.length ? "Filtros ativos podem estar restringindo a busca." : "Cadastre o primeiro cliente manual e comece a estruturar o perfil de tamanhos."}</span>${activeFilterLabels.length ? `<small>${escapeHtml(activeFilterLabels.join(" • "))}</small>` : ""}</div></td></tr>`;
   const contentHtml = `
@@ -10785,6 +11157,10 @@ function renderPdvCustomersOfficialFront(container = document.getElementById("pd
         ${canCreatePdvCustomers() ? `<div class="action-row"><button class="primary-button" type="button" data-pdv-customer-create-open="true">Novo cliente</button></div>` : ""}
       </div>
       <form class="pdv-customers-toolbar" data-pdv-customers-search-form="true">
+        <div class="pdv-customers-source-toggle" role="group" aria-label="Fonte de clientes">
+          <label><input type="radio" name="sourceMode" value="operational"${state.pdvCustomers.sourceMode !== "unified" ? " checked" : ""} /> Operacional contacts</label>
+          <label><input type="radio" name="sourceMode" value="unified"${state.pdvCustomers.sourceMode === "unified" ? " checked" : ""} /> Consolidada read-only</label>
+        </div>
         <label class="pdv-customers-search-label">Buscar por nome, documento ou cidade<input name="customersQuery" type="search" value="${escapeHtml(state.pdvCustomers.query || "")}" placeholder="Ex.: Cliente Teste, Ribeirao, 12345678900" /></label>
         <label class="pdv-customers-search-label">Buscar por celular<input name="customersPhoneQuery" type="search" value="${escapeHtml(state.pdvCustomers.phoneQuery || "")}" placeholder="Ex.: 16999999999" /></label>
         <div class="pdv-customers-toolbar-filters">
@@ -10844,6 +11220,11 @@ function renderPdvCustomersOfficialFront(container = document.getElementById("pd
     state.pdvCustomers.pagination.page = Math.min(totalPages, Number(state.pdvCustomers.pagination?.page || 1) + 1);
     loadPdvCustomersFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao carregar a proxima pagina de clientes", error));
   });
+  container.querySelectorAll('input[name="sourceMode"]').forEach((input) => input.addEventListener("change", () => {
+    const customersForm = container.querySelector('[data-pdv-customers-search-form="true"]');
+    applyPdvCustomersFiltersFromForm(customersForm);
+    loadPdvCustomersFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao trocar a fonte de clientes", error));
+  }));
   container.querySelector("[data-pdv-reactivation-load='true']")?.addEventListener("click", () => {
     loadPdvReactivationSegments().catch((error) => handleUiError("Erro ao carregar a segmentacao de giftback", error));
   });
@@ -10910,22 +11291,31 @@ async function loadPdvCustomersFront(options = {}) {
     });
     params.set("page", String(Math.max(1, Number(state.pdvCustomers.pagination?.page || 1))));
     params.set("limit", String(Math.max(1, Math.min(100, Number(state.pdvCustomers.pagination?.limit || 50)))));
-    const response = await api(`/api/customers?${params.toString()}`);
+    const isUnifiedSource = state.pdvCustomers.sourceMode === "unified";
+    const endpoint = isUnifiedSource ? "/api/customers/unified" : "/api/customers";
+    const response = await api(`${endpoint}?${params.toString()}`);
     if (state.pdvCustomers.loadingRequestId !== requestId) return;
-    state.pdvCustomers.items = toArray(response.items);
-    state.pdvCustomers.summary = response.summary || null;
-    state.pdvCustomers.pagination = response.pagination || {
+    state.pdvCustomers.items = isUnifiedSource
+      ? toArray(response.items).map(normalizeUnifiedCustomerForFront)
+      : toArray(response.items);
+    state.pdvCustomers.summary = isUnifiedSource
+      ? normalizeUnifiedCustomerSummary(response.stats || {})
+      : (response.summary || null);
+    const paginationPayload = response.pagination || {};
+    state.pdvCustomers.pagination = {
       page: 1,
       limit: 50,
       total: state.pdvCustomers.items.length,
-      totalPages: 1
+      totalPages: 1,
+      ...paginationPayload,
+      totalPages: Number(paginationPayload.totalPages || paginationPayload.total_pages || 1)
     };
     const nextSelected = preferredSelectionId
-      ? state.pdvCustomers.items.find((item) => normalizeText(item.id || "") === normalizeText(preferredSelectionId))
+      ? state.pdvCustomers.items.find((item) => getPdvCustomerRowId(item) === normalizeText(preferredSelectionId))
       : preserveSelection
-        ? state.pdvCustomers.items.find((item) => normalizeText(item.id || "") === normalizeText(state.pdvCustomers.selectedCustomerId || ""))
+        ? state.pdvCustomers.items.find((item) => getPdvCustomerRowId(item) === normalizeText(state.pdvCustomers.selectedCustomerId || ""))
         : null;
-    state.pdvCustomers.selectedCustomerId = normalizeText((nextSelected || state.pdvCustomers.items[0] || {}).id || "");
+    state.pdvCustomers.selectedCustomerId = getPdvCustomerRowId(nextSelected || state.pdvCustomers.items[0] || {});
     if (!preserveSelection) {
       state.pdvCustomers.detailCustomerId = "";
       state.pdvCustomers.cashbackSummary = null;
@@ -10934,9 +11324,11 @@ async function loadPdvCustomersFront(options = {}) {
     }
   } catch (error) {
     if (state.pdvCustomers.loadingRequestId !== requestId) return;
-    state.pdvCustomers.error = error.message || "Falha ao carregar os clientes.";
+    state.pdvCustomers.error = error.message === "Failed to fetch"
+      ? "Erro ao carregar clientes. Verifique se o servidor local esta ativo e tente novamente."
+      : (error.message || "Erro ao carregar clientes.");
     state.pdvCustomers.items = [];
-    state.pdvCustomers.summary = null;
+    state.pdvCustomers.summary = state.pdvCustomers.summary || null;
     state.pdvCustomers.selectedCustomerId = "";
     state.pdvCustomers.pagination = {
       page: Math.max(1, Number(state.pdvCustomers.pagination?.page || 1)),
@@ -23643,7 +24035,15 @@ async function logoutUser() {
     postSaleWhatsAppSaleId: "",
     postSaleCopiedSaleId: "",
     postSalePrintedSaleId: "",
-    postSaleAutoPrintedSaleId: ""
+    postSaleAutoPrintedSaleId: "",
+    postSaleProfileCustomer: null,
+    customerProfileDrawerOpen: false,
+    customerProfileSaving: false,
+    customerProfileError: "",
+    customerProfileDismissedSessionId: "",
+    customerProfileFinalizeBypassedSessionId: "",
+    customerProfileFinalizeReminderSessionId: "",
+    customerProfilePromptStage: ""
   };
   document.body.classList.remove("pdv-drawer-open");
   clearAuthSession();
@@ -25462,6 +25862,32 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const openPdvSaleProfileButton = event.target.closest("[data-pdv-sale-profile-open]");
+  if (openPdvSaleProfileButton) {
+    openPdvSaleCustomerProfileDrawer(openPdvSaleProfileButton.dataset.pdvSaleProfileOpen || "sale_prompt");
+    return;
+  }
+
+  const dismissPdvSaleProfileButton = event.target.closest("[data-pdv-sale-profile-dismiss]");
+  if (dismissPdvSaleProfileButton) {
+    dismissPdvSaleCustomerProfilePrompt();
+    return;
+  }
+
+  const bypassPdvSaleProfileButton = event.target.closest("[data-pdv-sale-profile-bypass]");
+  if (bypassPdvSaleProfileButton) {
+    bypassPdvSaleCustomerProfileFinalizeReminder();
+    return;
+  }
+
+  const closePdvSaleProfileButton = event.target.closest('[data-pdv-sale-profile-close="button"]');
+  const closePdvSaleProfileOverlay = event.target.matches?.('[data-pdv-sale-profile-close="overlay"]') ? event.target : null;
+  if (closePdvSaleProfileButton || closePdvSaleProfileOverlay) {
+    closePdvSaleCustomerProfileDrawer();
+    renderPdvSaleSurface();
+    return;
+  }
+
   const focusPdvSaleCustomerButton = event.target.closest("[data-pdv-sale-customer-focus]");
   if (focusPdvSaleCustomerButton) {
     focusPdvSaleCustomerSearchInput();
@@ -25821,6 +26247,9 @@ function handleDocumentClick(event) {
   if (openPdvCustomerDetailButton) {
     state.pdvCustomers.selectedCustomerId = normalizeText(openPdvCustomerDetailButton.dataset.pdvCustomerDetail || "");
     renderPdvCustomersOfficialFront();
+    if (state.pdvCustomers.sourceMode === "unified") {
+      return;
+    }
     loadPdvCustomerCashbackDetail(state.pdvCustomers.selectedCustomerId, { force: true }).catch((error) => {
       handleUiError("Erro ao carregar historico de cashback do cliente", error);
     });
@@ -26671,6 +27100,13 @@ function handleDocumentSubmit(event) {
   if (pdvSaleCustomerCreateForm) {
     event.preventDefault();
     savePdvSaleCustomerRegistration(pdvSaleCustomerCreateForm).catch((error) => handleUiError("Erro ao salvar o cadastro oficial do cliente", error));
+    return;
+  }
+
+  const pdvSaleProfileForm = event.target.closest("[data-pdv-sale-profile-form]");
+  if (pdvSaleProfileForm) {
+    event.preventDefault();
+    savePdvSaleCustomerCommercialProfile(pdvSaleProfileForm).catch((error) => handleUiError("Erro ao salvar o perfil comercial do cliente", error));
     return;
   }
 

@@ -303,7 +303,7 @@ router.patch("/cart/:sessionId/items/:itemId", async (req, res) => {
     if (!ensureStoreAccess(req, res, session.store_id || session.loja || "")) {
       return;
     }
-    res.json(updateCartItem(req.params.sessionId, req.params.itemId, req.body || {}));
+    res.json(updateCartItem(req.params.sessionId, req.params.itemId, req.body || {}, req.user || {}));
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao atualizar o item do carrinho do PDV." });
   }

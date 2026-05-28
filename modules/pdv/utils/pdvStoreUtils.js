@@ -99,6 +99,21 @@ function formatStoreLabel(value = "") {
     .join(" ");
 }
 
+function getStoreDisplayText(value = "") {
+  const key = normalizeStoreKey(value);
+  const name = formatStoreLabel(value || key);
+  if (key === "botanico") {
+    return { name, in: `no ${name}`, from: `do ${name}`, to: `para o ${name}` };
+  }
+  if (key === "sul") {
+    return { name, in: `no ${name}`, from: `do ${name}`, to: `para o ${name}` };
+  }
+  if (key === "vila") {
+    return { name, in: `na ${name}`, from: `da ${name}`, to: `para a ${name}` };
+  }
+  return { name, in: `na ${name || "loja atual"}`, from: `da ${name || "loja"}`, to: `para a ${name || "loja"}` };
+}
+
 function getActiveOperationalStoreOptions() {
   return ACTIVE_OPERATIONAL_STORE_OPTIONS.map((item) => ({ ...item }));
 }
@@ -232,6 +247,7 @@ module.exports = {
   normalizeStoreKey,
   getStoreLookupKey,
   formatStoreLabel,
+  getStoreDisplayText,
   buildStoreOptions,
   getActiveOperationalStoreOptions,
   isActiveOperationalStore,

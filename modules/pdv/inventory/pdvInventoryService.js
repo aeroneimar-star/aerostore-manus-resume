@@ -9,6 +9,7 @@ const {
   normalizeStoreKey,
   getStoreLookupKey,
   formatStoreLabel,
+  getStoreDisplayText,
   isSulStore,
   isActiveOperationalStore,
   isLegacyOperationalStore,
@@ -790,6 +791,35 @@ function resolveSaleItemFulfillment(item = {}, saleStoreId = DEFAULT_STORE_ID, o
   const wantsInternalTransfer = explicitFulfillment === FULFILLMENT_MODES.INTERNAL_TRANSFER || explicitFulfillment === "INTERNAL_TRANSFER";
   const wantsDirectDelivery = explicitFulfillment === FULFILLMENT_MODES.DIRECT_ORIGIN || explicitFulfillment === "DIRECT_DELIVERY";
   const wantsLogisticsReview = explicitFulfillment === FULFILLMENT_MODES.LOGISTICS_REVIEW || explicitFulfillment === "LOGISTICS_REVIEW";
+  const hasPhysicalConfirmation = Boolean(item.physical_confirmation_done)
+    || explicitFulfillment === "PHYSICAL_CONFIRMATION"
+    || explicitFulfillment === "venda_confirmada_fisicamente";
+  if (hasPhysicalConfirmation) {
+    return {
+      ok: true,
+      can_finalize: true,
+      blocked: false,
+      item_id: normalizeText(item.item_id || ""),
+      product_id: normalizeText(item.product_id || item.selected_product_id || ""),
+      sku: normalizeText(item.sku || item.selected_sku || ""),
+      codigo: normalizeText(item.codigo || item.selected_codigo || ""),
+      nome: itemLabel,
+      quantidade: requestedQty,
+      inventory_id: normalizeText(item.inventory_id || item.selected_inventory_id || ""),
+      available_qty: 0,
+      loja_venda: normalizedSaleStore,
+      loja_origem_estoque: normalizedSaleStore,
+      loja_entrega_retirada: normalizedDeliveryStore || normalizedSaleStore,
+      stock_source_store_id: normalizedSaleStore,
+      stock_source_store_name: formatStoreLabel(normalizedSaleStore),
+      fulfillment_type: "PHYSICAL_CONFIRMATION",
+      fulfillment_mode: "venda_confirmada_fisicamente",
+      fulfillment_status: FULFILLMENT_STATUS.CONFIRMED,
+      requires_logistics_review: false,
+      is_adjacent_store: false,
+      message: "Item liberado por conferencia fisica na loja da venda."
+    };
+  }
 
   const localResolutionCandidates = [
     item,
@@ -859,7 +889,7 @@ function resolveSaleItemFulfillment(item = {}, saleStoreId = DEFAULT_STORE_ID, o
       fulfillment_status: FULFILLMENT_STATUS.CONFIRMED,
       requires_logistics_review: false,
       is_adjacent_store: true,
-      message: `Disponivel na loja vizinha ${availability.adjacent_option.store_name}.`
+      message: `Disponivel ${getStoreDisplayText(availability.adjacent_option.store_id || availability.adjacent_option.store_name).in}.`
     };
   }
 
@@ -1462,6 +1492,13 @@ function validateStockAvailability(items = [], storeId = DEFAULT_STORE_ID) {
   const records = ensureInventorySeeded();
   const errors = [];
   (items || []).forEach((item) => {
+    if (
+      Boolean(item.physical_confirmation_done)
+      || normalizeText(item.fulfillment_type || item.fulfillment_mode || "") === "PHYSICAL_CONFIRMATION"
+      || normalizeText(item.fulfillment_mode || "") === "venda_confirmada_fisicamente"
+    ) {
+      return;
+    }
     const requestedQty = Math.max(1, roundQty(item.quantidade || 1));
     const sourceStoreId = normalizeStoreId(
       item.loja_origem_estoque
@@ -1506,6 +1543,42 @@ function applySaleInventory(sale, user = {}) {
   const records = ensureInventorySeeded();
   const movements = [];
   (sale.items || []).forEach((item) => {
+    if (
+      Boolean(item.physical_confirmation_done)
+      || normalizeText(item.fulfillment_type || item.fulfillment_mode || "") === "PHYSICAL_CONFIRMATION"
+      || normalizeText(item.fulfillment_mode || "") === "venda_confirmada_fisicamente"
+    ) {
+      const requestedQty = Math.max(1, roundQty(item.quantidade || 1));
+      const storeId = normalizeStoreId(item.physical_confirmation_store_id || item.loja_venda || sale.loja_venda || sale.loja);
+      const movement = appendInventoryMovement({
+        inventory_id: normalizeText(item.inventory_id || item.selected_inventory_id || ""),
+        type: "SALE_PHYSICAL_CONFIRMATION",
+        product_id: normalizeText(item.product_id || item.selected_product_id || ""),
+        sku: normalizeText(item.sku || item.codigo || ""),
+        codigo: normalizeText(item.codigo || ""),
+        nome: normalizeText(item.nome || ""),
+        store_id: storeId,
+        quantity: requestedQty,
+        direction: "INFO",
+        reference_type: "SALE",
+        reference_id: sale.sale_id,
+        reason: "Venda confirmada fisicamente sem saldo confirmado.",
+        notes: normalizeText(item.physical_confirmation_note || sale.observacoes || ""),
+        before_qty: 0,
+        after_qty: 0,
+        metadata: {
+          seller: sale.vendedor || "",
+          selected_product_id: normalizeText(item.product_id || item.selected_product_id || ""),
+          selected_inventory_id: normalizeText(item.inventory_id || item.selected_inventory_id || ""),
+          physical_confirmation_done: true,
+          physical_confirmation_by: normalizeText(item.physical_confirmation_by || ""),
+          physical_confirmation_at: normalizeText(item.physical_confirmation_at || ""),
+          physical_confirmation_reason: normalizeText(item.physical_confirmation_reason || "")
+        }
+      }, user);
+      movements.push(movement);
+      return;
+    }
     const originStore = normalizeStoreId(item.loja_origem_estoque || sale.loja_origem_estoque || sale.loja_venda || sale.loja);
     const record = resolveStrictInventoryRecord(records, item, originStore);
     const requestedQty = Math.max(1, roundQty(item.quantidade || 1));
@@ -1567,6 +1640,31 @@ function restoreSaleInventory(sale, user = {}) {
   const records = ensureInventorySeeded();
   const movements = [];
   (sale.items || []).forEach((item) => {
+    if (
+      Boolean(item.physical_confirmation_done)
+      || normalizeText(item.fulfillment_type || item.fulfillment_mode || "") === "PHYSICAL_CONFIRMATION"
+      || normalizeText(item.fulfillment_mode || "") === "venda_confirmada_fisicamente"
+    ) {
+      const movement = appendInventoryMovement({
+        inventory_id: normalizeText(item.inventory_id || item.selected_inventory_id || ""),
+        type: "SALE_PHYSICAL_CONFIRMATION_CANCELLED",
+        product_id: normalizeText(item.product_id || item.selected_product_id || ""),
+        sku: normalizeText(item.sku || item.codigo || ""),
+        codigo: normalizeText(item.codigo || ""),
+        nome: normalizeText(item.nome || ""),
+        store_id: normalizeStoreId(item.physical_confirmation_store_id || item.loja_venda || sale.loja_venda || sale.loja),
+        quantity: Math.max(1, roundQty(item.quantidade || 1)),
+        direction: "INFO",
+        reference_type: "SALE_CANCEL",
+        reference_id: sale.sale_id,
+        reason: "Cancelamento de venda que havia sido confirmada fisicamente sem baixa de estoque.",
+        notes: sale.cancel_reason || "",
+        before_qty: 0,
+        after_qty: 0
+      }, user);
+      movements.push(movement);
+      return;
+    }
     const originStore = normalizeStoreId(item.loja_origem_estoque || sale.loja_origem_estoque || sale.loja_venda || sale.loja);
     const record = resolveStrictInventoryRecord(records, item, originStore);
     const quantity = Math.max(1, roundQty(item.quantidade || 1));
