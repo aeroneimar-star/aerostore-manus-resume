@@ -4437,6 +4437,7 @@ tbody tr:hover td {
 }
 
 .preview-badge.duplicate,
+.preview-badge.danger,
 .preview-badge.ignored {
   background: rgba(176, 63, 63, 0.1);
   color: var(--error);
