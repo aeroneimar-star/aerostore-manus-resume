@@ -1290,6 +1290,66 @@ function buildInventorySearchText(record = {}) {
   ].join(" "));
 }
 
+const INVENTORY_SIZE_SEARCH_TOKENS = new Set([
+  "pp", "p", "m", "g", "gg", "xg", "xgg", "eg", "egg", "un", "u",
+  "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46", "47", "48"
+]);
+
+function tokenizeInventorySearchQuery(query = "") {
+  const normalized = normalizeLookup(query || "");
+  if (!normalized) return [];
+  return normalized
+    .split(/\s+/)
+    .map((token) => normalizeLookup(token || ""))
+    .filter(Boolean)
+    .filter((token, index, list) => token.length > 1 || (INVENTORY_SIZE_SEARCH_TOKENS.has(token) && list.length > 1))
+    .filter((token, index, list) => list.indexOf(token) === index);
+}
+
+function inventoryFieldHasExactToken(value = "", token = "") {
+  const normalizedToken = normalizeLookup(token || "");
+  if (!normalizedToken) return false;
+  return normalizeLookup(value || "").split(/\s+/).filter(Boolean).includes(normalizedToken);
+}
+
+function inventoryRecordHasSearchToken(record = {}, token = "") {
+  const normalizedToken = normalizeLookup(token || "");
+  if (!normalizedToken) return true;
+  if (INVENTORY_SIZE_SEARCH_TOKENS.has(normalizedToken)) {
+    return [
+      record.tamanho,
+      record.grade,
+      record.sizes,
+      record.nome,
+      record.categoria,
+      record.tipo,
+      record.cor
+    ].some((value) => inventoryFieldHasExactToken(value, normalizedToken));
+  }
+  if (/^\d{1,3}$/.test(normalizedToken)) {
+    return [
+      record.tamanho,
+      record.grade,
+      record.sizes,
+      record.nome,
+      record.sku,
+      record.codigo,
+      record.codigo_tiny,
+      record.codigo_etiqueta,
+      record.codigo_interno
+    ].some((value) => inventoryFieldHasExactToken(value, normalizedToken) || normalizeLookup(value || "").includes(normalizedToken));
+  }
+  return buildInventorySearchText(record).includes(normalizedToken);
+}
+
+function inventoryRecordMatchesTokenSearch(record = {}, query = "", tokens = null) {
+  const normalizedQuery = normalizeLookup(query || "");
+  if (!normalizedQuery) return true;
+  const searchTokens = Array.isArray(tokens) ? tokens : tokenizeInventorySearchQuery(query);
+  if (!searchTokens.length) return buildInventorySearchText(record).includes(normalizedQuery);
+  return searchTokens.every((token) => inventoryRecordHasSearchToken(record, token));
+}
+
 function isInventoryCodeLikeQuery(query = "") {
   const normalized = normalizeText(query || "");
   const digits = normalizeDigits(normalized);
@@ -1323,6 +1383,7 @@ function inventoryRecordMatchesExactCode(record = {}, query = "") {
 function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", page = 1, limit = 300 } = {}) {
   const records = ensureInventorySeeded();
   const normalizedQuery = normalizeLookup(q);
+  const searchTokens = tokenizeInventorySearchQuery(q);
   const codeLikeQuery = isInventoryCodeLikeQuery(q);
   const normalizedStore = normalizeStoreLookup(storeId || DEFAULT_STORE_ID);
   const shouldScopeToStore = Boolean(storeId && !normalizedQuery);
@@ -1336,7 +1397,7 @@ function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", 
     if (normalizedStatus && normalizeText(item.status).toUpperCase() !== normalizedStatus) return false;
     if (normalizedQuery) {
       if (codeLikeQuery && !inventoryRecordMatchesExactCode(item, q)) return false;
-      if (!codeLikeQuery && !buildInventorySearchText(item).includes(normalizedQuery)) return false;
+      if (!codeLikeQuery && !inventoryRecordMatchesTokenSearch(item, q, searchTokens)) return false;
     }
     if (normalizedAlert === "out" && toNumber(item.available_qty) > 0) return false;
     if (normalizedAlert === "low" && toNumber(item.available_qty) !== 1) return false;

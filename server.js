@@ -13322,6 +13322,13 @@ function buildCustomerSizeProfile(payload = {}, current = null) {
       last_confirmed_at: String(payload.blouseUpdatedAt ?? payload.blouse_updated_at ?? currentProfile?.blouse?.last_confirmed_at ?? payload.sizeProfileUpdatedAt ?? current?.size_profile_updated_at ?? "").trim(),
       notes: normalizeText(payload.blouseNotes ?? payload.blouse_notes ?? currentProfile?.blouse?.notes ?? "")
     },
+    shirt: {
+      size_value: normalizeText(payload.shirtSize ?? payload.shirt_size ?? currentProfile?.shirt?.size_value ?? "").toUpperCase(),
+      source: normalizeCustomerSource(payload.shirtSource ?? payload.shirt_source ?? currentProfile?.shirt?.source ?? payload.sizeProfileSource ?? current?.size_profile_source ?? "manual"),
+      confidence_score: normalizeCustomerConfidence(payload.shirtConfidence ?? payload.shirt_confidence ?? currentProfile?.shirt?.confidence_score ?? payload.sizeProfileConfidence ?? current?.size_profile_confidence ?? "media"),
+      last_confirmed_at: String(payload.shirtUpdatedAt ?? payload.shirt_updated_at ?? currentProfile?.shirt?.last_confirmed_at ?? payload.sizeProfileUpdatedAt ?? current?.size_profile_updated_at ?? "").trim(),
+      notes: normalizeText(payload.shirtNotes ?? payload.shirt_notes ?? currentProfile?.shirt?.notes ?? "")
+    },
     pants: {
       size_value: normalizeText(payload.pantsSize ?? payload.pants_size ?? currentProfile?.pants?.size_value ?? payload.bottomSize ?? payload.bottom_size ?? current?.bottom_size ?? ""),
       source: normalizeCustomerSource(payload.pantsSource ?? payload.pants_source ?? currentProfile?.pants?.source ?? payload.sizeProfileSource ?? current?.size_profile_source ?? "manual"),
@@ -13369,13 +13376,13 @@ function hasCustomerSizeProfile(sizeProfile = {}) {
   if (!sizeProfile || typeof sizeProfile !== "object") {
     return false;
   }
-  return ["tshirt", "blouse", "pants", "shorts", "dress", "shoes", "infant"]
+  return ["tshirt", "blouse", "shirt", "pants", "shorts", "dress", "shoes", "infant"]
     .some((key) => normalizeText(sizeProfile?.[key]?.size_value || ""));
 }
 
 function getCustomerPrimarySizes(sizeProfile = {}) {
   return {
-    top_size: normalizeText(sizeProfile?.tshirt?.size_value || sizeProfile?.blouse?.size_value || "").toUpperCase(),
+    top_size: normalizeText(sizeProfile?.tshirt?.size_value || sizeProfile?.blouse?.size_value || sizeProfile?.shirt?.size_value || "").toUpperCase(),
     bottom_size: normalizeText(sizeProfile?.pants?.size_value || sizeProfile?.shorts?.size_value || ""),
     shoe_size: normalizeText(sizeProfile?.shoes?.size_value || "")
   };
@@ -13439,6 +13446,89 @@ function buildCustomerPayload(payload = {}, current = null) {
     aerointel_last_enriched_at: String(payload.aerointel_last_enriched_at ?? current?.aerointel_last_enriched_at ?? "").trim(),
     aerointel_confidence_score: Number(payload.aerointel_confidence_score ?? current?.aerointel_confidence_score ?? 0) || 0,
     deleted_at: String(current?.deleted_at || "")
+  };
+}
+
+function parseCommercialProfileList(value, fallback = []) {
+  if (Array.isArray(value)) {
+    return uniqueStrings(value.map((item) => normalizeText(item || "")).filter(Boolean));
+  }
+  const raw = normalizeText(value || "");
+  if (!raw) {
+    return Array.isArray(fallback) ? uniqueStrings(fallback) : [];
+  }
+  return uniqueStrings(raw.split(/[,;\n|]+/).map((item) => normalizeText(item || "")).filter(Boolean));
+}
+
+function buildCustomerCommercialProfilePayload(payload = {}, current = null) {
+  const currentPreferences = parseStoredJsonObject(current?.preferences_json || {});
+  const nextPreferences = {
+    ...currentPreferences,
+    attendance_preferences: normalizeText(payload.preferencias_atendimento ?? payload.attendance_preferences ?? currentPreferences.attendance_preferences ?? "")
+  };
+  const commercialPayload = {
+    ...payload,
+    tshirt_size: payload.tamanho_camiseta ?? payload.tamanho_blusa ?? payload.tshirt_size ?? payload.top_size,
+    blouse_size: payload.tamanho_blusa ?? payload.tamanho_camiseta ?? payload.blouse_size,
+    shirt_size: payload.tamanho_camisa ?? payload.shirt_size,
+    pants_size: payload.tamanho_calca ?? payload.tamanho_bermuda ?? payload.pants_size ?? payload.bottom_size,
+    shorts_size: payload.tamanho_bermuda ?? payload.tamanho_calca ?? payload.shorts_size,
+    shoe_size: payload.tamanho_calcado ?? payload.shoe_size,
+    infant_size: payload.tamanho_infantil ?? payload.infant_size,
+    fit_notes: payload.modelagem_preferida ?? payload.fit_notes,
+    size_profile_source: payload.size_profile_source || "manual",
+    size_profile_confidence: payload.size_profile_confidence || "alta",
+    notes: normalizeText(payload.observacoes_comerciais ?? payload.notes ?? current?.notes ?? ""),
+    preferences_json: nextPreferences,
+    favorite_brands_json: parseCommercialProfileList(payload.marcas_preferidas ?? payload.favorite_brands_json, parseStoredJsonArray(current?.favorite_brands_json || [])),
+    favorite_colors_json: parseCommercialProfileList(payload.cores_preferidas ?? payload.favorite_colors_json, parseStoredJsonArray(current?.favorite_colors_json || [])),
+    favorite_categories_json: parseCommercialProfileList(payload.categorias_preferidas ?? payload.favorite_categories_json, parseStoredJsonArray(current?.favorite_categories_json || []))
+  };
+  return buildCustomerPayload(commercialPayload, current);
+}
+
+function getChangedCustomerProfileFields(current = {}, next = {}) {
+  const fields = [
+    "top_size",
+    "bottom_size",
+    "shoe_size",
+    "size_profile_json",
+    "size_profile_source",
+    "size_profile_confidence",
+    "preferences_json",
+    "favorite_brands_json",
+    "favorite_colors_json",
+    "favorite_categories_json",
+    "notes"
+  ];
+  return fields.filter((field) => String(current?.[field] ?? "") !== String(next?.[field] ?? ""));
+}
+
+function calculateCustomerProfileCompleteness(customer = {}) {
+  const sizeProfile = customer.size_profile || parseStoredJsonObject(customer.size_profile_json || {});
+  const hasTop = Boolean(normalizeText(customer.top_size || sizeProfile?.tshirt?.size_value || sizeProfile?.blouse?.size_value || sizeProfile?.shirt?.size_value || ""));
+  const hasBottom = Boolean(normalizeText(customer.bottom_size || sizeProfile?.pants?.size_value || sizeProfile?.shorts?.size_value || ""));
+  const hasShoes = Boolean(normalizeText(customer.shoe_size || sizeProfile?.shoes?.size_value || ""));
+  const hasInfant = Boolean(normalizeText(sizeProfile?.infant?.size_value || ""));
+  const preferences = customer.preferences_json || parseStoredJsonObject(customer.preferences_json || {});
+  const hasPreference = Boolean(
+    normalizeText(sizeProfile?.fit_notes || "")
+    || parseStoredJsonArray(customer.favorite_brands_json || []).length
+    || parseStoredJsonArray(customer.favorite_colors_json || []).length
+    || parseStoredJsonArray(customer.favorite_categories_json || []).length
+    || normalizeText(customer.notes || "")
+    || normalizeText(preferences.attendance_preferences || "")
+  );
+  const score = Math.min(100, [hasTop, hasBottom, hasShoes, hasInfant, hasPreference].filter(Boolean).length * 20);
+  const missingFields = [];
+  if (!hasTop) missingFields.push("tamanho superior");
+  if (!hasBottom) missingFields.push("calca/bermuda");
+  if (!hasShoes) missingFields.push("calcado");
+  if (!hasPreference) missingFields.push("preferencias");
+  return {
+    score,
+    missing_fields: missingFields,
+    status: score >= 80 ? "complete" : (score >= 60 ? "good" : (score > 0 ? "partial" : "empty"))
   };
 }
 

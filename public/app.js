@@ -227,6 +227,7 @@ const state = {
     customerCreateExistingCustomer: null,
     customerProfileDrawerOpen: false,
     customerProfileSaving: false,
+    customerProfileActivating: false,
     customerProfileError: "",
     customerProfileDismissedSessionId: "",
     customerProfileFinalizeBypassedSessionId: "",
@@ -236,6 +237,11 @@ const state = {
     productResults: [],
     productPagination: { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false },
     productSearching: false,
+    productSearchAppending: false,
+    productSearchError: "",
+    productSearchHasRun: false,
+    productSearchRequestId: 0,
+    productSearchLastQuery: "",
     productAddingKey: "",
     labelProductDrawerOpen: false,
     labelProductSaving: false,
@@ -2808,10 +2814,13 @@ function openPdvSaleCustomerRegistration() {
 }
 
 function buildPdvSaleCustomerSessionPayload(customer = {}) {
+  const operationalContactId = normalizeText(customer.contact_id || customer.legacy_contact_id || customer.id || "");
   return {
     id: customer.id || customer.master_customer_id || "",
+    contact_id: operationalContactId,
     master_customer_id: customer.id || customer.master_customer_id || "",
-    crm_contact_id: customer.crm_contact_id || customer.id || "",
+    crm_contact_id: customer.crm_contact_id || "",
+    unified_id: customer.unified_id || "",
     name: customer.name || "",
     phone: customer.mobile || customer.phone || "",
     document: customer.document || "",
@@ -2837,6 +2846,40 @@ function buildPdvSaleCustomerSessionPayload(customer = {}) {
     ultima_compra: customer.ultima_compra || customer.last_purchase_at || "",
     behavior: customer.behavior || {}
   };
+}
+
+function resolvePdvSaleCustomerOperationalId(customer = null) {
+  if (!customer) return "";
+  const candidates = [
+    customer.contact_id,
+    customer.legacy_contact_id,
+    customer.customer_id,
+    customer.id,
+    customer.master_customer_id
+  ];
+  for (const candidate of candidates) {
+    const value = normalizeText(candidate || "");
+    if (/^\d+$/.test(value) && Number(value) > 0) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function resolvePdvSaleCustomerUnifiedId(customer = null) {
+  if (!customer) return "";
+  return normalizeText(customer.unified_id || customer.master_customer_id || customer.id || "");
+}
+
+function isPdvSaleCustomerReadOnlyUnified(customer = null) {
+  if (!customer) return false;
+  if (resolvePdvSaleCustomerOperationalId(customer)) return false;
+  const sourceTables = toArray(customer.source_tables).map((item) => normalizeText(item || "").toLowerCase());
+  return Boolean(
+    normalizeText(customer.unified_id || "")
+    || sourceTables.includes("crm_contacts")
+    || (normalizeText(customer.crm_contact_id || "") && !normalizeText(customer.legacy_contact_id || ""))
+  );
 }
 
 function calculateCustomerProfileCompleteness(customer = {}) {
@@ -2947,6 +2990,8 @@ function buildPdvSaleCustomerProfileDrawer() {
   const sizeProfile = customer.size_profile || {};
   const preferences = customer.preferences_json || {};
   const isOpen = Boolean(state.pdvSale.customerProfileDrawerOpen);
+  const operationalId = resolvePdvSaleCustomerOperationalId(customer);
+  const needsActivation = !operationalId && isPdvSaleCustomerReadOnlyUnified(customer);
   return `
     <div class="pdv-drawer-overlay${isOpen ? "" : " hidden"}" data-pdv-sale-profile-close="overlay">
       <aside class="pdv-drawer pdv-crud-drawer${isOpen ? " open" : ""}" role="dialog" aria-modal="true" aria-label="Perfil comercial do cliente">
@@ -2959,6 +3004,13 @@ function buildPdvSaleCustomerProfileDrawer() {
         </div>
         <div class="pdv-drawer-body">
           <form class="pdv-crud-form" data-pdv-sale-profile-form="true">
+            ${needsActivation ? `
+              <div class="pdv-customer-profile-activation">
+                <strong>Ative este cliente para atendimento</strong>
+                <span>Este cliente vem da visao consolidada read-only. Para salvar tamanhos e preferencias, crie ou vincule um perfil operacional.</span>
+                <button class="secondary-button small" type="button" data-pdv-sale-profile-activate="true"${state.pdvSale.customerProfileActivating ? " disabled" : ""}>${state.pdvSale.customerProfileActivating ? "Ativando..." : "Ativar para atendimento"}</button>
+              </div>
+            ` : ""}
             <section class="panel pdv-crud-inline-panel">
               <div class="panel-header"><h3>O que o cliente veste</h3></div>
               <div class="form-grid pdv-crud-grid">
@@ -2978,7 +3030,7 @@ function buildPdvSaleCustomerProfileDrawer() {
             </section>
             <div class="pdv-drawer-actions">
               <button class="ghost-button" type="button" data-pdv-sale-profile-close="button"${state.pdvSale.customerProfileSaving ? " disabled" : ""}>Cancelar</button>
-              <button class="primary-button" type="submit"${state.pdvSale.customerProfileSaving ? " disabled" : ""}>${state.pdvSale.customerProfileSaving ? "Salvando..." : "Salvar perfil"}</button>
+              <button class="primary-button" type="submit"${state.pdvSale.customerProfileSaving || needsActivation ? " disabled" : ""}>${state.pdvSale.customerProfileSaving ? "Salvando..." : "Salvar perfil"}</button>
             </div>
           </form>
         </div>
@@ -2989,8 +3041,15 @@ function buildPdvSaleCustomerProfileDrawer() {
 
 async function savePdvSaleCustomerCommercialProfile(formElement) {
   const customer = state.pdvSale.session?.customer || state.pdvSale.postSaleProfileCustomer || null;
-  const customerId = normalizeText(customer?.master_customer_id || customer?.id || "");
-  if (!formElement || !customerId || state.pdvSale.customerProfileSaving) return;
+  const customerId = resolvePdvSaleCustomerOperationalId(customer);
+  if (!formElement || state.pdvSale.customerProfileSaving) return;
+  if (!customerId) {
+    state.pdvSale.customerProfileError = isPdvSaleCustomerReadOnlyUnified(customer)
+      ? "Este cliente precisa ser ativado para atendimento antes de salvar perfil."
+      : "Nao foi possivel identificar o cliente operacional para salvar o perfil.";
+    renderPdvSaleSurface();
+    return;
+  }
   const formData = new FormData(formElement);
   const payload = {
     tamanho_camiseta: normalizeText(formData.get("tamanho_camiseta") || ""),
@@ -3032,11 +3091,59 @@ async function savePdvSaleCustomerCommercialProfile(formElement) {
     }
     closePdvSaleCustomerProfileDrawer();
   } catch (error) {
-    state.pdvSale.customerProfileError = error.message || "Falha ao salvar o perfil do cliente.";
+    console.warn("Falha ao salvar perfil comercial do cliente", {
+      status: error?.status || error?.statusCode || "",
+      message: error?.message || "erro desconhecido"
+    });
+    state.pdvSale.customerProfileError = error.message || "Nao foi possivel salvar o perfil. Verifique se o cliente esta ativo na base operacional.";
     renderPdvSaleSurface();
     throw error;
   } finally {
     state.pdvSale.customerProfileSaving = false;
+    renderPdvSaleSurface();
+  }
+}
+
+async function activatePdvSaleCustomerForProfile() {
+  const customer = state.pdvSale.session?.customer || state.pdvSale.postSaleProfileCustomer || null;
+  const unifiedId = resolvePdvSaleCustomerUnifiedId(customer);
+  if (!customer || !unifiedId || state.pdvSale.customerProfileActivating || state.pdvSale.customerProfileSaving) {
+    state.pdvSale.customerProfileError = "Nao foi possivel identificar o cliente consolidado para ativacao.";
+    renderPdvSaleSurface();
+    return null;
+  }
+  state.pdvSale.customerProfileActivating = true;
+  state.pdvSale.customerProfileError = "";
+  renderPdvSaleSurface();
+  try {
+    const response = await api(`/api/customers/unified/${encodeURIComponent(unifiedId)}/activate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ store_id: getCurrentPdvStoreId() })
+    });
+    const updatedCustomer = response.customer || null;
+    if (updatedCustomer && state.pdvSale.sessionId) {
+      await api(`/api/pdv/operational/session/${encodeURIComponent(state.pdvSale.sessionId)}/customer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPdvSaleCustomerSessionPayload(updatedCustomer))
+      });
+      await refreshPdvSaleSession();
+    } else if (updatedCustomer) {
+      state.pdvSale.postSaleProfileCustomer = buildPdvSaleCustomerSessionPayload(updatedCustomer);
+    }
+    showFeedback(response.activated_existing ? "Cliente operacional vinculado ao atendimento." : "Cliente ativado para atendimento.");
+    return updatedCustomer;
+  } catch (error) {
+    console.warn("Falha ao ativar cliente consolidado para atendimento", {
+      status: error?.status || error?.statusCode || "",
+      message: error?.message || "erro desconhecido"
+    });
+    state.pdvSale.customerProfileError = error.message || "Nao foi possivel ativar este cliente para atendimento.";
+    renderPdvSaleSurface();
+    throw error;
+  } finally {
+    state.pdvSale.customerProfileActivating = false;
     renderPdvSaleSurface();
   }
 }
@@ -3741,19 +3848,41 @@ function buildPdvSaleResolutionModal() {
 function buildPdvSaleProductResults() {
   const rows = toArray(state.pdvSale.productResults);
   const pagination = state.pdvSale.productPagination || {};
+  const searchedQuery = normalizeText(state.pdvSale.productQuery || "");
   if (!rows.length) {
-    const searchedQuery = normalizeText(state.pdvSale.productQuery || "");
-    if (searchedQuery.length >= 2 && !state.pdvSale.productSearching) {
+    if (state.pdvSale.productSearching && !state.pdvSale.productSearchAppending) {
       return `
-        <div class="pdv-sale-empty-state compact pdv-sale-label-not-found">
-          <strong>Produto nÃ£o encontrado</strong>
-          <span>Deseja cadastrar pela etiqueta AEROSTORE usando o cÃ³digo ${escapeHtml(searchedQuery)}?</span>
+        <div class="pdv-product-search-loading" role="status" aria-live="polite">
+          <span class="pdv-product-search-spinner" aria-hidden="true"></span>
+          <div>
+            <strong>Buscando produtos...</strong>
+            <span>Procurando no catálogo e estoque da loja ativa.</span>
+          </div>
+        </div>
+        <div class="pdv-product-search-skeleton" aria-hidden="true">
+          <span></span><div><b></b><i></i><em></em></div><small></small>
+        </div>
+      `;
+    }
+    if (state.pdvSale.productSearchError) {
+      return `
+        <div class="pdv-product-empty-state is-error">
+          <strong>Não foi possível buscar produtos agora</strong>
+          <span>${escapeHtml(state.pdvSale.productSearchError || "Tente novamente em alguns instantes.")}</span>
+        </div>
+      `;
+    }
+    if (searchedQuery.length >= 2 && state.pdvSale.productSearchHasRun) {
+      return `
+        <div class="pdv-product-empty-state pdv-sale-label-not-found">
+          <strong>Produto não encontrado</strong>
+          <span>Verifique código, nome ou marca, ou use o cadastro por etiqueta para criar na base oficial.</span>
           ${canCreatePdvLabelProductFrontend() ? `<button class="primary-button" type="button" data-pdv-sale-label-product-open="true">Cadastrar por etiqueta</button>` : `<small>Seu perfil nÃ£o pode cadastrar produto ou estoque.</small>`}
         </div>
       `;
     }
     return `
-      <div class="pdv-sale-empty-state compact">
+      <div class="pdv-product-empty-state">
         <strong>Nenhum produto carregado</strong>
         <span>Pesquise por nome, SKU, código ou etiqueta para adicionar ao carrinho.</span>
       </div>
@@ -3812,9 +3941,15 @@ function buildPdvSaleProductResults() {
     ${pagination.hasMore ? `
       <div class="pdv-sale-product-load-more">
         <button class="secondary-button" type="button" data-pdv-sale-product-load-more="true"${state.pdvSale.productSearching ? " disabled" : ""}>
-          ${state.pdvSale.productSearching ? "Carregando..." : "Carregar mais"}
+          ${state.pdvSale.productSearchAppending ? "Carregando mais produtos..." : "Carregar mais"}
         </button>
-        <small>Mostrando ${escapeHtml(String(rows.length))} de ${escapeHtml(String(pagination.total || rows.length))} resultado(s).</small>
+        <small>${state.pdvSale.productSearchAppending ? "Mantendo os produtos carregados enquanto buscamos a próxima página." : `Mostrando ${escapeHtml(String(rows.length))} de ${escapeHtml(String(pagination.total || rows.length))} resultado(s).`}</small>
+      </div>
+    ` : ""}
+    ${state.pdvSale.productSearchError ? `
+      <div class="pdv-product-empty-state is-error is-inline">
+        <strong>Não foi possível carregar mais produtos</strong>
+        <span>${escapeHtml(state.pdvSale.productSearchError || "Tente novamente.")}</span>
       </div>
     ` : ""}
   `;
@@ -5238,6 +5373,7 @@ async function searchPdvSaleCustomers() {
       customer_lookup: String(item.id || item.mobile_normalized || item.phone || item.name || ""),
       master_customer_id: String(item.id || ""),
       id: Number(item.id || 0),
+      contact_id: String(item.id || ""),
       name: item.name || "Cliente",
       first_name: item.first_name || "",
       phone: item.mobile || item.phone || item.mobile_normalized || "",
@@ -5260,7 +5396,7 @@ async function searchPdvSaleCustomers() {
       cashback_operacional: toNumber(item.cashback_operacional || item.cashback_available || item.cashback || 0),
       saldo_cashback: toNumber(item.saldo_cashback || item.cashback_available || item.cashback || item.cashback_operacional || 0),
       cashback_legado: toNumber(item.cashback_legado || 0),
-      crm_contact_id: String(item.id || ""),
+      crm_contact_id: normalizeText(item.crm_contact_id || ""),
       legacy_contact_id: "",
       behavior: item.behavior || {}
     }));
@@ -5321,28 +5457,54 @@ async function searchPdvSaleProducts({ append = false } = {}) {
     query_length: normalizeText(state.pdvSale.productQuery).length,
     store_id: getCurrentPdvStoreId()
   });
-  if (state.pdvSale.productSearching) {
+  if (append && state.pdvSale.productSearching) {
     endAeroStorePerfMeasure(perfToken, { skipped: "already_searching" });
     return;
   }
   const query = normalizeText(state.pdvSale.productQuery);
   if (query.length < 2) {
+    state.pdvSale.productSearchRequestId = Number(state.pdvSale.productSearchRequestId || 0) + 1;
     state.pdvSale.productResults = [];
     state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
+    state.pdvSale.productSearching = false;
+    state.pdvSale.productSearchAppending = false;
+    state.pdvSale.productSearchError = "";
+    state.pdvSale.productSearchHasRun = false;
+    state.pdvSale.productSearchLastQuery = "";
     renderPdvSaleSurface();
     endAeroStorePerfMeasure(perfToken, { skipped: "query_too_short" });
     return;
   }
+  const requestId = Number(state.pdvSale.productSearchRequestId || 0) + 1;
+  const isAppending = Boolean(append && toArray(state.pdvSale.productResults).length);
+  state.pdvSale.productSearchRequestId = requestId;
   state.pdvSale.productSearching = true;
+  state.pdvSale.productSearchAppending = isAppending;
+  state.pdvSale.productSearchError = "";
+  state.pdvSale.productSearchHasRun = true;
+  state.pdvSale.productSearchLastQuery = query;
+  if (!isAppending) {
+    state.pdvSale.productResults = [];
+    state.pdvSale.productPagination = {
+      ...(state.pdvSale.productPagination || {}),
+      page: 1,
+      total: 0,
+      totalPages: 1,
+      hasMore: false
+    };
+  }
   renderPdvSaleSurface();
   try {
     const storeId = getCurrentPdvStoreId();
     const currentPagination = state.pdvSale.productPagination || {};
     const limit = Math.max(1, Math.min(100, Number(currentPagination.limit || 24)));
-    const page = append ? Math.max(1, Number(currentPagination.page || 1) + 1) : 1;
+    const page = isAppending ? Math.max(1, Number(currentPagination.page || 1) + 1) : 1;
     const response = await api(`/api/pdv/operational/search/products?q=${encodeURIComponent(query)}&store=${encodeURIComponent(storeId)}&page=${encodeURIComponent(String(page))}&limit=${encodeURIComponent(String(limit))}`);
+    if (requestId !== state.pdvSale.productSearchRequestId || query !== normalizeText(state.pdvSale.productQuery || "")) {
+      return;
+    }
     const nextItems = toArray(response.items || response);
-    if (append) {
+    if (isAppending) {
       const merged = new Map();
       [...toArray(state.pdvSale.productResults), ...nextItems].forEach((item, index) => {
         const key = [
@@ -5373,10 +5535,24 @@ async function searchPdvSaleProducts({ append = false } = {}) {
       totalPages,
       hasMore: pagination.has_more !== undefined ? Boolean(pagination.has_more) : currentPage < totalPages
     };
+    state.pdvSale.productSearchError = "";
+  } catch (error) {
+    if (requestId === state.pdvSale.productSearchRequestId) {
+      state.pdvSale.productSearchError = "Tente novamente.";
+      if (!isAppending) {
+        state.pdvSale.productResults = [];
+        state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
+      }
+    }
   } finally {
-    state.pdvSale.productSearching = false;
-    renderPdvSaleSurface();
-    endAeroStorePerfMeasure(perfToken, { results: toArray(state.pdvSale.productResults).length });
+    if (requestId === state.pdvSale.productSearchRequestId) {
+      state.pdvSale.productSearching = false;
+      state.pdvSale.productSearchAppending = false;
+      renderPdvSaleSurface();
+      endAeroStorePerfMeasure(perfToken, { results: toArray(state.pdvSale.productResults).length });
+    } else {
+      endAeroStorePerfMeasure(perfToken, { skipped: "stale_product_search" });
+    }
   }
 }
 
@@ -17961,7 +18137,6 @@ function getSidebarMenuGroups() {
       {
         title: "Operação",
         items: [
-          { label: "Painel", section: "dashboard" },
           { label: "PDV AEROSTORE", route: "/pdv" },
           { label: "Venda", route: "/pdv/venda" },
           { label: "Pedidos de venda", route: "/pdv/vendas" },
@@ -18188,6 +18363,11 @@ function resetPdvStoreScopedStateForActiveStoreChange() {
   state.pdvSale.productResults = [];
   state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
   state.pdvSale.productSearching = false;
+  state.pdvSale.productSearchAppending = false;
+  state.pdvSale.productSearchError = "";
+  state.pdvSale.productSearchHasRun = false;
+  state.pdvSale.productSearchRequestId = Number(state.pdvSale.productSearchRequestId || 0) + 1;
+  state.pdvSale.productSearchLastQuery = "";
   state.pdvSale.productAddingKey = "";
   state.pdvCash.currentRegister = null;
   state.pdvCash.registers = [];
@@ -24227,6 +24407,11 @@ async function logoutUser() {
     productQuery: "",
     productResults: [],
     productSearching: false,
+    productSearchAppending: false,
+    productSearchError: "",
+    productSearchHasRun: false,
+    productSearchRequestId: 0,
+    productSearchLastQuery: "",
     productAddingKey: "",
     labelProductDrawerOpen: false,
     labelProductSaving: false,
@@ -24280,6 +24465,7 @@ async function logoutUser() {
     postSaleProfileCustomer: null,
     customerProfileDrawerOpen: false,
     customerProfileSaving: false,
+    customerProfileActivating: false,
     customerProfileError: "",
     customerProfileDismissedSessionId: "",
     customerProfileFinalizeBypassedSessionId: "",
@@ -26121,6 +26307,12 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const activatePdvSaleProfileButton = event.target.closest("[data-pdv-sale-profile-activate]");
+  if (activatePdvSaleProfileButton) {
+    activatePdvSaleCustomerForProfile().catch((error) => handleUiError("Erro ao ativar cliente para atendimento", error));
+    return;
+  }
+
   const closePdvSaleProfileButton = event.target.closest('[data-pdv-sale-profile-close="button"]');
   const closePdvSaleProfileOverlay = event.target.matches?.('[data-pdv-sale-profile-close="overlay"]') ? event.target : null;
   if (closePdvSaleProfileButton || closePdvSaleProfileOverlay) {
@@ -26196,6 +26388,11 @@ function handleDocumentClick(event) {
     state.pdvSale.productResults = [];
     state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
     state.pdvSale.productSearching = false;
+    state.pdvSale.productSearchAppending = false;
+    state.pdvSale.productSearchError = "";
+    state.pdvSale.productSearchHasRun = false;
+    state.pdvSale.productSearchRequestId = Number(state.pdvSale.productSearchRequestId || 0) + 1;
+    state.pdvSale.productSearchLastQuery = "";
     state.pdvSale.productAddingKey = "";
     renderPdvSaleSurface();
     return;

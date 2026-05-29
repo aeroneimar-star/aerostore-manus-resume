@@ -926,10 +926,11 @@ function searchProducts(query = "", { storeId = "" } = {}) {
     // fallback silencioso para a base importada se o estoque operacional ainda nÃ£o estiver montado
   }
   const normalizedQuery = normalizeLookup(query);
+  const searchTokens = tokenizeProductSearchQuery(query);
   const products = loadProductsDataset();
   const filtered = !normalizedQuery
     ? products
-    : products.filter((product) => buildProductSearchText(product).includes(normalizedQuery));
+    : products.filter((product) => productMatchesTokenSearch(product, query, searchTokens));
   return filtered.slice(0, 40).map((product) => ({
     id: normalizeText(product.sku || product.codigo || product.nome || buildId("PRD")),
     product_id: normalizeText(product.product_id || ""),
@@ -1155,6 +1156,108 @@ function buildUnifiedProductSearchText(product = {}) {
   ].join(" "));
 }
 
+const PRODUCT_SIZE_TOKENS = new Set([
+  "pp", "p", "m", "g", "gg", "xg", "xgg", "eg", "egg", "un", "u",
+  "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46", "47", "48"
+]);
+
+function tokenizeProductSearchQuery(query = "") {
+  const normalized = normalizeLookup(query || "");
+  if (!normalized) return [];
+  return normalized
+    .split(/\s+/)
+    .map((token) => normalizeLookup(token || ""))
+    .filter(Boolean)
+    .filter((token, index, list) => {
+      if (token.length > 1) return true;
+      return PRODUCT_SIZE_TOKENS.has(token) && list.length > 1;
+    })
+    .filter((token, index, list) => list.indexOf(token) === index);
+}
+
+function splitSearchFieldTokens(value = "") {
+  return normalizeLookup(value || "").split(/\s+/).filter(Boolean);
+}
+
+function fieldHasExactSearchToken(value = "", token = "") {
+  const normalizedToken = normalizeLookup(token || "");
+  if (!normalizedToken) return false;
+  return splitSearchFieldTokens(value).includes(normalizedToken);
+}
+
+function productHasSearchToken(product = {}, token = "") {
+  const normalizedToken = normalizeLookup(token || "");
+  if (!normalizedToken) return true;
+  if (PRODUCT_SIZE_TOKENS.has(normalizedToken)) {
+    return [
+      product.tamanho,
+      product.size,
+      product.grade,
+      product.sizes,
+      product.nome,
+      product.name,
+      product.categoria,
+      product.category,
+      product.tipo,
+      product.cor,
+      product.color
+    ].some((value) => fieldHasExactSearchToken(value, normalizedToken));
+  }
+  if (/^\d{1,3}$/.test(normalizedToken)) {
+    return [
+      product.tamanho,
+      product.size,
+      product.grade,
+      product.sizes,
+      product.nome,
+      product.name,
+      product.sku,
+      product.codigo,
+      product.codigo_tiny,
+      product.codigo_etiqueta,
+      product.codigo_interno
+    ].some((value) => fieldHasExactSearchToken(value, normalizedToken) || normalizeLookup(value || "").includes(normalizedToken));
+  }
+  return buildUnifiedProductSearchText(product).includes(normalizedToken);
+}
+
+function productMatchesTokenSearch(product = {}, query = "", tokens = null) {
+  const normalizedQuery = normalizeLookup(query || "");
+  if (!normalizedQuery) return true;
+  const searchTokens = Array.isArray(tokens) ? tokens : tokenizeProductSearchQuery(query);
+  if (!searchTokens.length) return buildUnifiedProductSearchText(product).includes(normalizedQuery);
+  return searchTokens.every((token) => productHasSearchToken(product, token));
+}
+
+function scoreProductTokenSearchMatch(product = {}, query = "", tokens = null) {
+  const searchTokens = Array.isArray(tokens) ? tokens : tokenizeProductSearchQuery(query);
+  if (!searchTokens.length) return 0;
+  const strongText = normalizeLookup([
+    product.marca,
+    product.brand,
+    product.categoria,
+    product.category,
+    product.tipo,
+    product.tamanho,
+    product.size,
+    product.grade,
+    product.sizes,
+    product.cor,
+    product.color
+  ].join(" "));
+  const nameText = normalizeLookup([product.nome, product.name, product.descricao, product.short_description].join(" "));
+  const allText = buildUnifiedProductSearchText(product);
+  let score = 0;
+  searchTokens.forEach((token) => {
+    if (strongText.includes(token) || fieldHasExactSearchToken(strongText, token)) score += 90;
+    if (nameText.includes(token) || fieldHasExactSearchToken(nameText, token)) score += 55;
+    if (allText.includes(token)) score += 20;
+  });
+  if (searchTokens.every((token) => strongText.includes(token) || fieldHasExactSearchToken(strongText, token))) score += 220;
+  if (searchTokens.every((token) => nameText.includes(token) || fieldHasExactSearchToken(nameText, token))) score += 140;
+  return score;
+}
+
 function buildProductSearchIdentifiers(product = {}) {
   return {
     textCodes: [
@@ -1191,6 +1294,7 @@ function scoreProductSearchMatch(product = {}, query = "") {
   if (textQuery && identifiers.textCodes.some((value) => value.includes(textQuery))) score = Math.max(score, 920);
   if (normalizedTextQuery && identifiers.name === normalizedTextQuery) score = Math.max(score, 820);
   if (normalizedTextQuery && identifiers.text.includes(normalizedTextQuery)) score = Math.max(score, 420);
+  score = Math.max(score, scoreProductTokenSearchMatch(product, query));
   return score;
 }
 
@@ -1561,6 +1665,7 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
     };
   }
   const normalizedQuery = normalizeLookup(query);
+  const searchTokens = tokenizeProductSearchQuery(query);
   const strictCodeSearch = isStrictProductCodeSearch(query);
   const resultsBySource = {
     inventory: [],
@@ -1592,7 +1697,7 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
     .filter((product) => {
       if (!normalizedQuery) return true;
       if (strictCodeSearch) return productMatchesExactIdentifier(product, query);
-      return buildUnifiedProductSearchText(product).includes(normalizedQuery);
+      return productMatchesTokenSearch(product, query, searchTokens);
     })
     .slice((safePage - 1) * safeLimit, safePage * safeLimit)
     .map((product) => ({
@@ -1629,13 +1734,10 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
 
   if (normalizedQuery) {
     try {
-      const lookup = `%${normalizedQuery}%`;
+      const effectiveTokens = searchTokens.length ? searchTokens : [normalizedQuery];
+      const codeLookup = `%${normalizeCodeLookup(query)}%`;
       const digitLookup = `%${normalizeDigits(query)}%`;
-      const crmCatalogRows = await all(
-        `SELECT id, name, commercial_name, sku, codigo, gtin_ean, marca, category, color, sizes, price, store, short_description, estoque_total, main_media_id
-         FROM ai_products
-         WHERE COALESCE(deleted_at, '') = ''
-           AND (
+      const tokenClauses = effectiveTokens.map(() => `(
              lower(COALESCE(name, '')) LIKE ?
              OR lower(COALESCE(commercial_name, '')) LIKE ?
              OR lower(COALESCE(marca, '')) LIKE ?
@@ -1645,15 +1747,29 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
              OR COALESCE(sku, '') LIKE ?
              OR COALESCE(codigo, '') LIKE ?
              OR COALESCE(gtin_ean, '') LIKE ?
-           )
+           )`).join(" AND ");
+      const tokenParams = effectiveTokens.flatMap((token) => {
+        const tokenLookup = `%${token}%`;
+        return [tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup];
+      });
+      const crmCatalogRows = await all(
+        `SELECT id, name, commercial_name, sku, codigo, gtin_ean, marca, category, color, sizes, price, store, short_description, estoque_total, main_media_id
+         FROM ai_products
+         WHERE COALESCE(deleted_at, '') = ''
+           AND ${strictCodeSearch
+             ? "(lower(COALESCE(sku, '')) LIKE ? OR lower(COALESCE(codigo, '')) LIKE ? OR COALESCE(gtin_ean, '') LIKE ?)"
+             : tokenClauses}
          ORDER BY updated_at DESC, id DESC
          LIMIT ? OFFSET ?`,
-        [lookup, lookup, lookup, lookup, lookup, lookup, digitLookup, digitLookup, digitLookup, safeLimit, (safePage - 1) * safeLimit]
+        [
+          ...(strictCodeSearch ? [codeLookup, codeLookup, digitLookup] : tokenParams),
+          ...(strictCodeSearch ? [safeLimit * 3, 0] : [safeLimit, (safePage - 1) * safeLimit])
+        ]
       );
       resultsBySource.crm_catalog = crmCatalogRows
         .filter((product) => strictCodeSearch
           ? productMatchesExactIdentifier(product, query)
-          : buildUnifiedProductSearchText(product).includes(normalizedQuery))
+          : productMatchesTokenSearch(product, query, searchTokens))
         .map((product) => ({
           id: normalizeText(product.sku || product.codigo || `AI_${product.id}`),
           product_id: normalizeText(`AI_${product.id}`),
@@ -1710,7 +1826,9 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
 
   const unified = Array.from(mergedMap.values())
     .map((item) => enrichProductOperationalAvailability(item, storeId))
-    .filter((item) => !strictCodeSearch || productMatchesExactIdentifier(item, query))
+    .filter((item) => strictCodeSearch
+      ? productMatchesExactIdentifier(item, query)
+      : productMatchesTokenSearch(item, query, searchTokens))
     .sort((left, right) => {
       const exactDelta = Number(productMatchesExactIdentifier(right, query)) - Number(productMatchesExactIdentifier(left, query));
       if (exactDelta !== 0) {
