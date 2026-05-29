@@ -102,6 +102,7 @@ function formatStoreLabel(value = "") {
 function getStoreDisplayText(value = "") {
   const key = normalizeStoreKey(value);
   const name = formatStoreLabel(value || key);
+  const asciiName = normalizeStoreAscii(name);
   if (key === "loja_geral") {
     return { name: "Estoque geral", in: "no Estoque geral", from: "do Estoque geral", to: "para o Estoque geral" };
   }
@@ -113,6 +114,9 @@ function getStoreDisplayText(value = "") {
   }
   if (key === "vila") {
     return { name, in: `na ${name}`, from: `da ${name}`, to: `para a ${name}` };
+  }
+  if (asciiName.startsWith("estoque") || asciiName === "sul" || asciiName.includes("botanico")) {
+    return { name, in: `no ${name || "local atual"}`, from: `do ${name || "local"}`, to: `para o ${name || "local"}` };
   }
   return { name, in: `na ${name || "loja atual"}`, from: `da ${name || "loja"}`, to: `para a ${name || "loja"}` };
 }

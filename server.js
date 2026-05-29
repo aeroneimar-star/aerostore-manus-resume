@@ -14215,6 +14215,138 @@ function buildManualProductSearchClauses(query = "") {
   };
 }
 
+const MANUAL_PRODUCT_SIZE_SEARCH_TOKENS = new Set([
+  "pp", "p", "m", "g", "gg", "xg", "xgg", "eg", "egg", "un", "u",
+  "34", "35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46", "47", "48"
+]);
+
+function normalizeManualProductCodeLookup(value = "") {
+  return normalizeText(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "")
+    .toLowerCase();
+}
+
+function tokenizeManualProductSearchQuery(query = "") {
+  return normalizeLookup(query || "")
+    .split(/\s+/)
+    .map((token) => normalizeLookup(token || ""))
+    .filter(Boolean)
+    .filter((token, index, list) => token.length > 1 || (MANUAL_PRODUCT_SIZE_SEARCH_TOKENS.has(token) && list.length > 1))
+    .filter((token, index, list) => list.indexOf(token) === index);
+}
+
+function buildManualProductSearchText(product = {}) {
+  return normalizeLookup([
+    product.name,
+    product.commercial_name,
+    product.short_description,
+    product.sales_argument,
+    product.notes,
+    product.brand,
+    product.marca,
+    product.category,
+    product.color,
+    product.sizesText,
+    Array.isArray(product.sizes) ? product.sizes.join(" ") : product.sizes,
+    product.tagsText,
+    Array.isArray(product.tags) ? product.tags.join(" ") : product.tags,
+    product.sku,
+    product.codigo,
+    product.tiny_id,
+    product.codigo_interno,
+    product.codigo_etiqueta,
+    product.gtin_ean,
+    product.ean,
+    product.codigo_barras
+  ].join(" "));
+}
+
+function manualProductFieldHasExactToken(value = "", token = "") {
+  const normalizedToken = normalizeLookup(token || "");
+  if (!normalizedToken) return false;
+  return normalizeLookup(value || "").split(/\s+/).filter(Boolean).includes(normalizedToken);
+}
+
+function manualProductHasSearchToken(product = {}, token = "") {
+  const normalizedToken = normalizeLookup(token || "");
+  if (!normalizedToken) return true;
+  if (MANUAL_PRODUCT_SIZE_SEARCH_TOKENS.has(normalizedToken)) {
+    return [
+      product.sizesText,
+      Array.isArray(product.sizes) ? product.sizes.join(" ") : product.sizes,
+      product.name,
+      product.commercial_name,
+      product.category,
+      product.color
+    ].some((value) => manualProductFieldHasExactToken(value, normalizedToken));
+  }
+  return buildManualProductSearchText(product).includes(normalizedToken);
+}
+
+function manualProductMatchesExactIdentifier(product = {}, query = "") {
+  const textQuery = normalizeManualProductCodeLookup(query || "");
+  const digitsQuery = sanitizePhone(query || "");
+  const textCodes = [
+    product.sku,
+    product.codigo,
+    product.tiny_id,
+    product.codigo_interno,
+    product.codigo_etiqueta,
+    product.product_id,
+    product.inventory_id,
+    product.id
+  ].map((value) => normalizeManualProductCodeLookup(value || "")).filter(Boolean);
+  const digitCodes = [
+    product.gtin_ean,
+    product.ean,
+    product.codigo_barras,
+    product.barcode
+  ].map((value) => sanitizePhone(value || "")).filter(Boolean);
+  return Boolean((textQuery && textCodes.includes(textQuery)) || (digitsQuery && digitCodes.includes(digitsQuery)));
+}
+
+function scoreManualProductSearchMatch(product = {}, query = "") {
+  const tokens = tokenizeManualProductSearchQuery(query);
+  const textQuery = normalizeManualProductCodeLookup(query || "");
+  const digitsQuery = sanitizePhone(query || "");
+  const textCodes = [
+    product.sku,
+    product.codigo,
+    product.tiny_id,
+    product.codigo_interno,
+    product.codigo_etiqueta,
+    product.product_id,
+    product.inventory_id,
+    product.id
+  ].map((value) => normalizeManualProductCodeLookup(value || "")).filter(Boolean);
+  const digitCodes = [product.gtin_ean, product.ean, product.codigo_barras, product.barcode]
+    .map((value) => sanitizePhone(value || ""))
+    .filter(Boolean);
+  const strongText = normalizeLookup([
+    product.brand,
+    product.marca,
+    product.category,
+    product.color,
+    product.sizesText,
+    Array.isArray(product.sizes) ? product.sizes.join(" ") : product.sizes
+  ].join(" "));
+  const nameText = normalizeLookup([product.name, product.commercial_name, product.short_description].join(" "));
+  const allText = buildManualProductSearchText(product);
+  let score = 0;
+  if (digitsQuery && digitCodes.includes(digitsQuery)) score = Math.max(score, 1300);
+  if (textQuery && textCodes.includes(textQuery)) score = Math.max(score, 1200);
+  if (textQuery && textCodes.some((value) => value.startsWith(textQuery))) score = Math.max(score, 980);
+  tokens.forEach((token) => {
+    if (strongText.includes(token) || manualProductFieldHasExactToken(strongText, token)) score += 90;
+    if (nameText.includes(token) || manualProductFieldHasExactToken(nameText, token)) score += 55;
+    if (allText.includes(token)) score += 20;
+  });
+  if (tokens.length && tokens.every((token) => manualProductHasSearchToken(product, token))) score += 140;
+  return score;
+}
+
 function mapInventoryProductToManualProduct(item = {}) {
   const identifier = normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "");
   const gtin = normalizeText(item.gtin_ean || item.gtin || item.ean || item.codigo_barras || item.barcode || "");
@@ -14429,6 +14561,15 @@ async function listManualProducts(filters = {}) {
       });
       items = Array.from(merged.values()).slice(0, limit);
     }
+    items = items.sort((left, right) => {
+      const exactDelta = Number(manualProductMatchesExactIdentifier(right, query)) - Number(manualProductMatchesExactIdentifier(left, query));
+      if (exactDelta !== 0) return exactDelta;
+      const scoreDelta = scoreManualProductSearchMatch(right, query) - scoreManualProductSearchMatch(left, query);
+      if (scoreDelta !== 0) return scoreDelta;
+      const stockDelta = Number(right.stock || right.estoque_total || right.estoque || 0) - Number(left.stock || left.estoque_total || left.estoque || 0);
+      if (stockDelta !== 0) return stockDelta;
+      return String(left.name || left.commercial_name || "").localeCompare(String(right.name || right.commercial_name || ""), "pt-BR");
+    });
   }
   const total = Number(totalRow?.total || 0);
   const operationalTotal = Number(operationalPagination?.total || 0);

@@ -167,6 +167,14 @@ function normalizeLookup(value = "") {
     .toLowerCase();
 }
 
+function normalizeCodeLookup(value = "") {
+  return normalizeText(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "")
+    .toLowerCase();
+}
+
 function normalizeDigits(value = "") {
   return String(value || "").replace(/\D/g, "");
 }
@@ -817,7 +825,7 @@ function resolveSaleItemFulfillment(item = {}, saleStoreId = DEFAULT_STORE_ID, o
       fulfillment_status: FULFILLMENT_STATUS.CONFIRMED,
       requires_logistics_review: false,
       is_adjacent_store: false,
-      message: "Item liberado por conferencia fisica na loja da venda."
+      message: "Item liberado por conferência física na loja da venda."
     };
   }
 
@@ -889,7 +897,7 @@ function resolveSaleItemFulfillment(item = {}, saleStoreId = DEFAULT_STORE_ID, o
       fulfillment_status: FULFILLMENT_STATUS.CONFIRMED,
       requires_logistics_review: false,
       is_adjacent_store: true,
-      message: `Disponivel ${getStoreDisplayText(availability.adjacent_option.store_id || availability.adjacent_option.store_name).in}.`
+      message: `Disponível ${getStoreDisplayText(availability.adjacent_option.store_id || availability.adjacent_option.store_name).in}.`
     };
   }
 
@@ -944,7 +952,7 @@ function resolveSaleItemFulfillment(item = {}, saleStoreId = DEFAULT_STORE_ID, o
       fulfillment_status: FULFILLMENT_STATUS.PENDING,
       requires_logistics_review: false,
       is_adjacent_store: false,
-      message: `Defina transferencia ou entrega direta para usar o estoque de ${selectedSameCityOption.store_name}.`
+      message: `Defina transferência ou entrega direta para usar o estoque de ${selectedSameCityOption.store_name}.`
     };
   }
 
@@ -974,8 +982,8 @@ function resolveSaleItemFulfillment(item = {}, saleStoreId = DEFAULT_STORE_ID, o
       requires_logistics_review: true,
       is_adjacent_store: false,
       message: source
-        ? `Produto disponivel em ${source.store_name}, fora do grupo local da venda. Envie para analise logistica antes de concluir.`
-        : "Produto disponivel apenas fora do grupo local da venda. Envie para analise logistica antes de concluir."
+        ? `Produto disponível em ${source.store_name}, fora do grupo local da venda. Envie para análise logística antes de concluir.`
+        : "Produto disponível apenas fora do grupo local da venda. Envie para análise logística antes de concluir."
     };
   }
 
@@ -1361,7 +1369,7 @@ function isInventoryCodeLikeQuery(query = "") {
 }
 
 function inventoryRecordMatchesExactCode(record = {}, query = "") {
-  const normalizedQuery = normalizeText(query || "").toLowerCase();
+  const normalizedQuery = normalizeCodeLookup(query || "");
   const normalizedDigitsQuery = normalizeDigits(query || "");
   const textFields = [
     record.sku,
@@ -1369,7 +1377,7 @@ function inventoryRecordMatchesExactCode(record = {}, query = "") {
     record.codigo_tiny,
     record.codigo_etiqueta,
     record.codigo_interno
-  ].map((value) => normalizeText(value || "").toLowerCase());
+  ].map((value) => normalizeCodeLookup(value || ""));
   const digitFields = [
     record.ean,
     record.codigo_barras,
@@ -1378,6 +1386,61 @@ function inventoryRecordMatchesExactCode(record = {}, query = "") {
     record.gtin_ean
   ].map((value) => normalizeDigits(value || ""));
   return textFields.includes(normalizedQuery) || (normalizedDigitsQuery && digitFields.includes(normalizedDigitsQuery));
+}
+
+function scoreInventoryTokenSearchMatch(record = {}, query = "", tokens = null) {
+  const searchTokens = Array.isArray(tokens) ? tokens : tokenizeInventorySearchQuery(query);
+  if (!searchTokens.length) return 0;
+  const strongText = normalizeLookup([
+    record.marca,
+    record.categoria,
+    record.tipo,
+    record.tamanho,
+    record.grade,
+    record.sizes,
+    record.cor
+  ].join(" "));
+  const nameText = normalizeLookup([record.nome, record.descricao].join(" "));
+  const allText = buildInventorySearchText(record);
+  let score = 0;
+  searchTokens.forEach((token) => {
+    if (strongText.includes(token) || inventoryFieldHasExactToken(strongText, token)) score += 90;
+    if (nameText.includes(token) || inventoryFieldHasExactToken(nameText, token)) score += 55;
+    if (allText.includes(token)) score += 20;
+  });
+  if (searchTokens.every((token) => strongText.includes(token) || inventoryFieldHasExactToken(strongText, token))) score += 220;
+  if (searchTokens.every((token) => nameText.includes(token) || inventoryFieldHasExactToken(nameText, token))) score += 140;
+  return score;
+}
+
+function scoreInventorySearchMatch(record = {}, query = "", tokens = null) {
+  const textQuery = normalizeCodeLookup(query || "");
+  const digitsQuery = normalizeDigits(query || "");
+  const normalizedTextQuery = normalizeLookup(query || "");
+  const textCodes = [
+    record.sku,
+    record.codigo,
+    record.codigo_tiny,
+    record.codigo_etiqueta,
+    record.codigo_interno,
+    record.product_id,
+    record.inventory_id
+  ].map((value) => normalizeCodeLookup(value || "")).filter(Boolean);
+  const digitCodes = [
+    record.ean,
+    record.codigo_barras,
+    record.barcode,
+    record.gtin,
+    record.gtin_ean
+  ].map((value) => normalizeDigits(value || "")).filter(Boolean);
+  let score = 0;
+  if (digitsQuery && digitCodes.includes(digitsQuery)) score = Math.max(score, 1300);
+  if (textQuery && textCodes.includes(textQuery)) score = Math.max(score, 1200);
+  if (textQuery && textCodes.some((value) => value.startsWith(textQuery))) score = Math.max(score, 980);
+  if (textQuery && textCodes.some((value) => value.includes(textQuery))) score = Math.max(score, 920);
+  if (normalizedTextQuery && normalizeLookup(record.nome || "") === normalizedTextQuery) score = Math.max(score, 820);
+  if (normalizedTextQuery && buildInventorySearchText(record).includes(normalizedTextQuery)) score = Math.max(score, 420);
+  return Math.max(score, scoreInventoryTokenSearchMatch(record, query, tokens));
 }
 
 function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", page = 1, limit = 300 } = {}) {
@@ -1392,7 +1455,7 @@ function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", 
   const safePage = Math.max(1, Number(page || 1));
   const safeLimit = Math.max(1, Math.min(1000, Number(limit || 300)));
   const offset = Math.max(0, (safePage - 1) * safeLimit);
-  const rows = records.filter((item) => {
+  const baseRows = records.filter((item) => {
     if (shouldScopeToStore && normalizeStoreLookup(item.store_id) !== normalizedStore) return false;
     if (normalizedStatus && normalizeText(item.status).toUpperCase() !== normalizedStatus) return false;
     if (normalizedQuery) {
@@ -1403,6 +1466,20 @@ function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", 
     if (normalizedAlert === "low" && toNumber(item.available_qty) !== 1) return false;
     if (normalizedAlert === "negative" && toNumber(item.available_qty) >= 0) return false;
     return true;
+  });
+  const rows = baseRows.sort((left, right) => {
+    if (!normalizedQuery) {
+      return normalizeText(left.nome || "").localeCompare(normalizeText(right.nome || ""), "pt-BR");
+    }
+    const exactDelta = Number(inventoryRecordMatchesExactCode(right, q)) - Number(inventoryRecordMatchesExactCode(left, q));
+    if (exactDelta !== 0) return exactDelta;
+    const scoreDelta = scoreInventorySearchMatch(right, q, searchTokens) - scoreInventorySearchMatch(left, q, searchTokens);
+    if (scoreDelta !== 0) return scoreDelta;
+    const localDelta = Number(normalizeStoreLookup(right.store_id) === normalizedStore) - Number(normalizeStoreLookup(left.store_id) === normalizedStore);
+    if (localDelta !== 0) return localDelta;
+    const qtyDelta = toNumber(right.available_qty || 0) - toNumber(left.available_qty || 0);
+    if (qtyDelta !== 0) return qtyDelta;
+    return normalizeText(left.nome || "").localeCompare(normalizeText(right.nome || ""), "pt-BR");
   }).map((item) => {
     const itemStore = normalizeStoreLookup(item.store_id || "");
     const isOtherStoreResult = Boolean(storeId && normalizedQuery && itemStore && itemStore !== normalizedStore);
@@ -1413,11 +1490,11 @@ function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", 
     if (isOtherStoreResult) {
       availabilityLabel = qty > 0
         ? `Consultar ${formatStoreLabel(item.store_id)}`
-        : `${formatStoreLabel(item.store_id)} em conferencia`;
+        : `${formatStoreLabel(item.store_id)} em conferência`;
     } else if (stockStatus.includes("divergent") || qty < 0) {
-      availabilityLabel = "Divergente/provisorio - confirmar fisicamente";
+      availabilityLabel = "Divergente/provisório - confirmar fisicamente";
     } else if (stockStatus.startsWith("provisional") || inventoryStatus === "pending_count") {
-      availabilityLabel = "Pendente de conferencia";
+      availabilityLabel = "Pendente de conferência";
     }
     return {
       ...item,

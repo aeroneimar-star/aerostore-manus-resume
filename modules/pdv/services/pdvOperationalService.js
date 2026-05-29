@@ -214,16 +214,16 @@ function getPaymentMethodPolicyLabel(method = "") {
   const labels = {
     pix: "Pix",
     dinheiro: "Dinheiro",
-    debito: "Cartao de debito",
-    credito: "Cartao de credito",
-    credito_ate_10x: "Cartao de credito",
+    debito: "Cartão de débito",
+    credito: "Cartão de crédito",
+    credito_ate_10x: "Cartão de crédito",
     link_pagamento: "Link pagamento",
-    credito_troca: "Credito de Troca",
+    credito_troca: "Crédito de Troca",
     cashback: "Cashback",
     vale_presente: "Vale presente",
     permuta: "Permuta"
   };
-  return labels[normalizeText(method || "").toLowerCase()] || normalizeText(method || "Metodo nao elegivel");
+  return labels[normalizeText(method || "").toLowerCase()] || normalizeText(method || "Método não elegível");
 }
 
 function getSessionDiscountPolicy(session = {}) {
@@ -1434,9 +1434,9 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     return {
       status: fallbackQty > 0 ? "AVAILABLE_LOCAL" : "UNAVAILABLE",
       summary: fallbackQty > 0
-        ? `Disponivel ${saleStoreText.in || "na loja atual"} - ${fallbackQty} un.`
+        ? `Disponível ${saleStoreText.in || "na loja atual"} - ${fallbackQty} un.`
         : "Sem saldo confirmado",
-      detail: fallbackQty > 0 ? "Venda liberada na loja atual." : "Produto cadastrado no catalogo global. Confirme fisicamente antes de vender.",
+      detail: fallbackQty > 0 ? "Venda liberada na loja atual." : "Produto cadastrado no catálogo global. Confirme fisicamente antes de vender.",
       button_label: fallbackQty > 0 ? "Adicionar" : "Conferir",
       can_add_directly: fallbackQty > 0,
       requires_resolution: fallbackQty <= 0,
@@ -1448,7 +1448,7 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     const qty = toNumber(availability.local_option?.available_qty || item.available_qty || item.estoque || 0);
     return {
       status: availability.status,
-      summary: `Disponivel ${saleStoreText.in || "na loja atual"} - ${qty} un.`,
+      summary: `Disponível ${saleStoreText.in || "na loja atual"} - ${qty} un.`,
       detail: "Venda normal com estoque da loja atual.",
       button_label: "Adicionar",
       can_add_directly: true,
@@ -1464,7 +1464,7 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     return {
       status: availability.status,
       summary: `Não disponível ${saleStoreText.in || "na loja atual"}`,
-      detail: `Disponivel ${adjacentText.in || `em ${adjacentLabel}`} - ${qty} un. para consulta/transferencia.`,
+      detail: `Disponível ${adjacentText.in || `em ${adjacentLabel}`} - ${qty} un. para consulta/transferência.`,
       button_label: `Consultar ${adjacentText.name || adjacentLabel}`,
       can_add_directly: true,
       requires_resolution: false,
@@ -1480,7 +1480,7 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     return {
       status: availability.status,
       summary: `Não disponível ${saleStoreText.in || "na loja atual"}`,
-      detail: `Disponivel ${originText.in || `em ${originLabel}`} - ${qty} un. para consulta/transferencia.`,
+      detail: `Disponível ${originText.in || `em ${originLabel}`} - ${qty} un. para consulta/transferência.`,
       button_label: `Consultar ${originText.name || originLabel}`,
       can_add_directly: false,
       requires_resolution: true,
@@ -1494,9 +1494,9 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     return {
       status: availability.status,
       summary: availability.status === "PROVISIONAL_DIVERGENT_LOCAL"
-        ? "Estoque em conferencia"
-        : `Pendente de conferencia ${localText.in || `na ${localLabel}`}`,
-      detail: "Estoque em inventario. Confirme fisicamente a peca antes de vender.",
+        ? "Estoque em conferência"
+        : `Pendente de conferência ${localText.in || `na ${localLabel}`}`,
+      detail: "Estoque em inventário. Confirme fisicamente a peça antes de vender.",
       button_label: "Confirmar fisicamente",
       can_add_directly: false,
       requires_resolution: true,
@@ -1513,7 +1513,7 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
       status: availability.status,
       summary: `Consultar ${originText.name || originLabel}`,
       detail: divergent
-        ? `Estoque em conferencia ${originText.in || `em ${originLabel}`} - confirmar fisicamente.`
+        ? `Estoque em conferência ${originText.in || `em ${originLabel}`} - confirmar fisicamente.`
         : `${originText.name || originLabel} sem saldo confirmado - consultar e confirmar fisicamente.`,
       button_label: `Consultar ${originText.name || originLabel}`,
       can_add_directly: false,
@@ -1528,9 +1528,9 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
     const originText = getStoreDisplayText(originOption.store_id || originLabel);
     return {
       status: availability.status,
-      summary: `Disponivel ${originText.in || `em ${originLabel}`}`,
-      detail: "Requer analise logistica antes da conclusao.",
-      button_label: "Enviar para analise",
+      summary: `Disponível ${originText.in || `em ${originLabel}`}`,
+      detail: "Requer análise logística antes da conclusão.",
+      button_label: "Enviar para análise",
       can_add_directly: false,
       requires_resolution: false,
       requires_logistics_review: true,
@@ -1540,7 +1540,7 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
   return {
     status: "NO_KNOWN_STOCK",
     summary: "Sem saldo conhecido",
-    detail: "Produto cadastrado no catalogo global - conferir fisicamente antes de vender.",
+    detail: "Produto cadastrado no catálogo global - conferir fisicamente antes de vender.",
     button_label: "Conferir",
     can_add_directly: false,
     requires_resolution: true,
@@ -1558,7 +1558,7 @@ function enrichProductOperationalAvailability(item = {}, saleStoreId = "") {
       ...item,
       // Na busca/listagem do PDV precisamos calcular a disponibilidade do produto
       // em todo o mapa multiloja. Se prendermos ao inventory_id do primeiro match,
-      // o item pode parecer indisponivel mesmo existindo saldo em outra origem valida.
+      // o item pode parecer indisponível mesmo existindo saldo em outra origem válida.
       inventory_id: "",
       selected_inventory_id: ""
     }, normalizedSaleStore);
@@ -2801,7 +2801,7 @@ function buildCartItemFulfillmentSnapshot(payload = {}, session = {}) {
       throw buildOperationalError("Nao foi possivel identificar a loja de origem para este produto.", 400);
     }
     if (!["INTERNAL_TRANSFER", "DIRECT_DELIVERY", FULFILLMENT_MODES.INTERNAL_TRANSFER, FULFILLMENT_MODES.DIRECT_ORIGIN].includes(requestedFulfillment)) {
-      throw buildOperationalError("Defina transferencia ou entrega direta antes de adicionar este produto.", 400);
+      throw buildOperationalError("Defina transferência ou entrega direta antes de adicionar este produto.", 400);
     }
     const isDirectDelivery = requestedFulfillment === "DIRECT_DELIVERY" || requestedFulfillment === FULFILLMENT_MODES.DIRECT_ORIGIN;
     return {
@@ -2827,10 +2827,10 @@ function buildCartItemFulfillmentSnapshot(payload = {}, session = {}) {
 
   if (availability.status === "LOGISTICS_REVIEW_REQUIRED") {
     if (!otherRegionSource) {
-      throw buildOperationalError("Nao foi possivel identificar a loja de origem para a analise logistica.", 400);
+      throw buildOperationalError("Não foi possível identificar a loja de origem para a análise logística.", 400);
     }
     if (!["LOGISTICS_REVIEW", FULFILLMENT_MODES.LOGISTICS_REVIEW].includes(requestedFulfillment)) {
-      throw buildOperationalError("Produto disponivel em outro estado. Envie para analise logistica antes de continuar.", 400);
+      throw buildOperationalError("Produto disponível em outro estado. Envie para análise logística antes de continuar.", 400);
     }
     return {
       sale_store_id: saleStoreId,
@@ -2853,7 +2853,7 @@ function buildCartItemFulfillmentSnapshot(payload = {}, session = {}) {
     };
   }
 
-  throw buildOperationalError("Produto indisponivel em todas as lojas.", 400);
+  throw buildOperationalError("Produto indisponível em todas as lojas.", 400);
 }
 
 function addProductToCart(sessionId, payload = {}, user = {}) {

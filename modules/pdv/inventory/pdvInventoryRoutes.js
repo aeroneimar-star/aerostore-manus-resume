@@ -110,6 +110,26 @@ router.get("/products", canViewInventory, async (req, res) => {
     if (storeScope === null) {
       return;
     }
+    const hasSearchQuery = String(req.query.q || "").trim();
+    const hasInventoryOnlyFilters = String(req.query.status || "").trim() || String(req.query.alert || "").trim();
+    if (hasSearchQuery && !hasInventoryOnlyFilters) {
+      const { searchProductsDetailed } = require("../services/pdvOperationalService");
+      const searchPayload = await searchProductsDetailed(req.query.q || "", {
+        storeId: storeScope,
+        page: req.query.page || 1,
+        limit: req.query.limit || req.query.pageSize || req.query.page_size || 100
+      });
+      const payload = {
+        items: (searchPayload.unified || []).map((item) => ({
+          ...item,
+          inventory_id: item.inventory_id || item.product_id || item.sku || item.codigo || "",
+          availability_label: item.availability_label || item.operational_summary || "Sem saldo confirmado"
+        })),
+        total: searchPayload.pagination?.total || searchPayload.unified?.length || 0,
+        pagination: searchPayload.pagination || {}
+      };
+      return res.json(await projectInventoryPayloadPhotos(payload));
+    }
     const payload = listInventoryProducts({
       q: req.query.q || "",
       storeId: storeScope,
