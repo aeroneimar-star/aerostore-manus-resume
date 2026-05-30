@@ -1854,6 +1854,7 @@ async function initializeDatabase() {
       cashback_id TEXT DEFAULT '',
       customer_id TEXT DEFAULT '',
       reminder_type TEXT DEFAULT '',
+      event_type TEXT DEFAULT '',
       status TEXT NOT NULL DEFAULT '',
       meta_message_id TEXT DEFAULT '',
       error_code TEXT DEFAULT '',
@@ -1867,10 +1868,12 @@ async function initializeDatabase() {
       failed_at TEXT DEFAULT ''
     )
   `);
+  await ensureColumn("notification_logs", "event_type", "TEXT DEFAULT ''");
   await run("CREATE INDEX IF NOT EXISTS idx_notification_logs_created_at ON notification_logs(created_at)");
   await run("CREATE INDEX IF NOT EXISTS idx_notification_logs_status ON notification_logs(status)");
   await run("CREATE INDEX IF NOT EXISTS idx_notification_logs_meta_message ON notification_logs(meta_message_id)");
   await run("CREATE INDEX IF NOT EXISTS idx_notification_logs_cashback ON notification_logs(cashback_id, reminder_type, template_name)");
+  await run("CREATE INDEX IF NOT EXISTS idx_notification_logs_event ON notification_logs(cashback_id, customer_id, event_type, template_name)");
   await run(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_logs_cashback_once
     ON notification_logs(cashback_id, reminder_type, template_name)
@@ -1879,6 +1882,14 @@ async function initializeDatabase() {
       AND reminder_type <> ''
       AND template_name <> ''
       AND status IN ('sent', 'delivered', 'read')
+  `);
+  await run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_logs_cashback_event_once
+    ON notification_logs(cashback_id, customer_id, event_type, template_name)
+    WHERE cashback_id <> ''
+      AND event_type <> ''
+      AND template_name <> ''
+      AND status IN ('dry_run', 'sent', 'delivered', 'read')
   `);
 
   await run(`

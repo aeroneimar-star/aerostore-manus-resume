@@ -13,6 +13,12 @@ const REMINDER_TYPES = {
   D3: "D3"
 };
 
+const CASHBACK_NOTIFICATION_EVENTS = {
+  EARNED: "cashback_earned",
+  EXPIRING_10_DAYS: "cashback_expiring_10_days",
+  EXPIRING_3_DAYS: "cashback_expiring_3_days"
+};
+
 function getNotificationDryRunDefault() {
   return String(process.env.NOTIFICATION_DRY_RUN || "true").trim().toLowerCase() !== "false";
 }
@@ -44,6 +50,25 @@ function getCashbackBalance(cashback = {}) {
   return Number(cashback.available_balance ?? cashback.balance_amount ?? cashback.generated_value ?? 0);
 }
 
+function isCashbackUsedOrUnavailable(cashback = {}) {
+  const status = String(cashback.status || "").trim().toLowerCase();
+  return Boolean(
+    cashback.used_at
+    || cashback.canceled_at
+    || cashback.cancelled_at
+    || cashback.expired_at
+    || Number(cashback.used_value || 0) > 0
+    || ["usado", "used", "cancelado", "cancelled", "vencido", "expired"].includes(status)
+  );
+}
+
+function isCashbackExpired(cashback = {}, date = new Date()) {
+  const expiresAt = String(cashback.expires_at || "").trim();
+  if (!expiresAt) return false;
+  const expiryDate = new Date(expiresAt.includes("T") ? expiresAt : `${expiresAt}T23:59:59-03:00`);
+  return !Number.isNaN(expiryDate.getTime()) && expiryDate < date;
+}
+
 function isWithinBusinessHours(date = new Date()) {
   const localHour = Number(new Intl.DateTimeFormat("pt-BR", {
     timeZone: "America/Sao_Paulo",
@@ -70,17 +95,17 @@ class NotificationService {
     this.provider = options.provider || new WhatsAppCloudProvider();
   }
 
-  async hasRealSentNotification({ cashbackId, reminderType, templateName }) {
-    if (!cashbackId || !reminderType || !templateName) return false;
+  async hasNotificationLog({ cashbackId, customerId, eventType, templateName }) {
+    if (!cashbackId || !eventType || !templateName) return false;
     const row = await get(
       `SELECT id FROM notification_logs
        WHERE cashback_id = ?
-         AND reminder_type = ?
+         AND event_type = ?
          AND template_name = ?
-         AND dry_run = 0
-         AND status IN ('sent', 'delivered', 'read')
+         AND (? = '' OR customer_id = ?)
+         AND status IN ('dry_run', 'sent', 'delivered', 'read')
        LIMIT 1`,
-      [String(cashbackId), String(reminderType), String(templateName)]
+      [String(cashbackId), String(eventType), String(templateName), String(customerId || ""), String(customerId || "")]
     ).catch(() => null);
     return Boolean(row?.id);
   }
@@ -90,10 +115,10 @@ class NotificationService {
     const nowExpr = "datetime('now')";
     const result = await run(
       `INSERT INTO notification_logs
-      (provider, channel, template_name, phone_masked, phone_hash, cashback_id, customer_id, reminder_type,
+      (provider, channel, template_name, phone_masked, phone_hash, cashback_id, customer_id, reminder_type, event_type,
        status, meta_message_id, error_code, error_message, dry_run, payload_summary_json,
        created_at, sent_at, failed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${nowExpr}, ${status === "sent" ? nowExpr : "''"}, ${status === "failed" ? nowExpr : "''"})`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${nowExpr}, ${status === "sent" ? nowExpr : "''"}, ${status === "failed" ? nowExpr : "''"})`,
       [
         input.provider || "meta_whatsapp_cloud",
         input.channel || "whatsapp",
@@ -103,6 +128,7 @@ class NotificationService {
         input.cashbackId ? String(input.cashbackId) : "",
         input.customerId ? String(input.customerId) : "",
         input.reminderType || "",
+        input.eventType || input.event_type || "",
         status,
         input.metaMessageId || "",
         input.errorCode || "",
@@ -119,6 +145,7 @@ class NotificationService {
     return this.sendCashbackTemplate({
       cashback,
       reminderType: REMINDER_TYPES.CREDITED,
+      eventType: CASHBACK_NOTIFICATION_EVENTS.EARNED,
       templateName,
       dryRun: options.dryRun ?? getNotificationDryRunDefault(),
       sender: () => this.provider.sendCashbackNotification({
@@ -138,6 +165,7 @@ class NotificationService {
     return this.sendCashbackTemplate({
       cashback,
       reminderType: REMINDER_TYPES.D10,
+      eventType: CASHBACK_NOTIFICATION_EVENTS.EXPIRING_10_DAYS,
       templateName,
       dryRun: options.dryRun ?? getNotificationDryRunDefault(),
       sender: () => this.provider.sendCashbackAviso10Dias({
@@ -156,6 +184,7 @@ class NotificationService {
     return this.sendCashbackTemplate({
       cashback,
       reminderType: REMINDER_TYPES.D3,
+      eventType: CASHBACK_NOTIFICATION_EVENTS.EXPIRING_3_DAYS,
       templateName,
       dryRun: options.dryRun ?? getNotificationDryRunDefault(),
       sender: () => this.provider.sendCashbackAviso3Dias({
@@ -169,9 +198,38 @@ class NotificationService {
     });
   }
 
-  async sendCashbackTemplate({ cashback, reminderType, templateName, dryRun, sender }) {
+  async sendCashbackTemplate({ cashback, reminderType, eventType, templateName, dryRun, sender }) {
     const cashbackId = cashback?.id ? String(cashback.id) : "";
     const customerId = cashback?.contact_id ? String(cashback.contact_id) : "";
+    if (!cashbackId || !customerId) {
+      await this.createLog({
+        templateName,
+        cashbackId,
+        customerId,
+        reminderType,
+        eventType,
+        status: "failed",
+        dryRun,
+        errorCode: "missing_cashback_identity",
+        errorMessage: "Cashback ou cliente sem identificador para notificacao."
+      });
+      return { success: false, status: "failed", errorCode: "missing_cashback_identity" };
+    }
+    if (isCashbackUsedOrUnavailable(cashback) || isCashbackExpired(cashback)) {
+      await this.createLog({
+        templateName,
+        phoneMasked: maskPhone(cashback?.customer_phone || ""),
+        phoneHash: hashPhone(cashback?.customer_phone || ""),
+        cashbackId,
+        customerId,
+        reminderType,
+        eventType,
+        status: "skipped_unavailable",
+        dryRun,
+        payloadSummary: { reason: "cashback_used_expired_cancelled_or_unavailable" }
+      });
+      return { success: true, status: "skipped_unavailable" };
+    }
     if (!dryRun && shouldEnforceBusinessHours() && !isWithinBusinessHours()) {
       const phone = normalizePhoneForWhatsApp(cashback?.customer_phone || "");
       await this.createLog({
@@ -181,6 +239,7 @@ class NotificationService {
         cashbackId,
         customerId,
         reminderType,
+        eventType,
         status: "skipped_outside_business_hours",
         dryRun: false,
         payloadSummary: { reason: "outside_business_hours" }
@@ -188,7 +247,7 @@ class NotificationService {
       return { success: false, status: "skipped_outside_business_hours" };
     }
 
-    if (!dryRun && await this.hasRealSentNotification({ cashbackId, reminderType, templateName })) {
+    if (await this.hasNotificationLog({ cashbackId, customerId, eventType, templateName })) {
       await this.createLog({
         templateName,
         phoneMasked: maskPhone(cashback?.customer_phone || ""),
@@ -196,9 +255,10 @@ class NotificationService {
         cashbackId,
         customerId,
         reminderType,
+        eventType,
         status: "skipped_duplicate",
-        dryRun: false,
-        payloadSummary: { reason: "already_sent" }
+        dryRun,
+        payloadSummary: { reason: "already_logged_for_event" }
       });
       return { success: true, status: "skipped_duplicate" };
     }
@@ -210,6 +270,7 @@ class NotificationService {
       cashbackId,
       customerId,
       reminderType,
+      eventType,
       status: result.status,
       dryRun: result.dryRun
     });
@@ -229,6 +290,7 @@ class NotificationService {
       ...result,
       templateName: input.template,
       reminderType: "TEST",
+      eventType: "template_test",
       status: result.status,
       dryRun: result.dryRun
     });
@@ -263,11 +325,11 @@ class NotificationService {
 
   async getStatus() {
     const lastLog = await get(
-      `SELECT id, provider, channel, template_name, status, dry_run, created_at, sent_at, failed_at, error_code, error_message
+      `SELECT id, provider, channel, template_name, event_type, status, dry_run, created_at, sent_at, failed_at, error_code, error_message
        FROM notification_logs ORDER BY id DESC LIMIT 1`
     ).catch(() => null);
     const errors = await all(
-      `SELECT id, template_name, status, error_code, error_message, created_at
+      `SELECT id, template_name, event_type, status, error_code, error_message, created_at
        FROM notification_logs
        WHERE status = 'failed'
        ORDER BY id DESC LIMIT 5`
@@ -283,7 +345,8 @@ class NotificationService {
         cashback: process.env.WHATSAPP_TEMPLATE_CASHBACK || "cashback_notificacao",
         aviso10: process.env.WHATSAPP_TEMPLATE_AVISO_10 || "cashback_aviso_10dias",
         aviso3: process.env.WHATSAPP_TEMPLATE_AVISO_3 || "cashback_aviso_3dias",
-        language: process.env.WHATSAPP_TEMPLATE_LANG || "pt_BR"
+        language: process.env.WHATSAPP_TEMPLATE_LANG || "pt_BR",
+        events: CASHBACK_NOTIFICATION_EVENTS
       },
       lastLog,
       recentErrors: errors
@@ -308,5 +371,8 @@ module.exports = {
   formatDateBR,
   getFirstName,
   getCashbackBalance,
-  REMINDER_TYPES
+  isCashbackUsedOrUnavailable,
+  isCashbackExpired,
+  REMINDER_TYPES,
+  CASHBACK_NOTIFICATION_EVENTS
 };

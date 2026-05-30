@@ -1,4 +1,4 @@
-const { all } = require("../../db");
+const { all, run } = require("../../db");
 const { getNotificationService, getCashbackBalance, getNotificationDryRunDefault } = require("./NotificationService");
 const { isValidWhatsAppPhone } = require("./providers/WhatsAppCloudProvider");
 
@@ -31,6 +31,7 @@ function parseCashbackDateToLocal(value = "") {
 class CashbackScheduler {
   constructor(options = {}) {
     this.service = options.service || getNotificationService();
+    this.batchLimit = Number(options.batchLimit || process.env.NOTIFICATION_CASHBACK_BATCH_LIMIT || 50);
   }
 
   hasSaldo(cashback = {}) {
@@ -53,8 +54,10 @@ class CashbackScheduler {
   }
 
   async runDailyCheck(options = {}) {
-    await this.checkAndNotify10Days(options);
-    await this.checkAndNotify3Days(options);
+    const expired = await this.markExpiredCashbacks();
+    const aviso10 = await this.checkAndNotify10Days(options);
+    const aviso3 = await this.checkAndNotify3Days(options);
+    return { expired, aviso10, aviso3 };
   }
 
   async checkAndNotify10Days(options = {}) {
@@ -73,7 +76,7 @@ class CashbackScheduler {
       if (parseCashbackDateToLocal(cashback.expires_at) !== targetDate) return false;
       if (!this.hasSaldo(cashback)) return false;
       return isValidWhatsAppPhone(cashback.customer_phone || "");
-    });
+    }).slice(0, this.batchLimit);
 
     const results = [];
     for (const cashback of targetRows) {
@@ -87,8 +90,26 @@ class CashbackScheduler {
       targetDate,
       checked: rows.length,
       eligible: targetRows.length,
+      batchLimit: this.batchLimit,
       results
     };
+  }
+
+  async markExpiredCashbacks() {
+    const today = formatDateLocal(new Date());
+    const result = await run(
+      `UPDATE cashbacks
+       SET lost_value = lost_value + available_balance,
+           available_balance = 0,
+           status = 'vencido',
+           updated_at = datetime('now')
+       WHERE status IN ('disponivel', 'available', 'ativo', 'active')
+         AND COALESCE(expires_at, '') <> ''
+         AND substr(expires_at, 1, 10) < ?
+         AND available_balance > 0`,
+      [today]
+    ).catch(() => ({ changes: 0 }));
+    return { date: today, markedExpired: Number(result?.changes || 0) };
   }
 }
 
@@ -97,6 +118,8 @@ let lastCashbackReminderRunDate = null;
 
 function startCashbackReminderScheduler(options = {}) {
   if (schedulerStarted) return false;
+  const enabled = String(process.env.NOTIFICATION_SCHEDULER_ENABLED || "false").trim().toLowerCase() === "true";
+  if (!enabled) return false;
   schedulerStarted = true;
   const scheduler = options.scheduler || new CashbackScheduler();
   const dryRun = options.dryRun ?? getNotificationDryRunDefault();
