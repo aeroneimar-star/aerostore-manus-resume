@@ -1324,14 +1324,60 @@ function productMatchesExactIdentifier(product = {}, query = "") {
   );
 }
 
+const PRODUCT_SOURCE_PRIORITY = {
+  PDV_ESTOQUE: 300,
+  PDV_IMPORT: 200,
+  CRM_CATALOG: 100
+};
+
+function getProductSourcePriority(product = {}) {
+  const origin = normalizeText(product.origin || "").toUpperCase();
+  if (PRODUCT_SOURCE_PRIORITY[origin]) {
+    return PRODUCT_SOURCE_PRIORITY[origin];
+  }
+  const label = normalizeLookup([product.origin_label, ...(product.origins || [])].join(" "));
+  if (label.includes("estoque operacional")) return PRODUCT_SOURCE_PRIORITY.PDV_ESTOQUE;
+  if (label.includes("pdv import")) return PRODUCT_SOURCE_PRIORITY.PDV_IMPORT;
+  if (label.includes("crm") || label.includes("tiny") || label.includes("vitrine")) return PRODUCT_SOURCE_PRIORITY.CRM_CATALOG;
+  return 0;
+}
+
+function pickProductPrimaryRow(left = {}, right = {}) {
+  const leftPriority = getProductSourcePriority(left);
+  const rightPriority = getProductSourcePriority(right);
+  if (rightPriority > leftPriority) {
+    return { primary: right, secondary: left };
+  }
+  return { primary: left, secondary: right };
+}
+
+function buildProductDedupeIdentifiers(product = {}) {
+  const textIdentifiers = [
+    product.sku,
+    product.codigo_etiqueta,
+    product.codigo,
+    product.codigo_tiny,
+    product.codigo_interno
+  ].map((value) => normalizeCodeLookup(value || "")).filter(Boolean);
+  const digitIdentifiers = [
+    product.ean,
+    product.codigo_barras,
+    product.barcode,
+    product.gtin,
+    product.gtin_ean
+  ].map((value) => normalizeDigits(value || "")).filter(Boolean);
+  return {
+    textIdentifiers: uniqueStrings(textIdentifiers),
+    digitIdentifiers: uniqueStrings(digitIdentifiers)
+  };
+}
+
 function buildProductMatchKey(product = {}) {
-  return normalizeText(product.product_id || "")
-    || normalizeText(product.sku || "")
-    || normalizeText(product.codigo_tiny || "")
-    || normalizeText(product.codigo_etiqueta || "")
-    || normalizeDigits(product.ean || product.codigo_barras || "")
-    || normalizeText(product.codigo_interno || "")
-    || normalizeText(product.codigo || "")
+  const identifiers = buildProductDedupeIdentifiers(product);
+  return identifiers.textIdentifiers[0]
+    || identifiers.digitIdentifiers[0]
+    || normalizeText(product.product_id || "")
+    || normalizeText(product.id || "")
     || normalizeLookup([product.nome, product.marca, product.cor, product.tamanho, product.store_id].join(" "));
 }
 
@@ -1357,42 +1403,57 @@ function getUnifiedProductStatusLabel(status = "") {
 }
 
 function mergeUnifiedProductRow(target = {}, source = {}) {
+  const { primary, secondary } = pickProductPrimaryRow(target, source);
   const mergedOrigins = uniqueStrings([...(target.origins || []), ...(source.origins || []), source.origin_label]);
+  const targetPrice = toNumber(target.preco_venda || 0);
+  const sourcePrice = toNumber(source.preco_venda || 0);
+  const primaryPrice = toNumber(primary.preco_venda || 0);
+  const secondaryPrice = toNumber(secondary.preco_venda || 0);
+  const priceConflict = Boolean(
+    targetPrice > 0
+    && sourcePrice > 0
+    && Math.abs(targetPrice - sourcePrice) >= 0.01
+  );
   const merged = {
-    ...target,
-    ...source,
-    id: normalizeText(target.id || source.id || source.product_id || source.sku || source.codigo || buildId("PRD")),
-    product_id: normalizeText(target.product_id || source.product_id || ""),
-    codigo: normalizeText(target.codigo || source.codigo || ""),
-    sku: normalizeText(target.sku || source.sku || ""),
-    codigo_tiny: normalizeText(target.codigo_tiny || source.codigo_tiny || ""),
-    codigo_etiqueta: normalizeText(target.codigo_etiqueta || source.codigo_etiqueta || ""),
-    ean: normalizeDigits(target.ean || source.ean || target.codigo_barras || source.codigo_barras || ""),
-    codigo_barras: normalizeDigits(target.codigo_barras || source.codigo_barras || target.ean || source.ean || ""),
-    codigo_interno: normalizeText(target.codigo_interno || source.codigo_interno || ""),
-    nome: normalizeText(target.nome || source.nome || ""),
-    descricao: normalizeText(target.descricao || source.descricao || ""),
-    marca: normalizeText(target.marca || source.marca || ""),
-    categoria: normalizeText(target.categoria || source.categoria || ""),
-    linha_genero: normalizeText(target.linha_genero || source.linha_genero || ""),
-    tipo: normalizeText(target.tipo || source.tipo || ""),
-    cor: normalizeText(target.cor || source.cor || ""),
-    tamanho: normalizeText(target.tamanho || source.tamanho || ""),
-    preco_venda: Math.max(toNumber(target.preco_venda || 0), toNumber(source.preco_venda || 0)),
+    ...secondary,
+    ...primary,
+    id: normalizeText(primary.id || secondary.id || primary.product_id || primary.sku || primary.codigo || secondary.product_id || secondary.sku || secondary.codigo || buildId("PRD")),
+    product_id: normalizeText(primary.product_id || secondary.product_id || ""),
+    codigo: normalizeText(primary.codigo || secondary.codigo || ""),
+    sku: normalizeText(primary.sku || secondary.sku || ""),
+    codigo_tiny: normalizeText(primary.codigo_tiny || secondary.codigo_tiny || ""),
+    codigo_etiqueta: normalizeText(primary.codigo_etiqueta || secondary.codigo_etiqueta || ""),
+    ean: normalizeDigits(primary.ean || secondary.ean || primary.codigo_barras || secondary.codigo_barras || ""),
+    codigo_barras: normalizeDigits(primary.codigo_barras || secondary.codigo_barras || primary.ean || secondary.ean || ""),
+    codigo_interno: normalizeText(primary.codigo_interno || secondary.codigo_interno || ""),
+    nome: normalizeText(primary.nome || secondary.nome || ""),
+    descricao: normalizeText(primary.descricao || secondary.descricao || ""),
+    marca: normalizeText(primary.marca || secondary.marca || ""),
+    categoria: normalizeText(primary.categoria || secondary.categoria || ""),
+    linha_genero: normalizeText(primary.linha_genero || secondary.linha_genero || ""),
+    tipo: normalizeText(primary.tipo || secondary.tipo || ""),
+    cor: normalizeText(primary.cor || secondary.cor || ""),
+    tamanho: normalizeText(primary.tamanho || secondary.tamanho || ""),
+    preco_venda: primaryPrice > 0 ? primaryPrice : secondaryPrice,
     estoque: Math.max(toNumber(target.estoque || 0), toNumber(source.estoque || 0)),
     available_qty: Math.max(toNumber(target.available_qty || 0), toNumber(source.available_qty || 0)),
     reserved_qty: Math.max(toNumber(target.reserved_qty || 0), toNumber(source.reserved_qty || 0)),
     unavailable_qty: Math.max(toNumber(target.unavailable_qty || 0), toNumber(source.unavailable_qty || 0)),
-    media_id: Number(target.media_id || source.media_id || 0) || null,
-    photo_preview_url: normalizeText(target.photo_preview_url || source.photo_preview_url || source.preview_url || ""),
-    media_url: normalizeText(target.media_url || source.media_url || ""),
-    foto: normalizeText(target.foto || source.foto || target.photo_preview_url || source.photo_preview_url || ""),
-    observacao: normalizeText(target.observacao || source.observacao || ""),
-    store_id: normalizeStoreKey(target.store_id || source.store_id || ""),
+    media_id: Number(primary.media_id || secondary.media_id || 0) || null,
+    photo_preview_url: normalizeText(primary.photo_preview_url || secondary.photo_preview_url || primary.preview_url || secondary.preview_url || ""),
+    media_url: normalizeText(primary.media_url || secondary.media_url || ""),
+    foto: normalizeText(primary.foto || secondary.foto || primary.photo_preview_url || secondary.photo_preview_url || ""),
+    observacao: normalizeText(primary.observacao || secondary.observacao || ""),
+    store_id: normalizeStoreKey(primary.store_id || secondary.store_id || ""),
     tags: uniqueStrings([...(target.tags || []), ...(source.tags || [])]),
     origins: mergedOrigins,
     origin_label: mergedOrigins.join(" + "),
-    cashback_blocked_for_redemption: Boolean(target.cashback_blocked_for_redemption || source.cashback_blocked_for_redemption)
+    cashback_blocked_for_redemption: Boolean(target.cashback_blocked_for_redemption || source.cashback_blocked_for_redemption),
+    source_priority: Math.max(getProductSourcePriority(target), getProductSourcePriority(source)),
+    price_conflict: Boolean(target.price_conflict || source.price_conflict || priceConflict),
+    price_conflict_sources: priceConflict
+      ? uniqueStrings([...(target.price_conflict_sources || []), target.origin || target.origin_label || "", source.origin || source.origin_label || ""].filter(Boolean))
+      : uniqueStrings([...(target.price_conflict_sources || []), ...(source.price_conflict_sources || [])])
   };
   merged.status = normalizeUnifiedProductStatusValue(
     target.status || source.status || "",
@@ -1846,7 +1907,10 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
     })
     .slice(0, safeLimit);
   const inventoryTotal = Number(inventoryPagination?.total || 0);
-  const total = Math.max(inventoryTotal, (safePage - 1) * safeLimit + unified.length);
+  const dedupedVisibleTotal = (safePage - 1) * safeLimit + unified.length;
+  const total = strictCodeSearch
+    ? dedupedVisibleTotal
+    : Math.max(inventoryTotal, dedupedVisibleTotal);
   const totalPages = Math.max(1, Math.ceil(total / safeLimit));
   return {
     sources_consulted: ["inventory", "pdv_dataset", "crm_catalog"],
