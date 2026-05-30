@@ -4750,6 +4750,82 @@ body[data-auth-shell="authenticated"] .login-overlay {
   min-height: 22px;
 }
 
+.password-change-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(45, 212, 191, 0.16), transparent 28%),
+    rgba(7, 13, 18, 0.78);
+  backdrop-filter: blur(12px);
+  z-index: 1200;
+}
+
+.password-change-overlay.active {
+  display: flex;
+}
+
+.password-change-card {
+  width: min(480px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+  border-radius: 26px;
+  background: linear-gradient(145deg, #121B26, #0B1117);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.45);
+}
+
+.password-change-card h2,
+.password-change-card p {
+  margin: 0;
+}
+
+.password-change-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.password-change-fields label {
+  display: grid;
+  gap: 7px;
+  color: #C8D2DE;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.password-change-fields input {
+  min-height: 46px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #080D12;
+  color: #F5F7FB;
+  padding: 0 14px;
+  font: inherit;
+}
+
+.password-change-fields input:focus {
+  outline: none;
+  border-color: rgba(45, 212, 191, 0.55);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+}
+
+.password-change-error {
+  min-height: 22px;
+  color: var(--error);
+  line-height: 1.4;
+}
+
+.password-change-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 .pin-validated {
   color: var(--success);
   display: block;
@@ -20057,7 +20133,8 @@ body[data-auth-shell="authenticated"] .sidebar-footer > span {
   text-transform: uppercase;
 }
 
-.sidebar-logout-button {
+.sidebar-logout-button,
+.sidebar-password-button {
   min-height: 42px;
   width: 100%;
   border-radius: 14px;
@@ -20068,7 +20145,8 @@ body[data-auth-shell="authenticated"] .sidebar-footer > span {
   cursor: pointer;
 }
 
-.sidebar-logout-button:hover {
+.sidebar-logout-button:hover,
+.sidebar-password-button:hover {
   border-color: rgba(45,212,191,0.35);
   background: rgba(45,212,191,0.12);
   color: #2DD4BF;
@@ -20114,7 +20192,8 @@ body[data-auth-shell="authenticated"].sidebar-collapsed .sidebar-user-card {
   padding: 8px 4px;
 }
 
-body[data-auth-shell="authenticated"].sidebar-collapsed .sidebar-logout-button {
+body[data-auth-shell="authenticated"].sidebar-collapsed .sidebar-logout-button,
+body[data-auth-shell="authenticated"].sidebar-collapsed .sidebar-password-button {
   min-height: 38px;
   padding: 0;
   font-size: 0;
@@ -20122,6 +20201,12 @@ body[data-auth-shell="authenticated"].sidebar-collapsed .sidebar-logout-button {
 
 body[data-auth-shell="authenticated"].sidebar-collapsed .sidebar-logout-button::before {
   content: "SA";
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+}
+
+body[data-auth-shell="authenticated"].sidebar-collapsed .sidebar-password-button::before {
+  content: "TS";
   font-size: 0.72rem;
   letter-spacing: 0.05em;
 }

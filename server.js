@@ -11851,6 +11851,17 @@ function hashPassword(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
+function validatePasswordStrength(password = "") {
+  const value = String(password || "");
+  if (value.length < 8) {
+    return {
+      ok: false,
+      error: "Use uma senha com pelo menos 8 caracteres."
+    };
+  }
+  return { ok: true };
+}
+
 function createSessionToken() {
   return crypto.randomBytes(24).toString("hex");
 }
@@ -12233,7 +12244,8 @@ function serializeAuthUser(user = {}) {
     allowed_stores: allowedStores,
     permissions: enriched.permissions || {},
     sellerId: enriched.seller_id || null,
-    last_access_at: enriched.last_access_at || ""
+    last_access_at: enriched.last_access_at || "",
+    must_change_password: Boolean(Number(enriched.must_change_password || 0))
   };
 }
 
@@ -12593,7 +12605,11 @@ function auditSensitiveMutationMiddleware(req, res, next) {
     const includeBody = ![
       "/api/ia/responder",
       "/api/assistant",
-      "/api/whatsapp"
+      "/api/whatsapp",
+      "/api/auth/change-password",
+      "/api/auth/force-change-password",
+      "/reset-password",
+      "/api/admin/users"
     ].some((sensitivePath) => pathName.includes(sensitivePath));
     recordAuditEvent({
       req,
@@ -12642,6 +12658,7 @@ function serializeAdminUser(row = {}) {
     permissions: enriched.permissions || {},
     seller_id: enriched.seller_id || null,
     status: enriched.status || "ativo",
+    must_change_password: Boolean(Number(enriched.must_change_password || 0)),
     created_at: enriched.created_at || "",
     updated_at: enriched.updated_at || "",
     last_access_at: enriched.last_access_at || ""
@@ -12709,7 +12726,7 @@ async function listAdminUsers(req, res) {
   }
   const rows = await all(
     `SELECT id, email, role, store, seller_id, status, created_at, updated_at,
-            name, username, phone, store_id, allowed_stores_json, permissions_json, last_access_at
+            name, username, phone, store_id, allowed_stores_json, permissions_json, last_access_at, must_change_password
      FROM users
      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
      ORDER BY CASE WHEN status = 'ativo' THEN 0 ELSE 1 END, name COLLATE NOCASE ASC, email COLLATE NOCASE ASC`,
@@ -12723,19 +12740,24 @@ async function listAdminUsers(req, res) {
 
 async function createAdminUser(req, res) {
   const payload = normalizeAdminUserPayload(req.body || {});
-  const password = String(req.body?.password || "").trim() || "123456";
+  const password = String(req.body?.password || "").trim();
   if (!payload.email || !payload.name) {
     return res.status(400).json({ error: "Informe nome e e-mail do usuario." });
+  }
+  const passwordValidation = validatePasswordStrength(password);
+  if (!passwordValidation.ok) {
+    return res.status(400).json({ error: passwordValidation.error });
   }
   const existing = await get("SELECT id FROM users WHERE lower(email) = ? LIMIT 1", [payload.email]);
   if (existing?.id) {
     return res.status(409).json({ error: "Ja existe usuario com este e-mail." });
   }
+  const mustChangePassword = req.body?.mustChangePassword === false ? 0 : 1;
   const result = await run(
     `INSERT INTO users
       (email, password_hash, role, store, seller_id, status, created_at, updated_at,
-       name, username, phone, store_id, allowed_stores_json, permissions_json)
-     VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?, ?)`,
+       name, username, phone, store_id, allowed_stores_json, permissions_json, must_change_password)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.email,
       hashPassword(password),
@@ -12748,7 +12770,8 @@ async function createAdminUser(req, res) {
       payload.phone,
       payload.store_id,
       payload.allowed_stores_json,
-      payload.permissions_json
+      payload.permissions_json,
+      mustChangePassword
     ]
   );
   const user = await get("SELECT * FROM users WHERE id = ? LIMIT 1", [result?.lastID]);
@@ -12805,7 +12828,14 @@ async function updateAdminUser(req, res) {
   );
   const nextPassword = String(req.body?.password || "").trim();
   if (nextPassword) {
-    await run("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?", [hashPassword(nextPassword), userId]);
+    const passwordValidation = validatePasswordStrength(nextPassword);
+    if (!passwordValidation.ok) {
+      return res.status(400).json({ error: passwordValidation.error });
+    }
+    await run(
+      "UPDATE users SET password_hash = ?, must_change_password = 1, updated_at = datetime('now') WHERE id = ?",
+      [hashPassword(nextPassword), userId]
+    );
   }
   const user = await get("SELECT * FROM users WHERE id = ? LIMIT 1", [userId]);
   res.json({ user: serializeAdminUser(user), meta: buildUsersAdminMeta() });
@@ -12813,15 +12843,31 @@ async function updateAdminUser(req, res) {
 
 async function resetAdminUserPassword(req, res) {
   const userId = Number(req.params.id || 0);
-  const password = String(req.body?.password || "").trim();
-  if (!password || password.length < 4) {
-    return res.status(400).json({ error: "Informe uma senha com pelo menos 4 caracteres." });
+  const password = String(req.body?.newPassword || req.body?.password || "").trim();
+  const passwordValidation = validatePasswordStrength(password);
+  if (!passwordValidation.ok) {
+    return res.status(400).json({ error: passwordValidation.error });
   }
   const existing = await get("SELECT id FROM users WHERE id = ? LIMIT 1", [userId]);
   if (!existing) {
     return res.status(404).json({ error: "Usuario nao encontrado." });
   }
-  await run("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?", [hashPassword(password), userId]);
+  const mustChangePassword = req.body?.mustChangePassword === false ? 0 : 1;
+  await run(
+    "UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = datetime('now') WHERE id = ?",
+    [hashPassword(password), mustChangePassword, userId]
+  );
+  await recordAuditEvent({
+    req,
+    module: "auth",
+    action: "user_password_reset_by_admin",
+    entityType: "user",
+    entityId: String(userId),
+    result: "success",
+    message: "Senha redefinida por administrador",
+    includeBody: false,
+    metadata: { must_change_password: Boolean(mustChangePassword) }
+  });
   res.json({ success: true });
 }
 
@@ -18148,6 +18194,7 @@ async function handleAuthLogin(req, res) {
     res.json({
       success: true,
       session: COOKIE_SESSION_MARKER,
+      must_change_password: Boolean(Number(user.must_change_password || 0)),
       user: serializeAuthUser(user)
     });
   } catch (error) {
@@ -18264,14 +18311,101 @@ async function handleAuthActiveStore(req, res) {
   });
 }
 
+async function handleAuthChangePassword(req, res) {
+  const userId = Number(req.user?.id || 0);
+  const currentPassword = String(req.body?.currentPassword || "");
+  const newPassword = String(req.body?.newPassword || "");
+  if (!userId) {
+    return res.status(401).json({ error: "Sessao expirada. Faca login novamente." });
+  }
+  if (!currentPassword) {
+    return res.status(400).json({ error: "Informe a senha atual." });
+  }
+  const passwordValidation = validatePasswordStrength(newPassword);
+  if (!passwordValidation.ok) {
+    return res.status(400).json({ error: passwordValidation.error });
+  }
+  const existing = await get("SELECT id, password_hash FROM users WHERE id = ? LIMIT 1", [userId]);
+  if (!existing) {
+    return res.status(404).json({ error: "Usuario nao encontrado." });
+  }
+  const currentHash = hashPassword(currentPassword);
+  const nextHash = hashPassword(newPassword);
+  if (currentHash !== existing.password_hash) {
+    return res.status(403).json({ error: "Senha atual invalida." });
+  }
+  if (nextHash === existing.password_hash) {
+    return res.status(400).json({ error: "A nova senha precisa ser diferente da senha atual." });
+  }
+  await run(
+    "UPDATE users SET password_hash = ?, must_change_password = 0, updated_at = datetime('now') WHERE id = ?",
+    [nextHash, userId]
+  );
+  await recordAuditEvent({
+    req,
+    module: "auth",
+    action: "user_password_changed",
+    entityType: "user",
+    entityId: String(userId),
+    result: "success",
+    message: "Senha alterada pelo usuario",
+    includeBody: false
+  });
+  const user = await get("SELECT * FROM users WHERE id = ? LIMIT 1", [userId]);
+  res.json({ success: true, user: serializeAuthUser(user) });
+}
+
+async function handleAuthForceChangePassword(req, res) {
+  const userId = Number(req.user?.id || 0);
+  const newPassword = String(req.body?.newPassword || "");
+  if (!userId) {
+    return res.status(401).json({ error: "Sessao expirada. Faca login novamente." });
+  }
+  const passwordValidation = validatePasswordStrength(newPassword);
+  if (!passwordValidation.ok) {
+    return res.status(400).json({ error: passwordValidation.error });
+  }
+  const existing = await get("SELECT id, password_hash, must_change_password FROM users WHERE id = ? LIMIT 1", [userId]);
+  if (!existing) {
+    return res.status(404).json({ error: "Usuario nao encontrado." });
+  }
+  if (!Number(existing.must_change_password || 0)) {
+    return res.status(400).json({ error: "Troca obrigatoria de senha nao esta pendente para este usuario." });
+  }
+  const nextHash = hashPassword(newPassword);
+  if (nextHash === existing.password_hash) {
+    return res.status(400).json({ error: "A nova senha precisa ser diferente da senha temporaria." });
+  }
+  await run(
+    "UPDATE users SET password_hash = ?, must_change_password = 0, updated_at = datetime('now') WHERE id = ?",
+    [nextHash, userId]
+  );
+  await recordAuditEvent({
+    req,
+    module: "auth",
+    action: "user_password_changed",
+    entityType: "user",
+    entityId: String(userId),
+    result: "success",
+    message: "Troca obrigatoria de senha concluida",
+    includeBody: false,
+    metadata: { forced: true }
+  });
+  const user = await get("SELECT * FROM users WHERE id = ? LIMIT 1", [userId]);
+  res.json({ success: true, user: serializeAuthUser(user) });
+}
+
 app.get("/api/me", handleAuthMe);
 app.get("/api/auth/me", handleAuthMe);
 app.post("/api/auth/active-store", handleAuthActiveStore);
+app.patch("/api/auth/change-password", handleAuthChangePassword);
+app.patch("/api/auth/force-change-password", handleAuthForceChangePassword);
 registerProtectedNotificationRoutes(app, { requireAnyPermission });
 app.get("/api/admin/users", requirePermission("can_manage_users"), listAdminUsers);
 app.post("/api/admin/users", requirePermission("can_manage_users"), createAdminUser);
 app.patch("/api/admin/users/:id", requirePermission("can_manage_users"), updateAdminUser);
 app.post("/api/admin/users/:id/reset-password", requirePermission("can_manage_users"), resetAdminUserPassword);
+app.patch("/api/users/:id/reset-password", requirePermission("can_manage_users"), resetAdminUserPassword);
 app.post("/api/admin/users/:id/status", requirePermission("can_manage_users"), setAdminUserStatus);
 app.delete("/api/admin/users/:id", requirePermission("can_manage_users"), deleteAdminUser);
 

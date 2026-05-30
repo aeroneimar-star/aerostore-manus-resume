@@ -70,6 +70,7 @@
             </div>
           </div>
           <button class="sidebar-logout-button" id="sidebar-logout-button" type="button" data-auth-logout="true">Trocar login</button>
+          <button class="sidebar-password-button" id="sidebar-password-button" type="button" data-auth-change-password="true">Trocar senha</button>
           <span>Local • Seguro • Sem disparo em massa</span>
         </div>
       </aside>
@@ -1340,15 +1341,32 @@
       <form class="login-card" id="login-form">
         <img src="/img/logo-full-gold.png" alt="AEROSTORE" class="login-logo" />
         <h2 id="login-title">Entrar na AEROSTORE OS</h2>
-        <p id="login-description">Use seu perfil para acessar o PDV, CRM e permissoes da loja.</p>
+        <p id="login-description">Use seu perfil para acessar o PDV, CRM e permissões da loja.</p>
         <div class="login-status" id="login-status"></div>
         <div class="login-fields" id="login-fields">
-        <label>Email<input id="login-email" type="email" required placeholder="admin@aerostore.local" /></label>
-        <label>Senha<input id="login-password" type="password" required placeholder="123456" /></label>
+        <label>Email<input id="login-email" type="email" required placeholder="seu.email@aerostore" /></label>
+        <label>Senha<input id="login-password" type="password" required placeholder="Digite sua senha" /></label>
         <button class="primary-button" type="submit">Entrar</button>
-        <div class="login-help">Perfis iniciais: admin@aerostore.local, gestor.vila@aerostore.local, vendedor.vila@aerostore.local, caixa@aerostore.local — senha 123456</div>
+        <div class="login-help">Problemas para acessar? Fale com o administrador da loja.</div>
         </div>
         <div class="login-error" id="login-error"></div>
+      </form>
+    </div>
+    <div class="password-change-overlay" id="password-change-overlay" aria-hidden="true" data-mode="normal">
+      <form class="password-change-card" id="password-change-form">
+        <p class="eyebrow" id="password-change-eyebrow">SEGURANÇA</p>
+        <h2 id="password-change-title">Trocar senha</h2>
+        <p id="password-change-description">Crie uma senha nova para proteger seu acesso ao CRM/PDV.</p>
+        <div class="password-change-fields">
+          <label id="password-current-row">Senha atual<input id="password-current" type="password" autocomplete="current-password" placeholder="Digite sua senha atual" /></label>
+          <label>Nova senha<input id="password-new" type="password" autocomplete="new-password" required minlength="8" placeholder="Mínimo 8 caracteres" /></label>
+          <label>Confirmar nova senha<input id="password-confirm" type="password" autocomplete="new-password" required minlength="8" placeholder="Repita a nova senha" /></label>
+        </div>
+        <div class="password-change-error" id="password-change-error"></div>
+        <div class="password-change-actions">
+          <button class="primary-button" id="password-change-submit" type="submit">Salvar senha</button>
+          <button class="ghost-button" id="password-change-cancel" type="button">Cancelar</button>
+        </div>
       </form>
     </div>
     <script>

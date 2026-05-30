@@ -1790,6 +1790,7 @@ async function initializeDatabase() {
   await ensureColumn("users", "allowed_stores_json", "TEXT DEFAULT '[]'");
   await ensureColumn("users", "permissions_json", "TEXT DEFAULT '{}'");
   await ensureColumn("users", "last_access_at", "TEXT DEFAULT ''");
+  await ensureColumn("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0");
 
   await run(`
     CREATE TABLE IF NOT EXISTS user_sessions (

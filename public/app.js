@@ -18002,7 +18002,7 @@ function renderUsersAdminFront() {
               <label>Perfil<select name="role">${profileOptions}</select></label>
               <label>Status<select name="status"><option value="ativo"${draft.status === "ativo" ? " selected" : ""}>ativo</option><option value="inativo"${draft.status === "inativo" ? " selected" : ""}>inativo</option></select></label>
               <label>Loja principal<select name="store_id">${storeOptions}</select></label>
-              <label>Senha ${draft.id ? "<small>preencha apenas para redefinir</small>" : ""}<input name="password" type="password" value="" placeholder="${draft.id ? "manter senha atual" : "123456"}" /></label>
+              <label>Senha ${draft.id ? "<small>preencha apenas para redefinir</small>" : ""}<input name="password" type="password" value="" placeholder="${draft.id ? "manter senha atual" : "mínimo 8 caracteres"}" /></label>
             </div></div>
             <div class="users-admin-section"><h4>Lojas permitidas</h4><div class="users-admin-check-grid">${allowedStores}</div></div>
             <div class="users-admin-section users-admin-permissions-section"><h4>Permissões por módulo</h4>${permissionCatalog || `<p class="helper-text">Catálogo de permissões indisponível.</p>`}</div>
@@ -18076,14 +18076,19 @@ async function setUsersAdminStatus(userId, status) {
 }
 
 async function resetUsersAdminPassword(userId) {
-  const password = window.prompt("Nova senha para este usuario:", "123456");
+  const password = window.prompt("Nova senha temporária para este usuário (mínimo 8 caracteres):", "");
   if (!password) {
     return;
   }
+  if (password.length < 8) {
+    showFeedback("Use uma senha com pelo menos 8 caracteres.", "error");
+    return;
+  }
+  const mustChangePassword = window.confirm("Exigir que o usuário troque a senha no próximo acesso?");
   await api(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password })
+    body: JSON.stringify({ newPassword: password, mustChangePassword })
   });
   showFeedback("Senha redefinida com sucesso.");
 }
@@ -21597,6 +21602,126 @@ function hideLoginOverlay() {
   syncAuthShellState();
 }
 
+function isPasswordChangeRequired(user = state.currentUser) {
+  return Boolean(user?.must_change_password || user?.mustChangePassword);
+}
+
+function showPasswordChangeOverlay({ forced = false } = {}) {
+  const overlay = document.getElementById("password-change-overlay");
+  if (!overlay) {
+    return;
+  }
+  overlay.dataset.mode = forced ? "forced" : "normal";
+  overlay.classList.add("active");
+  overlay.setAttribute("aria-hidden", "false");
+  const title = document.getElementById("password-change-title");
+  const description = document.getElementById("password-change-description");
+  const currentRow = document.getElementById("password-current-row");
+  const currentInput = document.getElementById("password-current");
+  const cancelButton = document.getElementById("password-change-cancel");
+  const errorBox = document.getElementById("password-change-error");
+  if (title) {
+    title.textContent = forced ? "Crie sua nova senha" : "Trocar senha";
+  }
+  if (description) {
+    description.textContent = forced
+      ? "Por segurança, este acesso precisa trocar a senha temporária antes de continuar."
+      : "Informe sua senha atual e escolha uma nova senha para seu acesso.";
+  }
+  if (currentRow) {
+    currentRow.style.display = forced ? "none" : "";
+  }
+  if (currentInput) {
+    currentInput.required = !forced;
+    currentInput.value = "";
+  }
+  const newInput = document.getElementById("password-new");
+  const confirmInput = document.getElementById("password-confirm");
+  if (newInput) newInput.value = "";
+  if (confirmInput) confirmInput.value = "";
+  if (cancelButton) {
+    cancelButton.style.display = forced ? "none" : "";
+  }
+  if (errorBox) {
+    errorBox.textContent = "";
+  }
+  setTimeout(() => (forced ? newInput : currentInput)?.focus?.(), 50);
+}
+
+function hidePasswordChangeOverlay() {
+  const overlay = document.getElementById("password-change-overlay");
+  if (!overlay) {
+    return;
+  }
+  overlay.classList.remove("active");
+  overlay.setAttribute("aria-hidden", "true");
+  const errorBox = document.getElementById("password-change-error");
+  if (errorBox) {
+    errorBox.textContent = "";
+  }
+}
+
+async function continueAfterPasswordChange(user = null) {
+  if (user) {
+    setAuthSession("", user);
+  }
+  applyRolePermissions();
+  hideLoginOverlay();
+  hidePasswordChangeOverlay();
+  if (window.location.pathname === "/login") {
+    window.history.replaceState({}, "", getDefaultRouteForCurrentUser());
+  }
+  await bootstrap();
+}
+
+async function submitPasswordChange(event) {
+  event.preventDefault();
+  const overlay = document.getElementById("password-change-overlay");
+  const forced = overlay?.dataset.mode === "forced";
+  const currentPassword = document.getElementById("password-current")?.value || "";
+  const newPassword = document.getElementById("password-new")?.value || "";
+  const confirmPassword = document.getElementById("password-confirm")?.value || "";
+  const errorBox = document.getElementById("password-change-error");
+  const submitButton = document.getElementById("password-change-submit");
+  if (errorBox) {
+    errorBox.textContent = "";
+  }
+  if (newPassword.length < 8) {
+    if (errorBox) errorBox.textContent = "Use uma senha com pelo menos 8 caracteres.";
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    if (errorBox) errorBox.textContent = "A confirmação precisa ser igual à nova senha.";
+    return;
+  }
+  if (!forced && !currentPassword) {
+    if (errorBox) errorBox.textContent = "Informe a senha atual.";
+    return;
+  }
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.textContent = "Salvando...";
+  }
+  try {
+    const response = await api(forced ? "/api/auth/force-change-password" : "/api/auth/change-password", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(forced ? { newPassword } : { currentPassword, newPassword })
+    });
+    showFeedback("Senha atualizada com sucesso.");
+    await continueAfterPasswordChange(response.user || state.currentUser);
+  } catch (error) {
+    if (errorBox) {
+      errorBox.textContent = error.message || "Não foi possível trocar a senha agora.";
+    }
+  } finally {
+    if (submitButton) {
+      submitButton.disabled = false;
+      submitButton.textContent = "Salvar senha";
+    }
+  }
+}
+
 function cleanupTransientOverlays(targetSection = "") {
   const normalizedTarget = normalizeText(targetSection || "");
 
@@ -24602,7 +24727,7 @@ async function restoreSession() {
       state.authLoading = false;
       clearAuthSession();
       redirectToLogin();
-      showLoginOverlay("Faça login para acessar esta área do sistema.");
+      showLoginOverlay("");
       return false;
     }
     if (!response.ok) {
@@ -24616,6 +24741,11 @@ async function restoreSession() {
     state.isAuthenticated = Boolean(state.currentUser);
     state.authLoading = false;
     loadSavedTheme(state.currentUser);
+    if (isPasswordChangeRequired(state.currentUser)) {
+      hideLoginOverlay();
+      showPasswordChangeOverlay({ forced: true });
+      return false;
+    }
     hideLoginOverlay();
     applyRolePermissions();
     return true;
@@ -24637,6 +24767,11 @@ async function loginUser(event) {
     body: JSON.stringify({ email, password })
   });
   setAuthSession(result.token || "", result.user || null);
+  if (result.must_change_password || isPasswordChangeRequired(result.user || null)) {
+    hideLoginOverlay();
+    showPasswordChangeOverlay({ forced: true });
+    return;
+  }
   applyRolePermissions();
   hideLoginOverlay();
   if (window.location.pathname === "/login") {
@@ -26207,6 +26342,12 @@ function handleDocumentClick(event) {
   const authLogoutButton = event.target.closest("[data-auth-logout]");
   if (authLogoutButton) {
     logoutUser().catch((error) => handleUiError("Erro ao trocar login", error));
+    return;
+  }
+
+  const authChangePasswordButton = event.target.closest("[data-auth-change-password]");
+  if (authChangePasswordButton) {
+    showPasswordChangeOverlay({ forced: false });
     return;
   }
 
@@ -28780,6 +28921,15 @@ function bindEvents() {
     loginUser(event).catch((error) => {
       document.getElementById("login-error").textContent = error.message || "Falha ao entrar.";
     });
+  });
+  document.getElementById("password-change-form")?.addEventListener("submit", (event) => {
+    submitPasswordChange(event).catch((error) => {
+      const errorBox = document.getElementById("password-change-error");
+      if (errorBox) errorBox.textContent = error.message || "Falha ao trocar senha.";
+    });
+  });
+  document.getElementById("password-change-cancel")?.addEventListener("click", () => {
+    hidePasswordChangeOverlay();
   });
   document.getElementById("logout-button").addEventListener("click", () => {
     logoutUser().catch((error) => handleUiError("Erro ao sair", error));
