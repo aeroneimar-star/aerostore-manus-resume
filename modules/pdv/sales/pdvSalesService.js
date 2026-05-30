@@ -32,6 +32,8 @@ const {
 const { normalizeStoreKey, formatStoreLabel, storesMatch } = require("../utils/pdvStoreUtils");
 const { getStorePublicContext } = require("../../../services/storeSettingsService");
 const { PagBankError, createPagBankCheckout, getPagBankCheckout } = require("../../../services/pagbankService");
+const { get, run } = require("../../../db");
+const { getNotificationService, getNotificationDryRunDefault } = require("../../../src/notification/NotificationService");
 const {
   listActiveExchangeCreditsForCustomer,
   getExchangeCreditById,
@@ -1023,7 +1025,7 @@ function createCashbackEntry({ sale, customer, generatedAmount, user }) {
     customer_name: normalizeText(customer?.name || ""),
     source: "PDV_AEROSTORE",
     origin: "SALE",
-    status: "PENDING",
+    status: "AVAILABLE",
     amount: roundMoney(generatedAmount),
     remaining_amount: roundMoney(generatedAmount),
     valid_from: validFrom,
@@ -1032,12 +1034,282 @@ function createCashbackEntry({ sale, customer, generatedAmount, user }) {
     created_at: createdAt,
     generated_at: createdAt,
     created_by: user?.name || user?.email || "sistema",
-    notes: "Cashback oficial AEROSTORE gerado sobre valor liquido incremental e liberado no dia seguinte."
+    notes: "Cashback oficial AEROSTORE gerado sobre valor liquido incremental da venda."
   };
   const ledger = loadCashbackLedger();
   ledger.unshift(entry);
   saveCashbackLedger(ledger);
   return entry;
+}
+
+function removeCashbackEntryFromJsonLedger(cashbackId = "") {
+  const normalizedId = normalizeText(cashbackId || "");
+  if (!normalizedId) return false;
+  const ledger = loadCashbackLedger();
+  const nextLedger = ledger.filter((entry) => normalizeText(entry.cashback_id || "") !== normalizedId);
+  if (nextLedger.length === ledger.length) {
+    return false;
+  }
+  saveCashbackLedger(nextLedger);
+  return true;
+}
+
+async function resolveOperationalCashbackContact(customer = {}) {
+  const numericCandidates = [
+    customer.contact_id,
+    customer.cashback_contact_id,
+    customer.legacy_contact_id,
+    customer.master_customer_id,
+    customer.id
+  ]
+    .map((value) => Number(value || 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+
+  for (const id of numericCandidates) {
+    const row = await get("SELECT * FROM contacts WHERE id = ? LIMIT 1", [id]).catch(() => null);
+    if (row?.id) {
+      return row;
+    }
+  }
+
+  const phone = normalizePhone(customer.phone || customer.mobile || customer.customer_phone || "");
+  const document = normalizeDigits(customer.document || customer.cpf_cnpj || "");
+  const email = normalizeText(customer.email || "").toLowerCase();
+
+  if (phone) {
+    const row = await get(
+      `SELECT * FROM contacts
+       WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone, ''), '(', ''), ')', ''), '-', ''), ' ', ''), '+', '') IN (?, ?)
+       ORDER BY id DESC
+       LIMIT 1`,
+      [phone, `55${phone}`]
+    ).catch(() => null);
+    if (row?.id) {
+      return row;
+    }
+  }
+
+  if (document) {
+    const row = await get(
+      `SELECT * FROM contacts
+       WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(document, ''), '.', ''), '-', ''), '/', ''), ' ', '') = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+      [document]
+    ).catch(() => null);
+    if (row?.id) {
+      return row;
+    }
+  }
+
+  if (email) {
+    const row = await get(
+      "SELECT * FROM contacts WHERE lower(COALESCE(email, '')) = ? ORDER BY id DESC LIMIT 1",
+      [email]
+    ).catch(() => null);
+    if (row?.id) {
+      return row;
+    }
+  }
+
+  return null;
+}
+
+function buildOperationalCashbackDbPayload({ sale, cashbackEntry, contact, generatedAmount, user }) {
+  const customer = sale.customer || {};
+  const createdAt = normalizeText(sale.created_at || cashbackEntry.created_at || nowIso()) || nowIso();
+  const generated = roundMoney(generatedAmount || cashbackEntry.amount || 0);
+  return {
+    contact_id: Number(contact?.id || 0),
+    customer_name: normalizeText(contact?.name || customer.name || cashbackEntry.customer_name || "Cliente"),
+    customer_phone: normalizePhone(contact?.phone || customer.phone || cashbackEntry.customer_phone || ""),
+    store: normalizeStoreKey(sale.loja || ""),
+    seller_id: Number(user?.seller_id || 0) || null,
+    seller_name: normalizeText(sale.vendedor || user?.name || user?.email || ""),
+    purchase_value: roundMoney(sale.total_final || sale.paid_amount || sale.net_amount || 0),
+    percentage: CASHBACK_RATE * 100,
+    generated_value: generated,
+    available_balance: generated,
+    used_value: 0,
+    lost_value: 0,
+    minimum_purchase: roundMoney(generated / CASHBACK_REDEMPTION_LIMIT_RATE),
+    status: "disponivel",
+    origin: "pdv_sale",
+    valid_from: cashbackEntry.valid_from || cashbackEntry.available_at || createdAt,
+    expires_at: cashbackEntry.expires_at || getCashbackExpiresAt(cashbackEntry.valid_from || createdAt),
+    created_at: createdAt,
+    updated_at: createdAt,
+    created_by: user?.name || user?.email || "sistema",
+    sale_id: sale.sale_id,
+    source_type: "pdv_sale",
+    source_reference: sale.sale_id
+  };
+}
+
+async function upsertCustomerCashbackLedgerForSale({ sale, cashbackRow, cashbackEntry, contact, payload }) {
+  const existing = await get(
+    `SELECT id FROM customer_cashback_ledger
+     WHERE external_event_id = ?
+       AND origin = 'pdv_sale'
+     LIMIT 1`,
+    [sale.sale_id]
+  ).catch(() => null);
+  if (existing?.id) {
+    return existing;
+  }
+  const createdAt = normalizeText(payload.created_at || nowIso()) || nowIso();
+  const result = await run(
+    `INSERT INTO customer_cashback_ledger
+      (customer_id, contact_id, source_system, source_import_id, source_file, source_row_number,
+       external_event_id, external_customer_key, customer_name_snapshot, customer_phone_snapshot,
+       customer_document_snapshot, customer_email_snapshot, ledger_type, status, origin, store, seller,
+       purchase_date, purchase_amount, amount, balance_amount, used_amount, valid_from, valid_until,
+       match_method, match_confidence, import_ready, notes, raw_json, created_at, updated_at, deleted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+    [
+      payload.contact_id,
+      payload.contact_id,
+      "pdv_sale",
+      sale.sale_id,
+      sale.sale_id,
+      Number(cashbackRow?.id || 0),
+      sale.sale_id,
+      String(payload.contact_id || ""),
+      payload.customer_name,
+      payload.customer_phone,
+      normalizeDigits(contact?.document || sale.customer?.document || ""),
+      normalizeText(contact?.email || sale.customer?.email || ""),
+      "earned",
+      "available",
+      "pdv_sale",
+      payload.store,
+      payload.seller_name,
+      sale.data_hora || payload.created_at,
+      payload.purchase_value,
+      payload.generated_value,
+      payload.available_balance,
+      0,
+      payload.valid_from,
+      payload.expires_at,
+      contact?.id ? "contact_id" : "sale_customer",
+      contact?.id ? "high" : "low",
+      1,
+      `Cashback PDV gerado pela venda ${sale.sale_id}.`,
+      JSON.stringify({
+        sale_id: sale.sale_id,
+        cashback_id: cashbackRow?.id || "",
+        json_cashback_id: cashbackEntry?.cashback_id || "",
+        source: "pdv_sale"
+      }),
+      createdAt,
+      createdAt
+    ]
+  );
+  return { id: result.lastID };
+}
+
+async function persistOperationalCashbackForSale({ sale, cashbackEntry, generatedAmount, user }) {
+  const contact = await resolveOperationalCashbackContact(sale.customer || {});
+  if (!contact?.id) {
+    return {
+      persisted: false,
+      reason: "contact_not_found",
+      contact: null,
+      cashback: null
+    };
+  }
+
+  const existing = await get(
+    `SELECT * FROM cashbacks
+     WHERE sale_id = ?
+       AND contact_id = ?
+       AND origin = 'pdv_sale'
+     LIMIT 1`,
+    [sale.sale_id, contact.id]
+  ).catch(() => null);
+  const payload = buildOperationalCashbackDbPayload({ sale, cashbackEntry, contact, generatedAmount, user });
+  let cashbackRow = existing;
+  if (!cashbackRow?.id) {
+    const result = await run(
+      `INSERT INTO cashbacks
+        (contact_id, customer_name, customer_phone, store, seller_id, seller_name, seller,
+         purchase_value, percentage, generated_value, available_balance, used_value, lost_value,
+         minimum_purchase, status, origin, valid_from, expires_at, created_at, updated_at, created_by,
+         sale_id, source_type, source_reference)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        payload.contact_id,
+        payload.customer_name,
+        payload.customer_phone,
+        payload.store,
+        payload.seller_id,
+        payload.seller_name,
+        payload.seller_name,
+        payload.purchase_value,
+        payload.percentage,
+        payload.generated_value,
+        payload.available_balance,
+        payload.used_value,
+        payload.lost_value,
+        payload.minimum_purchase,
+        payload.status,
+        payload.origin,
+        payload.valid_from,
+        payload.expires_at,
+        payload.created_at,
+        payload.updated_at,
+        payload.created_by,
+        payload.sale_id,
+        payload.source_type,
+        payload.source_reference
+      ]
+    );
+    cashbackRow = await get("SELECT * FROM cashbacks WHERE id = ?", [result.lastID]);
+  }
+
+  const ledgerRow = await upsertCustomerCashbackLedgerForSale({
+    sale,
+    cashbackRow,
+    cashbackEntry,
+    contact,
+    payload
+  });
+
+  return {
+    persisted: true,
+    deduped: Boolean(existing?.id),
+    contact,
+    cashback: cashbackRow,
+    ledger: ledgerRow
+  };
+}
+
+async function notifyCashbackEarnedForSale(cashbackRow = {}) {
+  try {
+    if (!cashbackRow?.id) {
+      return { success: false, status: "skipped_missing_cashback" };
+    }
+    return await getNotificationService().sendCashbackNotification(cashbackRow, {
+      dryRun: getNotificationDryRunDefault()
+    });
+  } catch (error) {
+    try {
+      await getNotificationService().createLog({
+        templateName: process.env.WHATSAPP_TEMPLATE_CASHBACK || "cashback_notificacao",
+        cashbackId: cashbackRow?.id || "",
+        customerId: cashbackRow?.contact_id || "",
+        reminderType: "CREDITED",
+        eventType: "cashback_earned",
+        status: "failed",
+        dryRun: getNotificationDryRunDefault(),
+        errorCode: "notification_exception",
+        errorMessage: error.message || "Falha ao registrar notificacao de cashback."
+      });
+    } catch (_) {
+      // A venda e o cashback nao podem depender da disponibilidade da notificacao.
+    }
+    return { success: false, status: "failed", errorCode: "notification_exception" };
+  }
 }
 
 function consumeCashbackEntries(customerPhone, amount, saleId, user) {
@@ -1811,6 +2083,44 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
       generatedAmount: generatedCashbackAmount,
       user
     });
+    try {
+      const persistence = await persistOperationalCashbackForSale({
+        sale,
+        cashbackEntry: sale.cashback_generated,
+        generatedAmount: generatedCashbackAmount,
+        user
+      });
+      sale.cashback_generated.persistence_status = persistence.persisted ? "persisted" : "skipped";
+      sale.cashback_generated.db_cashback_id = persistence.cashback?.id || null;
+      sale.cashback_generated.db_ledger_id = persistence.ledger?.id || null;
+      sale.cashback_generated.contact_id = persistence.contact?.id || null;
+      sale.cashback_generated.deduped = Boolean(persistence.deduped);
+      if (persistence.persisted && persistence.cashback?.id) {
+        sale.cashback_notification = await notifyCashbackEarnedForSale(persistence.cashback);
+      } else {
+        sale.cashback_notification = {
+          success: false,
+          status: "skipped_missing_contact",
+          reason: persistence.reason || "contact_not_found"
+        };
+        await getNotificationService().createLog({
+          templateName: process.env.WHATSAPP_TEMPLATE_CASHBACK || "cashback_notificacao",
+          cashbackId: sale.cashback_generated.cashback_id,
+          customerId: "",
+          reminderType: "CREDITED",
+          eventType: "cashback_earned",
+          status: "failed",
+          dryRun: getNotificationDryRunDefault(),
+          errorCode: "contact_not_found",
+          errorMessage: "Cliente da venda sem contact_id operacional para gravar cashback em cashbacks."
+        }).catch(() => null);
+      }
+    } catch (error) {
+      sale.cashback_generated.persistence_status = "failed";
+      sale.cashback_generated.persistence_error = String(error.message || "Falha ao persistir cashback operacional.").slice(0, 180);
+      removeCashbackEntryFromJsonLedger(sale.cashback_generated.cashback_id);
+      throw error;
+    }
     appendEvent("CASHBACK_GRANTED", { sale_id: sale.sale_id, loja: sale.loja }, sale.cashback_generated, user);
   }
 

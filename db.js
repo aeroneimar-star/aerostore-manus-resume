@@ -1714,6 +1714,18 @@ async function initializeDatabase() {
   await ensureColumn("cashbacks", "pin_code", "TEXT DEFAULT ''");
   await ensureColumn("cashbacks", "pin_expires_at", "TEXT DEFAULT ''");
   await ensureColumn("cashbacks", "pin_validated_at", "TEXT DEFAULT ''");
+  await ensureColumn("cashbacks", "sale_id", "TEXT DEFAULT ''");
+  await ensureColumn("cashbacks", "source_type", "TEXT DEFAULT ''");
+  await ensureColumn("cashbacks", "source_reference", "TEXT DEFAULT ''");
+  await run("CREATE INDEX IF NOT EXISTS idx_cashbacks_sale_id ON cashbacks(sale_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_cashbacks_source_reference ON cashbacks(source_type, source_reference)");
+  await run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbacks_pdv_sale_once
+    ON cashbacks(sale_id, contact_id)
+    WHERE sale_id <> ''
+      AND contact_id IS NOT NULL
+      AND origin = 'pdv_sale'
+  `);
 
   await run(`
     CREATE TABLE IF NOT EXISTS cashback_pin_tokens (
