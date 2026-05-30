@@ -7403,6 +7403,31 @@ tbody tr {
   padding-top: 10px;
 }
 
+.pdv-route-summary .stat-card {
+  min-width: 0;
+}
+
+.pdv-route-summary-value {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.pdv-route-summary .pdv-active-store-select.is-compact {
+  width: auto;
+  max-width: 100%;
+  min-width: 92px;
+  height: 30px;
+  padding: 0 28px 0 11px;
+  border-color: rgba(45, 212, 191, 0.22);
+  background:
+    linear-gradient(135deg, rgba(45, 212, 191, 0.14), rgba(15, 20, 27, 0.72));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  font-size: 0.86rem;
+  line-height: 1;
+}
+
 .pdv-active-store-select {
   width: 100%;
   min-width: 138px;
@@ -16229,6 +16254,7 @@ body[data-route-section="pdv-sales-orders"] .pdv-hero-card .stat-card {
   padding: 14px 16px;
   gap: 4px;
   justify-content: center;
+  align-items: flex-start;
   border-radius: var(--radius-md, 12px);
 }
 
@@ -16242,6 +16268,12 @@ body[data-route-section="pdv-sales-orders"] .pdv-hero-card .stat-card span {
 body[data-route-section="pdv-sales-orders"] .pdv-hero-card .stat-card strong {
   font-size: 0.9rem;
   line-height: 1.2;
+}
+
+body[data-route-section="pdv-sales-orders"] .pdv-hero-card .pdv-active-store-select.is-compact {
+  min-width: 86px;
+  height: 30px;
+  font-size: 0.84rem;
 }
 
 @media (max-width: 1024px) {
@@ -17877,10 +17909,39 @@ body[data-route-section="pdv-sale"] .pdv-sale-financial-total strong {
   color: var(--sale-text-main);
 }
 
+body[data-route-section="pdv-sale"] .pdv-sale-financial-row strong {
+  transition: color 160ms ease, text-shadow 160ms ease;
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-financial-row.is-subtotal strong,
+body[data-route-section="pdv-sale"] .pdv-sale-financial-row.is-net-subtotal strong {
+  color: #DCE8F4;
+}
+
 body[data-route-section="pdv-sale"] .pdv-sale-financial-row.is-discount strong,
 body[data-route-section="pdv-sale"] .pdv-sale-financial-row.is-cashback strong,
 body[data-route-section="pdv-sale"] .pdv-sale-financial-row.is-exchange-credit strong {
-  color: var(--sale-success);
+  color: #6EE7B7;
+  text-shadow: 0 0 18px rgba(110, 231, 183, 0.12);
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-financial-row.is-cashback strong {
+  color: #5EEAD4;
+  text-shadow: 0 0 18px rgba(94, 234, 212, 0.14);
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-financial-row.is-exchange-credit strong {
+  color: #A7F3D0;
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-financial-row.is-paid strong {
+  color: #93C5FD;
+  text-shadow: 0 0 18px rgba(147, 197, 253, 0.12);
+}
+
+body[data-route-section="pdv-sale"] .pdv-sale-financial-total strong {
+  color: #FFFFFF;
+  text-shadow: 0 0 24px rgba(45, 212, 191, 0.18);
 }
 
 body[data-route-section="pdv-sale"] .pdv-sale-financial-pending:not(.is-balanced),
@@ -20669,6 +20730,141 @@ body[data-route-section="pdv-products"] .pdv-products-table tbody tr:hover td {
   background: var(--products-bg-card) !important;
 }
 
+body[data-route-section="pdv-products"] .split-grid {
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+  align-items: start;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-list-panel {
+  overflow: hidden;
+  padding: 14px !important;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-card-list {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-card {
+  display: grid;
+  grid-template-columns: var(--product-media-list-w) minmax(0, 1fr);
+  grid-template-areas:
+    "photo main"
+    "photo meta";
+  gap: 10px 16px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--products-divider);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 96% 12%, rgba(45,212,191,0.08), transparent 34%),
+    rgba(17,24,34,0.78);
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-card:hover,
+body[data-route-section="pdv-products"] .pdv-products-result-card.is-selected {
+  border-color: rgba(45,212,191,0.22);
+  background:
+    radial-gradient(circle at 96% 12%, rgba(45,212,191,0.11), transparent 34%),
+    rgba(22,31,44,0.88);
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-photo {
+  grid-area: photo;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-main {
+  grid-area: main;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-main strong {
+  color: var(--products-text-main);
+  font-size: 0.98rem;
+  line-height: 1.28;
+  overflow-wrap: anywhere;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-main small {
+  color: var(--products-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-main .pdv-customers-inline-badges {
+  gap: 5px;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-main .pdv-customers-inline-badges span {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-meta {
+  grid-area: meta;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-topline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 10px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-topline .pdv-products-price-cell {
+  min-width: 116px;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-topline .pdv-products-stock-cell {
+  min-width: 72px;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-card .pdv-products-identifiers {
+  display: flex;
+  flex-flow: row wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-card .pdv-products-identifier-chip {
+  margin: 0;
+  max-width: 190px;
+  min-height: 28px;
+  padding: 5px 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-card .pdv-products-identifiers > small {
+  flex-basis: 100%;
+  color: var(--products-text-muted);
+  font-size: 0.76rem;
+  letter-spacing: 0.01em;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-card .pdv-products-action-row {
+  justify-content: flex-start;
+  gap: 7px;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-result-card .pdv-products-action-row button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
 body[data-route-section="pdv-products"] .pdv-products-status-badge {
   background: var(--products-bg-card) !important;
   border: 1px solid var(--products-border-soft) !important;
@@ -20700,6 +20896,10 @@ body[data-route-section="pdv-products"] .pdv-products-status-badge.is-negative {
 }
 
 @media (max-width: 1180px) {
+  body[data-route-section="pdv-products"] .split-grid {
+    grid-template-columns: 1fr;
+  }
+
   body[data-route-section="pdv-products"] .pdv-products-toolbar {
     grid-template-columns: 1fr;
   }
@@ -20722,6 +20922,10 @@ body[data-route-section="pdv-products"] .pdv-products-status-badge.is-negative {
 
   body[data-route-section="pdv-products"] .pdv-products-toolbar-filters .pdv-products-action-row {
     grid-column: auto;
+  }
+
+  body[data-route-section="pdv-products"] .pdv-products-result-card {
+    grid-template-columns: var(--product-media-mobile) minmax(0, 1fr);
   }
 }
 
@@ -23179,6 +23383,249 @@ body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-r
   color: var(--reports-warning) !important;
 }
 
+/* AEROSTORE OS - Reports executive density pass */
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports {
+  --reports-gap-tight: 9px;
+  --reports-gap: 12px;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-route-shell,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-front-shell,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-reports-shell,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-shell {
+  gap: var(--reports-gap) !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .hero-card,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-hero-card,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-front-hero,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-route-hero {
+  min-height: 92px !important;
+  padding: 14px 18px !important;
+  border-radius: 18px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .hero-card h2,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .hero-card h3,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-front-hero h2,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-route-hero h2 {
+  margin: 3px 0 !important;
+  font-size: clamp(1.18rem, 1.65vw, 1.52rem) !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .hero-card p,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-front-hero p,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-route-hero p {
+  margin: 4px 0 0 !important;
+  max-width: 680px !important;
+  font-size: 0.8rem !important;
+  line-height: 1.32 !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .eyebrow {
+  font-size: 0.62rem !important;
+  letter-spacing: 0.16em !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-route-tabs,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-route-shell-compact {
+  gap: 7px !important;
+  padding: 7px !important;
+  border-radius: 16px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-route-tab {
+  min-height: 32px !important;
+  padding: 7px 11px !important;
+  font-size: 0.76rem !important;
+  border-radius: 12px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .panel,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-section,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-filter-panel,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-intro-panel,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-side-panel,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-decision-card,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-trend-panel {
+  padding: 11px !important;
+  border-radius: 16px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .panel-header {
+  gap: 8px !important;
+  margin-bottom: 8px !important;
+  padding-bottom: 8px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .panel-header h3,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .panel h3 {
+  font-size: 0.88rem !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .panel-header span,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .panel-header p,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .helper-text,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .table-meta {
+  font-size: 0.72rem !important;
+  line-height: 1.3 !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-filter-panel {
+  padding: 10px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-filter-grid {
+  grid-template-columns: repeat(6, minmax(120px, 1fr)) !important;
+  gap: 8px !important;
+  margin-top: 8px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-filter-actions,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-route-switch,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-curve-toolbar,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-margin-tabs {
+  gap: 6px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports label,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-filter-grid label,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-custom-dates label,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-curve-toolbar label {
+  gap: 4px !important;
+  font-size: 0.7rem !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports input,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports select {
+  min-height: 34px !important;
+  padding: 7px 10px !important;
+  border-radius: 10px !important;
+  font-size: 0.78rem !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .primary-button,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .secondary-button,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .ghost-button,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .danger-button {
+  min-height: 32px !important;
+  padding: 7px 11px !important;
+  border-radius: 10px !important;
+  font-size: 0.72rem !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-kpi-grid,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-mini-kpi-grid,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-summary-grid,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-highlight-grid {
+  gap: 8px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-kpi-card,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-stat-card {
+  min-height: 70px !important;
+  padding: 9px 10px !important;
+  border-radius: 13px !important;
+  gap: 4px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-kpi-card.compact {
+  min-height: 64px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-kpi-card span,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-stat-card span,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-stat-meta small {
+  font-size: 0.62rem !important;
+  letter-spacing: 0.06em !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-kpi-card strong,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-stat-card strong,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-highlight-card strong {
+  font-size: clamp(0.98rem, 1.12vw, 1.24rem) !important;
+  line-height: 1.05 !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-priority-grid,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-main-grid,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-feature-grid,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-table-grid,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-finance-grid {
+  gap: 10px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-side-stack,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-finance-groups,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-decision-list,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-trend-list,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-decision-grid,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-trends-grid {
+  gap: 8px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-decision-item,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-trend-item,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-highlight-card,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-callout-card {
+  padding: 9px 10px !important;
+  border-radius: 13px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-decision-item p {
+  margin: 5px 0 !important;
+  font-size: 0.78rem !important;
+  line-height: 1.35 !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-decision-head,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-trend-head,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-decision-foot,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-curve-toolbar {
+  gap: 7px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-table-wrap,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-curve-wrap,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-margin-wrap {
+  max-height: min(420px, calc(100vh - 270px)) !important;
+  border-radius: 13px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-table,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-table {
+  min-width: 760px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-table th,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-table td,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-table th,
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-table td {
+  padding: 7px 8px !important;
+  font-size: 0.72rem !important;
+  line-height: 1.25 !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-badge {
+  min-height: 21px !important;
+  padding: 4px 7px !important;
+  font-size: 0.62rem !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-empty-state {
+  padding: 10px !important;
+  border-radius: 13px !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-empty-state strong {
+  font-size: 0.82rem !important;
+}
+
+body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-report-empty-state span {
+  font-size: 0.72rem !important;
+  line-height: 1.32 !important;
+}
+
 @media (max-width: 1480px) {
   body:is([data-route-section="pdv-reports"], [data-section="pdv-reports"]) #pdv-reports .pdv-cockpit-filter-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
@@ -23335,6 +23782,209 @@ body[data-route-section="pdv-stock"] .pdv-products-stock-cell {
 /* REQUISITO 6 - Scroll Horizontal Discreto */
 body[data-route-section="pdv-stock"] .table-wrap {
   overflow-x: auto !important;
+}
+
+/* =========================================
+   AEROSTORE OS: PDV Stock Premium Card List
+   Remove a planilha espremida e preserva leitura operacional.
+   ========================================= */
+body[data-route-section="pdv-stock"] .split-grid {
+  grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr) !important;
+  align-items: start !important;
+  gap: 14px !important;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-results-panel {
+  min-width: 0 !important;
+  padding: 14px !important;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-results-scroll {
+  max-height: min(700px, calc(100vh - 330px)) !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  padding: 2px 8px 2px 0 !important;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-card-list {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-card {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr) minmax(116px, 0.32fr);
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 98% 8%, rgba(45,212,191,0.08), transparent 28%),
+    linear-gradient(135deg, rgba(19,26,35,0.98), rgba(13,18,25,0.94));
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-card:hover,
+body[data-route-section="pdv-stock"] .pdv-stock-result-card.is-selected {
+  border-color: rgba(45,212,191,0.28);
+  background:
+    radial-gradient(circle at 98% 8%, rgba(45,212,191,0.12), transparent 30%),
+    linear-gradient(135deg, rgba(22,31,42,0.98), rgba(14,21,30,0.96));
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-media {
+  min-width: 0;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-media .pdv-products-photo.is-product-media {
+  width: 72px !important;
+  height: 72px !important;
+  min-width: 72px !important;
+  border-radius: 16px !important;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-main {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-main > strong {
+  display: -webkit-box;
+  color: #F4F7FA;
+  font-size: 0.9rem;
+  line-height: 1.24;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-main > small {
+  color: #AAB4C0;
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: #7F8A99;
+  font-size: 0.72rem;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-context span {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-card .pdv-products-identifiers {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 4px !important;
+  min-width: 0 !important;
+  max-height: 54px;
+  overflow: hidden !important;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-card .pdv-products-identifiers span,
+body[data-route-section="pdv-stock"] .pdv-stock-result-card .pdv-products-identifier-chip {
+  max-width: 150px !important;
+  min-height: 22px !important;
+  padding: 3px 7px !important;
+  border-radius: 999px !important;
+  font-size: 0.68rem !important;
+  line-height: 1.15 !important;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-side {
+  display: grid;
+  justify-items: end;
+  align-content: center;
+  gap: 8px;
+  min-width: 0;
+  text-align: right;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-qty strong {
+  display: block;
+  color: #F4F7FA;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-qty small {
+  display: block;
+  color: #AAB4C0;
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-side .pdv-products-status-badge {
+  max-width: 126px;
+  min-height: 26px;
+  padding: 0 9px;
+  font-size: 0.68rem;
+  line-height: 1.15;
+  white-space: normal;
+}
+
+body[data-route-section="pdv-stock"] .pdv-stock-result-side .secondary-button.small {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 0.74rem;
+}
+
+body[data-route-section="pdv-stock"] .pdv-products-callout.warning {
+  display: grid !important;
+  gap: 6px !important;
+  padding: 12px 14px !important;
+  overflow: hidden !important;
+}
+
+body[data-route-section="pdv-stock"] .pdv-products-callout.warning span {
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+  line-height: 1.4 !important;
+}
+
+body[data-route-section="pdv-stock"] .split-grid > .panel:last-child {
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+body[data-route-section="pdv-stock"] .split-grid > .panel:last-child .pdv-products-detail-card {
+  box-shadow: none !important;
+}
+
+@media (max-width: 1180px) {
+  body[data-route-section="pdv-stock"] .split-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 760px) {
+  body[data-route-section="pdv-stock"] .pdv-stock-result-card {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  body[data-route-section="pdv-stock"] .pdv-stock-result-side {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, auto));
+    justify-content: start;
+    justify-items: start;
+    text-align: left;
+  }
 }
 
 /* =========================================

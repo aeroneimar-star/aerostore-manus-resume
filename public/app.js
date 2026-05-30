@@ -1595,7 +1595,7 @@ function buildPdvFrontShell({ sectionId, title, subtitle, eyebrow = "PDV AEROSTO
   const currentStoreContext = getPdvStorePublicContext(getCurrentPdvStoreId(), getCurrentUserStoreLabel());
   const currentStoreLabel = getPdvStoreDisplayName(getCurrentPdvStoreId(), currentStoreContext.display_name || getCurrentUserStoreLabel());
   const currentTerminalLabel = normalizeText(currentStoreContext?.terminal?.default_terminal_label || "");
-  const activeStoreSelectHtml = buildActiveStoreSelectMarkup() || `<strong>${escapeHtml(currentStoreLabel)}</strong>`;
+  const activeStoreSelectHtml = buildActiveStoreSelectMarkup({ compact: true }) || `<strong>${escapeHtml(currentStoreLabel)}</strong>`;
   return `
     <div class="hero-card pdv-hero-card">
       <div>
@@ -1606,7 +1606,7 @@ function buildPdvFrontShell({ sectionId, title, subtitle, eyebrow = "PDV AEROSTO
       <div class="stats-grid pdv-route-summary">
         <div class="stat-card">
           <span>Loja ativa</span>
-          ${activeStoreSelectHtml}
+          <div class="pdv-route-summary-value">${activeStoreSelectHtml}</div>
           ${currentTerminalLabel ? `<span>${escapeHtml(currentTerminalLabel)}</span>` : ""}
         </div>
         <div class="stat-card">
@@ -5175,7 +5175,7 @@ function buildPdvSaleActiveContent() {
             
             <div class="pdv-payment-summary-sticky pdv-sale-financial-summary">
               <div class="pdv-sale-financial-lines">
-                <div class="pdv-sale-financial-row">
+                <div class="pdv-sale-financial-row is-subtotal">
                   <span>Subtotal bruto</span>
                   <strong>${currency(totals.subtotal)}</strong>
                 </div>
@@ -5184,21 +5184,21 @@ function buildPdvSaleActiveContent() {
                     <span>Desconto nos itens</span>
                     <strong class="is-discount">-${currency(totals.itemDiscountAmount)}</strong>
                   </div>
-                  <div class="pdv-sale-financial-row">
+                  <div class="pdv-sale-financial-row is-net-subtotal">
                     <span>Subtotal líquido</span>
                     <strong>${currency(totals.itemsNetSubtotal)}</strong>
                   </div>
                 ` : ""}
-                <div class="pdv-sale-financial-row">
+                <div class="pdv-sale-financial-row is-discount">
                   <span>Desconto geral</span>
                   <strong class="${totals.discountAmount > 0 ? "is-discount" : ""}">${totals.discountAmount > 0 ? `-${currency(totals.discountAmount)}` : currency(0)}</strong>
                 </div>
-                <div class="pdv-sale-financial-row">
+                <div class="pdv-sale-financial-row is-cashback">
                   <span>Cashback aplicado</span>
                   <strong class="${totals.cashbackApplied > 0 ? "is-discount" : ""}">${totals.cashbackApplied > 0 ? `-${currency(totals.cashbackApplied)}` : currency(0)}</strong>
                 </div>
                 ${totals.exchangeCreditApplied > 0 ? `
-                  <div class="pdv-sale-financial-row">
+                  <div class="pdv-sale-financial-row is-exchange-credit">
                     <span>Crédito de Troca aplicado</span>
                     <strong class="is-discount">-${currency(totals.exchangeCreditApplied)}</strong>
                   </div>
@@ -5207,7 +5207,7 @@ function buildPdvSaleActiveContent() {
                   <span>Total a pagar</span>
                   <strong>${currency(totals.total)}</strong>
                 </div>
-                <div class="pdv-sale-financial-row">
+                <div class="pdv-sale-financial-row is-paid">
                   <span>Recebido</span>
                   <strong>${currency(totals.paid)}</strong>
                 </div>
@@ -11213,6 +11213,44 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
       <td><div class="action-row pdv-products-action-row"><button class="secondary-button" type="button" data-pdv-product-detail="${escapeHtml(String(item.id))}">Ver</button><button class="ghost-button" type="button" data-pdv-product-label-print="${escapeHtml(String(item.id))}">Etiqueta</button><button class="ghost-button" type="button" data-pdv-product-edit="${escapeHtml(String(item.id))}">Editar</button></div></td>
     </tr>
   `).join("") : `<tr><td colspan="7"><div class="empty-state compact"><strong>Nenhum produto cadastrado ainda.</strong><span>Cadastre o primeiro produto manual para preparar PDV e Vitrine IA.</span></div></td></tr>`;
+  const productCardsHtml = items.length ? items.map((item) => {
+    const productId = String(item.id || "");
+    const productName = item.display_name || item.commercial_name || item.name || "Produto";
+    const isSelected = normalizeText(state.pdvProducts.selectedProductId || "") === normalizeText(productId);
+    const statusKey = normalizeText(item.status || "ativo") || "ativo";
+    const sizesText = toArray(item.sizes).join(", ") || "Sem tamanhos";
+    const price = toNumber(item.price || 0);
+    const promoPrice = toNumber(item.promotional_price || item.promotionalPrice || 0);
+    const priceDetail = promoPrice > 0 && promoPrice < price ? `Por ${currency(promoPrice)}` : sizesText;
+    return `
+      <article class="pdv-products-result-card${isSelected ? " is-selected" : ""}">
+        <div class="pdv-products-result-photo">
+          <div class="pdv-products-photo is-product-media">${buildPdvProductImageMarkup(item.preview_url, productName, (productName || "PR").slice(0, 2).toUpperCase())}</div>
+        </div>
+        <div class="pdv-products-result-main">
+          <strong>${escapeHtml(productName)}</strong>
+          <small>${escapeHtml(item.category || "Sem categoria")} &middot; ${escapeHtml(item.gender || "Sem genero")}</small>
+          <div class="pdv-customers-inline-badges">${buildManualProductBadges(item)}</div>
+        </div>
+        <div class="pdv-products-result-meta">
+          <div class="pdv-products-result-topline">
+            <div class="pdv-products-price-cell"><strong>${currency(price)}</strong><small>${escapeHtml(priceDetail)}</small></div>
+            <div class="pdv-products-stock-cell"><strong>${escapeHtml(String(toNumber(item.stock || 0)))}</strong><small>${escapeHtml(normalizeText(item.store || "") || "Sem loja")}</small></div>
+            <span class="pdv-products-status-badge is-${escapeHtml(statusKey)}">${escapeHtml(getManualProductStatusLabel(item.status))}</span>
+          </div>
+          <div class="pdv-products-identifiers">
+            ${buildPdvProductIdentifierChips(item)}
+            ${normalizeText(item.brand || "") ? `<small>${escapeHtml(item.brand)}</small>` : ""}
+          </div>
+          <div class="action-row pdv-products-action-row">
+            <button class="secondary-button" type="button" data-pdv-product-detail="${escapeHtml(productId)}">Ver</button>
+            <button class="ghost-button" type="button" data-pdv-product-label-print="${escapeHtml(productId)}">Etiqueta</button>
+            <button class="ghost-button" type="button" data-pdv-product-edit="${escapeHtml(productId)}">Editar</button>
+          </div>
+        </div>
+      </article>
+    `;
+  }).join("") : `<div class="empty-state compact pdv-products-empty-list"><strong>Nenhum produto cadastrado ainda.</strong><span>Cadastre o primeiro produto manual para preparar PDV e Vitrine IA.</span></div>`;
   const contentHtml = `
     <div class="pdv-products-shell">
       <div class="panel-header pdv-products-header">
@@ -11253,7 +11291,9 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
         <button class="ghost-button small" type="button" data-pdv-products-page-next="true"${!pagination.hasMore || state.pdvProducts.loading ? " disabled" : ""}>Proximo</button>
       </div>
       <div class="split-grid">
-        <article class="panel"><div class="table-wrap"><table class="pdv-products-table"><thead><tr><th>Foto</th><th>Produto</th><th>SKU</th><th>Preco</th><th>Estoque</th><th>Status</th><th>Acoes</th></tr></thead><tbody>${rowsHtml}</tbody></table></div></article>
+        <article class="panel pdv-products-list-panel">
+          <div class="pdv-products-card-list">${productCardsHtml}</div>
+        </article>
         <article class="panel"><div class="panel-header"><h3>Detalhe do produto</h3></div>${buildManualProductDetailCard(selectedProduct)}</article>
       </div>
       ${buildPdvProductDrawer()}
@@ -12112,9 +12152,9 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
           <div class="action-row pdv-products-action-row">
             <button class="secondary-button" type="button" data-pdv-stock-detail="${escapeHtml(itemId)}">Detalhes</button>
           </div>
-        </td>
-      </tr>
-    `;
+      </td>
+    </tr>
+  `;
   }).join("") : `
     <tr>
       <td colspan="6">
@@ -12124,6 +12164,46 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
         </div>
       </td>
     </tr>
+  `;
+  const stockCardsHtml = visibleItems.length ? visibleItems.map((item) => {
+    const itemId = normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "");
+    const isSelected = normalizeText(state.pdvStock.selectedInventoryId || "") === itemId;
+    const variantText = [item.cor, item.tamanho, item.tipo].map((value) => normalizeText(value)).filter(Boolean).join(" · ");
+    const availableQty = toNumber(item.available_qty ?? item.saldo ?? item.estoque ?? 0);
+    const reservedQty = toNumber(item.reserved_qty || 0);
+    const updatedAt = formatDateTimeBR(item.last_movement_at || item.updated_at || "");
+    return `
+      <article class="pdv-stock-result-card${isSelected ? " is-selected" : ""}">
+        <div class="pdv-stock-result-media">
+          <div class="pdv-products-photo is-product-media">
+            ${buildPdvProductImageMarkup(item.photo_preview_url || item.photo_preview_url_resolved || item.foto || item.image || "", item.nome || "Produto", (item.nome || "ES").slice(0, 2).toUpperCase())}
+          </div>
+        </div>
+        <div class="pdv-stock-result-main">
+          <strong>${escapeHtml(item.nome || "Produto")}</strong>
+          <small>${escapeHtml(variantText || "Sem variação cadastrada")}</small>
+          <div class="pdv-stock-result-context">
+            <span>${escapeHtml(formatStoreIdLabel(item.store_id || ""))}</span>
+            <span>${escapeHtml(getPdvStockOriginLabel(item))}</span>
+            ${updatedAt ? `<span>${escapeHtml(updatedAt)}</span>` : ""}
+          </div>
+          <div class="pdv-products-identifiers">${buildPdvStockIdentifierChips(item)}</div>
+        </div>
+        <div class="pdv-stock-result-side">
+          <div class="pdv-stock-result-qty">
+            <strong>${escapeHtml(String(availableQty))}</strong>
+            <small>Reservado: ${escapeHtml(String(reservedQty))}</small>
+          </div>
+          <span class="pdv-products-status-badge is-${escapeHtml(getPdvStockStatusKey(item))}">${escapeHtml(getPdvStockStatusLabel(item))}</span>
+          <button class="secondary-button small" type="button" data-pdv-stock-detail="${escapeHtml(itemId)}">Detalhes</button>
+        </div>
+      </article>
+    `;
+  }).join("") : `
+    <div class="empty-state compact">
+      <strong>Nenhum item de estoque encontrado para este filtro.</strong>
+      <span>Revise loja, status, saldo ou a busca por nome e SKU para consultar a base real.</span>
+    </div>
   `;
   const paginationStart = visibleItems.length ? pagination.startIndex + 1 : 0;
   const paginationEnd = visibleItems.length ? Math.min(pagination.startIndex + visibleItems.length, pagination.total || visibleItems.length) : 0;
@@ -12149,7 +12229,13 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
     </div>
   `;
 
-  const alertMessages = toArray(summary.alerts || summary.items).slice(0, 4).map((alert) => normalizeText(alert.message || "")).filter(Boolean);
+  const alertMessages = Array.from(new Set(toArray(summary.alerts || summary.items)
+    .map((alert) => normalizeText(alert.message || "")
+      .replace(/\bvila_masc\b/gi, "Vila")
+      .replace(/\bbotanico\b/gi, "Botânico")
+      .replace(/\bsul\b/gi, "Sul"))
+    .filter(Boolean)))
+    .slice(0, 3);
   const contentHtml = `
     <div class="pdv-products-shell">
       <div class="panel-header pdv-products-header">
@@ -12224,20 +12310,8 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
       <div class="split-grid">
         <article class="panel pdv-stock-results-panel">
           ${paginationHtml}
-          <div class="table-wrap pdv-stock-results-scroll">
-            <table class="pdv-products-table">
-              <thead>
-                <tr>
-                  <th>Produto</th>
-                  <th>Identificadores</th>
-                  <th>Saldo</th>
-                  <th>Status</th>
-                  <th>Origem</th>
-                  <th>Acoes</th>
-                </tr>
-              </thead>
-              <tbody>${rowsHtml}</tbody>
-            </table>
+          <div class="pdv-stock-results-scroll">
+            <div class="pdv-stock-card-list">${stockCardsHtml}</div>
           </div>
         </article>
         <article class="panel">
@@ -20581,7 +20655,7 @@ function buildPdvExchangesContent() {
       <div class="pdv-exchanges-hero">
         <div>
           <span>Central de Trocas</span>
-          <h2>Troca com venda original localizada</h2>
+          <h2>Troca vinculada à venda original</h2>
           <p>Receba o produto devolvido, retorne ao estoque e gere Credito de Troca para o cliente favorecido.</p>
         </div>
         <strong>MVP seguro</strong>
