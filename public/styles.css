@@ -930,6 +930,147 @@ body[data-section="access-denied"]:not(.auth-shell-hidden) #access-denied .actio
   font-size: 0.9rem;
 }
 
+body[data-route-section="pdv-cash-register"] .pdv-cash-financial-grid {
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  align-items: stretch;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-balance-panel,
+body[data-route-section="pdv-cash-register"] .pdv-cash-movements-panel {
+  min-width: 0;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid div {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 16px;
+  padding: 13px 14px;
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.82), rgba(2, 6, 23, 0.56));
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid .total {
+  grid-column: span 2;
+  border-color: rgba(45, 212, 191, 0.28);
+  background: linear-gradient(135deg, rgba(20, 184, 166, 0.16), rgba(15, 23, 42, 0.82));
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid span,
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row span {
+  display: block;
+  color: rgba(203, 213, 225, 0.72);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid strong {
+  display: block;
+  margin-top: 5px;
+  color: #f8fafc;
+  font-size: clamp(1rem, 1.5vw, 1.35rem);
+  white-space: nowrap;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid .positive strong,
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row.in > strong {
+  color: #5eead4;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid .negative strong,
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row.out > strong {
+  color: #fda4af;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-list {
+  display: grid;
+  gap: 9px;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(15, 23, 42, 0.62);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row.in {
+  border-color: rgba(45, 212, 191, 0.22);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row.out {
+  border-color: rgba(251, 113, 133, 0.2);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row div {
+  min-width: 0;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row div strong {
+  color: #f8fafc;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row > strong {
+  white-space: nowrap;
+}
+
+.pdv-cash-movement-modal {
+  max-width: 520px;
+}
+
+.pdv-cash-movement-modal .pdv-drawer-header span {
+  color: rgba(203, 213, 225, 0.74);
+}
+
+.pdv-cash-movement-form {
+  gap: 15px;
+}
+
+.pdv-cash-reason-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pdv-cash-reason-chips .ghost-button {
+  border-radius: 999px;
+  padding-inline: 12px;
+}
+
+@media (max-width: 920px) {
+  body[data-route-section="pdv-cash-register"] .pdv-cash-financial-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid .total {
+    grid-column: auto;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 body[data-route-section="users-admin"] .users-admin-shell {
   display: grid;
   gap: 18px;
@@ -17887,7 +18028,7 @@ body[data-route-section="pdv-sale"] .pdv-cart-item-net-note {
 body[data-route-section="pdv-sale"] .pdv-cart-item-discount-editor {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(90px, 0.7fr) minmax(140px, 1fr) minmax(180px, 1.4fr) auto;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(90px, 0.7fr) minmax(140px, 1fr) minmax(180px, 1.2fr) auto;
   gap: 10px;
   align-items: end;
   margin-top: 12px;
@@ -17895,6 +18036,26 @@ body[data-route-section="pdv-sale"] .pdv-cart-item-discount-editor {
   border: 1px solid var(--sale-border-soft);
   border-radius: 16px;
   background: rgba(15, 20, 27, 0.72);
+}
+
+body[data-route-section="pdv-sale"] .pdv-cart-item-discount-summary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-sale"] .pdv-cart-item-discount-summary strong {
+  color: var(--sale-text);
+  font-size: 0.88rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route-section="pdv-sale"] .pdv-cart-item-discount-summary span {
+  color: var(--sale-text-muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
 }
 
 body[data-route-section="pdv-sale"] .pdv-cart-item-discount-editor label {

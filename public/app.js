@@ -361,11 +361,15 @@ const state = {
     registers: [],
     currentRegister: null,
     saleDetails: {},
+    movements: [],
     pendingPaymentLinks: [],
     pendingPaymentLinksError: "",
     selectedSaleId: "",
     highlightedSaleId: "",
     error: "",
+    movementModal: { open: false, type: "aporte" },
+    movementLoading: false,
+    movementError: "",
     authorizers: [],
     authorizationAudit: [],
     authorizersLoading: false,
@@ -4124,18 +4128,23 @@ function buildPdvSaleCartItems(session = null) {
         </div>
         ${isDiscountOpen ? `
           <div class="pdv-cart-item-discount-editor">
+            <div class="pdv-cart-item-discount-summary">
+              <strong>${escapeHtml(item.nome || item.sku || "Produto")}</strong>
+              <span>Preço unitário ${currency(unitPrice)} • Quantidade ${quantity} • Subtotal ${currency(grossTotal)}</span>
+              ${itemDiscount.amount > 0 ? `<span>Desconto atual ${currency(itemDiscount.amount)} • Líquido ${currency(netTotal)}</span>` : ""}
+            </div>
             <label>Modo
               <select data-pdv-sale-item-discount-mode="${escapeHtml(item.item_id)}"${isDiscountBusy ? " disabled" : ""}>
                 <option value="amount"${discountDraft.mode === "amount" ? " selected" : ""}>R$</option>
                 <option value="percent"${discountDraft.mode === "percent" ? " selected" : ""}>%</option>
               </select>
-              <small>${escapeHtml(storeOptions.length ? "A previa e a aplicacao ficam travadas nesta loja." : "Seu perfil nao possui loja permitida para importacao Tiny.")}</small>
+              <small>O desconto será aplicado somente neste item.</small>
             </label>
             <label>Desconto no item
               <input type="text" inputmode="decimal" data-pdv-sale-item-discount-value="${escapeHtml(item.item_id)}" value="${escapeHtml(discountDraft.value || "")}" placeholder="0,00"${isDiscountBusy ? " disabled" : ""} />
             </label>
-            <label class="pdv-sale-finalize-form-hidden">Motivo
-              <input type="text" data-pdv-sale-item-discount-reason="${escapeHtml(item.item_id)}" value="${escapeHtml(discountDraft.reason || "")}" placeholder="PeÃ§a antiga, sortida ou negociaÃ§Ã£o"${isDiscountBusy ? " disabled" : ""} />
+            <label>Motivo / observação
+              <input type="text" data-pdv-sale-item-discount-reason="${escapeHtml(item.item_id)}" value="${escapeHtml(discountDraft.reason || "")}" placeholder="Peça antiga, sortida ou negociação"${isDiscountBusy ? " disabled" : ""} />
             </label>
             <div class="pdv-cart-item-discount-actions">
               <button class="secondary-button small" type="button" data-pdv-sale-item-discount-apply="${escapeHtml(item.item_id)}"${isDiscountBusy ? " disabled" : ""}>${isDiscountBusy ? "Aplicando..." : "Aplicar"}</button>
@@ -6048,14 +6057,32 @@ async function applyPdvSaleItemDiscount(itemId = "") {
     return;
   }
   const draft = state.pdvSale.itemDiscountDrafts?.[normalizedItemId] || {};
+  const item = toArray(state.pdvSale.session?.cart_items).find((row) => normalizeText(row.item_id || "") === normalizedItemId);
+  if (!item) {
+    showFeedback("Item do carrinho não encontrado para aplicar desconto.", "error");
+    return;
+  }
   const modeInput = document.querySelector(`[data-pdv-sale-item-discount-mode="${CSS.escape(normalizedItemId)}"]`);
   const valueInput = document.querySelector(`[data-pdv-sale-item-discount-value="${CSS.escape(normalizedItemId)}"]`);
+  const reasonInput = document.querySelector(`[data-pdv-sale-item-discount-reason="${CSS.escape(normalizedItemId)}"]`);
   const mode = normalizeText(modeInput?.value || draft.mode || "amount").toLowerCase() === "percent" ? "percent" : "amount";
   const rawValue = valueInput?.value ?? draft.value ?? "";
   const value = mode === "percent" ? toNumber(String(rawValue || "").replace(",", ".")) : parseMoneyAmount(rawValue || 0);
-  const reason = "";
+  const reason = normalizeText(reasonInput?.value || draft.reason || "");
+  const grossTotal = getPdvSaleCartItemGross(item);
   if (value <= 0) {
     showFeedback("Informe um desconto valido para o item.", "error");
+    return;
+  }
+  const discountAmount = mode === "percent"
+    ? Number(((grossTotal * value) / 100).toFixed(2))
+    : Number(value.toFixed(2));
+  if (mode === "percent" && value > 100) {
+    showFeedback("O desconto percentual do item não pode passar de 100%.", "error");
+    return;
+  }
+  if (discountAmount > grossTotal + 0.009) {
+    showFeedback(`O desconto do item não pode superar o subtotal de ${currency(grossTotal)}.`, "error");
     return;
   }
   state.pdvSale.itemDiscountApplyingId = normalizedItemId;
@@ -7681,6 +7708,10 @@ function canClosePdvCashRegisterFrontend() {
   return hasPermission("can_close_register");
 }
 
+function canRegisterPdvCashMovementFrontend() {
+  return hasPermission("can_register_cash_movement");
+}
+
 function getPdvCashStoreOptions() {
   const allowedStores = toArray(state.currentUser?.allowed_stores || state.currentUser?.allowedStores || [])
     .map((item) => normalizePdvStoreIdentifier(item))
@@ -7812,6 +7843,10 @@ function buildPdvCashRegisterClosedState(register = null, dashboard = {}) {
 
 function summarizePdvCashRegister(register = null) {
   const saleMovements = toArray(register?.movements).filter((item) => String(item?.type || "").toUpperCase() === "SALE");
+  const manualMovements = toArray(register?.movements).filter((item) => ["SANGRIA", "SUPRIMENTO"].includes(String(item?.type || "").toUpperCase()));
+  const sumByType = (type) => toArray(register?.movements)
+    .filter((item) => String(item?.type || "").toUpperCase() === type)
+    .reduce((sum, item) => sum + toNumber(item?.value || item?.amount), 0);
   return {
     salesCount: saleMovements.length,
     totalReceived: saleMovements.reduce((sum, item) => sum + toNumber(item?.value), 0),
@@ -7820,8 +7855,185 @@ function summarizePdvCashRegister(register = null) {
     debit: saleMovements.reduce((sum, item) => sum + toNumber(item?.payload?.debito_amount), 0),
     credit: saleMovements.reduce((sum, item) => sum + toNumber(item?.payload?.credito_amount), 0),
     cashback: saleMovements.reduce((sum, item) => sum + toNumber(item?.payload?.cashback_amount), 0),
+    aportes: sumByType("SUPRIMENTO"),
+    sangrias: sumByType("SANGRIA"),
+    manualMovements,
     saleMovements
   };
+}
+
+function getPdvCashExpectedSummary(register = null) {
+  const expected = register?.expected || {};
+  const summary = summarizePdvCashRegister(register);
+  const initial = toNumber(register?.valor_inicial || 0);
+  const cashInSales = toNumber(expected.cash_in_sales_total ?? expected.dinheiro_vendas ?? summary.money);
+  const deposits = toNumber(expected.cash_deposits_total ?? expected.aportes_total ?? expected.suprimentos ?? summary.aportes);
+  const withdrawals = toNumber(expected.cash_withdrawals_total ?? expected.sangrias_total ?? expected.sangrias ?? summary.sangrias);
+  const expectedCash = toNumber(expected.expected_cash_amount ?? expected.dinheiro_esperado ?? (initial + cashInSales + deposits - withdrawals));
+  const counted = expected.counted_cash_amount ?? expected.dinheiro_informado ?? register?.close_summary?.dinheiro_informado;
+  return {
+    initial,
+    cashInSales,
+    deposits,
+    withdrawals,
+    expectedCash,
+    countedCash: counted === null || counted === undefined ? null : toNumber(counted),
+    difference: expected.cash_difference ?? expected.diferenca_final
+  };
+}
+
+function normalizePdvCashMovementType(type = "") {
+  const normalized = normalizeText(type || "").toLowerCase();
+  if (["aporte", "suprimento"].includes(normalized)) return "aporte";
+  if (["sangria", "retirada"].includes(normalized)) return "sangria";
+  return "";
+}
+
+function getPdvCashMovementTypeMeta(type = "") {
+  const normalized = normalizePdvCashMovementType(type);
+  if (normalized === "sangria") {
+    return {
+      label: "Sangria",
+      title: "Registrar sangria",
+      action: "Registrar sangria",
+      tone: "out",
+      sign: "-",
+      description: "Retirada manual de dinheiro do caixa aberto.",
+      reasons: ["Retirada de segurança", "Envio para gerente", "Excesso de dinheiro em caixa", "Outro"]
+    };
+  }
+  return {
+    label: "Aporte",
+    title: "Registrar aporte",
+    action: "Registrar aporte",
+    tone: "in",
+    sign: "+",
+    description: "Entrada manual de dinheiro no caixa aberto.",
+    reasons: ["Troco inicial", "Reforço de caixa", "Correção de abertura", "Outro"]
+  };
+}
+
+function getPdvCashManualMovements(register = null) {
+  const apiMovements = toArray(state.pdvCash.movements);
+  if (apiMovements.length) return apiMovements;
+  return toArray(register?.movements)
+    .filter((item) => ["SANGRIA", "SUPRIMENTO"].includes(String(item?.type || "").toUpperCase()))
+    .map((item) => {
+      const type = String(item?.type || "").toUpperCase() === "SANGRIA" ? "sangria" : "aporte";
+      return {
+        movement_id: item?.movement_id || "",
+        type,
+        amount: toNumber(item?.value || 0),
+        reason: item?.reason || item?.observation || "",
+        responsible: item?.responsible || item?.payload?.user_name || "",
+        created_at: item?.created_at || ""
+      };
+    });
+}
+
+function buildPdvCashExpectedSummaryPanel(register = null) {
+  const summary = getPdvCashExpectedSummary(register);
+  const difference = summary.countedCash === null || summary.countedCash === undefined
+    ? null
+    : toNumber(summary.difference ?? (summary.countedCash - summary.expectedCash));
+  return `
+    <article class="panel pdv-cash-balance-panel">
+      <div class="panel-header">
+        <h3>Dinheiro do caixa</h3>
+        <span class="table-meta">Aportes e sangrias entram no fechamento.</span>
+      </div>
+      <div class="pdv-cash-balance-grid">
+        <div><span>Fundo inicial</span><strong>${currency(summary.initial)}</strong></div>
+        <div><span>Vendas em dinheiro</span><strong>${currency(summary.cashInSales)}</strong></div>
+        <div class="positive"><span>Aportes</span><strong>${currency(summary.deposits)}</strong></div>
+        <div class="negative"><span>Sangrias</span><strong>${currency(summary.withdrawals)}</strong></div>
+        <div class="total"><span>Dinheiro esperado</span><strong>${currency(summary.expectedCash)}</strong></div>
+        <div><span>Dinheiro contado</span><strong>${summary.countedCash === null || summary.countedCash === undefined ? "-" : currency(summary.countedCash)}</strong></div>
+        <div class="${difference === null ? "" : difference < -0.009 ? "negative" : difference > 0.009 ? "positive" : "neutral"}"><span>Diferença</span><strong>${difference === null ? "-" : currency(difference)}</strong></div>
+      </div>
+    </article>
+  `;
+}
+
+function buildPdvCashMovementsPanel(register = null) {
+  const canRegister = canRegisterPdvCashMovementFrontend() && ["OPEN", "REOPENED"].includes(String(register?.status || "").toUpperCase());
+  const movements = getPdvCashManualMovements(register);
+  return `
+    <article class="panel pdv-cash-movements-panel">
+      <div class="panel-header">
+        <div>
+          <h3>Movimentações de caixa</h3>
+          <span class="table-meta">Entradas e retiradas manuais do caixa aberto.</span>
+        </div>
+        ${canRegister ? `
+          <div class="pdv-cash-movement-actions">
+            <button class="secondary-button small" type="button" data-pdv-cash-movement-open="aporte">Registrar aporte</button>
+            <button class="ghost-button small" type="button" data-pdv-cash-movement-open="sangria">Registrar sangria</button>
+          </div>
+        ` : ""}
+      </div>
+      ${state.pdvCash.movementError ? `<div class="pdv-payment-alert warning"><strong>Movimentação</strong><span>${escapeHtml(state.pdvCash.movementError)}</span></div>` : ""}
+      ${movements.length ? `
+        <div class="pdv-cash-movement-list">
+          ${movements.slice(0, 8).map((movement) => {
+            const type = normalizePdvCashMovementType(movement.type);
+            const meta = getPdvCashMovementTypeMeta(type);
+            return `
+              <div class="pdv-cash-movement-row ${escapeHtml(meta.tone)}">
+                <div>
+                  <strong>${escapeHtml(meta.label)}</strong>
+                  <span>${escapeHtml(movement.reason || "Sem observação")} • ${escapeHtml(formatDateTimeBR(movement.created_at || ""))}</span>
+                </div>
+                <strong>${escapeHtml(meta.sign)} ${currency(movement.amount || 0)}</strong>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      ` : `
+        <div class="empty-state compact">
+          <strong>Nenhuma sangria ou aporte registrado.</strong>
+          <span>Use os botões acima quando houver entrada ou retirada manual de dinheiro.</span>
+        </div>
+      `}
+    </article>
+  `;
+}
+
+function buildPdvCashMovementModal() {
+  const modal = state.pdvCash.movementModal || {};
+  if (!modal.open) return "";
+  const type = normalizePdvCashMovementType(modal.type || "aporte") || "aporte";
+  const meta = getPdvCashMovementTypeMeta(type);
+  return `
+    <div class="pdv-drawer-overlay pdv-cash-movement-overlay" data-pdv-cash-movement-close="overlay">
+      <aside class="pdv-drawer pdv-cash-movement-modal open" role="dialog" aria-modal="true" aria-label="${escapeHtml(meta.title)}">
+        <div class="pdv-drawer-header">
+          <div>
+            <p class="eyebrow">${escapeHtml(meta.label)}</p>
+            <h3>${escapeHtml(meta.title)}</h3>
+            <span>${escapeHtml(meta.description)}</span>
+          </div>
+          <button class="ghost-button pdv-drawer-close" type="button" data-pdv-cash-movement-close="button"${state.pdvCash.movementLoading ? " disabled" : ""}>Fechar</button>
+        </div>
+        <form class="pdv-drawer-body pdv-cash-movement-form" data-pdv-cash-movement-form="true">
+          <input type="hidden" name="type" value="${escapeHtml(type)}" />
+          <label>Valor
+            <input type="text" inputmode="decimal" name="amount" placeholder="0,00" required autofocus />
+          </label>
+          <label>Motivo / observação
+            <input type="text" name="reason" placeholder="Ex.: ${escapeHtml(meta.reasons[0])}" />
+          </label>
+          <div class="pdv-cash-reason-chips">
+            ${meta.reasons.map((reason) => `<button type="button" class="ghost-button small" data-pdv-cash-reason="${escapeHtml(reason)}">${escapeHtml(reason)}</button>`).join("")}
+          </div>
+          <div class="pdv-drawer-actions">
+            <button class="secondary-button" type="button" data-pdv-cash-movement-close="button"${state.pdvCash.movementLoading ? " disabled" : ""}>Cancelar</button>
+            <button class="primary-button" type="submit"${state.pdvCash.movementLoading ? " disabled" : ""}>${state.pdvCash.movementLoading ? "Registrando..." : escapeHtml(meta.action)}</button>
+          </div>
+        </form>
+      </aside>
+    </div>
+  `;
 }
 
 function findPreferredPdvCashRegister(registers = [], focusSale = null) {
@@ -8124,6 +8336,70 @@ async function closePdvCashRegisterFromUi(cashRegisterId = "") {
   }
 }
 
+function openPdvCashMovementModal(type = "aporte") {
+  const normalizedType = normalizePdvCashMovementType(type) || "aporte";
+  state.pdvCash.movementModal = { open: true, type: normalizedType };
+  state.pdvCash.movementError = "";
+  renderPdvCashRegisterOfficialFront();
+}
+
+function closePdvCashMovementModal() {
+  if (state.pdvCash.movementLoading) return;
+  state.pdvCash.movementModal = { open: false, type: "aporte" };
+  state.pdvCash.movementError = "";
+  renderPdvCashRegisterOfficialFront();
+}
+
+async function submitPdvCashMovementFromUi(formElement) {
+  const currentRegister = state.pdvCash.currentRegister;
+  if (!currentRegister?.cash_register_id) {
+    showFeedback("Abra o caixa antes de registrar movimentações.", "error");
+    return;
+  }
+  if (!canRegisterPdvCashMovementFrontend()) {
+    showFeedback("Seu perfil não pode registrar sangria ou aporte.", "error");
+    return;
+  }
+  const formData = new FormData(formElement || undefined);
+  const type = normalizePdvCashMovementType(formData.get("type") || state.pdvCash.movementModal?.type || "");
+  const amount = parseMoneyAmount(formData.get("amount") || 0);
+  const reason = normalizeText(formData.get("reason") || "");
+  if (!type) {
+    showFeedback("Escolha aporte ou sangria.", "error");
+    return;
+  }
+  if (amount <= 0) {
+    showFeedback("Informe um valor maior que zero.", "error");
+    return;
+  }
+  state.pdvCash.movementLoading = true;
+  state.pdvCash.movementError = "";
+  renderPdvCashRegisterOfficialFront();
+  try {
+    const response = await api("/api/pdv/cash/movements", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type,
+        amount,
+        reason,
+        store_id: getCurrentPdvStoreId()
+      })
+    });
+    state.pdvCash.currentRegister = response?.cash_register || state.pdvCash.currentRegister;
+    state.pdvCash.movements = toArray(response?.movements);
+    state.pdvCash.movementModal = { open: false, type: "aporte" };
+    showFeedback(type === "sangria" ? "Sangria registrada no caixa." : "Aporte registrado no caixa.");
+    await loadPdvCashRegisterFront();
+  } catch (error) {
+    state.pdvCash.movementError = normalizeVisibleText(error?.message || "Falha ao registrar movimentação.");
+    throw error;
+  } finally {
+    state.pdvCash.movementLoading = false;
+    renderPdvCashRegisterOfficialFront();
+  }
+}
+
 async function savePdvAuthorizerSetup() {
   const payload = {
     name: normalizeText(state.pdvCash.authorizerDraft?.name || ""),
@@ -8374,6 +8650,10 @@ function buildPdvCashRegisterFrontHtml() {
             </div>
           </article>
         </div>
+        <div class="split-grid pdv-cash-financial-grid">
+          ${buildPdvCashExpectedSummaryPanel(register)}
+          ${buildPdvCashMovementsPanel(register)}
+        </div>
         ${canManagePdvAuthorizers() ? buildPdvCashAuthorizersPanel() : ""}
         ${buildPdvCashPendingPaymentPanel(pendingPaymentLinks)}
 
@@ -8496,6 +8776,7 @@ function buildPdvCashRegisterFrontHtml() {
             `}
           </article>
         </div>
+        ${buildPdvCashMovementModal()}
       </div>
     `
   });
@@ -8508,6 +8789,11 @@ function renderPdvCashRegisterOfficialFront(container = document.getElementById(
   openForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     openPdvCashRegisterFromUi(openForm).catch((error) => handleUiError("Erro ao abrir o caixa do PDV", error));
+  });
+  const movementForm = container.querySelector("[data-pdv-cash-movement-form]");
+  movementForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitPdvCashMovementFromUi(movementForm).catch((error) => handleUiError("Erro ao registrar movimentação de caixa", error));
   });
 }
 
@@ -8546,6 +8832,25 @@ async function loadPdvCashRegisterFront() {
     }
 
     state.pdvCash.currentRegister = currentRegister || null;
+    state.pdvCash.movements = [];
+    if (currentRegister?.cash_register_id) {
+      const movementsResponse = await api(`/api/pdv/cash/movements?cash_register_id=${encodeURIComponent(currentRegister.cash_register_id)}`).catch(() => ({ items: [] }));
+      state.pdvCash.movements = toArray(movementsResponse?.items);
+      if (movementsResponse?.summary && state.pdvCash.currentRegister) {
+        state.pdvCash.currentRegister.expected = {
+          ...(state.pdvCash.currentRegister.expected || {}),
+          ...(movementsResponse.summary.expected || {}),
+          cash_in_sales_total: movementsResponse.summary.cash_in_sales_total,
+          cash_deposits_total: movementsResponse.summary.cash_deposits_total,
+          aportes_total: movementsResponse.summary.aportes_total,
+          cash_withdrawals_total: movementsResponse.summary.cash_withdrawals_total,
+          sangrias_total: movementsResponse.summary.sangrias_total,
+          expected_cash_amount: movementsResponse.summary.expected_cash_amount,
+          counted_cash_amount: movementsResponse.summary.counted_cash_amount,
+          cash_difference: movementsResponse.summary.cash_difference
+        };
+      }
+    }
     if (currentRegister?.loja || currentRegister?.store_id) {
       await loadPdvStorePublicContext(currentRegister.loja || currentRegister.store_id, { silent: true });
     }
@@ -8575,6 +8880,7 @@ async function loadPdvCashRegisterFront() {
   } catch (error) {
     state.pdvCash.error = error.message || "Falha ao carregar o caixa operacional.";
     state.pdvCash.currentRegister = null;
+    state.pdvCash.movements = [];
     state.pdvCash.saleDetails = {};
     state.pdvCash.pendingPaymentLinks = [];
     state.pdvCash.pendingPaymentLinksError = "";
@@ -27372,6 +27678,35 @@ function handleDocumentClick(event) {
   if (pdvCashCloseButton) {
     event.preventDefault();
     closePdvCashRegisterFromUi(pdvCashCloseButton.dataset.pdvCashClose || "").catch((error) => handleUiError("Erro ao fechar o caixa do PDV", error));
+    return;
+  }
+
+  const pdvCashMovementOpenButton = event.target.closest("[data-pdv-cash-movement-open]");
+  if (pdvCashMovementOpenButton) {
+    event.preventDefault();
+    openPdvCashMovementModal(pdvCashMovementOpenButton.dataset.pdvCashMovementOpen || "aporte");
+    return;
+  }
+
+  const pdvCashMovementCloseButton = event.target.closest("[data-pdv-cash-movement-close]");
+  if (pdvCashMovementCloseButton) {
+    if (pdvCashMovementCloseButton.dataset.pdvCashMovementClose === "overlay" && event.target !== pdvCashMovementCloseButton) {
+      return;
+    }
+    event.preventDefault();
+    closePdvCashMovementModal();
+    return;
+  }
+
+  const pdvCashReasonButton = event.target.closest("[data-pdv-cash-reason]");
+  if (pdvCashReasonButton) {
+    event.preventDefault();
+    const form = pdvCashReasonButton.closest("[data-pdv-cash-movement-form]");
+    const input = form?.querySelector('input[name="reason"]');
+    if (input) {
+      input.value = pdvCashReasonButton.dataset.pdvCashReason || "";
+      input.focus();
+    }
     return;
   }
 

@@ -1491,6 +1491,11 @@ function deriveLegacyFulfillmentItem(item = {}, sale = {}) {
   const saleStore = normalizeStoreKey(sale.loja_venda || sale.loja || item.loja_venda || item.loja || item.selected_loja || item.store_id || "");
   const originStore = normalizeStoreKey(item.loja_origem_estoque || sale.loja_origem_estoque || item.selected_loja || item.store_id || saleStore);
   const deliveryStore = normalizeStoreKey(item.loja_entrega_retirada || sale.loja_entrega_retirada || saleStore);
+  const quantity = getSaleCartItemQuantity(item);
+  const unitPrice = getSaleCartItemUnitPrice(item);
+  const grossTotal = roundMoney(unitPrice * quantity);
+  const itemDiscount = normalizeSaleCartItemDiscount(item);
+  const discountAmount = roundMoney(itemDiscount?.amount || 0);
   return {
     ...item,
     loja_venda: saleStore,
@@ -1503,7 +1508,13 @@ function deriveLegacyFulfillmentItem(item = {}, sale = {}) {
     fulfillment_status: normalizeText(item.fulfillment_status || sale.fulfillment_status || FULFILLMENT_STATUS.CONFIRMED),
     destination_store_id: normalizeStoreKey(item.destination_store_id || deliveryStore || saleStore),
     destination_store_name: normalizeText(item.destination_store_name || ""),
-    requires_logistics_review: Boolean(item.requires_logistics_review)
+    requires_logistics_review: Boolean(item.requires_logistics_review),
+    item_discount: itemDiscount,
+    item_discount_amount: discountAmount,
+    item_discount_percent: roundMoney(itemDiscount?.percent || 0),
+    item_discount_reason: normalizeText(itemDiscount?.reason || ""),
+    item_gross_total: grossTotal,
+    item_net_total: roundMoney(Math.max(0, grossTotal - discountAmount))
   };
 }
 

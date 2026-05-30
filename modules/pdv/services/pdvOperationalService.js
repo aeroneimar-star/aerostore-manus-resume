@@ -526,6 +526,25 @@ function toNumber(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function parseFlexibleNumber(value) {
+  if (typeof value === "number") {
+    return toNumber(value);
+  }
+  const raw = normalizeText(value || "");
+  if (!raw) return 0;
+  const sanitized = raw.replace(/[^\d,.-]/g, "");
+  if (!sanitized) return 0;
+  const lastComma = sanitized.lastIndexOf(",");
+  const lastDot = sanitized.lastIndexOf(".");
+  const decimalIndex = Math.max(lastComma, lastDot);
+  if (decimalIndex >= 0) {
+    const integerPart = sanitized.slice(0, decimalIndex).replace(/[.,]/g, "");
+    const decimalPart = sanitized.slice(decimalIndex + 1).replace(/[.,]/g, "");
+    return toNumber(`${integerPart || "0"}.${decimalPart}`);
+  }
+  return toNumber(sanitized.replace(/[.,]/g, ""));
+}
+
 function normalizeCashbackLedgerStatus(status = "", origin = "") {
   const normalizedStatus = normalizeLookup(status || "");
   const normalizedOrigin = normalizeLookup(origin || "");
@@ -3018,7 +3037,12 @@ function updateCartItem(sessionId, itemId, payload = {}, user = {}) {
   if (!item) {
     throw new Error("Item do carrinho nÃ£o encontrado.");
   }
-  if (payload.quantidade !== undefined) item.quantidade = Math.max(1, Math.round(toNumber(payload.quantidade)));
+  if (payload.quantidade !== undefined) {
+    item.quantidade = Math.max(1, Math.round(toNumber(payload.quantidade)));
+    if (item.item_discount) {
+      item.item_discount = normalizeCartItemDiscount(item);
+    }
+  }
   if (payload.observacao !== undefined) item.observacao = normalizeText(payload.observacao);
   if (payload.cor !== undefined) item.cor = normalizeText(payload.cor);
   if (payload.tamanho !== undefined) item.tamanho = normalizeText(payload.tamanho);
@@ -3086,9 +3110,19 @@ function updateCartItemDiscount(sessionId, itemId, payload = {}, user = {}) {
     item.item_discount = null;
   } else {
     const mode = normalizeText(payload.mode || payload.discount_mode || "amount").toLowerCase() === "percent" ? "percent" : "amount";
-    const value = Number(Math.max(0, toNumber(payload.value ?? payload.amount ?? payload.percent ?? 0)).toFixed(2));
+    const value = Number(Math.max(0, parseFlexibleNumber(payload.value ?? payload.amount ?? payload.percent ?? 0)).toFixed(2));
     if (value <= 0) {
       throw new Error("Informe um desconto válido para o item.");
+    }
+    const gross = Number((getCartItemUnitPrice(item) * getCartItemQuantity(item)).toFixed(2));
+    const discountAmount = mode === "percent"
+      ? Number(((gross * value) / 100).toFixed(2))
+      : value;
+    if (mode === "percent" && value > 100) {
+      throw new Error("O desconto percentual do item não pode passar de 100%.");
+    }
+    if (discountAmount > gross + 0.009) {
+      throw new Error("O desconto do item não pode superar o subtotal do item.");
     }
     item.item_discount = {
       mode,
