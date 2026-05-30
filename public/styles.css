@@ -18019,10 +18019,193 @@ body[data-route-section="pdv-sale"] .pdv-cart-item-discount-line {
   font-weight: 800;
 }
 
+body[data-route-section="pdv-sale"] .pdv-cart-item-card.is-discount-selected {
+  border-color: rgba(45, 212, 191, 0.42);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(45, 212, 191, 0.08);
+}
+
+body[data-route-section="pdv-sale"] .pdv-cart-item-discount-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  max-width: 100%;
+}
+
+body[data-route-section="pdv-sale"] .pdv-cart-item-discount-chips span {
+  border: 1px solid rgba(45, 212, 191, 0.22);
+  border-radius: 999px;
+  background: rgba(45, 212, 191, 0.08);
+  color: var(--sale-success);
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
 body[data-route-section="pdv-sale"] .pdv-cart-item-net-note {
   color: var(--sale-text-subtle);
   font-size: 0.72rem;
   text-decoration: line-through;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(4, 8, 13, 0.66);
+  backdrop-filter: blur(12px);
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-modal {
+  width: min(560px, 100%);
+  display: grid;
+  gap: 16px;
+  border: 1px solid rgba(45, 212, 191, 0.2);
+  border-radius: 24px;
+  padding: 18px;
+  background:
+    radial-gradient(circle at 90% 0%, rgba(200, 155, 60, 0.16), transparent 34%),
+    linear-gradient(145deg, rgba(18, 27, 38, 0.98), rgba(9, 14, 20, 0.98));
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-head div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-head span {
+  color: var(--sale-accent);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-head strong {
+  color: var(--sale-text-main);
+  font-size: 1.05rem;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-close {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--sale-border-soft);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--sale-text-muted);
+  font-weight: 900;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-close:hover {
+  border-color: var(--sale-accent-border);
+  color: var(--sale-accent);
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-metrics div,
+body[data-route-section="pdv-sale"] .pdv-item-discount-preview {
+  border: 1px solid var(--sale-border-soft);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 12px;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-metrics span,
+body[data-route-section="pdv-sale"] .pdv-item-discount-preview span {
+  display: block;
+  color: var(--sale-text-muted);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-metrics strong,
+body[data-route-section="pdv-sale"] .pdv-item-discount-preview strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--sale-text-main);
+  font-size: 1rem;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-form {
+  display: grid;
+  grid-template-columns: 0.8fr 1fr;
+  gap: 12px;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--sale-text-muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-form label.is-wide {
+  grid-column: 1 / -1;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-form input,
+body[data-route-section="pdv-sale"] .pdv-item-discount-form select {
+  min-height: 42px;
+  border-color: var(--sale-border-soft);
+  background: rgba(3, 8, 13, 0.7);
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 12px;
+  background: rgba(45, 212, 191, 0.07);
+  border-color: rgba(45, 212, 191, 0.22);
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-preview strong {
+  margin: 0;
+  color: var(--sale-success);
+  font-size: 1.35rem;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-preview small {
+  grid-column: 1 / -1;
+  color: var(--sale-text-muted);
+  font-size: 0.78rem;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+body[data-route-section="pdv-sale"] .pdv-item-discount-actions button {
+  min-height: 40px;
 }
 
 body[data-route-section="pdv-sale"] .pdv-cart-item-discount-editor {
@@ -18089,6 +18272,29 @@ body[data-route-section="pdv-sale"] .pdv-cart-item-discount-actions {
 
   body[data-route-section="pdv-sale"] .pdv-cart-item-discount-actions button {
     flex: 1;
+  }
+}
+
+@media (max-width: 640px) {
+  body[data-route-section="pdv-sale"] .pdv-item-discount-overlay {
+    align-items: end;
+    padding: 12px;
+  }
+
+  body[data-route-section="pdv-sale"] .pdv-item-discount-modal {
+    border-radius: 22px;
+    padding: 16px;
+  }
+
+  body[data-route-section="pdv-sale"] .pdv-item-discount-metrics,
+  body[data-route-section="pdv-sale"] .pdv-item-discount-form,
+  body[data-route-section="pdv-sale"] .pdv-item-discount-preview {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-route-section="pdv-sale"] .pdv-item-discount-actions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 }
 

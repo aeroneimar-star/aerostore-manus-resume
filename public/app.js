@@ -4071,6 +4071,17 @@ function getPdvSaleItemDiscountDraft(item = {}) {
   };
 }
 
+function buildPdvSaleItemDiscountLabel(itemDiscount = {}) {
+  if (toNumber(itemDiscount.amount || 0) <= 0) {
+    return "";
+  }
+  if (normalizeText(itemDiscount.mode || "") === "percent") {
+    const percent = String(itemDiscount.value || itemDiscount.percent || 0).replace(".", ",");
+    return `Desc. ${percent}%`;
+  }
+  return `Desc. ${currency(itemDiscount.amount)}`;
+}
+
 function buildPdvSaleCartItems(session = null) {
   const rows = toArray(session?.cart_items);
   if (!rows.length) {
@@ -4088,14 +4099,15 @@ function buildPdvSaleCartItems(session = null) {
     const grossTotal = getPdvSaleCartItemGross(item);
     const itemDiscount = getPdvSaleCartItemDiscount(item);
     const netTotal = Number(Math.max(0, grossTotal - itemDiscount.amount).toFixed(2));
-    const isDiscountOpen = normalizeText(state.pdvSale.itemDiscountOpenItemId || "") === itemId;
-    const discountDraft = getPdvSaleItemDiscountDraft(item);
+    const isDiscountSelected = normalizeText(state.pdvSale.itemDiscountOpenItemId || "") === itemId;
+    const isDiscountOpen = false;
     const isBusy = normalizeText(state.pdvSale.cartBusyItemId || "") === normalizeText(item.item_id || "");
     const isDiscountBusy = normalizeText(state.pdvSale.itemDiscountApplyingId || "") === itemId;
     const isPhysicalConfirmed = Boolean(item.physical_confirmation_done);
     const confirmationUser = normalizeText(item.physical_confirmation_by || item.physical_confirmation_user_name || "");
+    const discountLabel = buildPdvSaleItemDiscountLabel(itemDiscount);
     return `
-      <article class="pdv-cart-item-card">
+      <article class="pdv-cart-item-card${isDiscountSelected ? " is-discount-selected" : ""}">
         <div class="pdv-cart-item-left">
           <div class="pdv-cart-item-qty">${quantity}x</div>
           <div class="pdv-cart-item-info">
@@ -4114,13 +4126,18 @@ function buildPdvSaleCartItems(session = null) {
         <div class="pdv-cart-item-right">
           <div class="pdv-cart-item-pricing">
             <span class="pdv-cart-item-unit">${currency(unitPrice)} un.</span>
-            ${itemDiscount.amount > 0 ? `<span class="pdv-cart-item-discount-line">Desconto item: -${currency(itemDiscount.amount)}</span>` : ""}
             <strong class="pdv-cart-item-total">${currency(netTotal)}</strong>
-            ${itemDiscount.amount > 0 ? `<small class="pdv-cart-item-net-note">Original ${currency(grossTotal)}</small>` : ""}
+            ${itemDiscount.amount > 0 ? `
+              <div class="pdv-cart-item-discount-chips">
+                <span>${escapeHtml(discountLabel)}</span>
+                <span>Líquido ${currency(netTotal)}</span>
+              </div>
+              <small class="pdv-cart-item-net-note">Original ${currency(grossTotal)}</small>
+            ` : ""}
           </div>
           <div class="pdv-cart-item-actions">
             ${toArray(item.fulfillment_options).length ? `<button class="pdv-cart-action-btn" type="button" data-pdv-sale-cart-fulfillment="${escapeHtml(item.item_id)}"${isBusy ? " disabled" : ""}>Origem</button>` : ""}
-            <button class="pdv-cart-action-btn" type="button" data-pdv-sale-item-discount-toggle="${escapeHtml(item.item_id)}"${isBusy || isDiscountBusy ? " disabled" : ""}>Desconto</button>
+            <button class="pdv-cart-action-btn" type="button" data-pdv-sale-item-discount-toggle="${escapeHtml(item.item_id)}"${isBusy || isDiscountBusy ? " disabled" : ""}>${itemDiscount.amount > 0 ? "Editar desc." : "Desconto"}</button>
             <button class="pdv-cart-action-btn" type="button" data-pdv-sale-cart-qty="${escapeHtml(item.item_id)}" data-qty-delta="-1"${isBusy ? " disabled" : ""}>-</button>
             <button class="pdv-cart-action-btn" type="button" data-pdv-sale-cart-qty="${escapeHtml(item.item_id)}" data-qty-delta="1"${isBusy ? " disabled" : ""}>+</button>
             <button class="pdv-cart-action-btn danger" type="button" data-pdv-sale-cart-remove="${escapeHtml(item.item_id)}"${isBusy ? " disabled" : ""}>${isBusy ? "..." : "x"}</button>
@@ -4155,6 +4172,78 @@ function buildPdvSaleCartItems(session = null) {
       </article>
     `;
   }).join("");
+}
+
+function buildPdvSaleItemDiscountModal(session = null) {
+  const itemId = normalizeText(state.pdvSale.itemDiscountOpenItemId || "");
+  if (!itemId) {
+    return "";
+  }
+  const item = toArray(session?.cart_items).find((row) => normalizeText(row.item_id || "") === itemId);
+  if (!item) {
+    return "";
+  }
+  const quantity = getPdvSaleCartItemQuantity(item);
+  const unitPrice = getPdvSaleCartItemUnitPrice(item);
+  const grossTotal = getPdvSaleCartItemGross(item);
+  const itemDiscount = getPdvSaleCartItemDiscount(item);
+  const discountDraft = getPdvSaleItemDiscountDraft(item);
+  const mode = discountDraft.mode === "percent" ? "percent" : "amount";
+  const draftValue = mode === "percent"
+    ? toNumber(String(discountDraft.value || "").replace(",", "."))
+    : parseMoneyAmount(discountDraft.value || 0);
+  const previewDiscount = Number(Math.min(
+    grossTotal,
+    Math.max(0, mode === "percent" ? (grossTotal * draftValue) / 100 : draftValue)
+  ).toFixed(2));
+  const previewNet = Number(Math.max(0, grossTotal - previewDiscount).toFixed(2));
+  const isDiscountBusy = normalizeText(state.pdvSale.itemDiscountApplyingId || "") === itemId;
+  return `
+    <div class="pdv-item-discount-overlay" data-pdv-sale-item-discount-close="overlay" role="presentation">
+      <section class="pdv-item-discount-modal" role="dialog" aria-modal="true" aria-label="Desconto do item">
+        <header class="pdv-item-discount-head">
+          <div>
+            <span>Desconto do item</span>
+            <strong title="${escapeHtml(item.nome || item.sku || "Produto")}">${escapeHtml(item.nome || item.sku || "Produto")}</strong>
+          </div>
+          <button class="pdv-item-discount-close" type="button" data-pdv-sale-item-discount-close="button" aria-label="Fechar">x</button>
+        </header>
+
+        <div class="pdv-item-discount-metrics">
+          <div><span>Preço un.</span><strong>${currency(unitPrice)}</strong></div>
+          <div><span>Qtd.</span><strong>${quantity}</strong></div>
+          <div><span>Subtotal</span><strong>${currency(grossTotal)}</strong></div>
+        </div>
+
+        <div class="pdv-item-discount-form">
+          <label>Tipo
+            <select data-pdv-sale-item-discount-mode="${escapeHtml(item.item_id)}"${isDiscountBusy ? " disabled" : ""}>
+              <option value="amount"${mode === "amount" ? " selected" : ""}>R$</option>
+              <option value="percent"${mode === "percent" ? " selected" : ""}>%</option>
+            </select>
+          </label>
+          <label>Valor
+            <input type="text" inputmode="decimal" data-pdv-sale-item-discount-value="${escapeHtml(item.item_id)}" value="${escapeHtml(discountDraft.value || "")}" placeholder="0,00"${isDiscountBusy ? " disabled" : ""} />
+          </label>
+          <label class="is-wide">Motivo / observação
+            <input type="text" data-pdv-sale-item-discount-reason="${escapeHtml(item.item_id)}" value="${escapeHtml(discountDraft.reason || "")}" placeholder="Peça antiga, sortida ou negociação"${isDiscountBusy ? " disabled" : ""} />
+          </label>
+        </div>
+
+        <div class="pdv-item-discount-preview">
+          <span>Subtotal líquido previsto</span>
+          <strong>${currency(previewNet)}</strong>
+          ${previewDiscount > 0 ? `<small>Desconto de ${currency(previewDiscount)}</small>` : `<small>Informe o valor para simular o líquido.</small>`}
+        </div>
+
+        <footer class="pdv-item-discount-actions">
+          <button class="ghost-button small" type="button" data-pdv-sale-item-discount-remove="${escapeHtml(item.item_id)}"${itemDiscount.amount > 0 && !isDiscountBusy ? "" : " disabled"}>Remover desconto</button>
+          <button class="secondary-button small" type="button" data-pdv-sale-item-discount-close="button"${isDiscountBusy ? " disabled" : ""}>Cancelar</button>
+          <button class="primary-button small" type="button" data-pdv-sale-item-discount-apply="${escapeHtml(item.item_id)}"${isDiscountBusy ? " disabled" : ""}>${isDiscountBusy ? "Aplicando..." : "Aplicar desconto"}</button>
+        </footer>
+      </section>
+    </div>
+  `;
 }
 
 function getPdvSaleCashbackApplyCeiling(totals = null, cashbackInfo = null) {
@@ -5259,6 +5348,7 @@ function buildPdvSaleActiveContent() {
 
       </div>
       ${buildPdvSaleResolutionModal()}
+      ${buildPdvSaleItemDiscountModal(session)}
       ${buildPdvSaleLabelProductDrawer()}
       ${buildPdvSaleCustomerRegistrationDrawer()}
       ${buildPdvSaleCustomerProfileDrawer()}
@@ -6136,6 +6226,7 @@ async function removePdvSaleItemDiscount(itemId = "") {
     if (state.pdvSale.itemDiscountDrafts) {
       delete state.pdvSale.itemDiscountDrafts[normalizedItemId];
     }
+    state.pdvSale.itemDiscountOpenItemId = "";
     resetPdvSaleDiscountAuthorization();
     await reconcilePdvSaleCheckoutAfterMutation("item_discount_removed", { silentExcessWarning: true });
     showFeedback("Desconto removido do item.");
@@ -27175,6 +27266,14 @@ function handleDocumentClick(event) {
       };
     }
     state.pdvSale.itemDiscountOpenItemId = state.pdvSale.itemDiscountOpenItemId === itemId ? "" : itemId;
+    renderPdvSaleSurface();
+    return;
+  }
+
+  const closePdvSaleItemDiscountButton = event.target.closest("[data-pdv-sale-item-discount-close='button']");
+  const closePdvSaleItemDiscountOverlay = event.target.matches?.("[data-pdv-sale-item-discount-close='overlay']");
+  if (closePdvSaleItemDiscountButton || closePdvSaleItemDiscountOverlay) {
+    state.pdvSale.itemDiscountOpenItemId = "";
     renderPdvSaleSurface();
     return;
   }
