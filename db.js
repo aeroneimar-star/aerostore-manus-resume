@@ -3,8 +3,11 @@ const path = require("path");
 const crypto = require("crypto");
 const sqlite3 = require("sqlite3").verbose();
 
-const dataDir = path.join(__dirname, "data");
-const dbPath = path.join(dataDir, "aerostore-crm.sqlite");
+const configuredDatabasePath = String(process.env.DATABASE_PATH || "").trim();
+const dbPath = configuredDatabasePath
+  ? path.resolve(configuredDatabasePath)
+  : path.join(__dirname, "data", "aerostore-crm.sqlite");
+const dataDir = path.dirname(dbPath);
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
