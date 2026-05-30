@@ -1844,6 +1844,25 @@ async function initializeDatabase() {
   await run("CREATE INDEX IF NOT EXISTS idx_audit_logs_sale ON audit_logs(sale_id)");
 
   await run(`
+    CREATE TABLE IF NOT EXISTS cash_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cash_register_id TEXT NOT NULL,
+      store_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      reason TEXT DEFAULT '',
+      user_id INTEGER,
+      user_email TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    )
+  `);
+  await run("CREATE INDEX IF NOT EXISTS idx_cash_movements_register ON cash_movements(cash_register_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_cash_movements_store ON cash_movements(store_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_cash_movements_type ON cash_movements(type)");
+  await run("CREATE INDEX IF NOT EXISTS idx_cash_movements_created_at ON cash_movements(created_at)");
+
+  await run(`
     CREATE TABLE IF NOT EXISTS notification_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider TEXT NOT NULL DEFAULT '',

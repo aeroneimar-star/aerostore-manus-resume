@@ -40,6 +40,7 @@ const { pdvOperationalRouter } = require("./modules/pdv/routes/pdvOperationalRou
 const { pdvSalesRouter } = require("./modules/pdv/routes/pdvSalesRoutes");
 const { pdvExchangeRouter } = require("./modules/pdv/routes/pdvExchangeRoutes");
 const { pdvControlRouter } = require("./modules/pdv/routes/pdvControlRoutes");
+const { pdvCashRouter } = require("./modules/pdv/routes/pdvCashRoutes");
 const { pdvExperienceRouter } = require("./modules/pdv/routes/pdvExperienceRoutes");
 const { pdvInventoryRouter } = require("./modules/pdv/inventory/pdvInventoryRoutes");
 const { pdvLabelRouter } = require("./modules/pdv/routes/pdvLabelRoutes");
@@ -18544,6 +18545,7 @@ app.use("/api/pdv/operational", requirePermission("can_sell"), pdvOperationalRou
 app.use("/api/pdv/sales", pdvSalesRouter);
 app.use("/api/pdv/exchanges", requirePermission("can_sell"), pdvExchangeRouter);
 app.use("/api/pdv/control", pdvControlRouter);
+app.use("/api/pdv/cash", pdvCashRouter);
 app.use("/api/pdv/experience", pdvExperienceRouter);
 app.use("/api/pdv/inventory", pdvInventoryRouter);
 app.use("/api/pdv/labels", pdvLabelRouter);

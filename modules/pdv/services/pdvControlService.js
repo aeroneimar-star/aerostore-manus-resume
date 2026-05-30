@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const QRCode = require("qrcode");
+const { run, all } = require("../../../db");
 const { normalizeStoreKey, storesMatch, isActiveOperationalStore, isLegacyOperationalStore } = require("../utils/pdvStoreUtils");
 
 const controlRootDir = path.join(process.cwd(), "data", "pdv", "control");
@@ -144,6 +145,14 @@ function roundMoney(value) {
   return Number(toNumber(value).toFixed(2));
 }
 
+function safeJsonStringify(value = {}) {
+  try {
+    return JSON.stringify(value || {});
+  } catch (error) {
+    return "{}";
+  }
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -170,6 +179,52 @@ function normalizeDiscountPaymentMethod(method = "") {
 function getDiscountPaymentMethodLabel(method = "") {
   const normalized = normalizeDiscountPaymentMethod(method);
   return DISCOUNT_PAYMENT_METHOD_LABELS[normalized] || formatMethodLabel(normalized);
+}
+
+function normalizeManualCashMovementType(type = "") {
+  const normalized = normalizeText(type || "").toLowerCase();
+  if (["aporte", "suprimento", "deposito", "deposit", "cash_in"].includes(normalized)) {
+    return "aporte";
+  }
+  if (["sangria", "retirada", "withdrawal", "cash_out"].includes(normalized)) {
+    return "sangria";
+  }
+  return "";
+}
+
+function mapManualCashMovementToRegisterType(type = "") {
+  const normalized = normalizeManualCashMovementType(type);
+  if (normalized === "aporte") return "SUPRIMENTO";
+  if (normalized === "sangria") return "SANGRIA";
+  return "";
+}
+
+function getManualCashMovementLabel(type = "") {
+  const normalized = normalizeManualCashMovementType(type);
+  if (normalized === "aporte") return "Aporte";
+  if (normalized === "sangria") return "Sangria";
+  return "Movimentacao";
+}
+
+function getEffectiveUserStore(user = {}, fallbackStore = "") {
+  return normalizeStoreKey(
+    fallbackStore
+    || user.active_store_id
+    || user.activeStoreId
+    || user.active_store
+    || user.store_id
+    || user.store
+    || ""
+  );
+}
+
+function getCashMovementUser(user = {}) {
+  return {
+    id: user.id || user.user_id || null,
+    email: normalizeText(user.email || user.login || ""),
+    name: normalizeText(user.name || user.username || user.email || "sistema"),
+    role: getPdvUserRole(user)
+  };
 }
 
 function formatMethodLabel(method = "") {
@@ -1171,12 +1226,184 @@ function registerCashMovement({ cashRegisterId = "", type = "", value = 0, reaso
   return movement;
 }
 
+function normalizeManualMovementFromRegister(movement = {}) {
+  const registerType = normalizeText(movement.type || "").toUpperCase();
+  const manualType = normalizeManualCashMovementType(movement.payload?.manual_type || movement.payload?.cash_movement_type || "");
+  const type = manualType || (registerType === "SUPRIMENTO" ? "aporte" : registerType === "SANGRIA" ? "sangria" : "");
+  if (!type) return null;
+  return {
+    id: movement.id || null,
+    movement_id: normalizeText(movement.movement_id || ""),
+    cash_register_id: normalizeText(movement.cash_register_id || movement.payload?.cash_register_id || ""),
+    store_id: normalizeStoreKey(movement.store_id || movement.loja || ""),
+    type,
+    type_label: getManualCashMovementLabel(type),
+    register_type: registerType,
+    amount: roundMoney(movement.amount ?? movement.value ?? 0),
+    reason: normalizeText(movement.reason || movement.observation || ""),
+    user_id: movement.user_id || movement.payload?.user_id || null,
+    user_email: normalizeText(movement.user_email || movement.payload?.user_email || ""),
+    responsible: normalizeText(movement.responsible || movement.payload?.user_name || ""),
+    created_at: normalizeText(movement.created_at || ""),
+    metadata: movement.metadata || movement.payload || {}
+  };
+}
+
+function listManualMovementsFromRegister(register = {}) {
+  return (register.movements || [])
+    .map((movement) => normalizeManualMovementFromRegister({
+      ...movement,
+      cash_register_id: register.cash_register_id,
+      store_id: register.loja || register.store_id
+    }))
+    .filter(Boolean);
+}
+
+async function persistCashMovementRecord({ register = {}, movement = {}, type = "", amount = 0, reason = "", user = {} } = {}) {
+  const actor = getCashMovementUser(user);
+  await run(
+    `INSERT INTO cash_movements (
+      cash_register_id, store_id, type, amount, reason, user_id, user_email, created_at, metadata_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      normalizeText(register.cash_register_id || ""),
+      normalizeStoreKey(register.loja || register.store_id || ""),
+      normalizeManualCashMovementType(type),
+      roundMoney(amount),
+      normalizeText(reason || movement.reason || movement.observation || ""),
+      actor.id,
+      actor.email,
+      normalizeText(movement.created_at || nowIso()),
+      safeJsonStringify({
+        movement_id: movement.movement_id || "",
+        register_type: movement.type || "",
+        user_name: actor.name,
+        user_role: actor.role,
+        observation: movement.observation || "",
+        payload: movement.payload || {}
+      })
+    ]
+  );
+}
+
+async function listCashMovementsForRegister(cashRegisterId = "") {
+  const normalizedId = normalizeText(cashRegisterId || "");
+  if (!normalizedId) return [];
+  const rows = await all(
+    `SELECT id, cash_register_id, store_id, type, amount, reason, user_id, user_email, created_at, metadata_json
+     FROM cash_movements
+     WHERE cash_register_id = ?
+     ORDER BY datetime(created_at) DESC, id DESC`,
+    [normalizedId]
+  ).catch(() => []);
+  const dbRows = rows.map((row) => ({
+    id: row.id,
+    movement_id: "",
+    cash_register_id: row.cash_register_id,
+    store_id: row.store_id,
+    type: normalizeManualCashMovementType(row.type),
+    type_label: getManualCashMovementLabel(row.type),
+    amount: roundMoney(row.amount),
+    reason: normalizeText(row.reason || ""),
+    user_id: row.user_id,
+    user_email: normalizeText(row.user_email || ""),
+    responsible: normalizeText(row.user_email || ""),
+    created_at: normalizeText(row.created_at || ""),
+    metadata: (() => {
+      try {
+        return JSON.parse(row.metadata_json || "{}");
+      } catch (error) {
+        return {};
+      }
+    })()
+  }));
+  if (dbRows.length) {
+    return dbRows;
+  }
+  const register = getCashRegisterById(normalizedId);
+  return listManualMovementsFromRegister(register || {});
+}
+
+async function registerManualCashMovement({ type = "", amount = 0, reason = "", observation = "", store_id = "", metadata = {} } = {}, user = {}) {
+  const manualType = normalizeManualCashMovementType(type);
+  const registerType = mapManualCashMovementToRegisterType(manualType);
+  if (!manualType || !registerType) {
+    throw new Error("Informe se a movimentacao e aporte ou sangria.");
+  }
+  const movementAmount = roundMoney(amount);
+  if (movementAmount <= 0) {
+    throw new Error("Informe um valor maior que zero para registrar a movimentacao.");
+  }
+  const storeId = getEffectiveUserStore(user, store_id);
+  if (!storeId) {
+    throw new Error("Selecione a loja ativa antes de registrar movimentacoes.");
+  }
+  const register = getOpenCashRegisterByStore(storeId);
+  if (!register) {
+    const error = new Error("Abra o caixa antes de registrar movimentacoes.");
+    error.statusCode = 409;
+    error.code = "CASH_REGISTER_REQUIRED";
+    throw error;
+  }
+  const actor = getCashMovementUser(user);
+  const expectedBefore = computeCashRegisterExpected(register);
+  if (manualType === "sangria" && expectedBefore.dinheiro_esperado - movementAmount < -0.009 && !["ADMIN", "GERENTE"].includes(actor.role)) {
+    const error = new Error("Sangria nao pode deixar o dinheiro esperado negativo sem autorizacao de gestor.");
+    error.statusCode = 403;
+    error.code = "NEGATIVE_EXPECTED_CASH_REQUIRES_MANAGER";
+    throw error;
+  }
+  const movement = registerCashMovement({
+    cashRegisterId: register.cash_register_id,
+    type: registerType,
+    value: movementAmount,
+    reason: normalizeText(reason || getManualCashMovementLabel(manualType)),
+    observation,
+    payload: {
+      ...metadata,
+      manual_type: manualType,
+      cash_movement_type: manualType,
+      cash_register_id: register.cash_register_id,
+      user_id: actor.id,
+      user_email: actor.email,
+      user_name: actor.name
+    }
+  }, user);
+  const updatedRegister = getCashRegisterById(register.cash_register_id) || register;
+  await persistCashMovementRecord({
+    register: updatedRegister,
+    movement,
+    type: manualType,
+    amount: movementAmount,
+    reason,
+    user
+  });
+  const movements = await listCashMovementsForRegister(updatedRegister.cash_register_id);
+  return {
+    movement: normalizeManualMovementFromRegister({
+      ...movement,
+      cash_register_id: updatedRegister.cash_register_id,
+      store_id: updatedRegister.loja || updatedRegister.store_id
+    }),
+    cash_register: updatedRegister,
+    expected: computeCashRegisterExpected(updatedRegister),
+    movements
+  };
+}
+
 function computeCashRegisterExpected(register) {
   const movements = register.movements || [];
   const sumByType = (type) => roundMoney(movements.filter((item) => item.type === type).reduce((sum, item) => sum + toNumber(item.value), 0));
   const saleMoney = roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.money_amount || 0), 0));
+  const suprimentos = sumByType("SUPRIMENTO");
+  const sangrias = sumByType("SANGRIA");
+  const despesas = sumByType("DESPESA");
+  const ajustes = sumByType("AJUSTE");
+  const expectedCash = roundMoney(toNumber(register.valor_inicial) + saleMoney + suprimentos - sangrias - despesas + ajustes);
+  const countedCash = register.close_summary?.dinheiro_informado ?? register.close_summary?.counted_cash_amount ?? null;
   return {
-    dinheiro_esperado: roundMoney(toNumber(register.valor_inicial) + saleMoney + sumByType("SUPRIMENTO") - sumByType("SANGRIA") - sumByType("DESPESA") + sumByType("AJUSTE")),
+    dinheiro_esperado: expectedCash,
+    dinheiro_vendas: saleMoney,
     pix: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.pix_amount || 0), 0)),
     debito: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.debito_amount || 0), 0)),
     credito: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.credito_amount || 0), 0)),
@@ -1186,11 +1413,20 @@ function computeCashRegisterExpected(register) {
     permuta: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.permuta_amount || 0), 0)),
     credito_troca: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.credito_troca_amount || 0), 0)),
     descontos: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.desconto_extra || 0), 0)),
-    sangrias: sumByType("SANGRIA"),
-    suprimentos: sumByType("SUPRIMENTO"),
-    despesas: sumByType("DESPESA"),
-    ajustes: sumByType("AJUSTE"),
-    exchanges: sumByType("EXCHANGE")
+    sangrias,
+    suprimentos,
+    aportes: suprimentos,
+    despesas,
+    ajustes,
+    exchanges: sumByType("EXCHANGE"),
+    cash_in_sales_total: saleMoney,
+    cash_deposits_total: suprimentos,
+    aportes_total: suprimentos,
+    cash_withdrawals_total: sangrias,
+    sangrias_total: sangrias,
+    expected_cash_amount: expectedCash,
+    counted_cash_amount: countedCash === null || countedCash === undefined ? null : roundMoney(countedCash),
+    cash_difference: countedCash === null || countedCash === undefined ? null : roundMoney(toNumber(countedCash) - expectedCash)
   };
 }
 
@@ -1435,6 +1671,8 @@ module.exports = {
   requireMinimumRole,
   openCashRegister,
   registerCashMovement,
+  registerManualCashMovement,
+  listCashMovementsForRegister,
   closeCashRegister,
   reopenCashRegister,
   issueAuthorizationPin,
