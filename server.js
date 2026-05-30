@@ -374,7 +374,7 @@ const TRANSFER_POLICY = {
 };
 
 const app = express();
-const PORT = Number(instanceConfig.server?.port || 3000);
+const PORT = Number(process.env.PORT || instanceConfig.server?.port || 3000);
 const HOST = String(instanceConfig.server?.host || "0.0.0.0");
 const RUNTIME_VERSION = "IA_CONVERSATIONAL_VITRINE_CONFIG_V1";
 const BOOT_TIME = new Date().toISOString();
@@ -410,6 +410,7 @@ const WHATSAPP_SEND_HEALTH_TIMEOUT_MS = Number(process.env.WHATSAPP_SEND_HEALTH_
 const WHATSAPP_BOOTSTRAP_TIMEOUT_MS = Number(process.env.WHATSAPP_BOOTSTRAP_TIMEOUT_MS || 120000);
 const WHATSAPP_QR_REQUEST_MIN_TTL_MS = 30000;
 const WHATSAPP_QR_REQUEST_DEFAULT_TTL_MS = 120000;
+const WHATSAPP_WEB_ENABLED = String(process.env.WHATSAPP_WEB_ENABLED ?? "true").trim().toLowerCase() !== "false";
 const CANCEL_REASONS = [
   "Arrependimento da compra",
   "Não recebimento do PIN",
@@ -24982,6 +24983,14 @@ app.post("/api/ia/send-product-suggestion", async (req, res) => {
 });
 
 async function initializeWhatsAppClient() {
+  if (!WHATSAPP_WEB_ENABLED) {
+    if (whatsappState.status !== "desconectado" || whatsappState.lastError) {
+      resetWhatsAppState("desconectado", { lastError: null });
+    }
+    console.log("[WHATSAPP WEB] Desativado por WHATSAPP_WEB_ENABLED=false");
+    return null;
+  }
+
   if (whatsappInitializationPromise) {
     return whatsappInitializationPromise;
   }
@@ -26551,12 +26560,14 @@ initializeDatabase()
     await expireCashbacks();
     scheduleWarmupIncrement();
     startCashbackReminderScheduler({ dryRun: getNotificationDryRunDefault() });
-    if (instanceConfig.whatsapp?.auto_connect !== false) {
+    if (WHATSAPP_WEB_ENABLED && instanceConfig.whatsapp?.auto_connect !== false) {
       initializeWhatsAppClient().catch((error) => {
         console.error('Falha ao inicializar WhatsApp:', error);
         whatsappState.status = 'erro';
         whatsappState.lastError = normalizeWhatsAppBootstrapError(error);
       });
+    } else if (!WHATSAPP_WEB_ENABLED) {
+      console.log("[WHATSAPP WEB] Desativado por WHATSAPP_WEB_ENABLED=false");
     }
     app.listen(PORT, HOST, () => {
       console.log(`AEROSTORE CRM WhatsApp rodando em http://localhost:${PORT}`);
