@@ -12198,11 +12198,16 @@ function enrichUserRecord(user = {}) {
   const allowedStores = normalizeAllowedStores(user.allowed_stores_json || user.allowed_stores || [], primaryStoreId);
   const permissions = normalizePermissionSet(user.permissions_json || user.permissions || {}, roleKey);
   const hasAllStores = Boolean(permissions.can_view_all_stores) || roleKey === "admin";
+  const hasFixedOperationalStore = ["seller", "cashier"].includes(roleKey);
   const effectiveAllowedStores = hasAllStores
     ? Array.from(new Set([...allowedStores, "vila", "botanico", "sul"].filter(Boolean)))
-    : allowedStores;
+    : hasFixedOperationalStore
+      ? (primaryStoreId ? [primaryStoreId] : [])
+      : allowedStores;
   const activeStoreCandidate = normalizeStoreKey(user.active_store_id || user.activeStoreId || user.active_store || "");
-  const activeStoreId = activeStoreCandidate && (hasAllStores || effectiveAllowedStores.includes(activeStoreCandidate))
+  const activeStoreId = hasFixedOperationalStore && primaryStoreId
+    ? primaryStoreId
+    : activeStoreCandidate && (hasAllStores || effectiveAllowedStores.includes(activeStoreCandidate))
     ? activeStoreCandidate
     : (primaryStoreId || effectiveAllowedStores[0] || "");
   const activeStoreLabel = formatStoreLabel(activeStoreId);
@@ -12391,6 +12396,9 @@ function userCanAccessStore(user = {}, storeId = "") {
   }
   if (userHasPermission(enriched, "can_view_all_stores")) {
     return true;
+  }
+  if (["seller", "cashier"].includes(enriched.role_key)) {
+    return normalizedStore === normalizeStoreKey(enriched.primary_store_id || enriched.store_id || "");
   }
   return (enriched.allowed_stores || []).includes(normalizedStore);
 }

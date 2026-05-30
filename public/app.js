@@ -946,15 +946,19 @@ function normalizeAuthUserStoreContext(user = null) {
   const primaryStoreId = normalizePdvStoreIdentifier(user.primary_store_id || user.primaryStoreId || user.store_id || user.store || activeStoreId || "");
   const roleKey = normalizeText(user.role || user.role_key || user.profile || "").toLowerCase();
   const hasAllStores = Boolean(user.permissions?.can_view_all_stores) || roleKey === "admin";
+  const hasFixedOperationalStore = ["seller", "vendedor", "cashier", "caixa"].includes(roleKey);
   const normalizedAllowedStores = hasAllStores
     ? Array.from(new Set([...allowedStores, "vila", "botanico", "sul"]))
+    : hasFixedOperationalStore
+      ? (primaryStoreId ? [primaryStoreId] : [])
     : Array.from(new Set([activeStoreId, ...allowedStores].filter(Boolean)));
+  const effectiveActiveStoreId = hasFixedOperationalStore && primaryStoreId ? primaryStoreId : activeStoreId;
   return {
     ...user,
-    active_store_id: activeStoreId || null,
-    store_id: activeStoreId || primaryStoreId || null,
+    active_store_id: effectiveActiveStoreId || null,
+    store_id: effectiveActiveStoreId || primaryStoreId || null,
     primary_store_id: primaryStoreId || activeStoreId || null,
-    store_label: activeStoreId ? formatStoreIdLabel(activeStoreId) : (primaryStoreId ? formatStoreIdLabel(primaryStoreId) : normalizeText(user.store_label || "")),
+    store_label: effectiveActiveStoreId ? formatStoreIdLabel(effectiveActiveStoreId) : (primaryStoreId ? formatStoreIdLabel(primaryStoreId) : normalizeText(user.store_label || "")),
     allowed_stores: normalizedAllowedStores
   };
 }
