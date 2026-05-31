@@ -78,7 +78,13 @@ const TOTP_SECRET_BYTES = 20;
 const AUTHORIZATION_APPROVAL_TTL_MINUTES = 5;
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const AUTOMATIC_DISCOUNT_ALLOWED_METHODS = new Set(["pix", "dinheiro"]);
-const DISCOUNT_CONTEXT_IGNORED_METHODS = new Set(["cashback"]);
+const DISCOUNT_CONTEXT_IGNORED_METHODS = new Set([
+  "cashback",
+  "credito_troca",
+  "credit_exchange",
+  "exchange_credit",
+  "vale_troca"
+]);
 const DISCOUNT_PAYMENT_METHOD_LABELS = {
   pix: "Pix",
   dinheiro: "Dinheiro",
@@ -187,6 +193,7 @@ function normalizeDiscountPaymentMethod(method = "") {
   if (["cash", "money"].includes(normalized)) return "dinheiro";
   if (["debit", "cartao_debito"].includes(normalized)) return "debito";
   if (["credit", "cartao_credito"].includes(normalized)) return "credito";
+  if (["exchange_credit", "credit_exchange", "vale_troca"].includes(normalized)) return "credito_troca";
   return normalized;
 }
 
@@ -284,24 +291,60 @@ function isAutomaticDiscountAllowedPaymentMethod(method = "") {
   return AUTOMATIC_DISCOUNT_ALLOWED_METHODS.has(normalizeDiscountPaymentMethod(method));
 }
 
-function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, discountPercent = 0, itemDiscountAmount = 0, discountBase = 0, subtotal = 0 } = {}) {
+function getDiscountPolicyForSale({
+  paymentMethods = [],
+  discountAmount = 0,
+  discountPercent = 0,
+  itemDiscountAmount = 0,
+  discountBase = 0,
+  subtotal = 0,
+  cashbackUsed = 0,
+  cashbackAmount = 0,
+  cashbackApplied = 0,
+  exchangeCredit = 0,
+  exchangeCreditUsed = 0
+} = {}) {
   const methods = getDiscountRelevantPaymentMethods(paymentMethods);
   const invalidMethods = methods.filter((method) => !isAutomaticDiscountAllowedPaymentMethod(method));
   const generalDiscountAmount = roundMoney(discountAmount || 0);
   const safeItemDiscountAmount = roundMoney(itemDiscountAmount || 0);
-  const policyBase = roundMoney(discountBase || 0);
   const grossSubtotal = roundMoney(subtotal || 0);
+  const safeCashbackUsed = roundMoney(cashbackUsed || cashbackAmount || cashbackApplied || 0);
+  const safeExchangeCredit = roundMoney(exchangeCredit || exchangeCreditUsed || 0);
+  const excessBalanceBeforeDiscount = roundMoney(Math.max(
+    0,
+    (discountBase > 0 ? discountBase : grossSubtotal - safeCashbackUsed - safeExchangeCredit)
+  ));
+  const policyBase = excessBalanceBeforeDiscount;
+  const excessBalanceAfterDiscount = roundMoney(Math.max(0, excessBalanceBeforeDiscount - generalDiscountAmount));
   const commercialDiscountTotal = roundMoney(safeItemDiscountAmount + generalDiscountAmount);
-  const effectiveDiscountPercent = grossSubtotal > 0
-    ? Number(((commercialDiscountTotal / grossSubtotal) * 100).toFixed(2))
+  const effectiveDiscountPercent = excessBalanceBeforeDiscount > 0
+    ? Number(((generalDiscountAmount / excessBalanceBeforeDiscount) * 100).toFixed(2))
     : Number(toNumber(discountPercent || 0).toFixed(2));
-  const automaticLimitAmount = roundMoney((grossSubtotal * 10) / 100);
+  const automaticLimitAmount = roundMoney((excessBalanceBeforeDiscount * 10) / 100);
   const hasDiscount = commercialDiscountTotal > 0 || effectiveDiscountPercent > 0;
-  const withinAutomaticPolicy = hasDiscount
+  const hasGeneralDiscount = generalDiscountAmount > 0.009;
+  const hasItemDiscount = safeItemDiscountAmount > 0.009;
+  const eligiblePaymentTotal = roundMoney((paymentMethods || []).reduce((sum, item) => {
+    const method = typeof item === "string" ? normalizeDiscountPaymentMethod(item) : normalizeDiscountPaymentMethod(item?.method || item?.value || "");
+    if (!method || DISCOUNT_CONTEXT_IGNORED_METHODS.has(method) || !isAutomaticDiscountAllowedPaymentMethod(method)) {
+      return sum;
+    }
+    return sum + roundMoney(typeof item === "string" ? 0 : item?.amount || 0);
+  }, 0));
+  const nonEligiblePaymentTotal = roundMoney((paymentMethods || []).reduce((sum, item) => {
+    const method = typeof item === "string" ? normalizeDiscountPaymentMethod(item) : normalizeDiscountPaymentMethod(item?.method || item?.value || "");
+    if (!method || DISCOUNT_CONTEXT_IGNORED_METHODS.has(method) || isAutomaticDiscountAllowedPaymentMethod(method)) {
+      return sum;
+    }
+    return sum + roundMoney(typeof item === "string" ? 0 : item?.amount || 0);
+  }, 0));
+  const withinAutomaticPolicy = hasGeneralDiscount
     && methods.length > 0
     && !invalidMethods.length
     && effectiveDiscountPercent <= 10.001
-    && commercialDiscountTotal <= automaticLimitAmount + 0.01;
+    && generalDiscountAmount <= automaticLimitAmount + 0.01
+    && !hasItemDiscount;
   const invalidMethodsLabel = invalidMethods.map((method) => getDiscountPaymentMethodLabel(method)).join(" + ");
 
   if (!hasDiscount) {
@@ -316,6 +359,12 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
       allowedWithoutAuthorization: true,
       message: "Sem desconto aplicado.",
       policyBase,
+      cashbackUsed: safeCashbackUsed,
+      exchangeCredit: safeExchangeCredit,
+      excessBalanceBeforeDiscount,
+      excessBalanceAfterDiscount,
+      eligiblePaymentTotal,
+      nonEligiblePaymentTotal,
       automaticLimitAmount,
       generalDiscountPercent: effectiveDiscountPercent,
       effectiveDiscountPercent,
@@ -328,7 +377,67 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
     };
   }
 
-  if (!methods.length) {
+  if (hasItemDiscount) {
+    return {
+      limitPercent: 10,
+      reason: "ITEM_DISCOUNT_REQUIRES_AUTHORIZATION",
+      paymentMethods: methods,
+      invalidMethods,
+      invalidMethodsLabel,
+      pendingPaymentMethod: false,
+      requiresAuthorization: true,
+      allowedWithoutAuthorization: false,
+      message: "Desconto direto no produto exige autorizacao gerencial.",
+      policyBase,
+      cashbackUsed: safeCashbackUsed,
+      exchangeCredit: safeExchangeCredit,
+      excessBalanceBeforeDiscount,
+      excessBalanceAfterDiscount,
+      eligiblePaymentTotal,
+      nonEligiblePaymentTotal,
+      automaticLimitAmount,
+      generalDiscountPercent: effectiveDiscountPercent,
+      effectiveDiscountPercent,
+      commercialDiscountTotal,
+      generalWithinAutomaticPolicy: false,
+      generalRequiresAuthorization: true,
+      generalExceptionAmount: safeItemDiscountAmount,
+      authorizationAmount: commercialDiscountTotal,
+      authorizationPercent: grossSubtotal > 0 ? Number(((commercialDiscountTotal / grossSubtotal) * 100).toFixed(2)) : effectiveDiscountPercent
+    };
+  }
+
+  if (hasGeneralDiscount && excessBalanceBeforeDiscount <= 0) {
+    return {
+      limitPercent: 10,
+      reason: "DISCOUNT_WITHOUT_EXCESS_BALANCE",
+      paymentMethods: methods,
+      invalidMethods,
+      invalidMethodsLabel,
+      pendingPaymentMethod: false,
+      requiresAuthorization: true,
+      allowedWithoutAuthorization: false,
+      message: "Nao ha saldo excedente para aplicar desconto geral automatico.",
+      policyBase,
+      cashbackUsed: safeCashbackUsed,
+      exchangeCredit: safeExchangeCredit,
+      excessBalanceBeforeDiscount,
+      excessBalanceAfterDiscount,
+      eligiblePaymentTotal,
+      nonEligiblePaymentTotal,
+      automaticLimitAmount,
+      generalDiscountPercent: effectiveDiscountPercent,
+      effectiveDiscountPercent,
+      commercialDiscountTotal,
+      generalWithinAutomaticPolicy: false,
+      generalRequiresAuthorization: true,
+      generalExceptionAmount: generalDiscountAmount,
+      authorizationAmount: generalDiscountAmount,
+      authorizationPercent: effectiveDiscountPercent
+    };
+  }
+
+  if (hasGeneralDiscount && !methods.length) {
     return {
       limitPercent: 10,
       reason: "PENDING_PAYMENT_METHOD",
@@ -340,6 +449,12 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
       allowedWithoutAuthorization: false,
       message: "Escolha a forma de pagamento para validar este desconto.",
       policyBase,
+      cashbackUsed: safeCashbackUsed,
+      exchangeCredit: safeExchangeCredit,
+      excessBalanceBeforeDiscount,
+      excessBalanceAfterDiscount,
+      eligiblePaymentTotal,
+      nonEligiblePaymentTotal,
       automaticLimitAmount,
       generalDiscountPercent: effectiveDiscountPercent,
       effectiveDiscountPercent,
@@ -362,8 +477,14 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
       pendingPaymentMethod: false,
       requiresAuthorization: false,
       allowedWithoutAuthorization: true,
-      message: "Desconto comercial de PIX/dinheiro dentro da politica.",
+      message: "Desconto geral dentro da politica de 10% sobre saldo excedente em PIX/dinheiro.",
       policyBase,
+      cashbackUsed: safeCashbackUsed,
+      exchangeCredit: safeExchangeCredit,
+      excessBalanceBeforeDiscount,
+      excessBalanceAfterDiscount,
+      eligiblePaymentTotal,
+      nonEligiblePaymentTotal,
       automaticLimitAmount,
       generalDiscountPercent: effectiveDiscountPercent,
       effectiveDiscountPercent,
@@ -386,9 +507,15 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
     requiresAuthorization: true,
     allowedWithoutAuthorization: false,
     message: invalidMethods.length
-      ? "Este desconto e permitido apenas para PIX ou dinheiro."
-      : "Autorizacao gerencial necessaria para desconto especial.",
+      ? "Desconto geral com esta forma de pagamento exige autorizacao gerencial."
+      : "Desconto acima da politica de 10% sobre saldo excedente. Solicite autorizacao.",
     policyBase,
+    cashbackUsed: safeCashbackUsed,
+    exchangeCredit: safeExchangeCredit,
+    excessBalanceBeforeDiscount,
+    excessBalanceAfterDiscount,
+    eligiblePaymentTotal,
+    nonEligiblePaymentTotal,
     automaticLimitAmount,
     generalDiscountPercent: effectiveDiscountPercent,
     effectiveDiscountPercent,
@@ -396,7 +523,7 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
     generalWithinAutomaticPolicy: false,
     generalRequiresAuthorization: true,
     generalExceptionAmount: generalDiscountAmount,
-    authorizationAmount: commercialDiscountTotal,
+    authorizationAmount: generalDiscountAmount,
     authorizationPercent: effectiveDiscountPercent
   };
 }
@@ -405,8 +532,8 @@ function buildDiscountAuthorizationError(policy = {}) {
   if (policy.pendingPaymentMethod && !policy.requiresAuthorization) {
     return "Escolha a forma de pagamento para validar este desconto.";
   }
-  if (policy.invalidMethods?.length) {
-    return "Este desconto e permitido apenas para PIX ou dinheiro.";
+  if (policy.message) {
+    return policy.message;
   }
   return "Autorizacao gerencial necessaria para desconto especial.";
 }
@@ -525,6 +652,10 @@ function buildDiscountAuthorizationFingerprint(context = {}) {
   const commercialDiscountPercent = subtotal > 0
     ? Number(((commercialDiscountTotal / subtotal) * 100).toFixed(2))
     : Number(toNumber(context.commercialDiscountPercent ?? context.discount_percent ?? 0).toFixed(2));
+  const cashbackApplied = roundMoney(context.cashbackApplied ?? context.cashback_applied ?? context.cashbackUsed ?? 0);
+  const exchangeCredit = roundMoney(context.exchangeCredit ?? context.exchange_credit ?? 0);
+  const excessBalanceBeforeDiscount = roundMoney(context.excessBalanceBeforeDiscount ?? context.excess_balance_before_discount ?? Math.max(0, subtotal - cashbackApplied - exchangeCredit));
+  const excessBalanceAfterDiscount = roundMoney(context.excessBalanceAfterDiscount ?? context.excess_balance_after_discount ?? Math.max(0, excessBalanceBeforeDiscount - generalDiscountAmount));
   return hashStableObject({
     loja: normalizeStoreKey(context.loja || context.store_id || ""),
     customer_id: normalizeText(context.customerId || context.customer_id || ""),
@@ -534,10 +665,11 @@ function buildDiscountAuthorizationFingerprint(context = {}) {
     commercial_discount_total: commercialDiscountTotal,
     commercial_discount_percent: commercialDiscountPercent,
     total_final: roundMoney(context.totalFinal ?? context.amountToPay ?? context.total_final ?? 0),
-    paid_amount: roundMoney(context.paidAmount ?? context.paid_amount ?? 0),
-    cashback_applied: roundMoney(context.cashbackApplied ?? context.cashback_applied ?? context.cashbackUsed ?? 0),
-    exchange_credit: roundMoney(context.exchangeCredit ?? context.exchange_credit ?? 0),
-    payment_methods: normalizeAuthorizationPaymentAmounts(context.paymentMethods || context.payment_methods || context.paymentAmounts || []),
+    cashback_applied: cashbackApplied,
+    exchange_credit: exchangeCredit,
+    excess_balance_before_discount: excessBalanceBeforeDiscount,
+    excess_balance_after_discount: excessBalanceAfterDiscount,
+    payment_risk_methods: normalizeAuthorizationPaymentRiskAmounts(context.paymentMethods || context.payment_methods || context.paymentAmounts || []),
     items: normalizeAuthorizationItems(context.items || [])
   });
 }
@@ -899,14 +1031,31 @@ function setAuthorizerStatus(authorizerId = "", isActive = true, user = {}) {
   return sanitizeAuthorizer(entry);
 }
 
-function getDiscountLimitForSale({ paymentMethods = [], discountAmount = 0, discountPercent = 0, itemDiscountAmount = 0, discountBase = 0, subtotal = 0 } = {}) {
+function getDiscountLimitForSale({
+  paymentMethods = [],
+  discountAmount = 0,
+  discountPercent = 0,
+  itemDiscountAmount = 0,
+  discountBase = 0,
+  subtotal = 0,
+  cashbackUsed = 0,
+  cashbackAmount = 0,
+  cashbackApplied = 0,
+  exchangeCredit = 0,
+  exchangeCreditUsed = 0
+} = {}) {
   return getDiscountPolicyForSale({
     paymentMethods,
     discountAmount,
     discountPercent,
     itemDiscountAmount,
     discountBase,
-    subtotal
+    subtotal,
+    cashbackUsed,
+    cashbackAmount,
+    cashbackApplied,
+    exchangeCredit,
+    exchangeCreditUsed
   });
 }
 
@@ -1075,9 +1224,29 @@ function normalizeAuthorizationPaymentAmounts(values = []) {
     .sort((left, right) => left.method.localeCompare(right.method) || left.amount - right.amount);
 }
 
+function normalizeAuthorizationPaymentRiskAmounts(values = []) {
+  return normalizeAuthorizationPaymentAmounts(values)
+    .filter((item) =>
+      !DISCOUNT_CONTEXT_IGNORED_METHODS.has(item.method)
+      && !isAutomaticDiscountAllowedPaymentMethod(item.method)
+    );
+}
+
 function paymentAmountSetsMatch(left = [], right = []) {
   const normalizedLeft = normalizeAuthorizationPaymentAmounts(left);
   const normalizedRight = normalizeAuthorizationPaymentAmounts(right);
+  if (normalizedLeft.length !== normalizedRight.length) {
+    return false;
+  }
+  return normalizedLeft.every((item, index) =>
+    item.method === normalizedRight[index].method
+    && Math.abs(item.amount - normalizedRight[index].amount) <= 0.01
+  );
+}
+
+function paymentRiskAmountSetsMatch(left = [], right = []) {
+  const normalizedLeft = normalizeAuthorizationPaymentRiskAmounts(left);
+  const normalizedRight = normalizeAuthorizationPaymentRiskAmounts(right);
   if (normalizedLeft.length !== normalizedRight.length) {
     return false;
   }
@@ -1172,8 +1341,8 @@ function consumeValidatedAuthorization({
     });
     throw new Error("Alteracao na venda invalidou a autorizacao de desconto. Solicite autorizacao novamente.");
   }
-  if (entry.metadata_json?.payment_methods && !paymentAmountSetsMatch(paymentAmounts.length ? paymentAmounts : paymentMethods, entry.metadata_json.payment_methods)) {
-    throw new Error("Autorizacao emitida para outra composicao de pagamentos.");
+  if (entry.metadata_json?.payment_methods && !paymentRiskAmountSetsMatch(paymentAmounts.length ? paymentAmounts : paymentMethods, entry.metadata_json.payment_methods)) {
+    throw new Error("Autorizacao emitida para outra composicao de pagamentos de risco.");
   }
   entry.status = "CONSUMED";
   entry.used_at = nowIso();
@@ -1731,7 +1900,9 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
     discountAmount: extraDiscount,
     discountPercent,
     itemDiscountAmount,
-    discountBase
+    discountBase,
+    cashbackUsed: saleContext.cashbackUsed || saleContext.cashbackApplied || 0,
+    exchangeCredit: saleContext.exchangeCredit || 0
   });
   const discountLimit = Number(toNumber(discountPolicy.limitPercent || 10).toFixed(2));
 

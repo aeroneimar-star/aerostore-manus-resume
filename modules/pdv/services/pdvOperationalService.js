@@ -235,11 +235,13 @@ function getSessionDiscountPolicy(session = {}) {
     ?? 0
   );
   const subtotal = getCartItemsGrossSubtotal(cartItems);
+  const cashbackUsed = toNumber(session?.cashback_application?.amount || 0);
+  const exchangeCredit = sumSessionPaymentMethods(session, ["credito_troca"]);
   const policyBase = Number(Math.max(
     0,
-    getCartItemsNetSubtotal(cartItems)
-      - toNumber(session?.cashback_application?.amount || 0)
-      - sumSessionPaymentMethods(session, ["credito_troca"])
+    subtotal
+      - cashbackUsed
+      - exchangeCredit
   ).toFixed(2));
   const discountPercent = policyBase > 0 ? Number(((generalDiscountAmount / policyBase) * 100).toFixed(2)) : toNumber(session?.discount_percent || 0);
   return getDiscountPolicyForSale({
@@ -248,7 +250,9 @@ function getSessionDiscountPolicy(session = {}) {
     discountPercent,
     itemDiscountAmount,
     discountBase: policyBase,
-    subtotal
+    subtotal,
+    cashbackUsed,
+    exchangeCredit
   });
 }
 
