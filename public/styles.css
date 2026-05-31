@@ -16046,7 +16046,7 @@ body[data-route-section="pdv-sale"] .pdv-sale-customer-results > .pdv-sale-empty
 .pdv-orders-drawer {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  z-index: 3200;
   display: grid;
   justify-items: end;
   background: rgba(0, 0, 0, 0.45);
@@ -16057,6 +16057,8 @@ body[data-route-section="pdv-sale"] .pdv-sale-customer-results > .pdv-sale-empty
   width: min(760px, calc(100vw - 24px));
   height: 100%;
   overflow-y: auto;
+  scrollbar-color: rgba(45, 212, 191, 0.38) rgba(15, 23, 42, 0.28);
+  scrollbar-width: thin;
   display: grid;
   align-content: start;
   gap: 16px;
@@ -22080,6 +22082,321 @@ body[data-route-section="pdv-cash-register"] .empty-state strong {
   font-size: 0.92rem !important;
 }
 
+body[data-route-section="pdv-cash-register"] .pdv-cash-summary-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-money-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(340px, 0.88fr);
+  gap: 14px;
+  align-items: start;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-money-left,
+body[data-route-section="pdv-cash-register"] .pdv-cash-money-right {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-movement-list {
+  max-height: 260px;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-authorizers-panel.is-collapsed {
+  padding-bottom: 14px !important;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-authorizers-compact-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-authorizers-compact-list > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(28, 214, 190, 0.14);
+  border-radius: 14px;
+  background: rgba(8, 18, 27, 0.58);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-authorizers-compact-list strong,
+body[data-route-section="pdv-cash-register"] .pdv-authorizers-compact-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-authorizers-compact-list strong {
+  font-size: 0.82rem;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-authorizers-compact-list small {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-empty-slim {
+  justify-items: start;
+  text-align: left;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-table-panel .table-wrap,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .table-wrap {
+  overflow-x: hidden !important;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-table-panel .pdv-cash-table,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table {
+  display: block;
+  min-width: 0 !important;
+  width: 100%;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-table-panel .pdv-cash-table thead,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table thead {
+  display: none;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-table-panel .pdv-cash-table tbody,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table tbody {
+  display: grid;
+  gap: 9px;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-table-panel .pdv-cash-table tr,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table tr {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.25fr) minmax(110px, 0.8fr) auto;
+  gap: 8px 10px;
+  align-items: center;
+  padding: 11px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 15px;
+  background: rgba(8, 18, 27, 0.52);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table tr {
+  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1fr) minmax(100px, 0.7fr) minmax(0, 1.1fr);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-table-panel .pdv-cash-table td,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table td {
+  display: block;
+  min-width: 0;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-table-panel .pdv-cash-table td:nth-child(2),
+body[data-route-section="pdv-cash-register"] .pdv-cash-table-panel .pdv-cash-table td:nth-child(4),
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table td:nth-child(1),
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table td:nth-child(4) {
+  color: var(--text-muted);
+  font-size: 0.7rem !important;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-table-panel .pdv-cash-table td:nth-child(6),
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table td:nth-child(6),
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table td:nth-child(7),
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table td:nth-child(8) {
+  grid-column: span 2;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-actions {
+  justify-content: flex-end;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .panel-helper {
+  margin: 0 0 12px;
+  max-width: 860px;
+  color: var(--text-muted);
+  font-size: 0.78rem !important;
+  line-height: 1.4 !important;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-list {
+  display: grid;
+  gap: 10px;
+  max-height: 430px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 8px;
+  scrollbar-color: rgba(45, 212, 191, 0.38) rgba(15, 23, 42, 0.28);
+  scrollbar-width: thin;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-list::-webkit-scrollbar,
+body[data-route-section="pdv-sales-orders"] .pdv-orders-drawer-card::-webkit-scrollbar,
+body[data-route-section="pdv-sales-orders"] .pdv-orders-table-wrap::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-list::-webkit-scrollbar-track,
+body[data-route-section="pdv-sales-orders"] .pdv-orders-drawer-card::-webkit-scrollbar-track,
+body[data-route-section="pdv-sales-orders"] .pdv-orders-table-wrap::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.24);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-list::-webkit-scrollbar-thumb,
+body[data-route-section="pdv-sales-orders"] .pdv-orders-drawer-card::-webkit-scrollbar-thumb,
+body[data-route-section="pdv-sales-orders"] .pdv-orders-table-wrap::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(45, 212, 191, 0.58), rgba(148, 163, 184, 0.28));
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-list::-webkit-scrollbar-thumb:hover,
+body[data-route-section="pdv-sales-orders"] .pdv-orders-drawer-card::-webkit-scrollbar-thumb:hover,
+body[data-route-section="pdv-sales-orders"] .pdv-orders-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(45, 212, 191, 0.78), rgba(148, 163, 184, 0.42));
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(28, 214, 190, 0.06), transparent 42%),
+    rgba(8, 18, 27, 0.64);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-card.is-selected {
+  border-color: rgba(28, 214, 190, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(28, 214, 190, 0.08);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-main,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-status {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(0, 1.35fr) minmax(130px, 0.75fr);
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-status {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-id,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-customer,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-total,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-status span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-id strong,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-customer strong,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-total strong,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-status strong {
+  overflow: hidden;
+  color: var(--text-main, #F4F7FA);
+  font-size: 0.86rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-id strong,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-total strong {
+  color: var(--accent-2, #19E6C1);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-id span,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-customer span,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-total span,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-status small,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-status em {
+  overflow: hidden;
+  color: var(--text-muted, #AAB4C0);
+  font-size: 0.68rem;
+  font-style: normal;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(45, 212, 191, 0.2);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at top right, rgba(45, 212, 191, 0.12), transparent 42%),
+    rgba(2, 8, 15, 0.48);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-head div,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-grid div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-head span,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-grid span,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-head em {
+  color: var(--text-muted, #AAB4C0);
+  font-size: 0.68rem;
+  font-style: normal;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-head strong,
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-grid strong {
+  overflow: hidden;
+  color: var(--text-main, #F4F7FA);
+  font-size: 0.82rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px 12px;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-pending-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
 @media (max-width: 1180px) {
   body[data-route-section="pdv-cash-register"] .pdv-cash-summary-grid,
   body[data-route-section="pdv-cash-register"] .pdv-cash-kpi-grid,
@@ -22089,6 +22406,26 @@ body[data-route-section="pdv-cash-register"] .empty-state strong {
 
   body[data-route-section="pdv-cash-register"] .split-grid {
     grid-template-columns: 1fr !important;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-cash-money-block,
+  body[data-route-section="pdv-cash-register"] .pdv-cash-table-panel .pdv-cash-table tr,
+  body[data-route-section="pdv-cash-register"] .pdv-cash-pending-panel .pdv-cash-table tr {
+    grid-template-columns: 1fr !important;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-authorizers-compact-list,
+  body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-cash-pending-main,
+  body[data-route-section="pdv-cash-register"] .pdv-cash-pending-status {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -22113,6 +22450,24 @@ body[data-route-section="pdv-cash-register"] .empty-state strong {
   body[data-route-section="pdv-cash-register"] .pdv-authorizer-card-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-authorizers-compact-list,
+  body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-cash-pending-main,
+  body[data-route-section="pdv-cash-register"] .pdv-cash-pending-status {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-cash-pending-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-cash-pending-actions {
+    justify-content: stretch;
   }
 }
 
