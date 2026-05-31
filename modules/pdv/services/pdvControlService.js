@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const QRCode = require("qrcode");
-const { run, all } = require("../../../db");
+const { run, get, all } = require("../../../db");
 const { normalizeStoreKey, storesMatch, isActiveOperationalStore, isLegacyOperationalStore } = require("../utils/pdvStoreUtils");
 
 const controlRootDir = path.join(process.cwd(), "data", "pdv", "control");
@@ -78,7 +78,7 @@ const TOTP_SECRET_BYTES = 20;
 const AUTHORIZATION_APPROVAL_TTL_MINUTES = 5;
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const AUTOMATIC_DISCOUNT_ALLOWED_METHODS = new Set(["pix", "dinheiro"]);
-const DISCOUNT_CONTEXT_IGNORED_METHODS = new Set(["cashback", "credito_troca"]);
+const DISCOUNT_CONTEXT_IGNORED_METHODS = new Set(["cashback"]);
 const DISCOUNT_PAYMENT_METHOD_LABELS = {
   pix: "Pix",
   dinheiro: "Dinheiro",
@@ -151,6 +151,20 @@ function safeJsonStringify(value = {}) {
   } catch (error) {
     return "{}";
   }
+}
+
+function stableJsonStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJsonStringify(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJsonStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashStableObject(value = {}) {
+  return crypto.createHash("sha256").update(stableJsonStringify(value || {})).digest("hex");
 }
 
 function nowIso() {
@@ -273,22 +287,21 @@ function isAutomaticDiscountAllowedPaymentMethod(method = "") {
 function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, discountPercent = 0, itemDiscountAmount = 0, discountBase = 0, subtotal = 0 } = {}) {
   const methods = getDiscountRelevantPaymentMethods(paymentMethods);
   const invalidMethods = methods.filter((method) => !isAutomaticDiscountAllowedPaymentMethod(method));
-  const hasItemDiscount = roundMoney(itemDiscountAmount || 0) > 0;
   const generalDiscountAmount = roundMoney(discountAmount || 0);
+  const safeItemDiscountAmount = roundMoney(itemDiscountAmount || 0);
   const policyBase = roundMoney(discountBase || 0);
-  const hasGeneralDiscount = generalDiscountAmount > 0;
-  const normalizedPercent = policyBase > 0
-    ? Number(((generalDiscountAmount / policyBase) * 100).toFixed(2))
+  const grossSubtotal = roundMoney(subtotal || 0);
+  const commercialDiscountTotal = roundMoney(safeItemDiscountAmount + generalDiscountAmount);
+  const effectiveDiscountPercent = grossSubtotal > 0
+    ? Number(((commercialDiscountTotal / grossSubtotal) * 100).toFixed(2))
     : Number(toNumber(discountPercent || 0).toFixed(2));
-  const automaticLimitAmount = roundMoney((policyBase * 10) / 100);
-  const hasDiscount = hasItemDiscount || hasGeneralDiscount || normalizedPercent > 0;
-  const generalWithinAutomaticPolicy = hasGeneralDiscount
+  const automaticLimitAmount = roundMoney((grossSubtotal * 10) / 100);
+  const hasDiscount = commercialDiscountTotal > 0 || effectiveDiscountPercent > 0;
+  const withinAutomaticPolicy = hasDiscount
     && methods.length > 0
     && !invalidMethods.length
-    && generalDiscountAmount <= automaticLimitAmount + 0.01;
-  const generalRequiresAuthorization = hasGeneralDiscount
-    && !generalWithinAutomaticPolicy
-    && !(!methods.length && normalizedPercent <= 10.001);
+    && effectiveDiscountPercent <= 10.001
+    && commercialDiscountTotal <= automaticLimitAmount + 0.01;
   const invalidMethodsLabel = invalidMethods.map((method) => getDiscountPaymentMethodLabel(method)).join(" + ");
 
   if (!hasDiscount) {
@@ -304,65 +317,14 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
       message: "Sem desconto aplicado.",
       policyBase,
       automaticLimitAmount,
-      generalDiscountPercent: normalizedPercent,
-      generalWithinAutomaticPolicy,
+      generalDiscountPercent: effectiveDiscountPercent,
+      effectiveDiscountPercent,
+      commercialDiscountTotal,
+      generalWithinAutomaticPolicy: false,
       generalRequiresAuthorization: false,
       generalExceptionAmount: 0,
       authorizationAmount: 0,
       authorizationPercent: 0
-    };
-  }
-
-  if (hasItemDiscount) {
-    const generalExceptionAmount = roundMoney(generalRequiresAuthorization ? generalDiscountAmount : 0);
-    const authorizationAmount = roundMoney(itemDiscountAmount + generalExceptionAmount);
-    const authorizationPercent = subtotal > 0 ? Number(((authorizationAmount / subtotal) * 100).toFixed(2)) : 0;
-    return {
-      limitPercent: 10,
-      reason: generalRequiresAuthorization && invalidMethods.length ? "ITEM_DISCOUNT_SPECIAL_WITH_NON_CASH_METHOD" : "ITEM_DISCOUNT_SPECIAL",
-      paymentMethods: methods,
-      invalidMethods,
-      invalidMethodsLabel,
-      pendingPaymentMethod: hasGeneralDiscount && !methods.length,
-      requiresAuthorization: true,
-      allowedWithoutAuthorization: false,
-      message: generalRequiresAuthorization && invalidMethods.length
-        ? "Este desconto e permitido apenas para PIX ou dinheiro."
-        : generalRequiresAuthorization
-          ? "Autorizacao gerencial necessaria para desconto especial."
-          : generalWithinAutomaticPolicy
-            ? "Desconto de PIX/dinheiro dentro da politica."
-            : "Autorizacao gerencial necessaria para desconto especial.",
-      policyBase,
-      automaticLimitAmount,
-      generalDiscountPercent: normalizedPercent,
-      generalWithinAutomaticPolicy,
-      generalRequiresAuthorization,
-      generalExceptionAmount,
-      authorizationAmount,
-      authorizationPercent
-    };
-  }
-
-  if (normalizedPercent > 10.001) {
-    return {
-      limitPercent: 10,
-      reason: methods.length ? "DISCOUNT_ABOVE_LIMIT" : "DISCOUNT_ABOVE_LIMIT_PENDING_PAYMENT_METHOD",
-      paymentMethods: methods,
-      invalidMethods,
-      invalidMethodsLabel,
-      pendingPaymentMethod: !methods.length,
-      requiresAuthorization: true,
-      allowedWithoutAuthorization: false,
-      message: "Autorizacao gerencial necessaria para desconto especial.",
-      policyBase,
-      automaticLimitAmount,
-      generalDiscountPercent: normalizedPercent,
-      generalWithinAutomaticPolicy,
-      generalRequiresAuthorization: true,
-      generalExceptionAmount: generalDiscountAmount,
-      authorizationAmount: generalDiscountAmount,
-      authorizationPercent: subtotal > 0 ? Number(((generalDiscountAmount / subtotal) * 100).toFixed(2)) : normalizedPercent
     };
   }
 
@@ -379,8 +341,10 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
       message: "Escolha a forma de pagamento para validar este desconto.",
       policyBase,
       automaticLimitAmount,
-      generalDiscountPercent: normalizedPercent,
-      generalWithinAutomaticPolicy,
+      generalDiscountPercent: effectiveDiscountPercent,
+      effectiveDiscountPercent,
+      commercialDiscountTotal,
+      generalWithinAutomaticPolicy: false,
       generalRequiresAuthorization: false,
       generalExceptionAmount: 0,
       authorizationAmount: 0,
@@ -388,7 +352,7 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
     };
   }
 
-  if (!invalidMethods.length) {
+  if (withinAutomaticPolicy) {
     return {
       limitPercent: 10,
       reason: "PIX_DINHEIRO_10",
@@ -398,11 +362,13 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
       pendingPaymentMethod: false,
       requiresAuthorization: false,
       allowedWithoutAuthorization: true,
-      message: "Desconto de PIX/dinheiro dentro da politica.",
+      message: "Desconto comercial de PIX/dinheiro dentro da politica.",
       policyBase,
       automaticLimitAmount,
-      generalDiscountPercent: normalizedPercent,
-      generalWithinAutomaticPolicy,
+      generalDiscountPercent: effectiveDiscountPercent,
+      effectiveDiscountPercent,
+      commercialDiscountTotal,
+      generalWithinAutomaticPolicy: true,
       generalRequiresAuthorization: false,
       generalExceptionAmount: 0,
       authorizationAmount: 0,
@@ -412,22 +378,26 @@ function getDiscountPolicyForSale({ paymentMethods = [], discountAmount = 0, dis
 
   return {
     limitPercent: 10,
-    reason: "MANAGER_AUTH_REQUIRED_NON_CASH_METHOD",
+    reason: invalidMethods.length ? "MANAGER_AUTH_REQUIRED_NON_CASH_METHOD" : "DISCOUNT_ABOVE_LIMIT",
     paymentMethods: methods,
     invalidMethods,
     invalidMethodsLabel,
     pendingPaymentMethod: false,
     requiresAuthorization: true,
     allowedWithoutAuthorization: false,
-    message: "Este desconto e permitido apenas para PIX ou dinheiro.",
+    message: invalidMethods.length
+      ? "Este desconto e permitido apenas para PIX ou dinheiro."
+      : "Autorizacao gerencial necessaria para desconto especial.",
     policyBase,
     automaticLimitAmount,
-    generalDiscountPercent: normalizedPercent,
-    generalWithinAutomaticPolicy,
+    generalDiscountPercent: effectiveDiscountPercent,
+    effectiveDiscountPercent,
+    commercialDiscountTotal,
+    generalWithinAutomaticPolicy: false,
     generalRequiresAuthorization: true,
     generalExceptionAmount: generalDiscountAmount,
-    authorizationAmount: generalDiscountAmount,
-    authorizationPercent: subtotal > 0 ? Number(((generalDiscountAmount / subtotal) * 100).toFixed(2)) : normalizedPercent
+    authorizationAmount: commercialDiscountTotal,
+    authorizationPercent: effectiveDiscountPercent
   };
 }
 
@@ -467,6 +437,109 @@ function requireMinimumRole(user, role) {
     throw new Error(`Ação permitida apenas para ${role} ou superior.`);
   }
   return current;
+}
+
+function parseAllowedStores(value = [], fallbackStore = "") {
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed || "[]");
+    } catch (error) {
+      parsed = parsed.split(",");
+    }
+  }
+  const stores = (Array.isArray(parsed) ? parsed : [])
+    .map((item) => normalizeStoreKey(item || ""))
+    .filter(Boolean);
+  const fallback = normalizeStoreKey(fallbackStore || "");
+  return uniqueStrings([...stores, fallback].filter(Boolean));
+}
+
+function userCanAuthorizeDiscountForStore(user = {}, storeId = "") {
+  const role = getPdvUserRole(user);
+  const store = normalizeStoreKey(storeId || "");
+  if (!store) return false;
+  if (role === "VENDEDOR" || role === "CAIXA") return false;
+  if (role === "ADMIN") return isActiveOperationalStore(store) || isLegacyOperationalStore(store);
+  if (role !== "GERENTE") return false;
+  return parseAllowedStores(user.allowed_stores_json || user.allowed_stores || [], user.store_id || user.store)
+    .some((allowedStore) => storesMatch(allowedStore, store));
+}
+
+function normalizeAuthorizerLookupValue(value = "") {
+  return normalizeText(value || "").toLowerCase();
+}
+
+async function resolveAuthorizerLinkedUser(authorizer = {}) {
+  const linkedUserId = normalizeText(authorizer.linked_user_id || "");
+  const linkedEmail = normalizeAuthorizerLookupValue(authorizer.linked_user_email || "");
+  const linkedName = normalizeAuthorizerLookupValue(authorizer.name || "");
+  if (!linkedUserId && !linkedEmail && !linkedName) return null;
+  return await get(
+    `SELECT * FROM users
+     WHERE (? <> '' AND CAST(id AS TEXT) = ?)
+        OR (? <> '' AND lower(email) = ?)
+        OR (? <> '' AND lower(username) = ?)
+        OR (? <> '' AND lower(name) = ?)
+     ORDER BY CASE
+       WHEN ? <> '' AND CAST(id AS TEXT) = ? THEN 1
+       WHEN ? <> '' AND lower(email) = ? THEN 2
+       WHEN ? <> '' AND lower(username) = ? THEN 3
+       ELSE 4
+     END
+     LIMIT 1`,
+    [
+      linkedUserId, linkedUserId,
+      linkedEmail, linkedEmail,
+      linkedName, linkedName,
+      linkedName, linkedName,
+      linkedUserId, linkedUserId,
+      linkedEmail, linkedEmail,
+      linkedName, linkedName
+    ]
+  );
+}
+
+function normalizeAuthorizationItems(items = []) {
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    id: normalizeText(item?.item_id || item?.id || item?.product_id || ""),
+    sku: normalizeText(item?.sku || item?.codigo || item?.code || item?.codigo_etiqueta || ""),
+    name: normalizeText(item?.nome || item?.name || item?.descricao || ""),
+    quantity: roundMoney(item?.quantidade || item?.quantity || 0),
+    unit_price: roundMoney(item?.preco_referencia || item?.unit_price || item?.price || item?.valor_unitario || 0),
+    item_discount: roundMoney(item?.item_discount?.amount || item?.item_discount_amount || item?.discount_amount || 0)
+  })).sort((left, right) =>
+    left.sku.localeCompare(right.sku)
+    || left.id.localeCompare(right.id)
+    || left.name.localeCompare(right.name)
+    || left.quantity - right.quantity
+    || left.unit_price - right.unit_price
+  );
+}
+
+function buildDiscountAuthorizationFingerprint(context = {}) {
+  const subtotal = roundMoney(context.subtotal || 0);
+  const itemDiscountAmount = roundMoney(context.itemDiscountAmount ?? context.item_discount_amount ?? 0);
+  const generalDiscountAmount = roundMoney(context.generalDiscountAmount ?? context.general_discount_amount ?? context.extraDiscount ?? 0);
+  const commercialDiscountTotal = roundMoney(context.commercialDiscountTotal ?? context.discount_amount ?? itemDiscountAmount + generalDiscountAmount);
+  const commercialDiscountPercent = subtotal > 0
+    ? Number(((commercialDiscountTotal / subtotal) * 100).toFixed(2))
+    : Number(toNumber(context.commercialDiscountPercent ?? context.discount_percent ?? 0).toFixed(2));
+  return hashStableObject({
+    loja: normalizeStoreKey(context.loja || context.store_id || ""),
+    customer_id: normalizeText(context.customerId || context.customer_id || ""),
+    subtotal,
+    item_discount_amount: itemDiscountAmount,
+    general_discount_amount: generalDiscountAmount,
+    commercial_discount_total: commercialDiscountTotal,
+    commercial_discount_percent: commercialDiscountPercent,
+    total_final: roundMoney(context.totalFinal ?? context.amountToPay ?? context.total_final ?? 0),
+    paid_amount: roundMoney(context.paidAmount ?? context.paid_amount ?? 0),
+    cashback_applied: roundMoney(context.cashbackApplied ?? context.cashback_applied ?? context.cashbackUsed ?? 0),
+    exchange_credit: roundMoney(context.exchangeCredit ?? context.exchange_credit ?? 0),
+    payment_methods: normalizeAuthorizationPaymentAmounts(context.paymentMethods || context.payment_methods || context.paymentAmounts || []),
+    items: normalizeAuthorizationItems(context.items || [])
+  });
 }
 
 function loadCashRegisters() {
@@ -837,7 +910,7 @@ function getDiscountLimitForSale({ paymentMethods = [], discountAmount = 0, disc
   });
 }
 
-function validateOperationAuthorization(payload = {}, user = {}) {
+async function validateOperationAuthorization(payload = {}, user = {}) {
   const authorizerId = normalizeText(payload.authorizer_id || "");
   const operationType = normalizeText(payload.operation_type || "").toUpperCase();
   const reason = normalizeText(payload.reason || "");
@@ -847,6 +920,7 @@ function validateOperationAuthorization(payload = {}, user = {}) {
   const amount = roundMoney(payload.amount || 0);
   const percent = Number(toNumber(payload.percent || 0).toFixed(2));
   const metadata = payload.context && typeof payload.context === "object" ? payload.context : {};
+  const loja = normalizeStoreKey(payload.loja || metadata.loja || metadata.store_id || "");
   if (!AUTHORIZATION_OPERATION_TYPES.includes(operationType)) {
     throw new Error("Operacao sensivel invalida para autorizacao.");
   }
@@ -861,8 +935,40 @@ function validateOperationAuthorization(payload = {}, user = {}) {
   if (!authorizer || !authorizer.is_active) {
     throw new Error("Autorizador indisponivel para uso.");
   }
+  const linkedUser = await resolveAuthorizerLinkedUser(authorizer);
+  if (!linkedUser || !userCanAuthorizeDiscountForStore(linkedUser, loja)) {
+    appendAuditLog({
+      audit_id: buildId("AUD"),
+      action: "DISCOUNT_AUTH_STORE_SCOPE_DENIED",
+      created_at: nowIso(),
+      actor: normalizeText(user?.name || user?.email || "sistema"),
+      actor_role: getPdvUserRole(user),
+      loja,
+      reason,
+      before: null,
+      after: {
+        operation_type: operationType,
+        authorizer_id: authorizer.authorizer_id,
+        authorized_by_name: authorizer.name,
+        linked_user_email: normalizeText(authorizer.linked_user_email || linkedUser?.email || ""),
+        status: "DENIED_STORE_SCOPE"
+      }
+    });
+    throw new Error("Autorizador nao possui permissao para esta loja.");
+  }
   const secret = decryptSensitiveValue(authorizer.totp_secret_encrypted || "");
   const verification = verifyTotpCode(secret, code, { window: TOTP_WINDOW });
+  const authorizationFingerprint = buildDiscountAuthorizationFingerprint({
+    ...metadata,
+    loja,
+    subtotal: metadata.subtotal,
+    itemDiscountAmount: metadata.item_discount_amount,
+    generalDiscountAmount: metadata.general_discount_amount,
+    commercialDiscountTotal: metadata.discount_amount,
+    commercialDiscountPercent: metadata.discount_percent,
+    paymentMethods: metadata.payment_methods || metadata.paymentMethods || [],
+    items: metadata.items || []
+  });
   const attempt = {
     authorization_id: buildId("AUTZ"),
     operation_type: operationType,
@@ -882,6 +988,7 @@ function validateOperationAuthorization(payload = {}, user = {}) {
     ip: normalizeText(payload.ip || ""),
     user_agent: normalizeText(payload.user_agent || ""),
     metadata_json: metadata,
+    authorization_fingerprint: authorizationFingerprint,
     totp_counter: verification.counter
   };
   if (!verification.ok) {
@@ -924,7 +1031,7 @@ function validateOperationAuthorization(payload = {}, user = {}) {
     created_at: nowIso(),
     actor: attempt.requested_by_name,
     actor_role: getPdvUserRole(user),
-    loja: normalizeStoreKey(payload.loja || metadata.loja || ""),
+      loja: normalizeStoreKey(payload.loja || metadata.loja || ""),
     reason,
     before: null,
     after: {
@@ -933,6 +1040,7 @@ function validateOperationAuthorization(payload = {}, user = {}) {
       authorized_by_name: authorizer.name,
       amount,
       percent,
+      authorization_fingerprint: authorizationFingerprint,
       status: "APPROVED"
     }
   });
@@ -945,6 +1053,7 @@ function validateOperationAuthorization(payload = {}, user = {}) {
     reason: attempt.reason,
     amount: attempt.amount,
     percent: attempt.percent,
+    authorization_fingerprint: authorizationFingerprint,
     created_at: attempt.created_at,
     expires_at: attempt.expires_at
   };
@@ -987,6 +1096,12 @@ function consumeValidatedAuthorization({
   percent = 0,
   paymentMethods = [],
   paymentAmounts = [],
+  items = [],
+  loja = "",
+  customerId = "",
+  itemDiscountAmount = 0,
+  generalDiscountAmount = 0,
+  exchangeCredit = 0,
   subtotal = 0,
   cashbackApplied = 0,
   amountToPay = 0,
@@ -1022,6 +1137,43 @@ function consumeValidatedAuthorization({
   }
   if (entry.metadata_json && Object.prototype.hasOwnProperty.call(entry.metadata_json, "subtotal")) {
     compareAuthorizedNumber(subtotal, entry.metadata_json.subtotal, "subtotal");
+  }
+  const expectedFingerprint = buildDiscountAuthorizationFingerprint({
+    loja,
+    customerId,
+    subtotal,
+    itemDiscountAmount,
+    generalDiscountAmount,
+    commercialDiscountTotal: amount,
+    commercialDiscountPercent: percent,
+    totalFinal: amountToPay,
+    paidAmount,
+    cashbackApplied,
+    exchangeCredit,
+    paymentMethods: paymentAmounts.length ? paymentAmounts : paymentMethods,
+    items
+  });
+  const approvedFingerprint = normalizeText(entry.authorization_fingerprint || entry.metadata_json?.authorization_fingerprint || "");
+  if (approvedFingerprint && approvedFingerprint !== expectedFingerprint) {
+    entry.status = "INVALIDATED";
+    entry.invalidated_at = nowIso();
+    entry.invalidated_reason = "SALE_CONTEXT_CHANGED";
+    saveAuthorizationAudit(rows);
+    appendAuditLog({
+      audit_id: buildId("AUD"),
+      action: "DISCOUNT_AUTH_INVALIDATED",
+      created_at: nowIso(),
+      actor: normalizeText(user?.name || user?.email || "sistema"),
+      actor_role: getPdvUserRole(user),
+      loja: normalizeStoreKey(loja || entry.metadata_json?.loja || ""),
+      reason: "Contexto comercial da venda mudou apos a autorizacao.",
+      before: { authorization_id: entry.authorization_id, fingerprint: approvedFingerprint },
+      after: { fingerprint: expectedFingerprint }
+    });
+    throw new Error("Alteracao na venda invalidou a autorizacao de desconto. Solicite autorizacao novamente.");
+  }
+  if (entry.metadata_json?.payment_methods && !paymentAmountSetsMatch(paymentAmounts.length ? paymentAmounts : paymentMethods, entry.metadata_json.payment_methods)) {
+    throw new Error("Autorizacao emitida para outra composicao de pagamentos.");
   }
   entry.status = "CONSUMED";
   entry.used_at = nowIso();
@@ -1570,7 +1722,8 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
   const saleId = normalizeText(saleContext.saleId || "");
   const saleSessionId = normalizeText(saleContext.saleSessionId || "");
   const discountBase = roundMoney(saleContext.discountBase || 0);
-  const discountPercent = discountBase > 0 ? Number(((extraDiscount / discountBase) * 100).toFixed(2)) : 0;
+  const commercialDiscountTotal = roundMoney(itemDiscountAmount + extraDiscount);
+  const discountPercent = subtotal > 0 ? Number(((commercialDiscountTotal / subtotal) * 100).toFixed(2)) : 0;
   const discountPolicy = getDiscountLimitForSale({
     subtotal,
     items: saleContext.items || [],
@@ -1599,6 +1752,12 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
       percent: discountPolicy.authorizationPercent || discountPercent,
       paymentMethods: saleContext.paymentMethods || [],
       paymentAmounts: saleContext.paymentMethods || [],
+      items: saleContext.items || [],
+      loja,
+      customerId: saleContext.customerId || "",
+      itemDiscountAmount,
+      generalDiscountAmount: extraDiscount,
+      exchangeCredit: saleContext.exchangeCredit || 0,
       subtotal,
       cashbackApplied: saleContext.cashbackUsed || 0,
       amountToPay: saleContext.totalFinal || 0,

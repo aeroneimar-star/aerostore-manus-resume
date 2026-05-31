@@ -1902,9 +1902,11 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
       itemDiscountAmount: totals.itemDiscountAmount,
       discountBase: roundMoney(Math.max(0, totals.subtotalAfterItemDiscount - totals.cashbackUsed - totals.exchangeCredit)),
       cashbackUsed: totals.cashbackUsed,
+      exchangeCredit: totals.exchangeCredit,
       totalFinal: totals.totalFinal,
       paidAmount: totals.paidAmount,
       items: session.cart_items,
+      customerId: session.customer?.id || session.customer_id || "",
       permutaAmount: totals.permutaAmount,
       loja: saleStoreKey,
       paymentMethods: totals.paymentMethods

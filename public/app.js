@@ -365,6 +365,8 @@ const state = {
     pendingPaymentLinks: [],
     pendingPaymentLinksError: "",
     selectedSaleId: "",
+    saleDetailLoadingId: "",
+    saleDetailError: "",
     highlightedSaleId: "",
     error: "",
     movementModal: { open: false, type: "aporte" },
@@ -378,6 +380,7 @@ const state = {
     authorizerSaving: false,
     authorizerSetup: null,
     authorizerSetupCode: "",
+    authorizersExpanded: false,
     authorizerVerifyLoading: false,
     authorizerStatusLoadingId: "",
     authorizerResetLoadingId: "",
@@ -1914,81 +1917,72 @@ function getPdvSaleDiscountPolicy(session = null, options = {}) {
     : null;
   const paymentMethods = uniqueStrings(getPdvSaleFinancialPaymentMethods(currentSession)
     .map((item) => normalizePdvSaleDiscountMethod(item.method || ""))
-    .filter((method) => method && !["cashback", "credito_troca"].includes(method)));
+    .filter((method) => method && method !== "cashback"));
   const invalidMethods = paymentMethods.filter((method) => !isPdvAutomaticDiscountAllowedPaymentMethod(method));
   const invalidMethodsLabel = invalidMethods.map((method) => formatPaymentMethodLabel(method)).join(" + ");
   const hasItemDiscount = itemDiscountAmount > 0.009;
-  const hasDiscount = hasItemDiscount || generalDiscountAmount > 0.009 || percent > 0;
+  const commercialDiscountTotal = Number((itemDiscountAmount + generalDiscountAmount).toFixed(2));
+  const effectiveDiscountPercent = grossSubtotal > 0 ? Number(((commercialDiscountTotal / grossSubtotal) * 100).toFixed(2)) : 0;
+  const automaticCommercialLimitAmount = Number(((grossSubtotal * 10) / 100).toFixed(2));
+  const hasDiscount = commercialDiscountTotal > 0.009 || effectiveDiscountPercent > 0;
   const hasGeneralDiscount = generalDiscountAmount > 0.009;
-  const generalWithinAutomaticPolicy = hasGeneralDiscount
+  const generalWithinAutomaticPolicy = hasDiscount
     && paymentMethods.length > 0
     && !invalidMethods.length
-    && generalDiscountAmount <= automaticLimitAmount + 0.01;
-  const generalRequiresAuthorization = hasGeneralDiscount
+    && commercialDiscountTotal <= automaticCommercialLimitAmount + 0.01
+    && effectiveDiscountPercent <= 10.001;
+  const generalRequiresAuthorization = hasDiscount
     && !generalWithinAutomaticPolicy
-    && !(!paymentMethods.length && percent <= 10.001);
+    && !(!paymentMethods.length && effectiveDiscountPercent <= 10.001);
   let reason = "NO_DISCOUNT";
   let pendingPaymentMethod = false;
   let requiresAuthorization = false;
   let allowedWithoutAuthorization = true;
   let message = "Sem desconto aplicado.";
 
-  if (hasItemDiscount) {
-    reason = generalRequiresAuthorization && invalidMethods.length
-      ? "ITEM_DISCOUNT_SPECIAL_WITH_NON_CASH_METHOD"
-      : "ITEM_DISCOUNT_SPECIAL";
-    requiresAuthorization = true;
-    pendingPaymentMethod = hasGeneralDiscount && !paymentMethods.length;
-    allowedWithoutAuthorization = false;
-    message = generalRequiresAuthorization && invalidMethods.length
-      ? "Este desconto e permitido apenas para PIX ou dinheiro."
-      : generalRequiresAuthorization
-        ? "Autorizacao gerencial necessaria para desconto especial."
-        : generalWithinAutomaticPolicy
-          ? "Desconto de PIX/dinheiro dentro da politica."
-          : "Autorizacao gerencial necessaria para desconto especial.";
-  } else if (hasGeneralDiscount && percent > 10.001) {
-    reason = paymentMethods.length ? "DISCOUNT_ABOVE_LIMIT" : "DISCOUNT_ABOVE_LIMIT_PENDING_PAYMENT_METHOD";
-    pendingPaymentMethod = !paymentMethods.length;
-    requiresAuthorization = true;
-    allowedWithoutAuthorization = false;
-    message = "Autorizacao gerencial necessaria para desconto especial.";
-  } else if (hasGeneralDiscount && !paymentMethods.length) {
+  if (hasDiscount && !paymentMethods.length) {
     reason = "PENDING_PAYMENT_METHOD";
     pendingPaymentMethod = true;
     requiresAuthorization = false;
     allowedWithoutAuthorization = false;
     message = "Escolha a forma de pagamento para validar este desconto.";
-  } else if (hasGeneralDiscount && invalidMethods.length) {
+  } else if (hasDiscount && invalidMethods.length) {
     reason = "MANAGER_AUTH_REQUIRED_NON_CASH_METHOD";
     requiresAuthorization = true;
     allowedWithoutAuthorization = false;
     message = "Este desconto e permitido apenas para PIX ou dinheiro.";
-  } else if (hasGeneralDiscount) {
+  } else if (hasDiscount && effectiveDiscountPercent > 10.001) {
+    reason = paymentMethods.length ? "DISCOUNT_ABOVE_LIMIT" : "DISCOUNT_ABOVE_LIMIT_PENDING_PAYMENT_METHOD";
+    pendingPaymentMethod = !paymentMethods.length;
+    requiresAuthorization = true;
+    allowedWithoutAuthorization = false;
+    message = "Autorizacao gerencial necessaria para desconto especial.";
+  } else if (hasDiscount) {
     reason = "PIX_DINHEIRO_10";
     requiresAuthorization = false;
     allowedWithoutAuthorization = true;
-    message = "Desconto de PIX/dinheiro dentro da politica.";
+    message = "Desconto comercial de PIX/dinheiro dentro da politica.";
   }
 
-  const effectiveRequiresAuthorization = Boolean(sessionPolicy?.requiresAuthorization || requiresAuthorization);
-  const useLocalPolicy = requiresAuthorization && !sessionPolicy?.requiresAuthorization;
+  const effectiveRequiresAuthorization = Boolean(requiresAuthorization);
   const generalExceptionAmount = Number((generalRequiresAuthorization ? generalDiscountAmount : 0).toFixed(2));
-  const authorizationAmount = Number((itemDiscountAmount + generalExceptionAmount).toFixed(2));
+  const authorizationAmount = Number((requiresAuthorization ? commercialDiscountTotal : 0).toFixed(2));
   const authorizationPercent = grossSubtotal > 0 ? Number(((authorizationAmount / grossSubtotal) * 100).toFixed(2)) : 0;
   return {
     limitPercent: Number(toNumber(sessionPolicy?.limitPercent || 10).toFixed(2)),
-    reason: normalizeText(useLocalPolicy ? reason : sessionPolicy?.reason || reason),
+    reason: normalizeText(reason),
     paymentMethods,
     invalidMethods,
     invalidMethodsLabel,
-    pendingPaymentMethod: Boolean(useLocalPolicy ? pendingPaymentMethod : sessionPolicy?.pendingPaymentMethod ?? pendingPaymentMethod),
+    pendingPaymentMethod: Boolean(pendingPaymentMethod),
     requiresAuthorization: effectiveRequiresAuthorization,
-    allowedWithoutAuthorization: Boolean(useLocalPolicy ? allowedWithoutAuthorization : sessionPolicy?.allowedWithoutAuthorization ?? allowedWithoutAuthorization),
-    message: normalizeText(useLocalPolicy ? message : sessionPolicy?.message || message),
+    allowedWithoutAuthorization: Boolean(allowedWithoutAuthorization),
+    message: normalizeText(message),
     policyBase,
     automaticLimitAmount,
     generalDiscountPercent: percent,
+    effectiveDiscountPercent,
+    commercialDiscountTotal,
     generalWithinAutomaticPolicy,
     generalRequiresAuthorization,
     generalExceptionAmount,
@@ -2039,13 +2033,10 @@ function evaluateDiscountAuthorizationState(session = null, totals = null) {
   const authState = getCurrentPdvSaleDiscountAuthorization(safeSession);
   const hasApprovedAuthorization = Boolean(normalizeText(authState.approvalId || ""));
   const reasons = [];
-  if (discount.itemDiscountAmount > 0) {
-    reasons.push("item_discount_requires_manager_authorization");
-  }
-  if (discount.amount > 0 && policy.generalDiscountPercent > 10.001) {
+  if (discount.totalDiscountAmount > 0 && policy.effectiveDiscountPercent > 10.001) {
     reasons.push("discount_above_10_percent");
   }
-  if (discount.amount > 0 && policy.generalRequiresAuthorization && toArray(policy.invalidMethods).length) {
+  if (discount.totalDiscountAmount > 0 && policy.generalRequiresAuthorization && toArray(policy.invalidMethods).length) {
     reasons.push("payment_method_requires_manager_authorization");
   }
   if (policy.pendingPaymentMethod && discount.totalDiscountAmount > 0) {
@@ -6280,9 +6271,18 @@ async function validatePdvSaleDiscountAuthorization() {
           loja: getCurrentPdvStoreId(),
           subtotal: totals.subtotal,
           item_discount_amount: discount.itemDiscountAmount,
+          general_discount_amount: discount.amount,
           general_exception_amount: policy.generalExceptionAmount || 0,
-          discount_amount: policy.authorizationAmount || discount.totalDiscountAmount,
-          discount_percent: policy.authorizationPercent || discount.totalDiscountPercent,
+          discount_amount: discount.totalDiscountAmount,
+          discount_percent: policy.effectiveDiscountPercent || discount.totalDiscountPercent,
+          total_final: totals.total,
+          paid_amount: totals.paid,
+          cashback_applied: totals.cashbackUsed,
+          exchange_credit: totals.exchangeCreditApplied,
+          payment_methods: totals.paymentMethods,
+          items: toArray(session.cart_items),
+          customer_id: normalizeText(session.customer?.id || session.customer_id || ""),
+          authorization_fingerprint: getPdvSaleDiscountPaymentContextKey(session),
           pix_money_policy_base: policy.policyBase || 0,
           pix_money_policy_limit: policy.automaticLimitAmount || 0
         }
@@ -6328,13 +6328,39 @@ function getPdvSaleDiscountPaymentContextKey(session = null) {
   const totals = getPdvSaleCartTotals(session);
   const discount = getPdvSaleSessionDiscount(session);
   const policy = discount.policy || getPdvSaleDiscountPolicy(session);
-  return [
-    `subtotal:${toNumber(totals.subtotal).toFixed(2)}`,
-    `itemDiscount:${toNumber(discount.itemDiscountAmount).toFixed(2)}`,
-    `generalException:${toNumber(policy.generalExceptionAmount || 0).toFixed(2)}`,
-    `authorizationAmount:${toNumber(policy.authorizationAmount || discount.itemDiscountAmount).toFixed(2)}`,
-    `authorizationPercent:${toNumber(policy.authorizationPercent || 0).toFixed(2)}`
-  ].join(";");
+  const normalizeForKey = (value) => Number(toNumber(value || 0).toFixed(2));
+  const items = toArray(session?.cart_items).map((item) => ({
+    id: normalizeText(item.item_id || item.id || item.product_id || ""),
+    sku: normalizeText(item.sku || item.codigo || item.code || item.codigo_etiqueta || ""),
+    name: normalizeText(item.nome || item.name || item.descricao || ""),
+    quantity: normalizeForKey(item.quantidade || item.quantity || 0),
+    unit_price: normalizeForKey(item.preco_referencia || item.unit_price || item.price || 0),
+    item_discount: normalizeForKey(getPdvSaleCartItemDiscount(item).amount || 0)
+  })).sort((left, right) =>
+    left.sku.localeCompare(right.sku)
+    || left.id.localeCompare(right.id)
+    || left.name.localeCompare(right.name)
+  );
+  const paymentMethods = toArray(totals.paymentMethods).map((item) => ({
+    method: normalizePdvSaleDiscountMethod(item.method || ""),
+    amount: normalizeForKey(item.amount || 0)
+  })).filter((item) => item.method && item.amount > 0)
+    .sort((left, right) => left.method.localeCompare(right.method) || left.amount - right.amount);
+  return JSON.stringify({
+    loja: getCurrentPdvStoreId(),
+    customer_id: normalizeText(session?.customer?.id || session?.customer_id || ""),
+    subtotal: normalizeForKey(totals.subtotal),
+    item_discount_amount: normalizeForKey(discount.itemDiscountAmount),
+    general_discount_amount: normalizeForKey(discount.amount),
+    commercial_discount_total: normalizeForKey(discount.totalDiscountAmount),
+    commercial_discount_percent: normalizeForKey(policy.effectiveDiscountPercent || discount.totalDiscountPercent),
+    total_final: normalizeForKey(totals.total),
+    paid_amount: normalizeForKey(totals.paid),
+    cashback_applied: normalizeForKey(totals.cashbackUsed),
+    exchange_credit: normalizeForKey(totals.exchangeCreditApplied),
+    payment_methods: paymentMethods,
+    items
+  });
 }
 
 function handlePdvSaleDiscountPolicyAfterPaymentChange(previousSession = null, nextSession = null) {
@@ -6349,7 +6375,7 @@ function handlePdvSaleDiscountPolicyAfterPaymentChange(previousSession = null, n
   const hadApproval = Boolean(state.pdvSale.discountAuthorization?.approvalId);
   resetPdvSaleDiscountAuthorization();
   if (hadApproval) {
-    showFeedback("Composicao do desconto alterada. A autorizacao anterior foi invalidada.", "error");
+    showFeedback("Alteração na venda invalidou a autorização de desconto. Solicite autorização novamente.", "error");
   }
 }
 
@@ -7897,7 +7923,8 @@ function buildPdvCashRegisterClosedState(register = null, dashboard = {}) {
           </article>
         </div>
 
-        <div class="split-grid">
+        <section class="pdv-cash-money-block">
+          <div class="pdv-cash-money-left">
           <article class="panel">
             <div class="empty-state compact">
               <strong>Nenhum caixa aberto ${escapeHtml(getStoreDisplayText(activeStoreId || storeLabel).in || `na ${storeLabel}`)}.</strong>
@@ -7905,8 +7932,10 @@ function buildPdvCashRegisterClosedState(register = null, dashboard = {}) {
             </div>
             ${buildPdvCashOpenRegisterCard()}
           </article>
-
-          <article class="panel">
+            ${buildPdvCashExpectedSummaryPanel(register)}
+          </div>
+          <div class="pdv-cash-money-right">
+          <article class="panel pdv-cash-store-kpis">
             <div class="panel-header">
               <h3>Último caixa fechado</h3>
             </div>
@@ -7923,7 +7952,7 @@ function buildPdvCashRegisterClosedState(register = null, dashboard = {}) {
               </div>
             </div>
           </article>
-        </div>
+        </section>
 
         ${canManagePdvAuthorizers() ? buildPdvCashAuthorizersPanel() : ""}
         ${buildPdvCashPendingPaymentPanel(sortPdvCashPendingPaymentLinks(state.pdvCash.pendingPaymentLinks || []))}
@@ -8201,12 +8230,32 @@ function buildPdvCashAuthorizersPanel() {
   const rows = toArray(state.pdvCash.authorizers);
   const setup = state.pdvCash.authorizerSetup || null;
   const setupId = normalizeText(setup?.authorizer?.authorizer_id || "");
+  const expanded = Boolean(state.pdvCash.authorizersExpanded || setup);
   const activeCount = rows.filter((item) => item.is_active).length;
   const pendingCount = rows.filter((item) => !item.is_active && !normalizeText(item.activated_at || "")).length;
   const inactiveCount = rows.filter((item) => !item.is_active && normalizeText(item.activated_at || "")).length;
   const totalApprovals = toArray(state.pdvCash.authorizationAudit)
     .filter((item) => ["APPROVED", "CONSUMED"].includes(normalizeText(item.status || "").toUpperCase()))
     .length;
+  const compactRows = rows.filter((item) => item.is_active).slice(0, 4);
+  const compactList = compactRows.length ? `
+    <div class="pdv-authorizers-compact-list">
+      ${compactRows.map((item) => {
+        const statusMeta = getPdvAuthorizerStatusMeta(item);
+        return `
+          <span>
+            <strong>${escapeHtml(item.name || "Autorizador")}</strong>
+            <small>${escapeHtml(item.role || "AUTORIZADOR")} - ${escapeHtml(statusMeta.label)}</small>
+          </span>
+        `;
+      }).join("")}
+    </div>
+  ` : `
+    <div class="empty-state compact pdv-cash-empty-slim">
+      <strong>Nenhum autorizador ativo</strong>
+      <span>Configure um autorizador quando precisar liberar excecoes comerciais.</span>
+    </div>
+  `;
   const createForm = canManagePdvAuthorizers() ? `
     <div class="pdv-authorizer-create-card">
       <div class="pdv-authorizer-setup-copy">
@@ -8291,12 +8340,13 @@ function buildPdvCashAuthorizersPanel() {
     </div>
   `;
   return `
-    <article class="panel pdv-authorizers-panel">
+    <article class="panel pdv-authorizers-panel ${expanded ? "is-expanded" : "is-collapsed"}">
       <div class="panel-header pdv-authorizers-head">
         <div>
-          <h3>Autorizadores Google Authenticator</h3>
-          <span>Configure o celular de Neimar, Gestora e demais autorizadores oficiais do desconto supervisionado.</span>
+          <h3>Autorizadores de desconto</h3>
+          <span>Resumo dos celulares autorizados para liberar excecoes supervisionadas.</span>
         </div>
+        ${canManagePdvAuthorizers() ? `<button class="secondary-button small" type="button" data-pdv-authorizer-panel-toggle="true">${expanded ? "Recolher" : "Configurar autorizador"}</button>` : ""}
       </div>
       <div class="pdv-authorizers-summary">
         <span><strong>${activeCount}</strong> ativos</span>
@@ -8304,16 +8354,16 @@ function buildPdvCashAuthorizersPanel() {
         <span><strong>${inactiveCount}</strong> inativos</span>
         ${canViewPdvAuthorizationAudit() ? `<span><strong>${totalApprovals}</strong> aprovações registradas</span>` : ""}
       </div>
-      <div class="pdv-authorizer-instructions">
+      ${expanded ? `<div class="pdv-authorizer-instructions">
         <strong>Onde configurar no celular</strong>
         <span>Abra o Google Authenticator, toque em <strong>+</strong>, escaneie o QR Code desta área e valide o primeiro código de 6 dígitos.</span>
-      </div>
-      <div class="pdv-authorizers-stack">
+      </div>` : compactList}
+      ${state.pdvCash.authorizersError ? `<div class="pdv-payment-alert warning"><strong>Autorizadores</strong><span>${escapeHtml(state.pdvCash.authorizersError)}</span></div>` : ""}
+      ${expanded ? `<div class="pdv-authorizers-stack">
         ${createForm}
         ${setupCard}
-        ${state.pdvCash.authorizersError ? `<div class="pdv-payment-alert warning"><strong>Autorizadores</strong><span>${escapeHtml(state.pdvCash.authorizersError)}</span></div>` : ""}
         <div class="pdv-authorizers-list">${listHtml}</div>
-      </div>
+      </div>` : ""}
     </article>
   `;
 }
@@ -8652,6 +8702,7 @@ function buildPdvCashRegisterFrontHtml() {
     || Boolean(normalizeText(currentSale?.payment_link_status || currentSale?.payment_link_payment_status || currentSale?.payment_link_url || ""));
   const currentSalePaymentLink = getPdvSalePaymentLinkData(currentSale);
   const currentSalePaymentLinkMeta = currentSaleUsesPaymentLink ? getPdvSalePaymentLinkStatusMeta(currentSale) : null;
+  const currentSalePaymentLinkCopied = normalizeText(state.pdvSale.postSalePaymentLinkCopiedSaleId || "") === normalizeText(currentSaleId || "");
   const currentSaleCustomerName = currentSale?.customer?.name || currentSale?.customer_name || "Venda balcão";
   const currentSaleSellerName = currentSale?.vendedor || currentSale?.seller_name || currentMovement?.responsible || "-";
   const currentStoreContext = getPdvStorePublicContext(register.loja || getCurrentPdvStoreId(), formatStoreIdLabel(register.loja || getCurrentPdvStoreId()));
@@ -8695,9 +8746,18 @@ function buildPdvCashRegisterFrontHtml() {
             <span>Total recebido</span>
             <strong>${currency(summary.totalReceived)}</strong>
           </article>
+          <article class="stat-card">
+            <span>Valor inicial</span>
+            <strong>${currency(register.valor_inicial || 0)}</strong>
+          </article>
+          <article class="stat-card">
+            <span>Ultimo movimento</span>
+            <strong>${escapeHtml(formatDateTimeBR(saleRows[0]?.movement?.created_at || register.criado_em || ""))}</strong>
+          </article>
         </div>
 
-        <div class="split-grid">
+        <section class="pdv-cash-money-block">
+          <div class="pdv-cash-money-left">
           <article class="panel">
             <div class="panel-header">
               <h3>Caixa ativo da loja</h3>
@@ -8728,8 +8788,10 @@ function buildPdvCashRegisterFrontHtml() {
               ` : ""}
             </div>
           </article>
-
-          <article class="panel">
+            ${buildPdvCashExpectedSummaryPanel(register)}
+          </div>
+          <div class="pdv-cash-money-right">
+          <article class="panel pdv-cash-store-kpis">
             <div class="panel-header">
               <h3>Resumo operacional</h3>
             </div>
@@ -8740,15 +8802,13 @@ function buildPdvCashRegisterFrontHtml() {
               <article class="stat-card"><span>Último movimento</span><strong>${escapeHtml(formatDateTimeBR(saleRows[0]?.movement?.created_at || register.criado_em || ""))}</strong></article>
             </div>
           </article>
-        </div>
-        <div class="split-grid pdv-cash-financial-grid">
-          ${buildPdvCashExpectedSummaryPanel(register)}
           ${buildPdvCashMovementsPanel(register)}
-        </div>
-        ${canManagePdvAuthorizers() ? buildPdvCashAuthorizersPanel() : ""}
+          </div>
+        </section>
         ${buildPdvCashPendingPaymentPanel(pendingPaymentLinks)}
+        ${canManagePdvAuthorizers() ? buildPdvCashAuthorizersPanel() : ""}
 
-        <div class="split-grid">
+        <section class="split-grid pdv-cash-sales-layout">
           <article class="panel pdv-cash-table-panel">
             <div class="panel-header">
               <h3>Vendas do caixa</h3>
@@ -8846,6 +8906,7 @@ function buildPdvCashRegisterFrontHtml() {
                     <div><span>Status do link</span><strong>${escapeHtml(currentSalePaymentLinkMeta?.link?.label || "-")}</strong></div>
                     <div><span>Status do pagamento</span><strong class="pdv-payment-link-tone-${escapeHtml(currentSalePaymentLinkMeta?.payment?.tone || "neutral")}">${escapeHtml(currentSalePaymentLinkMeta?.payment?.label || "-")}</strong></div>
                     <div><span>Status PagBank</span><strong>${escapeHtml(currentSalePaymentLink.providerStatus || "-")}</strong></div>
+                    <div><span>Link manual</span><strong title="${escapeHtml(currentSalePaymentLink.url || "")}">${escapeHtml(maskPdvExternalUrl(currentSalePaymentLink.url || ""))}</strong></div>
                     <div><span>Ultima checagem</span><strong>${escapeHtml(formatDateTimeBR(currentSalePaymentLink.lastCheckedAt || ""))}</strong></div>
                     <div><span>Pago em</span><strong>${escapeHtml(formatDateTimeBR(currentSalePaymentLink.paidAt || ""))}</strong></div>
                     <div><span>Checkout ID</span><strong>${escapeHtml(currentSalePaymentLink.checkoutId || "-")}</strong></div>
@@ -8855,6 +8916,7 @@ function buildPdvCashRegisterFrontHtml() {
                   <button class="secondary-button small" type="button" data-pdv-sale-generate-coupon="${escapeHtml(currentSaleId || "")}"${normalizeText(state.pdvSale.couponLoadingSaleId || "") === normalizeText(currentSaleId || "") ? " disabled" : ""}>${normalizeText(state.pdvSale.couponLoadingSaleId || "") === normalizeText(currentSaleId || "") ? "Abrindo..." : currentCouponUrl ? "Abrir cupom" : "Gerar cupom"}</button>
                   <button class="ghost-button small" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(currentSaleId || "")}"${normalizeText(state.pdvSale.whatsappSendingSaleId || "") === normalizeText(currentSaleId || "") ? " disabled" : ""}>${normalizeText(state.pdvSale.whatsappSendingSaleId || "") === normalizeText(currentSaleId || "") ? "Enviando..." : currentSaleUsesPaymentLink ? (currentSalePaymentLink.sentAt ? "Reenviar link WhatsApp CRM" : "Enviar link WhatsApp CRM") : "Enviar resumo WhatsApp CRM"}</button>
                   ${currentSaleUsesPaymentLink && currentSalePaymentLink.checkoutId ? `<button class="ghost-button small" type="button" data-pdv-sale-refresh-payment-link="${escapeHtml(currentSaleId || "")}"${normalizeText(state.pdvSale.paymentLinkBusySaleId || "") === normalizeText(currentSaleId || "") ? " disabled" : ""}>${normalizeText(state.pdvSale.paymentLinkBusySaleId || "") === normalizeText(currentSaleId || "") ? "Atualizando..." : "Atualizar status"}</button>` : ""}
+                  ${currentSaleUsesPaymentLink && currentSalePaymentLink.url ? `<button class="ghost-button small" type="button" data-pdv-sale-copy-payment-link="${escapeHtml(currentSaleId || "")}">${currentSalePaymentLinkCopied ? "Link copiado" : "Copiar link"}</button>` : ""}
                   ${currentSaleUsesPaymentLink && currentSalePaymentLink.url ? `<button class="ghost-button small" type="button" data-pdv-sale-open-payment-link="${escapeHtml(currentSaleId || "")}">Abrir link</button>` : ""}
                   <button class="ghost-button small" type="button" data-route="/pdv/venda">Ir para Venda</button>
                 </div>
@@ -8866,7 +8928,7 @@ function buildPdvCashRegisterFrontHtml() {
               </div>
             `}
           </article>
-        </div>
+        </section>
         ${buildPdvCashMovementModal()}
       </div>
     `
@@ -19785,6 +19847,53 @@ function removePdvCashPendingPaymentLinkItem(saleId = "") {
     .filter((item) => normalizeText(item?.sale_id || item?.saleId || "") !== normalizedSaleId);
 }
 
+function buildPdvCashPendingPaymentInlineDetail(item = {}) {
+  const saleId = normalizeText(item?.sale_id || item?.saleId || "");
+  if (!saleId) {
+    return "";
+  }
+  const enrichedSale = state.pdvCash.saleDetails?.[saleId] || null;
+  const sale = {
+    ...(item || {}),
+    ...(enrichedSale || {})
+  };
+  const paymentLink = getPdvSalePaymentLinkData(sale);
+  const statusMeta = getPdvSalePaymentLinkStatusMeta(sale);
+  const storeContext = getPdvSaleStoreDisplayContext(sale);
+  const loading = normalizeText(state.pdvCash.saleDetailLoadingId || "") === saleId;
+  const error = normalizeText(state.pdvCash.saleDetailError || "");
+  const customerName = sale?.customer?.name || sale?.customer_name || "Venda balcão";
+  const sellerName = sale?.vendedor || sale?.seller_name || "-";
+  const createdAt = sale?.created_at || sale?.criado_em || "";
+  const payments = getPdvSalePostSalePayments(sale);
+  const paymentLine = payments.length
+    ? payments.map((payment) => `${formatPaymentMethodLabel(payment.method)} ${currency(payment.amount || 0)}`).join(" • ")
+    : "Link pagamento";
+  return `
+    <div class="pdv-cash-pending-detail" data-pdv-cash-pending-detail="${escapeHtml(saleId)}">
+      <div class="pdv-cash-pending-detail-head">
+        <div>
+          <span>Resumo da venda</span>
+          <strong>${escapeHtml(saleId)}</strong>
+        </div>
+        ${loading ? `<em>Carregando detalhes...</em>` : ""}
+      </div>
+      ${error ? `<div class="pdv-register-inline-warning warning"><strong>Detalhe parcial</strong><span>${escapeHtml(error)}</span></div>` : ""}
+      <div class="pdv-cash-pending-detail-grid">
+        <div><span>Cliente</span><strong>${escapeHtml(customerName)}</strong></div>
+        <div><span>Loja</span><strong>${escapeHtml(storeContext.display_name || getPdvStoreDisplayName(sale?.store_id || sale?.loja || "", sale?.store_label || ""))}</strong></div>
+        <div><span>Vendedor</span><strong>${escapeHtml(sellerName)}</strong></div>
+        <div><span>Total</span><strong>${currency(sale?.total_final || sale?.total || 0)}</strong></div>
+        <div><span>Pagamento</span><strong>${escapeHtml(paymentLine)}</strong></div>
+        <div><span>Criada em</span><strong>${escapeHtml(formatDateTimeBR(createdAt || ""))}</strong></div>
+        <div><span>Status do link</span><strong>${escapeHtml(statusMeta?.link?.label || "-")}</strong></div>
+        <div><span>Status PagBank</span><strong class="pdv-payment-link-tone-${escapeHtml(statusMeta?.payment?.tone || "neutral")}">${escapeHtml(paymentLink.providerStatus || statusMeta?.payment?.label || "-")}</strong></div>
+        <div><span>Decisão</span><strong class="pdv-payment-link-tone-${escapeHtml(statusMeta?.release?.tone || "neutral")}">${escapeHtml(statusMeta?.release?.label || "Aguardando pagamento")}</strong></div>
+      </div>
+    </div>
+  `;
+}
+
 function buildPdvCashPendingPaymentPanel(items = []) {
   const rows = sortPdvCashPendingPaymentLinks(items).filter((item) => isPdvCashPendingPaymentLinkItem(item));
   const pendingCount = rows.length;
@@ -19801,75 +19910,60 @@ function buildPdvCashPendingPaymentPanel(items = []) {
         </div>
       ` : ""}
       ${pendingCount ? `
-        <div class="table-wrap table-scroll">
-          <table class="pdv-cash-table pdv-cash-pending-table">
-            <thead>
-              <tr>
-                <th>Data</th>
-                <th>Venda</th>
-                <th>Cliente</th>
-                <th>Loja</th>
-                <th>Total</th>
-                <th>Link</th>
-                <th>Status PagBank</th>
-                <th>Decisao</th>
-                <th>Acoes</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rows.map((item) => {
-                const saleId = normalizeText(item?.sale_id || "");
-                const storeContext = getPdvSaleStoreDisplayContext(item);
-                const paymentLink = getPdvSalePaymentLinkData(item);
-                const statusMeta = getPdvSalePaymentLinkStatusMeta(item);
-                const isSelected = normalizeText(state.pdvCash.selectedSaleId || "") === saleId;
-                const whatsappSending = normalizeText(state.pdvSale.whatsappSendingSaleId || "") === saleId;
-                const paymentLinkBusy = normalizeText(state.pdvSale.paymentLinkBusySaleId || "") === saleId;
-                const copiedLink = normalizeText(state.pdvSale.postSalePaymentLinkCopiedSaleId || "") === saleId;
-                return `
-                  <tr class="${isSelected ? "is-selected" : ""}">
-                    <td>${escapeHtml(formatDateTimeBR(item?.created_at || ""))}</td>
-                    <td>
-                      <div class="pdv-register-label-cell">
-                        <strong>${escapeHtml(saleId || "-")}</strong>
-                        <span>${escapeHtml(statusMeta?.payment?.label || "Aguardando pagamento")}</span>
-                      </div>
-                    </td>
-                    <td>${escapeHtml(item?.customer_name || "Venda balcao")}</td>
-                    <td>${escapeHtml(getPdvStoreDisplayName(item?.store_id || item?.store_label || "", storeContext.display_name || item?.store_label || ""))}</td>
-                    <td><strong>${currency(item?.total || 0)}</strong></td>
-                    <td>
-                      <div class="pdv-register-label-cell">
-                        <strong>${escapeHtml(statusMeta?.link?.label || "-")}</strong>
-                        <span title="${escapeHtml(paymentLink.url || "")}">${escapeHtml(maskPdvExternalUrl(paymentLink.url || ""))}</span>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="pdv-register-label-cell">
-                        <strong>${escapeHtml(paymentLink.providerStatus || "-")}</strong>
-                        <span class="pdv-payment-link-tone-${escapeHtml(statusMeta?.payment?.tone || "neutral")}">${escapeHtml(statusMeta?.payment?.label || "-")}</span>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="pdv-register-label-cell">
-                        <strong class="pdv-payment-link-tone-${escapeHtml(statusMeta?.release?.tone || "neutral")}">${escapeHtml(statusMeta?.release?.label || "Nao liberar mercadoria")}</strong>
-                        <span>${escapeHtml(statusMeta?.note || "Nao libere a mercadoria ate o pagamento ser confirmado.")}</span>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="pdv-cash-pending-actions">
-                        <button class="secondary-button small" type="button" data-pdv-cash-sale-detail="${escapeHtml(saleId)}">Ver venda</button>
-                        ${paymentLink.checkoutId ? `<button class="ghost-button small" type="button" data-pdv-sale-refresh-payment-link="${escapeHtml(saleId)}"${paymentLinkBusy ? " disabled" : ""}>${paymentLinkBusy ? "Atualizando..." : "Atualizar status"}</button>` : ""}
-                        ${paymentLink.url ? `<button class="ghost-button small" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(saleId)}"${whatsappSending ? " disabled" : ""}>${whatsappSending ? "Enviando..." : paymentLink.sentAt ? "Reenviar link" : "Enviar link"}</button>` : ""}
-                        ${paymentLink.url ? `<button class="ghost-button small" type="button" data-pdv-sale-copy-payment-link="${escapeHtml(saleId)}">${copiedLink ? "Link copiado" : "Copiar link"}</button>` : ""}
-                        ${paymentLink.url ? `<button class="ghost-button small" type="button" data-pdv-sale-open-payment-link="${escapeHtml(saleId)}">Abrir link</button>` : ""}
-                      </div>
-                    </td>
-                  </tr>
-                `;
-              }).join("")}
-            </tbody>
-          </table>
+        <div class="pdv-cash-pending-list">
+          ${rows.map((item) => {
+            const saleId = normalizeText(item?.sale_id || "");
+            const storeContext = getPdvSaleStoreDisplayContext(item);
+            const paymentLink = getPdvSalePaymentLinkData(item);
+            const statusMeta = getPdvSalePaymentLinkStatusMeta(item);
+            const isSelected = normalizeText(state.pdvCash.selectedSaleId || "") === saleId;
+            const whatsappSending = normalizeText(state.pdvSale.whatsappSendingSaleId || "") === saleId;
+            const paymentLinkBusy = normalizeText(state.pdvSale.paymentLinkBusySaleId || "") === saleId;
+            const copiedLink = normalizeText(state.pdvSale.postSalePaymentLinkCopiedSaleId || "") === saleId;
+            return `
+              <article class="pdv-cash-pending-card ${isSelected ? "is-selected" : ""}">
+                <div class="pdv-cash-pending-main">
+                  <div class="pdv-cash-pending-id">
+                    <strong>${escapeHtml(saleId || "-")}</strong>
+                    <span>${escapeHtml(formatDateTimeBR(item?.created_at || ""))}</span>
+                  </div>
+                  <div class="pdv-cash-pending-customer">
+                    <strong>${escapeHtml(item?.customer_name || "Venda balcao")}</strong>
+                    <span>${escapeHtml(getPdvStoreDisplayName(item?.store_id || item?.store_label || "", storeContext.display_name || item?.store_label || ""))}</span>
+                  </div>
+                  <div class="pdv-cash-pending-total">
+                    <strong>${currency(item?.total || 0)}</strong>
+                    <span>${escapeHtml(statusMeta?.payment?.label || "Aguardando pagamento")}</span>
+                  </div>
+                </div>
+                <div class="pdv-cash-pending-status">
+                  <span>
+                    <small>Link</small>
+                    <strong>${escapeHtml(statusMeta?.link?.label || "-")}</strong>
+                    <em title="${escapeHtml(paymentLink.url || "")}">${escapeHtml(maskPdvExternalUrl(paymentLink.url || ""))}</em>
+                  </span>
+                  <span>
+                    <small>PagBank</small>
+                    <strong>${escapeHtml(paymentLink.providerStatus || "-")}</strong>
+                    <em class="pdv-payment-link-tone-${escapeHtml(statusMeta?.payment?.tone || "neutral")}">${escapeHtml(statusMeta?.payment?.label || "-")}</em>
+                  </span>
+                  <span>
+                    <small>Decisao</small>
+                    <strong class="pdv-payment-link-tone-${escapeHtml(statusMeta?.release?.tone || "neutral")}">${escapeHtml(statusMeta?.release?.label || "Nao liberar")}</strong>
+                    <em>${escapeHtml(statusMeta?.note || "Aguarde confirmacao do pagamento.")}</em>
+                  </span>
+                </div>
+                ${isSelected ? buildPdvCashPendingPaymentInlineDetail(item) : ""}
+                <div class="pdv-cash-pending-actions">
+                  <button class="secondary-button small" type="button" data-pdv-cash-sale-detail="${escapeHtml(saleId)}">Ver venda</button>
+                  ${paymentLink.checkoutId ? `<button class="ghost-button small" type="button" data-pdv-sale-refresh-payment-link="${escapeHtml(saleId)}"${paymentLinkBusy ? " disabled" : ""}>${paymentLinkBusy ? "Atualizando..." : "Atualizar status"}</button>` : ""}
+                  ${paymentLink.url ? `<button class="ghost-button small" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(saleId)}"${whatsappSending ? " disabled" : ""}>${whatsappSending ? "Enviando..." : paymentLink.sentAt ? "Reenviar link" : "Enviar link"}</button>` : ""}
+                  ${paymentLink.url ? `<button class="ghost-button small" type="button" data-pdv-sale-copy-payment-link="${escapeHtml(saleId)}">${copiedLink ? "Link copiado" : "Copiar link"}</button>` : ""}
+                  ${paymentLink.url ? `<button class="ghost-button small" type="button" data-pdv-sale-open-payment-link="${escapeHtml(saleId)}">Abrir link</button>` : ""}
+                </div>
+              </article>
+            `;
+          }).join("")}
         </div>
       ` : `
         <div class="empty-state compact">
@@ -21670,19 +21764,32 @@ async function loadPdvSalesOrdersFront({ preservePage = false } = {}) {
 async function openPdvSalesOrderDetail(saleId = "") {
   const normalizedSaleId = normalizeText(saleId || "");
   if (!normalizedSaleId) return;
+  const rowFallback = toArray(state.pdvSalesOrders.rows).find((row) => normalizeText(row?.sale_id || "") === normalizedSaleId) || null;
   state.pdvSalesOrders.selectedSaleId = normalizedSaleId;
   state.pdvSalesOrders.detailLoading = true;
   state.pdvSalesOrders.detailError = "";
-  state.pdvSalesOrders.detail = null;
+  state.pdvSalesOrders.detail = rowFallback ? { row: rowFallback, sale: rowFallback } : null;
   renderPdvSalesOrdersFront();
   try {
     const detail = await api(`/api/pdv/sales/orders/${encodeURIComponent(normalizedSaleId)}`);
-    state.pdvSalesOrders.detail = detail || null;
+    state.pdvSalesOrders.detail = detail || (rowFallback ? { row: rowFallback, sale: rowFallback } : null);
     if (detail?.sale) {
       persistPdvSaleRecordUpdate(detail.sale);
     }
   } catch (error) {
-    state.pdvSalesOrders.detailError = normalizeVisibleText(error?.message || "Nao foi possivel carregar esta venda.");
+    const fallbackSale = await api(`/api/pdv/sales/sale/${encodeURIComponent(normalizedSaleId)}`).catch(() => null);
+    if (fallbackSale || rowFallback) {
+      state.pdvSalesOrders.detail = {
+        row: rowFallback || fallbackSale,
+        sale: fallbackSale || rowFallback
+      };
+      if (fallbackSale) {
+        persistPdvSaleRecordUpdate(fallbackSale);
+      }
+      state.pdvSalesOrders.detailError = "";
+    } else {
+      state.pdvSalesOrders.detailError = normalizeVisibleText(error?.message || "Não foi possível carregar esta venda.");
+    }
   } finally {
     state.pdvSalesOrders.detailLoading = false;
     renderPdvSalesOrdersFront();
@@ -27811,21 +27918,42 @@ function handleDocumentClick(event) {
 
   const pdvCashSaleDetailButton = event.target.closest("[data-pdv-cash-sale-detail]");
   if (pdvCashSaleDetailButton) {
+    event.preventDefault();
     const saleId = normalizeText(pdvCashSaleDetailButton.dataset.pdvCashSaleDetail || "");
     state.pdvCash.selectedSaleId = saleId;
+    state.pdvCash.saleDetailError = "";
     persistPdvCashHighlightSaleId(saleId);
     renderPdvCashRegisterOfficialFront();
     if (saleId && !state.pdvCash.saleDetails?.[saleId]) {
-      fetchPdvSaleById(saleId, { silent: true }).finally(() => {
+      state.pdvCash.saleDetailLoadingId = saleId;
+      renderPdvCashRegisterOfficialFront();
+      fetchPdvSaleById(saleId, { silent: true }).then((sale) => {
+        if (!sale) {
+          state.pdvCash.saleDetailError = "Não foi possível enriquecer esta venda agora. Mantive o resumo da fila.";
+        }
+      }).catch((error) => {
+        state.pdvCash.saleDetailError = normalizeVisibleText(error?.message || "Não foi possível carregar o detalhe da venda.");
+      }).finally(() => {
+        state.pdvCash.saleDetailLoadingId = "";
         renderPdvCashRegisterOfficialFront();
       });
     }
+    window.setTimeout(() => {
+      document.querySelector(`[data-pdv-cash-pending-detail="${CSS.escape(saleId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 40);
     return;
   }
 
   const savePdvAuthorizerButton = event.target.closest("[data-pdv-authorizer-save]");
   if (savePdvAuthorizerButton) {
     savePdvAuthorizerSetup().catch((error) => handleUiError("Erro ao criar o autorizador do PDV", error));
+    return;
+  }
+
+  const togglePdvAuthorizerPanelButton = event.target.closest("[data-pdv-authorizer-panel-toggle]");
+  if (togglePdvAuthorizerPanelButton) {
+    state.pdvCash.authorizersExpanded = !state.pdvCash.authorizersExpanded;
+    renderPdvCashRegisterOfficialFront();
     return;
   }
 

@@ -381,7 +381,7 @@ router.post("/authorizations/validate", async (req, res) => {
     if (!hasPermission(req.user || {}, "can_request_discount_authorization")) {
       return res.status(403).json({ error: "Seu perfil nao pode solicitar autorizacoes do PDV." });
     }
-    res.json(validateOperationAuthorization({
+    res.json(await validateOperationAuthorization({
       ...(req.body || {}),
       ip: req.ip || "",
       user_agent: req.headers["user-agent"] || ""
