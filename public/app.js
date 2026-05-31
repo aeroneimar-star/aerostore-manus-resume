@@ -7952,6 +7952,7 @@ function buildPdvCashRegisterClosedState(register = null, dashboard = {}) {
               </div>
             </div>
           </article>
+          </div>
         </section>
 
         ${canManagePdvAuthorizers() ? buildPdvCashAuthorizersPanel() : ""}
@@ -7980,6 +7981,72 @@ function summarizePdvCashRegister(register = null) {
     manualMovements,
     saleMovements
   };
+}
+
+function buildPdvCashSaleCards({ saleRows = [], currentSaleId = "", focusSaleId = "" } = {}) {
+  const rows = toArray(saleRows);
+  if (!rows.length) {
+    return `
+      <div class="empty-state compact">
+        <strong>Nao ha vendas neste caixa.</strong>
+        <span>Quando uma venda for finalizada no PDV, ela aparecera nesta leitura operacional do caixa.</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="pdv-cash-sales-list">
+      ${rows.map((row) => {
+        const paymentLine = toArray(row.sale?.pagamentos).length
+          ? toArray(row.sale?.pagamentos).map((item) => `${formatPaymentMethodLabel(item.method)} ${currency(item.amount || 0)}`).join(" - ")
+          : [
+            row.movement?.payload?.pix_amount ? `Pix ${currency(row.movement.payload.pix_amount)}` : "",
+            row.movement?.payload?.money_amount ? `Dinheiro ${currency(row.movement.payload.money_amount)}` : "",
+            row.movement?.payload?.debito_amount ? `Debito ${currency(row.movement.payload.debito_amount)}` : "",
+            row.movement?.payload?.credito_amount ? `Credito ${currency(row.movement.payload.credito_amount)}` : ""
+          ].filter(Boolean).join(" - ");
+        const saleId = normalizeText(row.saleId || "");
+        const isActive = saleId && saleId === currentSaleId;
+        const isHighlighted = saleId && saleId === focusSaleId;
+        const saleStatus = normalizeText(row.sale?.status || "SALE");
+        return `
+          <article class="pdv-cash-sale-card${isActive ? " is-selected" : ""}${isHighlighted ? " is-highlighted" : ""}">
+            <div class="pdv-cash-sale-card-main">
+              <div class="pdv-register-label-cell">
+                <strong>${escapeHtml(saleId || "-")}</strong>
+                <span>${escapeHtml(row.movement?.movement_id || "-")}</span>
+              </div>
+              <div>
+                <span>Data</span>
+                <strong>${escapeHtml(formatDateTimeBR(row.movement?.created_at || row.sale?.criado_em || ""))}</strong>
+              </div>
+              <div>
+                <span>Cliente</span>
+                <strong>${escapeHtml(row.sale?.customer?.name || "Venda balcao")}</strong>
+              </div>
+              <div>
+                <span>Vendedor</span>
+                <strong>${escapeHtml(row.sale?.vendedor || row.movement?.responsible || "-")}</strong>
+              </div>
+            </div>
+            <div class="pdv-cash-sale-card-side">
+              <div>
+                <span>Total</span>
+                <strong>${currency(row.sale?.total_final || row.movement?.value || 0)}</strong>
+              </div>
+              <div>
+                <span>Pagamento</span>
+                <strong>${escapeHtml(paymentLine || "-")}</strong>
+              </div>
+              <span class="pdv-register-status-badge ${getPdvCashRegisterStatusClass(saleStatus === "COMPLETED" ? "OPEN" : "CLOSED")}">${escapeHtml(saleStatus)}</span>
+              <button class="secondary-button small" type="button" data-pdv-cash-sale-detail="${escapeHtml(saleId)}">
+                Ver detalhes
+              </button>
+            </div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
 }
 
 function getPdvCashExpectedSummary(register = null) {
@@ -8813,6 +8880,8 @@ function buildPdvCashRegisterFrontHtml() {
             <div class="panel-header">
               <h3>Vendas do caixa</h3>
             </div>
+            ${buildPdvCashSaleCards({ saleRows, currentSaleId, focusSaleId })}
+            <div class="pdv-cash-legacy-sales-table" aria-hidden="true">
             ${saleRows.length ? `
               <div class="table-wrap table-scroll">
                 <table class="pdv-cash-table">
@@ -8871,6 +8940,7 @@ function buildPdvCashRegisterFrontHtml() {
                 <span>Quando uma venda for finalizada no PDV, ela aparecerá nesta leitura operacional do caixa.</span>
               </div>
             `}
+            </div>
           </article>
 
           <article class="panel pdv-cash-detail-panel">
