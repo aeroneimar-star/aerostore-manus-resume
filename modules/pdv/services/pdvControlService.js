@@ -311,17 +311,14 @@ function getDiscountPolicyForSale({
   const grossSubtotal = roundMoney(subtotal || 0);
   const safeCashbackUsed = roundMoney(cashbackUsed || cashbackAmount || cashbackApplied || 0);
   const safeExchangeCredit = roundMoney(exchangeCredit || exchangeCreditUsed || 0);
-  const excessBalanceBeforeDiscount = roundMoney(Math.max(
-    0,
-    (discountBase > 0 ? discountBase : grossSubtotal - safeCashbackUsed - safeExchangeCredit)
-  ));
-  const policyBase = excessBalanceBeforeDiscount;
-  const excessBalanceAfterDiscount = roundMoney(Math.max(0, excessBalanceBeforeDiscount - generalDiscountAmount));
+  const excessBalanceBeforeDiscount = roundMoney(Math.max(0, grossSubtotal - safeCashbackUsed - safeExchangeCredit));
+  const policyBase = roundMoney(discountBase > 0 ? discountBase : grossSubtotal);
   const commercialDiscountTotal = roundMoney(safeItemDiscountAmount + generalDiscountAmount);
-  const effectiveDiscountPercent = excessBalanceBeforeDiscount > 0
-    ? Number(((generalDiscountAmount / excessBalanceBeforeDiscount) * 100).toFixed(2))
+  const excessBalanceAfterDiscount = roundMoney(Math.max(0, excessBalanceBeforeDiscount - commercialDiscountTotal));
+  const effectiveDiscountPercent = policyBase > 0
+    ? Number(((commercialDiscountTotal / policyBase) * 100).toFixed(2))
     : Number(toNumber(discountPercent || 0).toFixed(2));
-  const automaticLimitAmount = roundMoney((excessBalanceBeforeDiscount * 10) / 100);
+  const automaticLimitAmount = roundMoney((policyBase * 10) / 100);
   const hasDiscount = commercialDiscountTotal > 0 || effectiveDiscountPercent > 0;
   const hasGeneralDiscount = generalDiscountAmount > 0.009;
   const hasItemDiscount = safeItemDiscountAmount > 0.009;
@@ -343,7 +340,7 @@ function getDiscountPolicyForSale({
     && methods.length > 0
     && !invalidMethods.length
     && effectiveDiscountPercent <= 10.001
-    && generalDiscountAmount <= automaticLimitAmount + 0.01
+    && commercialDiscountTotal <= automaticLimitAmount + 0.01
     && !hasItemDiscount;
   const invalidMethodsLabel = invalidMethods.map((method) => getDiscountPaymentMethodLabel(method)).join(" + ");
 
@@ -407,7 +404,7 @@ function getDiscountPolicyForSale({
     };
   }
 
-  if (hasGeneralDiscount && excessBalanceBeforeDiscount <= 0) {
+  if (hasGeneralDiscount && policyBase <= 0) {
     return {
       limitPercent: 10,
       reason: "DISCOUNT_WITHOUT_EXCESS_BALANCE",
@@ -417,7 +414,7 @@ function getDiscountPolicyForSale({
       pendingPaymentMethod: false,
       requiresAuthorization: true,
       allowedWithoutAuthorization: false,
-      message: "Nao ha saldo excedente para aplicar desconto geral automatico.",
+      message: "Nao ha subtotal comercial para aplicar desconto geral automatico.",
       policyBase,
       cashbackUsed: safeCashbackUsed,
       exchangeCredit: safeExchangeCredit,
@@ -652,10 +649,6 @@ function buildDiscountAuthorizationFingerprint(context = {}) {
   const commercialDiscountPercent = subtotal > 0
     ? Number(((commercialDiscountTotal / subtotal) * 100).toFixed(2))
     : Number(toNumber(context.commercialDiscountPercent ?? context.discount_percent ?? 0).toFixed(2));
-  const cashbackApplied = roundMoney(context.cashbackApplied ?? context.cashback_applied ?? context.cashbackUsed ?? 0);
-  const exchangeCredit = roundMoney(context.exchangeCredit ?? context.exchange_credit ?? 0);
-  const excessBalanceBeforeDiscount = roundMoney(context.excessBalanceBeforeDiscount ?? context.excess_balance_before_discount ?? Math.max(0, subtotal - cashbackApplied - exchangeCredit));
-  const excessBalanceAfterDiscount = roundMoney(context.excessBalanceAfterDiscount ?? context.excess_balance_after_discount ?? Math.max(0, excessBalanceBeforeDiscount - generalDiscountAmount));
   return hashStableObject({
     loja: normalizeStoreKey(context.loja || context.store_id || ""),
     customer_id: normalizeText(context.customerId || context.customer_id || ""),
@@ -664,11 +657,6 @@ function buildDiscountAuthorizationFingerprint(context = {}) {
     general_discount_amount: generalDiscountAmount,
     commercial_discount_total: commercialDiscountTotal,
     commercial_discount_percent: commercialDiscountPercent,
-    total_final: roundMoney(context.totalFinal ?? context.amountToPay ?? context.total_final ?? 0),
-    cashback_applied: cashbackApplied,
-    exchange_credit: exchangeCredit,
-    excess_balance_before_discount: excessBalanceBeforeDiscount,
-    excess_balance_after_discount: excessBalanceAfterDiscount,
     payment_risk_methods: normalizeAuthorizationPaymentRiskAmounts(context.paymentMethods || context.payment_methods || context.paymentAmounts || []),
     items: normalizeAuthorizationItems(context.items || [])
   });

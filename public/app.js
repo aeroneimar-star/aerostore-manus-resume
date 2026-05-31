@@ -1907,10 +1907,11 @@ function getPdvSaleDiscountPolicy(session = null, options = {}) {
   const grossSubtotal = getPdvSaleItemsGrossSubtotal(currentSession);
   const cashbackUsed = getPdvSaleCashbackApplication(currentSession).amount;
   const exchangeCredit = getPdvSaleExchangeCreditApplication(currentSession).amount;
-  const policyBase = Number(Math.max(0, grossSubtotal - cashbackUsed - exchangeCredit).toFixed(2));
-  const excessBalanceBeforeDiscount = policyBase;
-  const excessBalanceAfterDiscount = Number(Math.max(0, excessBalanceBeforeDiscount - generalDiscountAmount).toFixed(2));
-  const percent = policyBase > 0 ? Number(((generalDiscountAmount / policyBase) * 100).toFixed(2)) : 0;
+  const policyBase = Number(Math.max(0, grossSubtotal).toFixed(2));
+  const excessBalanceBeforeDiscount = Number(Math.max(0, grossSubtotal - cashbackUsed - exchangeCredit).toFixed(2));
+  const excessBalanceAfterDiscount = Number(Math.max(0, excessBalanceBeforeDiscount - itemDiscountAmount - generalDiscountAmount).toFixed(2));
+  const commercialDiscountTotal = Number((itemDiscountAmount + generalDiscountAmount).toFixed(2));
+  const percent = policyBase > 0 ? Number(((commercialDiscountTotal / policyBase) * 100).toFixed(2)) : 0;
   const automaticLimitAmount = Number(((policyBase * 10) / 100).toFixed(2));
   const sessionPolicy = currentSession?.discount_policy && typeof currentSession.discount_policy === "object"
     ? currentSession.discount_policy
@@ -1922,14 +1923,13 @@ function getPdvSaleDiscountPolicy(session = null, options = {}) {
   const invalidMethodsLabel = invalidMethods.map((method) => formatPaymentMethodLabel(method)).join(" + ");
   const hasItemDiscount = itemDiscountAmount > 0.009;
   const hasGeneralDiscount = generalDiscountAmount > 0.009;
-  const commercialDiscountTotal = Number((itemDiscountAmount + generalDiscountAmount).toFixed(2));
   const effectiveDiscountPercent = grossSubtotal > 0 ? Number(((commercialDiscountTotal / grossSubtotal) * 100).toFixed(2)) : 0;
   const hasDiscount = commercialDiscountTotal > 0.009 || percent > 0;
   const generalWithinAutomaticPolicy = hasGeneralDiscount
     && paymentMethods.length > 0
     && !invalidMethods.length
     && !hasItemDiscount
-    && generalDiscountAmount <= automaticLimitAmount + 0.01
+    && commercialDiscountTotal <= automaticLimitAmount + 0.01
     && percent <= 10.001;
   const generalRequiresAuthorization = hasGeneralDiscount
     && !generalWithinAutomaticPolicy
@@ -1949,7 +1949,7 @@ function getPdvSaleDiscountPolicy(session = null, options = {}) {
     reason = "DISCOUNT_WITHOUT_EXCESS_BALANCE";
     requiresAuthorization = true;
     allowedWithoutAuthorization = false;
-    message = "Nao ha saldo excedente para aplicar desconto geral automatico.";
+    message = "Nao ha subtotal comercial para aplicar desconto geral automatico.";
   } else if (hasGeneralDiscount && !paymentMethods.length) {
     reason = "PENDING_PAYMENT_METHOD";
     pendingPaymentMethod = true;
@@ -6379,11 +6379,6 @@ function getPdvSaleDiscountPaymentContextKey(session = null) {
     general_discount_amount: normalizeForKey(discount.amount),
     commercial_discount_total: normalizeForKey(discount.totalDiscountAmount),
     commercial_discount_percent: normalizeForKey(policy.effectiveDiscountPercent || discount.totalDiscountPercent),
-    total_final: normalizeForKey(totals.total),
-    cashback_applied: normalizeForKey(totals.cashbackUsed),
-    exchange_credit: normalizeForKey(totals.exchangeCreditApplied),
-    excess_balance_before_discount: normalizeForKey(policy.excessBalanceBeforeDiscount || policy.policyBase || 0),
-    excess_balance_after_discount: normalizeForKey(policy.excessBalanceAfterDiscount || 0),
     payment_risk_methods: paymentRiskMethods,
     items
   });

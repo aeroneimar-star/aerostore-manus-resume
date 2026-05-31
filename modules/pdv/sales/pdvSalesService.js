@@ -1900,7 +1900,7 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
       subtotal: totals.subtotal,
       extraDiscount: totals.extraDiscount,
       itemDiscountAmount: totals.itemDiscountAmount,
-      discountBase: roundMoney(Math.max(0, totals.subtotal - totals.cashbackUsed - totals.exchangeCredit)),
+      discountBase: roundMoney(Math.max(0, totals.subtotal)),
       cashbackUsed: totals.cashbackUsed,
       exchangeCredit: totals.exchangeCredit,
       totalFinal: totals.totalFinal,
