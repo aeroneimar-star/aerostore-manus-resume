@@ -646,9 +646,12 @@ function buildDiscountAuthorizationFingerprint(context = {}) {
   const itemDiscountAmount = roundMoney(context.itemDiscountAmount ?? context.item_discount_amount ?? 0);
   const generalDiscountAmount = roundMoney(context.generalDiscountAmount ?? context.general_discount_amount ?? context.extraDiscount ?? 0);
   const commercialDiscountTotal = roundMoney(context.commercialDiscountTotal ?? context.discount_amount ?? itemDiscountAmount + generalDiscountAmount);
-  const commercialDiscountPercent = subtotal > 0
-    ? Number(((commercialDiscountTotal / subtotal) * 100).toFixed(2))
-    : Number(toNumber(context.commercialDiscountPercent ?? context.discount_percent ?? 0).toFixed(2));
+  const providedCommercialPercent = context.commercialDiscountPercent ?? context.discount_percent;
+  const commercialDiscountPercent = providedCommercialPercent !== undefined && providedCommercialPercent !== null && toNumber(providedCommercialPercent) > 0
+    ? Number(toNumber(providedCommercialPercent).toFixed(2))
+    : (subtotal > 0
+      ? Number(((commercialDiscountTotal / subtotal) * 100).toFixed(2))
+      : 0);
   return hashStableObject({
     loja: normalizeStoreKey(context.loja || context.store_id || ""),
     customer_id: normalizeText(context.customerId || context.customer_id || ""),
@@ -1880,7 +1883,9 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
   const saleSessionId = normalizeText(saleContext.saleSessionId || "");
   const discountBase = roundMoney(saleContext.discountBase || 0);
   const commercialDiscountTotal = roundMoney(itemDiscountAmount + extraDiscount);
-  const discountPercent = subtotal > 0 ? Number(((commercialDiscountTotal / subtotal) * 100).toFixed(2)) : 0;
+  const discountPercent = saleContext.discountPercent !== undefined && saleContext.discountPercent !== null && toNumber(saleContext.discountPercent) > 0
+    ? Number(toNumber(saleContext.discountPercent).toFixed(2))
+    : (discountBase > 0 ? Number(((commercialDiscountTotal / discountBase) * 100).toFixed(2)) : 0);
   const discountPolicy = getDiscountLimitForSale({
     subtotal,
     items: saleContext.items || [],

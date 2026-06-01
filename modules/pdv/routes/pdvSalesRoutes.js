@@ -207,7 +207,7 @@ router.post("/cancel/:saleId", canCancelSale, async (req, res) => {
       }, req.user || {});
     }
 
-    res.json(cancelSale(req.params.saleId, req.user || {}, { reason, authorization }));
+    res.json(await cancelSale(req.params.saleId, req.user || {}, { reason, authorization }));
   } catch (error) {
     const statusCode = error.statusCode || 400;
     res.status(statusCode).json({ error: error.message || "Falha ao cancelar a venda do PDV." });

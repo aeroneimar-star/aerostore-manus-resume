@@ -32,7 +32,7 @@ const {
 const { normalizeStoreKey, formatStoreLabel, storesMatch } = require("../utils/pdvStoreUtils");
 const { getStorePublicContext } = require("../../../services/storeSettingsService");
 const { PagBankError, createPagBankCheckout, getPagBankCheckout } = require("../../../services/pagbankService");
-const { get, run } = require("../../../db");
+const { get, run, all } = require("../../../db");
 const { getNotificationService, getNotificationDryRunDefault } = require("../../../src/notification/NotificationService");
 const {
   listActiveExchangeCreditsForCustomer,
@@ -970,15 +970,6 @@ function computeSaleTotals(session, payload = {}) {
       blockedForRedemption: false
     };
   }
-  const extraDiscount = roundMoney(
-    payload.desconto_extra
-    ?? payload.extra_discount
-    ?? payload.discount_amount
-    ?? session.desconto_extra
-    ?? session.extra_discount
-    ?? session.discount_amount
-    ?? 0
-  );
   const rawPaymentMethods = buildNormalizedPaymentMethods(payload.paymentMethods || session.payment_plan?.methods || []);
   const cashbackApplication = resolveCashbackApplication(session, payload, rawPaymentMethods);
   const cashbackUsed = roundMoney(cashbackApplication?.amount || 0);
@@ -987,7 +978,24 @@ function computeSaleTotals(session, payload = {}) {
   const exchangeCredit = sumPaymentMethods(paymentMethods, ["credito_troca"]);
   const permutaAmount = sumPaymentMethods(paymentMethods, ["permuta"]);
   const paidAmount = roundMoney(paymentMethods.filter((item) => isRealPaymentMethod(item.method)).reduce((sum, item) => sum + toNumber(item.amount), 0));
-  const safeExtraDiscount = roundMoney(Math.min(extraDiscount, subtotalAfterItemDiscount));
+  const requestedExtraDiscount = roundMoney(
+    payload.desconto_extra
+    ?? payload.extra_discount
+    ?? payload.discount_amount
+    ?? session.desconto_extra
+    ?? session.extra_discount
+    ?? session.discount_amount
+    ?? 0
+  );
+  const discountMode = normalizeText(payload.discount_mode || session.discount_mode || "value").toLowerCase() === "percent" ? "percent" : "value";
+  const requestedDiscountPercent = roundMoney(payload.discount_percent ?? session.discount_percent ?? 0);
+  const generalDiscountBase = roundMoney(Math.max(0, subtotalAfterItemDiscount - cashbackUsed - exchangeCredit));
+  const safeExtraDiscount = discountMode === "percent" && requestedDiscountPercent > 0
+    ? roundMoney(Math.min(generalDiscountBase, (generalDiscountBase * requestedDiscountPercent) / 100))
+    : roundMoney(Math.min(requestedExtraDiscount, generalDiscountBase));
+  const generalDiscountPercent = discountMode === "percent" && requestedDiscountPercent > 0
+    ? requestedDiscountPercent
+    : (generalDiscountBase > 0 ? roundMoney((safeExtraDiscount / generalDiscountBase) * 100) : 0);
   const totalDiscountAmount = roundMoney(itemDiscountAmount + safeExtraDiscount);
   const totalAfterDiscount = roundMoney(Math.max(0, subtotalAfterItemDiscount - safeExtraDiscount - giftCardUsed - exchangeCredit - permutaAmount));
   const totalFinal = roundMoney(Math.max(0, totalAfterDiscount - cashbackUsed));
@@ -1004,6 +1012,8 @@ function computeSaleTotals(session, payload = {}) {
     giftCardUsed,
     exchangeCredit,
     permutaAmount,
+    generalDiscountBase,
+    generalDiscountPercent,
     totalFinal,
     paidAmount,
     paymentMethods,
@@ -1012,6 +1022,36 @@ function computeSaleTotals(session, payload = {}) {
     incrementalBase,
     blockedForRedemption
   };
+}
+
+function getSessionGeneralDiscountBase(session = {}) {
+  const paymentMethods = buildNormalizedPaymentMethods(session.payment_plan?.methods || []);
+  const cashbackApplication = resolveCashbackApplication(session, {}, paymentMethods);
+  const cashbackUsed = roundMoney(cashbackApplication?.amount || 0);
+  const subtotalAfterItemDiscount = getSaleItemsNetSubtotal(session.cart_items || []);
+  const exchangeCredit = sumPaymentMethods(paymentMethods.filter((item) => item.method !== "cashback"), ["credito_troca"]);
+  return roundMoney(Math.max(0, subtotalAfterItemDiscount - cashbackUsed - exchangeCredit));
+}
+
+function recalculateSessionGeneralDiscountAmount(session = {}) {
+  const mode = normalizeText(session.discount_mode || "value").toLowerCase() === "percent" ? "percent" : "value";
+  const currentAmount = roundMoney(session.desconto_extra ?? session.extra_discount ?? session.discount_amount ?? 0);
+  const currentPercent = roundMoney(session.discount_percent || 0);
+  if (currentAmount <= 0 && currentPercent <= 0) {
+    return session;
+  }
+  const base = getSessionGeneralDiscountBase(session);
+  const nextAmount = mode === "percent" && currentPercent > 0
+    ? roundMoney(Math.min(base, (base * currentPercent) / 100))
+    : roundMoney(Math.min(currentAmount, base));
+  const nextPercent = mode === "percent" && currentPercent > 0
+    ? currentPercent
+    : (base > 0 ? roundMoney((nextAmount / base) * 100) : 0);
+  session.desconto_extra = nextAmount;
+  session.extra_discount = nextAmount;
+  session.discount_amount = nextAmount;
+  session.discount_percent = nextPercent;
+  return session;
 }
 
 function createCashbackEntry({ sale, customer, generatedAmount, user }) {
@@ -1312,6 +1352,141 @@ async function notifyCashbackEarnedForSale(cashbackRow = {}) {
   }
 }
 
+async function findOperationalCashbacksForSale(sale = {}) {
+  const saleId = normalizeText(sale.sale_id || "");
+  const dbCashbackId = Number(sale.cashback_generated?.db_cashback_id || 0);
+  const clauses = [];
+  const params = [];
+  if (dbCashbackId > 0) {
+    clauses.push("id = ?");
+    params.push(dbCashbackId);
+  }
+  if (saleId) {
+    clauses.push("sale_id = ?");
+    params.push(saleId);
+    clauses.push("source_reference = ?");
+    params.push(saleId);
+    clauses.push("(source_type = 'pdv_sale' AND source_reference = ?)");
+    params.push(saleId);
+  }
+  if (!clauses.length) {
+    return [];
+  }
+  const rows = await all(
+    `SELECT * FROM cashbacks WHERE ${clauses.join(" OR ")} ORDER BY id ASC`,
+    params
+  ).catch(() => []);
+  const seen = new Set();
+  return rows.filter((row) => {
+    const id = Number(row.id || 0);
+    if (!id || seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+}
+
+async function reverseOperationalCashbackForCancelledSale(sale = {}, user = {}, reason = "") {
+  const saleId = normalizeText(sale.sale_id || "");
+  if (!saleId) {
+    return { cashbacks: [], ledger: [], skipped: "missing_sale_id" };
+  }
+  const now = nowIso();
+  const actor = user?.name || user?.email || "sistema";
+  const cancelReason = normalizeText(reason || sale.cancel_reason || "Cancelamento da venda do PDV");
+  const cashbackRows = await findOperationalCashbacksForSale(sale);
+  const ledgerRows = await all(
+    `SELECT * FROM customer_cashback_ledger
+     WHERE external_event_id = ?
+       AND origin = 'pdv_sale'
+       AND COALESCE(deleted_at, '') = ''
+     ORDER BY id ASC`,
+    [saleId]
+  ).catch(() => []);
+
+  const usedCashbacks = cashbackRows.filter((row) => {
+    const status = normalizeText(row.status || "").toLowerCase();
+    return toNumber(row.used_value || 0) > 0.009 || ["usado", "used", "resgatado"].includes(status);
+  });
+  const usedLedgerRows = ledgerRows.filter((row) => toNumber(row.used_amount || 0) > 0.009);
+  if (usedCashbacks.length || usedLedgerRows.length) {
+    const error = new Error("Nao foi possivel cancelar automaticamente: o cashback gerado por esta venda ja foi usado total ou parcialmente. Revise com gestor antes de estornar.");
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const reversedCashbacks = [];
+  for (const row of cashbackRows) {
+    const status = normalizeText(row.status || "").toLowerCase();
+    if (["cancelado", "cancelled", "canceled"].includes(status)) {
+      reversedCashbacks.push({ id: row.id, status: "already_cancelled", value: 0 });
+      continue;
+    }
+    const cancelledValue = roundMoney(Math.max(0, row.available_balance || 0));
+    await run(
+      `UPDATE cashbacks SET
+        status = 'cancelado',
+        lost_value = lost_value + ?,
+        available_balance = 0,
+        canceled_at = ?,
+        cancel_reason = ?,
+        updated_at = ?
+       WHERE id = ?`,
+      [cancelledValue, now, cancelReason, now, row.id]
+    );
+    await run(
+      `INSERT INTO cashback_events
+        (cashback_id, contact_id, event_type, value, store, seller, reason, created_at, event_date, status, lost_value, origin, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.id,
+        Number(row.contact_id || 0),
+        "cashback_cancelado",
+        cancelledValue,
+        row.store || sale.loja || "",
+        actor,
+        cancelReason,
+        now,
+        now,
+        "cancelado",
+        cancelledValue,
+        "pdv_sale_cancel",
+        `Cashback cancelado automaticamente pelo cancelamento da venda ${saleId}.`
+      ]
+    ).catch(() => null);
+    reversedCashbacks.push({ id: row.id, status: "cancelled", value: cancelledValue });
+  }
+
+  const reversedLedger = [];
+  for (const row of ledgerRows) {
+    const status = normalizeText(row.status || "").toLowerCase();
+    if (["cancelado", "cancelled", "canceled"].includes(status)) {
+      reversedLedger.push({ id: row.id, status: "already_cancelled", value: 0 });
+      continue;
+    }
+    const cancelledValue = roundMoney(Math.max(0, row.balance_amount || 0));
+    const nextNotes = normalizeText(`${row.notes || ""} Cashback cancelado automaticamente pela venda ${saleId}: ${cancelReason}`.slice(0, 900));
+    await run(
+      `UPDATE customer_cashback_ledger SET
+        status = 'cancelled',
+        balance_amount = 0,
+        cancelled_at = ?,
+        notes = ?,
+        updated_at = ?
+       WHERE id = ?`,
+      [now, nextNotes, now, row.id]
+    );
+    reversedLedger.push({ id: row.id, status: "cancelled", value: cancelledValue });
+  }
+
+  return {
+    cashbacks: reversedCashbacks,
+    ledger: reversedLedger,
+    skipped: cashbackRows.length || ledgerRows.length ? "" : "no_operational_cashback"
+  };
+}
+
 function consumeCashbackEntries(customerPhone, amount, saleId, user) {
   let remaining = roundMoney(amount);
   if (remaining <= 0) return [];
@@ -1422,6 +1597,7 @@ function removeCashbackFromSession(sessionId, user = {}) {
     throw new Error("NÃ£o Ã© possÃ­vel remover cashback de uma venda jÃ¡ finalizada.");
   }
   session.cashback_application = null;
+  recalculateSessionGeneralDiscountAmount(session);
   session.updated_at = nowIso();
   saveSession(session);
   appendEvent("CASHBACK_USED", { session_id: session.session_id, loja: session.loja }, {
@@ -1900,7 +2076,8 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
       subtotal: totals.subtotal,
       extraDiscount: totals.extraDiscount,
       itemDiscountAmount: totals.itemDiscountAmount,
-      discountBase: roundMoney(Math.max(0, totals.subtotal)),
+      discountBase: totals.generalDiscountBase,
+      discountPercent: totals.generalDiscountPercent,
       cashbackUsed: totals.cashbackUsed,
       exchangeCredit: totals.exchangeCredit,
       totalFinal: totals.totalFinal,
@@ -2285,7 +2462,7 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
   return sale;
 }
 
-function cancelSale(saleId, user = {}, options = {}) {
+async function cancelSale(saleId, user = {}, options = {}) {
   const sales = loadSales();
   const sale = sales.find((item) => item.sale_id === String(saleId || "").trim());
   if (sale) {
@@ -2297,12 +2474,15 @@ function cancelSale(saleId, user = {}, options = {}) {
   if (sale.status === "CANCELLED") {
     return sale;
   }
+  const cancelReason = normalizeText(options.reason || "");
+  const operationalCashbackReversal = await reverseOperationalCashbackForCancelledSale(sale, user, cancelReason);
   sale.status = "CANCELLED";
   sale.fulfillment_status = FULFILLMENT_STATUS.CANCELLED;
   sale.cancelled_at = nowIso();
   sale.cancelled_by = user?.name || user?.email || "sistema";
-  sale.cancel_reason = normalizeText(options.reason || "");
+  sale.cancel_reason = cancelReason;
   sale.cancel_authorization = options.authorization || null;
+  sale.operational_cashback_reversal = operationalCashbackReversal;
   if (sale.cashback_generated?.cashback_id) {
     const ledger = loadCashbackLedger();
     const entry = ledger.find((item) => item.cashback_id === sale.cashback_generated.cashback_id);
@@ -2326,6 +2506,7 @@ function cancelSale(saleId, user = {}, options = {}) {
     after: {
       status: "CANCELLED",
       reason: sale.cancel_reason,
+      operational_cashback_reversal: sale.operational_cashback_reversal,
       restored_cashback: sale.restored_cashback,
       restored_gift_card: sale.restored_gift_card ? {
         gift_card_id: sale.restored_gift_card.gift_card_id,
@@ -2347,6 +2528,7 @@ function cancelSale(saleId, user = {}, options = {}) {
       status: "CANCELLED",
       sale_id: sale.sale_id,
       authorization: sale.cancel_authorization,
+      operational_cashback_reversal: sale.operational_cashback_reversal,
       restored_cashback: sale.restored_cashback,
       restored_gift_card: sale.restored_gift_card ? {
         gift_card_id: sale.restored_gift_card.gift_card_id,
@@ -3100,6 +3282,7 @@ function applyCashbackToSession(sessionId, payload = {}, user = {}) {
     applied_at: nowIso(),
     applied_by: user?.name || user?.email || "sistema"
   });
+  recalculateSessionGeneralDiscountAmount(session);
   session.updated_at = nowIso();
   saveSession(session);
   appendEvent("CASHBACK_USED", { session_id: session.session_id, loja: session.loja }, {
@@ -3214,6 +3397,7 @@ function applyExchangeCreditToSession(sessionId, payload = {}, user = {}) {
     applied_at: nowIso(),
     applied_by: user?.name || user?.email || "sistema"
   };
+  recalculateSessionGeneralDiscountAmount(session);
   session.updated_at = nowIso();
   saveSession(session);
   return {
@@ -3236,6 +3420,7 @@ function removeExchangeCreditFromSession(sessionId, user = {}) {
     .filter((item) => item.method !== "credito_troca");
   session.payment_plan = { methods: currentMethods };
   session.exchange_credit_application = null;
+  recalculateSessionGeneralDiscountAmount(session);
   session.updated_at = nowIso();
   saveSession(session);
   return session;

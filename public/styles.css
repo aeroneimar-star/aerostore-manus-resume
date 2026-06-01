@@ -15333,6 +15333,38 @@ body[data-route-section="pdv-sale"] .pdv-sale-customer-results > .pdv-sale-empty
   gap: 10px;
 }
 
+.pdv-sale-discount-auth-summary {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.pdv-sale-discount-auth-summary article {
+  background: rgba(5, 10, 16, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.pdv-sale-discount-auth-summary span {
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pdv-sale-discount-auth-summary strong {
+  color: var(--text);
+  font-size: 0.88rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pdv-sale-discount-auth-compact label {
   display: grid;
   gap: 7px;
@@ -18507,6 +18539,20 @@ body[data-route-section="pdv-sale"] .pdv-checkout-step-chevron {
   font-size: 0.95rem;
 }
 
+body[data-route-section="pdv-sale"] .pdv-checkout-step > .pdv-sale-discount-helper {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 0 14px 14px;
+}
+
+body[data-route-section="pdv-sale"] .pdv-payment-authorize-discount-btn {
+  justify-content: center;
+  min-height: 42px;
+  width: 100%;
+}
+
 body[data-route-section="pdv-sale"] .pdv-checkout-step-body {
   border-top: 1px solid var(--sale-divider, rgba(255, 255, 255, 0.06));
   display: grid;
@@ -18551,6 +18597,14 @@ body[data-route-section="pdv-sale"] .pdv-checkout-step-body .pdv-payment-launche
 
   body[data-route-section="pdv-sale"] .pdv-checkout-step-chevron {
     display: none;
+  }
+
+  body[data-route-section="pdv-sale"] .pdv-checkout-step > .pdv-sale-discount-helper {
+    grid-template-columns: 1fr;
+  }
+
+  .pdv-sale-discount-auth-summary {
+    grid-template-columns: 1fr;
   }
 }
 

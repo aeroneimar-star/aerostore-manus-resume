@@ -9,6 +9,13 @@ const { normalizeStoreKey, storesMatch, formatStoreLabel, getStoreDisplayText } 
 const { getDiscountPolicyForSale } = require("./pdvControlService");
 
 const GENERAL_DISCOUNT_ALLOWED_PAYMENT_METHODS = new Set(["pix", "dinheiro"]);
+const GENERAL_DISCOUNT_IGNORED_PAYMENT_METHODS = new Set([
+  "cashback",
+  "credito_troca",
+  "credit_exchange",
+  "exchange_credit",
+  "vale_troca"
+]);
 
 const operationalRootDir = path.join(process.cwd(), "data", "pdv", "operational");
 const operationalFiles = {
@@ -177,6 +184,35 @@ function getCartItemsNetSubtotal(cartItems = []) {
   return Number(Math.max(0, getCartItemsGrossSubtotal(cartItems) - getCartItemsDiscountTotal(cartItems)).toFixed(2));
 }
 
+function getSessionGeneralDiscountBase(session = {}) {
+  const cartItems = Array.isArray(session?.cart_items) ? session.cart_items : [];
+  const itemsNetSubtotal = getCartItemsNetSubtotal(cartItems);
+  const cashbackUsed = toNumber(session?.cashback_application?.amount || 0);
+  const exchangeCredit = sumSessionPaymentMethods(session, ["credito_troca"]) || toNumber(session?.exchange_credit_application?.amount || 0);
+  return Number(Math.max(0, itemsNetSubtotal - cashbackUsed - exchangeCredit).toFixed(2));
+}
+
+function recalculateSessionGeneralDiscountAmount(session = {}) {
+  const mode = normalizeText(session?.discount_mode || "percent").toLowerCase() === "value" ? "value" : "percent";
+  const base = getSessionGeneralDiscountBase(session);
+  const currentAmount = toNumber(session?.desconto_extra ?? session?.extra_discount ?? session?.discount_amount ?? 0);
+  const currentPercent = toNumber(session?.discount_percent || 0);
+  if (currentAmount <= 0 && currentPercent <= 0) {
+    return session;
+  }
+  const nextAmount = mode === "percent"
+    ? Number((base > 0 ? Math.min(base, (base * Math.max(0, currentPercent)) / 100) : 0).toFixed(2))
+    : Number((base > 0 ? Math.min(base, Math.max(0, currentAmount)) : 0).toFixed(2));
+  const nextPercent = mode === "percent"
+    ? Number(Math.max(0, currentPercent).toFixed(2))
+    : (base > 0 ? Number(((nextAmount / base) * 100).toFixed(2)) : 0);
+  session.desconto_extra = nextAmount;
+  session.extra_discount = nextAmount;
+  session.discount_amount = nextAmount;
+  session.discount_percent = nextPercent;
+  return session;
+}
+
 function sumSessionPaymentMethods(session = {}, methods = []) {
   const allowed = new Set(methods);
   return Number((Array.isArray(session?.payment_plan?.methods) ? session.payment_plan.methods : []).reduce((sum, item) => {
@@ -207,7 +243,10 @@ function getGeneralDiscountBlockingPaymentMethods(session = {}) {
   if (exchangeCreditAmount > 0.01 && !launched.some((item) => item.method === "credito_troca")) {
     launched.push({ method: "credito_troca", amount: exchangeCreditAmount });
   }
-  return launched.filter((item) => !isPaymentMethodEligibleForGeneralDiscount(item.method));
+  return launched.filter((item) =>
+    !GENERAL_DISCOUNT_IGNORED_PAYMENT_METHODS.has(item.method)
+    && !isPaymentMethodEligibleForGeneralDiscount(item.method)
+  );
 }
 
 function getPaymentMethodPolicyLabel(method = "") {
@@ -236,9 +275,12 @@ function getSessionDiscountPolicy(session = {}) {
   );
   const subtotal = getCartItemsGrossSubtotal(cartItems);
   const cashbackUsed = toNumber(session?.cashback_application?.amount || 0);
-  const exchangeCredit = sumSessionPaymentMethods(session, ["credito_troca"]);
-  const policyBase = Number(Math.max(0, subtotal).toFixed(2));
-  const discountPercent = policyBase > 0 ? Number(((generalDiscountAmount / policyBase) * 100).toFixed(2)) : toNumber(session?.discount_percent || 0);
+  const exchangeCredit = sumSessionPaymentMethods(session, ["credito_troca"]) || toNumber(session?.exchange_credit_application?.amount || 0);
+  const policyBase = getSessionGeneralDiscountBase(session);
+  const storedPercent = toNumber(session?.discount_percent || 0);
+  const discountPercent = normalizeText(session?.discount_mode || "percent").toLowerCase() === "percent" && storedPercent > 0
+    ? Number(storedPercent.toFixed(2))
+    : (policyBase > 0 ? Number(((generalDiscountAmount / policyBase) * 100).toFixed(2)) : 0);
   return getDiscountPolicyForSale({
     paymentMethods: session?.payment_plan?.methods || [],
     discountAmount: generalDiscountAmount,
@@ -252,6 +294,7 @@ function getSessionDiscountPolicy(session = {}) {
 }
 
 function applySessionDiscountPolicy(session = {}) {
+  recalculateSessionGeneralDiscountAmount(session);
   const discountPolicy = getSessionDiscountPolicy(session);
   session.discount_policy = discountPolicy;
   session.authorization_required = Boolean(discountPolicy.requiresAuthorization);
@@ -3422,12 +3465,8 @@ function updateSessionDiscount(sessionId, payload = {}) {
     throw new Error("Sessao do atendimento nao encontrada.");
   }
   const cartItems = Array.isArray(session.cart_items) ? session.cart_items : [];
-  const subtotal = Number(Math.max(
-    0,
-    getCartItemsNetSubtotal(cartItems)
-      - toNumber(session?.cashback_application?.amount || 0)
-      - sumSessionPaymentMethods(session, ["credito_troca"])
-  ).toFixed(2));
+  const subtotal = Number(Math.max(0, getCartItemsNetSubtotal(cartItems)).toFixed(2));
+  const discountBase = getSessionGeneralDiscountBase(session);
   const mode = normalizeText(payload.mode || payload.discount_mode || "percent").toLowerCase() === "value" ? "value" : "percent";
   const rawValue = toNumber(payload.value ?? payload.amount ?? payload.percent ?? 0);
   const reason = normalizeText(payload.reason || "");
@@ -3442,14 +3481,23 @@ function updateSessionDiscount(sessionId, payload = {}) {
   let discountPercent = 0;
   if (mode === "percent") {
     discountPercent = Number(Math.max(0, rawValue).toFixed(2));
-    discountAmount = Number(((subtotal * discountPercent) / 100).toFixed(2));
+    if (discountPercent > 0 && discountBase <= 0) {
+      throw new Error("Nao ha base elegivel para aplicar desconto geral apos Cashback e Credito de Troca.");
+    }
+    discountAmount = Number(((discountBase * discountPercent) / 100).toFixed(2));
   } else {
     discountAmount = Number(Math.max(0, rawValue).toFixed(2));
-    discountPercent = subtotal > 0 ? Number(((discountAmount / subtotal) * 100).toFixed(2)) : 0;
+    if (discountAmount > discountBase + 0.009) {
+      throw new Error("O desconto geral nao pode superar a base elegivel apos Cashback e Credito de Troca.");
+    }
+    discountPercent = discountBase > 0 ? Number(((discountAmount / discountBase) * 100).toFixed(2)) : 0;
   }
-  discountAmount = Number(Math.min(discountAmount, subtotal).toFixed(2));
-  discountPercent = subtotal > 0 ? Number(((discountAmount / subtotal) * 100).toFixed(2)) : 0;
+  discountAmount = Number(Math.min(discountAmount, discountBase).toFixed(2));
+  discountPercent = mode === "percent"
+    ? Number(Math.max(0, rawValue).toFixed(2))
+    : (discountBase > 0 ? Number(((discountAmount / discountBase) * 100).toFixed(2)) : 0);
   session.desconto_extra = discountAmount;
+  session.extra_discount = discountAmount;
   session.discount_amount = discountAmount;
   session.discount_percent = discountPercent;
   session.discount_mode = mode;

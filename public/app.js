@@ -1895,24 +1895,38 @@ function getPdvSaleItemsNetSubtotal(session = null) {
   return Number(Math.max(0, getPdvSaleItemsGrossSubtotal(session) - getPdvSaleItemDiscountTotal(session)).toFixed(2));
 }
 
+function getPdvSaleGeneralDiscountBase(session = null) {
+  const currentSession = session || state.pdvSale.session || null;
+  const itemsNetSubtotal = getPdvSaleItemsNetSubtotal(currentSession);
+  const cashbackUsed = getPdvSaleCashbackApplication(currentSession).amount;
+  const exchangeCredit = getPdvSaleExchangeCreditApplication(currentSession).amount;
+  return Number(Math.max(0, itemsNetSubtotal - cashbackUsed - exchangeCredit).toFixed(2));
+}
+
 function getPdvSaleDiscountPolicy(session = null, options = {}) {
   const currentSession = session || state.pdvSale.session || null;
   const itemDiscountAmount = getPdvSaleItemDiscountTotal(currentSession);
-  const generalDiscountAmount = Number(Math.max(0, toNumber(
+  const discountBase = getPdvSaleGeneralDiscountBase(currentSession);
+  const discountMode = normalizeText(currentSession?.discount_mode || "percent").toLowerCase() === "value" ? "value" : "percent";
+  const storedDiscountPercent = Number(Math.max(0, toNumber(currentSession?.discount_percent || 0)).toFixed(2));
+  const rawGeneralDiscountAmount = Number(Math.max(0, toNumber(
     options.amount
     ?? currentSession?.desconto_extra
     ?? currentSession?.extra_discount
     ?? currentSession?.discount_amount
     ?? 0
   )).toFixed(2));
+  const generalDiscountAmount = Number((discountBase > 0 ? Math.min(discountBase, rawGeneralDiscountAmount) : 0).toFixed(2));
   const grossSubtotal = getPdvSaleItemsGrossSubtotal(currentSession);
   const cashbackUsed = getPdvSaleCashbackApplication(currentSession).amount;
   const exchangeCredit = getPdvSaleExchangeCreditApplication(currentSession).amount;
-  const policyBase = Number(Math.max(0, grossSubtotal).toFixed(2));
-  const excessBalanceBeforeDiscount = Number(Math.max(0, grossSubtotal - cashbackUsed - exchangeCredit).toFixed(2));
+  const policyBase = Number(Math.max(0, discountBase).toFixed(2));
+  const excessBalanceBeforeDiscount = policyBase;
   const excessBalanceAfterDiscount = Number(Math.max(0, excessBalanceBeforeDiscount - itemDiscountAmount - generalDiscountAmount).toFixed(2));
   const commercialDiscountTotal = Number((itemDiscountAmount + generalDiscountAmount).toFixed(2));
-  const percent = policyBase > 0 ? Number(((commercialDiscountTotal / policyBase) * 100).toFixed(2)) : 0;
+  const percent = discountMode === "percent" && storedDiscountPercent > 0
+    ? storedDiscountPercent
+    : (policyBase > 0 ? Number(((generalDiscountAmount / policyBase) * 100).toFixed(2)) : 0);
   const automaticLimitAmount = Number(((policyBase * 10) / 100).toFixed(2));
   const sessionPolicy = currentSession?.discount_policy && typeof currentSession.discount_policy === "object"
     ? currentSession.discount_policy
@@ -1924,7 +1938,7 @@ function getPdvSaleDiscountPolicy(session = null, options = {}) {
   const invalidMethodsLabel = invalidMethods.map((method) => formatPaymentMethodLabel(method)).join(" + ");
   const hasItemDiscount = itemDiscountAmount > 0.009;
   const hasGeneralDiscount = generalDiscountAmount > 0.009;
-  const effectiveDiscountPercent = grossSubtotal > 0 ? Number(((commercialDiscountTotal / grossSubtotal) * 100).toFixed(2)) : 0;
+  const effectiveDiscountPercent = percent;
   const hasDiscount = commercialDiscountTotal > 0.009 || percent > 0;
   const generalWithinAutomaticPolicy = hasGeneralDiscount
     && paymentMethods.length > 0
@@ -2010,18 +2024,25 @@ function getPdvSaleDiscountPolicy(session = null, options = {}) {
 
 function getPdvSaleSessionDiscount(session = null) {
   const currentSession = session || state.pdvSale.session || null;
-  const amount = Number(Math.max(0, toNumber(
+  const mode = normalizeText(currentSession?.discount_mode || "percent").toLowerCase() === "value" ? "value" : "percent";
+  const storedPercent = Number(Math.max(0, toNumber(currentSession?.discount_percent || 0)).toFixed(2));
+  const discountBase = getPdvSaleGeneralDiscountBase(currentSession);
+  const storedAmount = Number(Math.max(0, toNumber(
     currentSession?.desconto_extra
     ?? currentSession?.extra_discount
     ?? currentSession?.discount_amount
     ?? 0
   )).toFixed(2));
+  const amount = mode === "percent" && storedPercent > 0
+    ? Number(Math.min(discountBase, (discountBase * storedPercent) / 100).toFixed(2))
+    : Number((discountBase > 0 ? Math.min(storedAmount, discountBase) : 0).toFixed(2));
   const itemDiscountAmount = getPdvSaleItemDiscountTotal(currentSession);
   const totalDiscountAmount = Number((itemDiscountAmount + amount).toFixed(2));
   const grossSubtotal = getPdvSaleItemsGrossSubtotal(currentSession);
   const totalDiscountPercent = grossSubtotal > 0 ? Number(((totalDiscountAmount / grossSubtotal) * 100).toFixed(2)) : 0;
-  const percent = Number(Math.max(0, toNumber(currentSession?.discount_percent || 0)).toFixed(2));
-  const mode = normalizeText(currentSession?.discount_mode || "percent").toLowerCase() === "value" ? "value" : "percent";
+  const percent = mode === "percent"
+    ? storedPercent
+    : (discountBase > 0 ? Number(((amount / discountBase) * 100).toFixed(2)) : 0);
   const policy = getPdvSaleDiscountPolicy(currentSession, { amount, percent: totalDiscountPercent });
   return {
     amount,
@@ -2330,10 +2351,25 @@ function getPdvSaleDiscountDraftAmount(draft = {}, session = null) {
   const mode = normalizeText(draft.mode || "percent").toLowerCase() === "value" ? "value" : "percent";
   const value = mode === "value" ? parseMoneyAmount(draft.value || 0) : toNumber(String(draft.value || "").replace(",", "."));
   if (value <= 0) return 0;
-  const totals = getPdvSaleCartTotals(session || state.pdvSale.session);
+  const discountBase = getPdvSaleGeneralDiscountBase(session || state.pdvSale.session);
   return mode === "value"
     ? Number(Math.max(0, value).toFixed(2))
-    : Number(((Math.max(0, toNumber(totals.itemsNetSubtotal || 0)) * value) / 100).toFixed(2));
+    : Number(((Math.max(0, discountBase) * value) / 100).toFixed(2));
+}
+
+function readPdvSaleDiscountDraftFromDom() {
+  const modeInput = document.querySelector("[data-pdv-sale-discount-mode]");
+  const valueInput = document.querySelector("[data-pdv-sale-discount-value]");
+  const reasonInput = document.querySelector("[data-pdv-sale-discount-note]");
+  const currentDraft = state.pdvSale.discountDraft || { mode: "percent", value: "", reason: "" };
+  const mode = normalizeText(modeInput?.value || currentDraft.mode || "percent").toLowerCase() === "value" ? "value" : "percent";
+  const draft = {
+    mode,
+    value: String(valueInput?.value ?? currentDraft.value ?? ""),
+    reason: String(reasonInput?.value ?? currentDraft.reason ?? "")
+  };
+  state.pdvSale.discountDraft = draft;
+  return draft;
 }
 
 function getPdvSaleGeneralDiscountBlockMessage(policy = {}) {
@@ -2404,6 +2440,27 @@ function setPdvSaleCheckoutOpenStep(step = "", options = {}) {
 function resetPdvSaleCheckoutPanelState() {
   state.pdvSale.checkoutOpenStep = "";
   state.pdvSale.checkoutManualStepState = {};
+}
+
+function getPdvSaleDiscountAuthorizationPromptState(session = null, totals = null) {
+  const safeSession = session || state.pdvSale.session || null;
+  const safeTotals = totals || getPdvSaleCartTotals(safeSession);
+  const discountState = evaluateDiscountAuthorizationState(safeSession, safeTotals);
+  return {
+    show: discountState.status === "authorization_required",
+    state: discountState,
+    message: normalizeText(discountState.message || "Esta venda precisa de autorizacao para finalizar.")
+  };
+}
+
+async function openPdvSaleDiscountAuthorizationPanel(options = {}) {
+  setPdvSaleCheckoutOpenStep("discount", { source: "auto", force: true });
+  state.pdvSale.discountDetailsOpen = true;
+  renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+  await ensurePdvSaleDiscountAuthorizers();
+  if (options.message) {
+    showFeedback(options.message, options.tone || "warning");
+  }
 }
 
 function getPdvSaleVisibleGeneralDiscountBlock(session = null, draft = null) {
@@ -2618,6 +2675,7 @@ function getPdvSaleCartTotals(session = null) {
       totalDiscountAmount: 0,
       discountPercent: 0,
       discountMode: "percent",
+      generalDiscountBase: 0,
       cashbackLimitBase: 0,
       totalBeforeCashback: 0,
       total: 0,
@@ -2650,6 +2708,7 @@ function getPdvSaleCartTotals(session = null) {
   const paid = Number(realPaymentMethods.reduce((sum, item) => sum + toNumber(item.amount), 0).toFixed(2));
   const draftTotals = getPdvSaleDraftTotals(session);
   const discount = getPdvSaleSessionDiscount(session);
+  const generalDiscountBase = getPdvSaleGeneralDiscountBase(session);
   const cashbackLimitBase = Number(Math.max(0, itemsNetSubtotal - discount.amount).toFixed(2));
   const totalBeforeCashback = Number(Math.max(0, cashbackLimitBase - exchangeCreditApplied).toFixed(2));
   const rawCashbackUsed = getPdvSaleCashbackApplication(session).amount;
@@ -2676,6 +2735,7 @@ function getPdvSaleCartTotals(session = null) {
     totalDiscountAmount: discount.totalDiscountAmount,
     discountPercent: discount.percent,
     discountMode: discount.mode,
+    generalDiscountBase,
     cashbackLimitBase,
     totalBeforeCashback,
     total,
@@ -2777,7 +2837,7 @@ function getPdvSaleFinalizeState(session = null) {
     return {
       key: "discount_authorization",
       label: discount.itemDiscountAmount > 0 ? "Autorizar desconto no item" : discountPolicy.invalidMethods?.length ? "Autorizar desconto para este metodo" : "Validar autorizacao do desconto",
-      disabled: true
+      disabled: false
     };
   }
   return {
@@ -4470,6 +4530,10 @@ function buildPdvSaleDiscountPanel(session = null, totals = null) {
             ? discountPolicy.message
             : "Solicite a liberacao do gestor para continuar."
       : "Sem desconto aplicado.";
+  const authorizationPaymentSummary = toArray(safeTotals.realPaymentMethods)
+    .map((item) => `${formatPaymentMethodLabel(item.method)} ${currency(item.amount)}`)
+    .filter(Boolean)
+    .join(" + ") || "Nenhum pagamento real lancado";
   return `
     <div class="pdv-sale-discount-panel is-simplified">
       <div class="pdv-sale-discount-form">
@@ -4492,6 +4556,14 @@ function buildPdvSaleDiscountPanel(session = null, totals = null) {
       </div>
       ${requiresAuthorization && !hasApprovedAuthorization ? `
         <div class="pdv-sale-discount-auth-compact">
+          <div class="pdv-sale-discount-auth-summary">
+            <article><span>Subtotal bruto</span><strong>${currency(safeTotals.subtotal)}</strong></article>
+            <article><span>Desconto total</span><strong>${currency(safeTotals.totalDiscountAmount)} (${toNumber(safeTotals.discountPercent).toFixed(2).replace(".", ",")}%)</strong></article>
+            <article><span>Cashback usado</span><strong>${currency(safeTotals.cashbackApplied)}</strong></article>
+            <article><span>Credito de Troca</span><strong>${currency(safeTotals.exchangeCreditApplied)}</strong></article>
+            <article><span>Total a pagar</span><strong>${currency(safeTotals.total)}</strong></article>
+            <article><span>Pagamentos</span><strong>${escapeHtml(authorizationPaymentSummary)}</strong></article>
+          </div>
           ${authState.loading ? `
             <div class="pdv-sale-discount-helper">
               <span>Carregando autorizadores ativos...</span>
@@ -4716,7 +4788,7 @@ function getPdvSaleCheckoutStepMeta(step = "", session = null, totals = null) {
       return { label: "Ajuste necessario", tone: "danger", detail: "Pagamentos ficaram acima do novo total" };
     }
     if (discountAuthorizationState.status === "authorization_required") {
-      return { label: "Autorizacao necessaria", tone: "pending", detail: discount.itemDiscountAmount > 0 ? "Desconto no item exige token" : "Aguardando autorizacao gerencial" };
+      return { label: "Bloqueado", tone: "pending", detail: discount.itemDiscountAmount > 0 ? "Desconto no item exige token" : "Aguardando autorizacao gerencial" };
     }
     if (discountAuthorizationState.status === "authorized") {
       return { label: "Feito", tone: "done", detail: `Autorizado: ${currency(discount.totalDiscountAmount)}` };
@@ -4757,11 +4829,14 @@ function getPdvSaleCheckoutStepMeta(step = "", session = null, totals = null) {
   return { label: "Pendente", tone: "pending", detail: "" };
 }
 
-function buildPdvSaleCheckoutAccordion({ step = "", title = "", subtitle = "", meta = null, content = "" } = {}) {
+function buildPdvSaleCheckoutAccordion({ step = "", title = "", subtitle = "", meta = null, content = "", session = null, totals = null } = {}) {
   const status = meta || getPdvSaleCheckoutStepMeta(step);
   const rawOpenStep = state.pdvSale.checkoutOpenStep;
   const currentOpenStep = normalizeText(rawOpenStep || "");
   const isOpen = currentOpenStep === normalizeText(step);
+  const discountAuthorizationPrompt = step === "discount"
+    ? getPdvSaleDiscountAuthorizationPromptState(session || state.pdvSale.session, totals)
+    : { show: false, message: "" };
   return `
     <section class="pdv-checkout-step${isOpen ? " is-open" : ""}" data-checkout-step="${escapeHtml(step)}">
       <button class="pdv-checkout-step-header" type="button" data-pdv-sale-checkout-step="${escapeHtml(step)}" aria-expanded="${isOpen ? "true" : "false"}">
@@ -4772,6 +4847,12 @@ function buildPdvSaleCheckoutAccordion({ step = "", title = "", subtitle = "", m
         <span class="pdv-checkout-step-status is-${escapeHtml(status.tone || "pending")}" title="${escapeHtml(status.detail || "")}">${escapeHtml(status.label || "Pendente")}</span>
         <span class="pdv-checkout-step-chevron">${isOpen ? "▴" : "▾"}</span>
       </button>
+      ${discountAuthorizationPrompt.show ? `
+        <div class="pdv-sale-discount-helper is-warning">
+          <span>${escapeHtml(discountAuthorizationPrompt.message || "Esta venda precisa de autorizacao para finalizar.")}</span>
+          <button class="secondary-button small" type="button" data-pdv-sale-discount-authorize-open="true">Autorizar desconto</button>
+        </div>
+      ` : ""}
       <div class="pdv-checkout-step-body${isOpen ? "" : " is-collapsed"}">
         ${content}
       </div>
@@ -5352,6 +5433,12 @@ function buildPdvSaleActiveContent() {
                     <strong class="is-discount">-${currency(totals.exchangeCreditApplied)}</strong>
                   </div>
                 ` : ""}
+                ${(totals.discountAmount > 0 || totals.cashbackApplied > 0 || totals.exchangeCreditApplied > 0) ? `
+                  <div class="pdv-sale-financial-row is-net-subtotal">
+                    <span>Base para desconto</span>
+                    <strong>${currency(totals.generalDiscountBase)}</strong>
+                  </div>
+                ` : ""}
                 <div class="pdv-sale-financial-row pdv-sale-financial-total">
                   <span>Total a pagar</span>
                   <strong>${currency(totals.total)}</strong>
@@ -5381,6 +5468,7 @@ function buildPdvSaleActiveContent() {
               <div class="pdv-payment-checkout-footer${effectiveFinalizeState.key === "ready" ? " is-ready" : ""}" data-finalize-state="${escapeHtml(effectiveFinalizeState.key || "unknown")}" style="margin-top:auto; padding-top:16px;">
                 ${buildPdvSaleCustomerProfileFinalizeReminder(selectedCustomer)}
                 <div class="pdv-payment-footer-actions" style="display:flex; flex-direction:column; gap:12px;">
+                  ${effectiveFinalizeState.key === "discount_authorization" ? `<button class="secondary-button pdv-payment-authorize-discount-btn" type="button" data-pdv-sale-discount-authorize-open="true">Autorizar desconto</button>` : ""}
                   <button class="primary-button pdv-payment-finalize-btn${effectiveFinalizeState.key === "ready" ? " is-ready" : ""}" type="submit"${effectiveFinalizeState.disabled ? " disabled" : ""} style="width:100%; min-height:54px; font-size:1.1rem;">
                     ${cashRegisterClosed ? "CAIXA FECHADO" : (effectiveFinalizeState.key === "ready" ? "FINALIZAR VENDA" : "🔒 FINALIZAR VENDA")}
                   </button>
@@ -6094,24 +6182,11 @@ async function applyPdvSaleDiscount() {
   if (!sessionId || !state.pdvSale.session) {
     return;
   }
-  const draft = state.pdvSale.discountDraft || { mode: "percent", value: "", reason: "" };
+  const draft = readPdvSaleDiscountDraftFromDom();
   const mode = normalizeText(draft.mode || "percent").toLowerCase() === "value" ? "value" : "percent";
   const value = mode === "value" ? parseMoneyAmount(draft.value || 0) : toNumber(String(draft.value || "").replace(",", "."));
   if (value <= 0) {
     showFeedback("Informe um desconto valido para aplicar.", "error");
-    return;
-  }
-  const paymentPolicy = getPdvSaleGeneralDiscountPaymentPolicy(state.pdvSale.session);
-  if (!paymentPolicy.eligible) {
-    const message = getPdvSaleGeneralDiscountBlockMessage(paymentPolicy);
-    state.pdvSale.generalDiscountBlock = {
-      message,
-      labels: paymentPolicy.blockingLabels,
-      createdAt: new Date().toISOString()
-    };
-    setPdvSaleCheckoutOpenStep("discount", { source: "auto" });
-    showFeedback(`Desconto bloqueado. ${message}`, "warning");
-    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
   }
   state.pdvSale.generalDiscountBlock = null;
@@ -6142,6 +6217,7 @@ async function applyPdvSaleDiscount() {
     );
     if (updatedDiscount.requiresAuthorization) {
       await ensurePdvSaleDiscountAuthorizers();
+      setPdvSaleCheckoutOpenStep("discount", { source: "auto", force: true });
       if (!reconciliationAlreadyNotified) {
         showFeedback(updatedDiscount.policy?.message || "Desconto aplicado. Esta venda agora exige autorizacao.");
       }
@@ -7148,8 +7224,10 @@ async function finalizePdvSale(form) {
   if (currentDiscountAuthorization.status === "authorization_required") {
     perfFinalizeOutcome = "authorization_required";
     finishFinalizePerf();
-    showFeedback(currentDiscountAuthorization.message || currentDiscount.policy?.message || "Esta venda possui desconto que exige autorizacao gerencial.", "error");
-    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    await openPdvSaleDiscountAuthorizationPanel({
+      message: currentDiscountAuthorization.message || currentDiscount.policy?.message || "Autorize o desconto para finalizar esta venda.",
+      tone: "warning"
+    });
     return;
   }
   const selectedCustomer = state.pdvSale.session?.customer || null;
@@ -27532,6 +27610,7 @@ function handleDocumentClick(event) {
 
   const applyPdvSaleDiscountButton = event.target.closest("[data-pdv-sale-discount-apply]");
   if (applyPdvSaleDiscountButton) {
+    event.preventDefault();
     applyPdvSaleDiscount().catch((error) => handleUiError("Erro ao aplicar o desconto supervisionado", error));
     return;
   }
@@ -27546,6 +27625,16 @@ function handleDocumentClick(event) {
   if (validatePdvSaleDiscountButton) {
     event.preventDefault();
     validatePdvSaleDiscountAuthorization().catch((error) => handleUiError("Erro ao validar a autorizacao do desconto", error));
+    return;
+  }
+
+  const openPdvSaleDiscountAuthorizationButton = event.target.closest("[data-pdv-sale-discount-authorize-open]");
+  if (openPdvSaleDiscountAuthorizationButton) {
+    event.preventDefault();
+    openPdvSaleDiscountAuthorizationPanel({
+      message: "Autorize o desconto para finalizar esta venda.",
+      tone: "warning"
+    }).catch((error) => handleUiError("Erro ao abrir autorizacao do desconto", error));
     return;
   }
 
