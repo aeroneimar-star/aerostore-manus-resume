@@ -274,6 +274,7 @@ const state = {
     discountDetailsOpen: false,
     discountDetailsSyncing: false,
     checkoutOpenStep: "",
+    checkoutManualStepState: {},
     discountApplying: false,
     discountAuthorization: {
       loading: false,
@@ -1792,7 +1793,7 @@ async function ensurePdvSaleCashRegisterOpenForFinancialAction(message = "Caixa 
   const status = await loadPdvSaleCashRegisterStatus({ silent: true });
   if (status && status.is_open === false) {
     showFeedback(message, "error");
-    state.pdvSale.checkoutOpenStep = "payments";
+    setPdvSaleCheckoutOpenStep("payments", { source: "auto" });
     renderPdvSaleSurface();
     return false;
   }
@@ -2367,9 +2368,42 @@ function revalidatePdvSaleGeneralDiscountAfterPaymentChange(session = null, opti
   const hadBlock = Boolean(state.pdvSale.generalDiscountBlock);
   const policy = refreshPdvSaleGeneralDiscountEligibility(session || state.pdvSale.session);
   if (hadBlock && policy.eligible && options.keepDiscountStepOpen) {
-    state.pdvSale.checkoutOpenStep = "discount";
+    setPdvSaleCheckoutOpenStep("discount", { source: "auto" });
   }
   return policy;
+}
+
+function getPdvSaleCheckoutManualStepState() {
+  if (!state.pdvSale.checkoutManualStepState || typeof state.pdvSale.checkoutManualStepState !== "object") {
+    state.pdvSale.checkoutManualStepState = {};
+  }
+  return state.pdvSale.checkoutManualStepState;
+}
+
+function setPdvSaleCheckoutOpenStep(step = "", options = {}) {
+  const normalizedStep = normalizeText(step || "");
+  const source = normalizeText(options.source || "auto");
+  const manualState = getPdvSaleCheckoutManualStepState();
+  if (!normalizedStep) {
+    state.pdvSale.checkoutOpenStep = "";
+    return true;
+  }
+  if (source === "manual") {
+    const shouldClose = normalizeText(state.pdvSale.checkoutOpenStep || "") === normalizedStep;
+    state.pdvSale.checkoutOpenStep = shouldClose ? "" : normalizedStep;
+    manualState[normalizedStep] = shouldClose ? "closed" : "open";
+    return true;
+  }
+  if (!options.force && manualState[normalizedStep] === "closed") {
+    return false;
+  }
+  state.pdvSale.checkoutOpenStep = normalizedStep;
+  return true;
+}
+
+function resetPdvSaleCheckoutPanelState() {
+  state.pdvSale.checkoutOpenStep = "";
+  state.pdvSale.checkoutManualStepState = {};
 }
 
 function getPdvSaleVisibleGeneralDiscountBlock(session = null, draft = null) {
@@ -5999,7 +6033,7 @@ function resetPdvSaleCheckoutResidue() {
   state.pdvSale.itemDiscountOpenItemId = "";
   state.pdvSale.itemDiscountDrafts = {};
   state.pdvSale.itemDiscountApplyingId = "";
-  state.pdvSale.checkoutOpenStep = "";
+  resetPdvSaleCheckoutPanelState();
   resetPdvSaleDiscountAuthorization();
   resetPdvSaleCashbackState();
   resetPdvSaleExchangeCreditState();
@@ -6075,7 +6109,7 @@ async function applyPdvSaleDiscount() {
       labels: paymentPolicy.blockingLabels,
       createdAt: new Date().toISOString()
     };
-    state.pdvSale.checkoutOpenStep = "discount";
+    setPdvSaleCheckoutOpenStep("discount", { source: "auto" });
     showFeedback(`Desconto bloqueado. ${message}`, "warning");
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
@@ -6328,7 +6362,7 @@ async function validatePdvSaleDiscountAuthorization() {
       state.pdvSale.session.discount_authorization_context_key = authState.contextKey;
     }
     persistPdvSaleDiscountAuthorization(authState, state.pdvSale.session || session);
-    state.pdvSale.checkoutOpenStep = "payments";
+    setPdvSaleCheckoutOpenStep("payments", { source: "auto" });
     closePdvSaleDiscountDetailsPanel();
     showFeedback(`Autorizacao aprovada por ${authState.approvedBy || "autorizador"}.`);
   } catch (error) {
@@ -6566,12 +6600,12 @@ async function reconcilePdvSaleCheckoutAfterMutation(reason = "", options = {}) 
   const launchedPaymentAdjustment = await normalizePdvSaleLaunchedPaymentsAfterTotalChange(reason || "checkout_changed");
   const totals = getPdvSaleCartTotals(state.pdvSale.session);
   if (totals.change > 0) {
-    state.pdvSale.checkoutOpenStep = "payments";
+    setPdvSaleCheckoutOpenStep("payments", { source: "auto" });
     if (!options?.silentExcessWarning) {
       showFeedback(`O desconto reduziu o total abaixo dos pagamentos ja lancados. Remova ou ajuste ${currency(totals.change)} antes de finalizar.`, "warning");
     }
   } else if (totals.pending > 0 || totals.drafted > 0 || draftAdjustment.adjusted) {
-    state.pdvSale.checkoutOpenStep = "payments";
+    setPdvSaleCheckoutOpenStep("payments", { source: "auto" });
   }
   if (draftAdjustment.adjusted && !options?.silentDraftAdjustment) {
     showFeedback(`Valor digitado em pagamento ajustado para ${currency(draftAdjustment.nextAmount)} apos recalculo do checkout.`, "warning");
@@ -7474,7 +7508,7 @@ async function startNewPdvSaleSession() {
   state.pdvSale.itemDiscountOpenItemId = "";
   state.pdvSale.itemDiscountDrafts = {};
   state.pdvSale.itemDiscountApplyingId = "";
-  state.pdvSale.checkoutOpenStep = "";
+  resetPdvSaleCheckoutPanelState();
   resetPdvSaleDiscountAuthorization({ preserveAuthorizers: false });
   resetPdvSaleCashbackState();
   resetPdvSaleExchangeCreditState();
@@ -7527,7 +7561,7 @@ function forcePdvSalePostSaleExitFallback() {
   state.pdvSale.productResults = [];
   state.pdvSale.productPagination = { page: 1, limit: 24, total: 0, totalPages: 1, hasMore: false };
   state.pdvSale.paymentDraft = {};
-  state.pdvSale.checkoutOpenStep = "";
+  resetPdvSaleCheckoutPanelState();
   state.pdvSale.drawerOpen = false;
   state.pdvSale.sessionStarting = false;
   resetPdvSaleCashbackState();
@@ -25446,6 +25480,7 @@ async function logoutUser() {
     discountDetailsOpen: false,
     discountDetailsSyncing: false,
     checkoutOpenStep: "",
+    checkoutManualStepState: {},
     discountApplying: false,
     discountAuthorization: {
       loading: false,
@@ -28083,7 +28118,7 @@ function handleDocumentClick(event) {
   if (pdvSaleCheckoutStepButton) {
     event.preventDefault();
     const nextStep = normalizeText(pdvSaleCheckoutStepButton.dataset.pdvSaleCheckoutStep || "payments");
-    state.pdvSale.checkoutOpenStep = state.pdvSale.checkoutOpenStep === nextStep ? "" : nextStep;
+    setPdvSaleCheckoutOpenStep(nextStep, { source: "manual" });
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     return;
   }
