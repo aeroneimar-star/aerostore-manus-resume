@@ -2311,7 +2311,10 @@ function getPdvSaleGeneralDiscountPaymentPolicy(session = null) {
   if (directExchangeCredit > 0.01 && !launched.some((item) => item.method === "credito_troca")) {
     launched.push({ method: "credito_troca", amount: directExchangeCredit });
   }
-  const blockingMethods = launched.filter((item) => !isPdvSalePaymentMethodEligibleForGeneralDiscount(item.method));
+  const blockingMethods = launched.filter((item) =>
+    !PDV_DISCOUNT_CONTEXT_IGNORED_METHODS.has(item.method)
+    && !isPdvSalePaymentMethodEligibleForGeneralDiscount(item.method)
+  );
   const blockingLabels = uniqueStrings(blockingMethods.map((item) => formatPaymentMethodLabel(item.method)).filter(Boolean));
   return {
     hasLaunchedPayments: launched.length > 0,
@@ -2337,7 +2340,7 @@ function getPdvSaleGeneralDiscountBlockMessage(policy = {}) {
   const methodsLabel = labels.length
     ? ` Esta venda possui ${labels.join(" + ")} aplicado/lançado.`
     : "";
-  return `Desconto geral disponível apenas para vendas pagas integralmente em PIX ou Dinheiro.${methodsLabel} Remova esses lançamentos ou finalize sem desconto geral.`;
+  return `Desconto geral dentro da política exige saldo final em PIX ou Dinheiro.${methodsLabel} Remova o método de risco ou solicite autorização.`;
 }
 
 function refreshPdvSaleGeneralDiscountEligibility(session = null) {
@@ -4748,13 +4751,6 @@ function buildPdvSaleCheckoutSteps(session = null, totals = null) {
   return `
     <div class="pdv-checkout-steps">
       ${buildPdvSaleCheckoutAccordion({
-        step: "discount",
-        title: "Desconto",
-        subtitle: "Ajuste comercial supervisionado",
-        meta: getPdvSaleCheckoutStepMeta("discount", safeSession, safeTotals),
-        content: `<div class="pdv-payment-discount-zone">${buildPdvSaleDiscountPanel(safeSession, safeTotals)}</div>`
-      })}
-      ${buildPdvSaleCheckoutAccordion({
         step: "exchange_credit",
         title: "Crédito de Troca",
         subtitle: "Saldo gerado por troca anterior",
@@ -4789,6 +4785,13 @@ function buildPdvSaleCheckoutSteps(session = null, totals = null) {
             </div>
           </div>
         `
+      })}
+      ${buildPdvSaleCheckoutAccordion({
+        step: "discount",
+        title: "Desconto",
+        subtitle: "Ajuste comercial supervisionado",
+        meta: getPdvSaleCheckoutStepMeta("discount", safeSession, safeTotals),
+        content: `<div class="pdv-payment-discount-zone">${buildPdvSaleDiscountPanel(safeSession, safeTotals)}</div>`
       })}
     </div>
   `;
