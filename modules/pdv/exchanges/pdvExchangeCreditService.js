@@ -45,6 +45,63 @@ function normalizePhone(value = "") {
   return String(value || "").replace(/\D/g, "");
 }
 
+function normalizePhoneForOwnership(value = "") {
+  let digits = normalizePhone(value || "");
+  if (digits.startsWith("55") && digits.length > 11) {
+    digits = digits.slice(2);
+  }
+  return digits;
+}
+
+function normalizeComparableName(value = "") {
+  return normalizeText(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function collectCustomerIdentityIds(value = {}) {
+  const candidates = [
+    value.customer_id,
+    value.exchange_customer_id,
+    value.master_customer_id,
+    value.contact_id,
+    value.crm_contact_id,
+    value.legacy_contact_id,
+    value.id,
+    value.customer?.customer_id,
+    value.customer?.master_customer_id,
+    value.customer?.contact_id,
+    value.customer?.crm_contact_id,
+    value.customer?.id
+  ];
+  const seen = new Set();
+  return candidates
+    .map((item) => normalizeText(item || ""))
+    .filter((item) => {
+      if (!item || seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+}
+
+function hasCustomerNameConflict(leftName = "", rightName = "") {
+  const left = normalizeComparableName(leftName);
+  const right = normalizeComparableName(rightName);
+  if (!left || !right || left === right || left.includes(right) || right.includes(left)) {
+    return false;
+  }
+  const leftParts = left.split(" ").filter((part) => part.length > 2);
+  const rightParts = right.split(" ").filter((part) => part.length > 2);
+  if (!leftParts.length || !rightParts.length) {
+    return false;
+  }
+  return !leftParts.some((part) => rightParts.includes(part));
+}
+
 function toNumber(value = 0) {
   if (typeof value === "number") {
     return Number.isFinite(value) ? value : 0;
@@ -101,6 +158,9 @@ function normalizeCreditOwner(customer = {}) {
     customer.customer_id
     || customer.exchange_customer_id
     || customer.master_customer_id
+    || customer.contact_id
+    || customer.crm_contact_id
+    || customer.legacy_contact_id
     || customer.id
     || ""
   );
@@ -111,6 +171,51 @@ function normalizeCreditOwner(customer = {}) {
     customer_phone: phone,
     customer_document: normalizeText(customer.document || customer.cpf || customer.cnpj || "")
   };
+}
+
+function isManualExchangeCredit(credit = {}) {
+  const sourceType = normalizeText(credit.source_type || "").toLowerCase();
+  const origin = normalizeText(credit.origin || "").toLowerCase();
+  const sourceOrigin = normalizeManualCreditOrigin(credit.source_origin || "");
+  return sourceType === "manual_exchange_credit"
+    || origin === "credito_manual"
+    || Boolean(sourceOrigin);
+}
+
+function checkExchangeCreditCustomerOwnership(credit = {}, customer = {}) {
+  const owner = normalizeCreditOwner(customer || {});
+  const creditIds = collectCustomerIdentityIds(credit);
+  const ownerIds = collectCustomerIdentityIds(customer);
+  const idMatch = creditIds.some((creditId) => ownerIds.includes(creditId));
+  const hasIdMismatch = Boolean(creditIds.length && ownerIds.length && !idMatch);
+  const creditPhone = normalizePhoneForOwnership(credit.customer_phone || credit.phone || "");
+  const ownerPhone = normalizePhoneForOwnership(owner.customer_phone || customer.phone || customer.telefone || "");
+  const phoneMatch = Boolean(creditPhone && ownerPhone && creditPhone === ownerPhone);
+  const hasPhoneMismatch = Boolean(creditPhone && ownerPhone && creditPhone !== ownerPhone);
+  const nameConflict = hasCustomerNameConflict(credit.customer_name || credit.name || "", owner.customer_name || customer.name || customer.nome || "");
+  const manualCredit = isManualExchangeCredit(credit);
+
+  if (idMatch) {
+    return { belongs: true, reason: "id_match", idMatch, phoneMatch, nameConflict, manualCredit };
+  }
+
+  if (phoneMatch && !nameConflict && (manualCredit || !creditIds.length || !ownerIds.length)) {
+    return { belongs: true, reason: manualCredit ? "manual_phone_match" : "phone_match", idMatch, phoneMatch, nameConflict, manualCredit };
+  }
+
+  if (hasPhoneMismatch) {
+    return { belongs: false, reason: "phone_mismatch", idMatch, phoneMatch, nameConflict, manualCredit };
+  }
+
+  if (nameConflict && phoneMatch) {
+    return { belongs: false, reason: "name_conflict", idMatch, phoneMatch, nameConflict, manualCredit };
+  }
+
+  if (hasIdMismatch) {
+    return { belongs: false, reason: "customer_id_mismatch", idMatch, phoneMatch, nameConflict, manualCredit };
+  }
+
+  return { belongs: false, reason: "missing_customer_match", idMatch, phoneMatch, nameConflict, manualCredit };
 }
 
 function maskPhone(value = "") {
@@ -234,6 +339,11 @@ function createManualExchangeCredit({ payload = {}, user = {} } = {}) {
   if (!storeId) {
     throw createHttpError("Informe a loja do Credito de Troca manual.");
   }
+  const sourceCustomer = payload.customer || payload.owner || payload;
+  const masterCustomerId = normalizeText(sourceCustomer.master_customer_id || sourceCustomer.masterCustomerId || sourceCustomer.customer_id || sourceCustomer.id || "");
+  const contactId = normalizeText(sourceCustomer.contact_id || sourceCustomer.contactId || sourceCustomer.operational_contact_id || "");
+  const crmContactId = normalizeText(sourceCustomer.crm_contact_id || sourceCustomer.crmContactId || "");
+  const legacyContactId = normalizeText(sourceCustomer.legacy_contact_id || sourceCustomer.legacyContactId || "");
   const actor = getActorName(user);
   const credit = normalizeCreditRow({
     credit_id: buildId("EXCR_MAN"),
@@ -249,6 +359,10 @@ function createManualExchangeCredit({ payload = {}, user = {} } = {}) {
     returned_product_id: "",
     returned_quantity: 0,
     customer_id: owner.customer_id,
+    master_customer_id: masterCustomerId,
+    contact_id: contactId,
+    crm_contact_id: crmContactId,
+    legacy_contact_id: legacyContactId,
     customer_name: owner.customer_name,
     customer_phone: owner.customer_phone,
     customer_document: owner.customer_document,
@@ -280,6 +394,9 @@ function createManualExchangeCredit({ payload = {}, user = {} } = {}) {
       notes,
       store_id: storeId,
       customer_id: owner.customer_id,
+      master_customer_id: masterCustomerId,
+      contact_id: contactId,
+      crm_contact_id: crmContactId,
       customer_phone_masked: maskPhone(owner.customer_phone),
       created_at: nowIso(),
       created_by: actor
@@ -292,15 +409,10 @@ function createManualExchangeCredit({ payload = {}, user = {} } = {}) {
 }
 
 function listActiveExchangeCreditsForCustomer(customer = {}) {
-  const normalizedOwner = normalizeCreditOwner(customer);
-  const ownerId = normalizeText(normalizedOwner.customer_id || "");
-  const ownerPhone = normalizePhone(normalizedOwner.customer_phone || "");
   const rows = readExchangeCredits().map(normalizeCreditRow)
     .filter((credit) => {
       if (!isCreditActive(credit)) return false;
-      const creditCustomerId = normalizeText(credit.customer_id || "");
-      const creditPhone = normalizePhone(credit.customer_phone || "");
-      return Boolean((ownerId && creditCustomerId === ownerId) || (ownerPhone && creditPhone === ownerPhone));
+      return checkExchangeCreditCustomerOwnership(credit, customer).belongs;
     });
   const deduped = [...rows]
     .sort(compareCreditCreatedAt)
@@ -340,11 +452,31 @@ function consumeExchangeCreditForSale({ creditId = "", amount = 0, saleId = "", 
   if (!["ativo", "active"].includes(status)) {
     throw createHttpError("Este Credito de Troca nao esta ativo.");
   }
-  if (owner.customer_id && normalizeText(credit.customer_id || "") && normalizeText(credit.customer_id || "") !== owner.customer_id) {
+  const ownership = checkExchangeCreditCustomerOwnership(credit, customer);
+  if (!ownership.belongs && ownership.reason === "phone_mismatch") {
+    console.warn("[PDV][exchange-credit] ownership denied on consume", {
+      credit_id: normalizeText(credit.credit_id || ""),
+      customer_phone_masked: maskPhone(owner.customer_phone || customer.phone || ""),
+      credit_phone_masked: maskPhone(credit.customer_phone || ""),
+      reason: ownership.reason
+    });
+    throw createHttpError("Este Credito de Troca pertence a outro telefone.");
+  }
+  if (!ownership.belongs) {
+    console.warn("[PDV][exchange-credit] ownership denied on consume", {
+      credit_id: normalizeText(credit.credit_id || ""),
+      customer_phone_masked: maskPhone(owner.customer_phone || customer.phone || ""),
+      credit_phone_masked: maskPhone(credit.customer_phone || ""),
+      reason: ownership.reason
+    });
     throw createHttpError("Este Credito de Troca pertence a outro cliente.");
   }
-  if (owner.customer_phone && normalizePhone(credit.customer_phone || "") && normalizePhone(credit.customer_phone || "") !== normalizePhone(owner.customer_phone)) {
-    throw createHttpError("Este Credito de Troca pertence a outro telefone.");
+  if (ownership.reason === "manual_phone_match") {
+    console.info("[PDV][exchange-credit] manual ownership fallback", {
+      credit_id: normalizeText(credit.credit_id || ""),
+      customer_phone_masked: maskPhone(owner.customer_phone || customer.phone || ""),
+      reason: ownership.reason
+    });
   }
   const before = roundMoney(credit.remaining_amount);
   if (useAmount > before + 0.009) {
@@ -426,6 +558,7 @@ module.exports = {
   createManualExchangeCredit,
   listActiveExchangeCreditsForCustomer,
   getExchangeCreditById,
+  checkExchangeCreditCustomerOwnership,
   cancelManualExchangeCredit,
   consumeExchangeCreditForSale,
   buildExchangeSourceKey

@@ -3388,7 +3388,10 @@ async function syncPdvSaleExchangeCreditInfo(session = null, { force = false } =
     state.pdvSale.exchangeCreditInfo = response || { items: [], total: 0 };
     state.pdvSale.exchangeCreditCustomerKey = customerKey;
     const applied = getPdvSaleExchangeCreditApplication(currentSession);
-    state.pdvSale.exchangeCreditSelectedId = applied.credit_id || toArray(response?.items)[0]?.credit_id || "";
+    const rows = toArray(response?.items);
+    const preferredCreditId = normalizeText(applied.credit_id || state.pdvSale.exchangeCreditSelectedId || "");
+    const selectedCredit = rows.find((item) => normalizeText(item.credit_id || "") === preferredCreditId) || rows[0] || null;
+    state.pdvSale.exchangeCreditSelectedId = normalizeText(selectedCredit?.credit_id || "");
     state.pdvSale.exchangeCreditInput = applied.amount > 0 ? formatMoneyAmountInput(applied.amount) : state.pdvSale.exchangeCreditInput;
     return state.pdvSale.exchangeCreditInfo;
   } finally {
@@ -4717,8 +4720,9 @@ function buildPdvSaleExchangeCreditPanel(session = null, totals = null) {
     availableTotal,
     toNumber(saleTotals.subtotal || 0) - toNumber(saleTotals.discountAmount || 0)
   )).toFixed(2));
-  const selectedCreditId = normalizeText(state.pdvSale.exchangeCreditSelectedId || applied.credit_id || rows[0]?.credit_id || "");
-  const selectedCredit = rows.find((item) => normalizeText(item.credit_id || "") === selectedCreditId) || rows[0] || null;
+  const preferredCreditId = normalizeText(state.pdvSale.exchangeCreditSelectedId || applied.credit_id || "");
+  const selectedCredit = rows.find((item) => normalizeText(item.credit_id || "") === preferredCreditId) || rows[0] || null;
+  const selectedCreditId = normalizeText(selectedCredit?.credit_id || "");
   const currentInput = normalizeText(state.pdvSale.exchangeCreditInput || "")
     || (applied.amount > 0 ? formatMoneyAmountInput(applied.amount) : "");
   const cashRegisterClosed = isPdvSaleCashRegisterClosedForSale();
@@ -4756,7 +4760,7 @@ function buildPdvSaleExchangeCreditPanel(session = null, totals = null) {
           </label>
           <div class="pdv-cashback-checkout-buttons">
             <button class="secondary-button small" type="button" data-pdv-sale-exchange-credit-fill="true" ${canApply ? "" : "disabled"}>Usar saldo</button>
-            <button class="primary-button small" type="submit" ${canApply ? "" : "disabled"}>${state.pdvSale.exchangeCreditApplying ? "Aplicando..." : "Aplicar crédito"}</button>
+            <button class="primary-button small" type="button" data-pdv-sale-exchange-credit-apply="true" ${canApply ? "" : "disabled"}>${state.pdvSale.exchangeCreditApplying ? "Aplicando..." : "Aplicar crédito"}</button>
             <button class="ghost-button small" type="button" data-pdv-sale-exchange-credit-remove="true" ${(applied.amount > 0 && !state.pdvSale.lastCompletedSale && !state.pdvSale.exchangeCreditApplying) ? "" : "disabled"}>Remover crédito</button>
           </div>
         </form>
@@ -6883,39 +6887,85 @@ async function removePdvSaleCashback() {
   }
 }
 
-async function applyPdvSaleExchangeCredit() {
+async function applyPdvSaleExchangeCredit(source = null) {
   const sessionId = getActivePdvSaleSessionId();
   const session = state.pdvSale.session;
-  if (!sessionId || !session) return;
+  console.info("[PDV][exchange-credit] apply requested", {
+    sessionId,
+    hasSession: Boolean(session),
+    sourceTag: source?.tagName || ""
+  });
+  if (!sessionId || !session) {
+    console.info("[PDV][exchange-credit] stopped before endpoint", {
+      reason: "missing_session",
+      sessionId,
+      hasSession: Boolean(session)
+    });
+    showFeedback("Não foi possível identificar a sessão da venda para aplicar o Crédito de Troca.", "error");
+    return;
+  }
   if (state.pdvSale.lastCompletedSale) {
+    console.info("[PDV][exchange-credit] stopped before endpoint", { reason: "completed_sale", sessionId });
     showFeedback("Não é possível aplicar Crédito de Troca em uma venda já finalizada.", "error");
     return;
   }
   const cashOpen = await ensurePdvSaleCashRegisterOpenForFinancialAction("Caixa fechado. Abra o caixa antes de aplicar Crédito de Troca.");
   if (!cashOpen) {
+    console.info("[PDV][exchange-credit] stopped before endpoint", { reason: "cash_register_closed", sessionId });
     return;
   }
   if (!session.customer?.phone) {
+    console.info("[PDV][exchange-credit] stopped before endpoint", { reason: "missing_customer_phone", sessionId });
     showFeedback("Selecione um cliente antes de aplicar Crédito de Troca.", "error");
     return;
   }
-  const creditId = normalizeText(state.pdvSale.exchangeCreditSelectedId || toArray(state.pdvSale.exchangeCreditInfo?.items)[0]?.credit_id || "");
+  const form = source?.closest?.("[data-pdv-sale-exchange-credit-form]") || document.querySelector("[data-pdv-sale-exchange-credit-form]");
+  console.info("[PDV][exchange-credit] form found", Boolean(form));
+  const liveCreditId = form?.querySelector?.("[data-pdv-sale-exchange-credit-select]")?.value;
+  const liveAmount = form?.querySelector?.("[data-pdv-sale-exchange-credit-input]")?.value;
+  if (liveCreditId !== undefined) {
+    state.pdvSale.exchangeCreditSelectedId = normalizeText(liveCreditId || "");
+  }
+  if (liveAmount !== undefined) {
+    state.pdvSale.exchangeCreditInput = liveAmount;
+  }
+  const availableCredits = toArray(state.pdvSale.exchangeCreditInfo?.items);
+  let creditId = normalizeText(state.pdvSale.exchangeCreditSelectedId || availableCredits[0]?.credit_id || "");
+  if (availableCredits.length && !availableCredits.some((credit) => normalizeText(credit.credit_id || "") === creditId)) {
+    creditId = normalizeText(availableCredits[0]?.credit_id || "");
+    state.pdvSale.exchangeCreditSelectedId = creditId;
+  }
   const amount = Number(Math.max(0, parseMoneyAmount(state.pdvSale.exchangeCreditInput || 0)).toFixed(2));
+  console.info("[PDV][exchange-credit] payload candidate", {
+    sessionId,
+    creditId,
+    rawAmount: state.pdvSale.exchangeCreditInput,
+    amount
+  });
   if (!creditId) {
+    console.info("[PDV][exchange-credit] stopped before endpoint", { reason: "missing_credit_id", sessionId });
     showFeedback("Selecione o Crédito de Troca que será usado.", "error");
     return;
   }
   if (amount <= 0) {
+    console.info("[PDV][exchange-credit] stopped before endpoint", { reason: "invalid_amount", sessionId, amount });
     showFeedback("Informe o valor de Crédito de Troca para aplicar.", "error");
     return;
   }
   state.pdvSale.exchangeCreditApplying = true;
   renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
   try {
-    const response = await api(`/api/pdv/sales/session/${encodeURIComponent(sessionId)}/apply-exchange-credit`, {
+    const endpoint = `/api/pdv/sales/session/${encodeURIComponent(sessionId)}/apply-exchange-credit`;
+    console.info("[PDV][exchange-credit] endpoint", endpoint);
+    const response = await api(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ credit_id: creditId, amount })
+      body: JSON.stringify({ credit_id: creditId, exchange_credit_id: creditId, amount })
+    });
+    console.info("[PDV][exchange-credit] response received", {
+      hasSession: Boolean(response?.session),
+      appliedAmount: response?.applied?.amount || 0,
+      creditId: response?.applied?.credit_id || creditId
     });
     state.pdvSale.session = response.session || state.pdvSale.session;
     state.pdvSale.exchangeCreditInfo = response.credits || state.pdvSale.exchangeCreditInfo;
@@ -6923,6 +6973,12 @@ async function applyPdvSaleExchangeCredit() {
     state.pdvSale.exchangeCreditSelectedId = response.applied?.credit_id || creditId;
     await reconcilePdvSaleCheckoutAfterMutation("exchange_credit_changed");
     showFeedback("Crédito de Troca aplicado à venda.");
+  } catch (error) {
+    console.info("[PDV][exchange-credit] endpoint error", {
+      status: error?.status || error?.statusCode || "",
+      message: error?.message || "erro desconhecido"
+    });
+    throw error;
   } finally {
     state.pdvSale.exchangeCreditApplying = false;
     renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
@@ -21217,6 +21273,10 @@ async function createPdvManualExchangeCredit(form) {
   const data = new FormData(form);
   const payload = {
     customer_id: customer.master_customer_id || customer.customer_id || customer.id || "",
+    master_customer_id: customer.master_customer_id || customer.customer_id || customer.id || "",
+    contact_id: customer.contact_id || customer.operational_contact_id || "",
+    crm_contact_id: customer.crm_contact_id || "",
+    legacy_contact_id: customer.legacy_contact_id || "",
     name: customer.name || customer.nome || "",
     phone: customer.phone || customer.telefone || "",
     document: customer.document || customer.cpf || customer.cnpj || "",
@@ -28467,6 +28527,13 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const applyPdvSaleExchangeCreditButton = event.target.closest("[data-pdv-sale-exchange-credit-apply]");
+  if (applyPdvSaleExchangeCreditButton) {
+    event.preventDefault();
+    applyPdvSaleExchangeCredit(applyPdvSaleExchangeCreditButton).catch((error) => handleUiError("Erro ao aplicar Crédito de Troca na venda", error));
+    return;
+  }
+
   const removePdvSaleCashbackButton = event.target.closest("[data-pdv-sale-cashback-remove]");
   if (removePdvSaleCashbackButton) {
     removePdvSaleCashback().catch((error) => handleUiError("Erro ao remover cashback da venda", error));
@@ -28943,6 +29010,23 @@ function handleDocumentClick(event) {
   }
 }
 
+function handlePdvSaleExchangeCreditApplyCapture(event) {
+  const eventTarget = event.target?.nodeType === 1 ? event.target : event.target?.parentElement;
+  const applyButton = eventTarget?.closest?.("[data-pdv-sale-exchange-credit-apply]");
+  if (!applyButton) {
+    return;
+  }
+  console.info("[PDV][exchange-credit] click captured");
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation?.();
+  if (applyButton.disabled || applyButton.getAttribute("aria-disabled") === "true") {
+    console.info("[PDV][exchange-credit] stopped before apply", { reason: "button_disabled" });
+    return;
+  }
+  applyPdvSaleExchangeCredit(applyButton).catch((error) => handleUiError("Erro ao aplicar Crédito de Troca na venda", error));
+}
+
 function handleDocumentSubmit(event) {
   const usersAdminForm = event.target.closest("[data-users-admin-form]");
   if (usersAdminForm) {
@@ -29000,7 +29084,7 @@ function handleDocumentSubmit(event) {
   const pdvSaleExchangeCreditForm = event.target.closest("[data-pdv-sale-exchange-credit-form]");
   if (pdvSaleExchangeCreditForm) {
     event.preventDefault();
-    applyPdvSaleExchangeCredit().catch((error) => handleUiError("Erro ao aplicar Crédito de Troca na venda", error));
+    applyPdvSaleExchangeCredit(pdvSaleExchangeCreditForm).catch((error) => handleUiError("Erro ao aplicar Crédito de Troca na venda", error));
     return;
   }
 
@@ -29922,6 +30006,7 @@ async function bootstrapBackgroundWork(settingsPromise = null, { renderActiveRou
 }
 
 function bindEvents() {
+  document.addEventListener("click", handlePdvSaleExchangeCreditApplyCapture, true);
   document.addEventListener("click", handleDocumentClick);
   document.addEventListener("submit", handleDocumentSubmit);
   document.addEventListener("change", handleDocumentChange);

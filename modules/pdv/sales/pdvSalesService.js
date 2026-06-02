@@ -37,6 +37,7 @@ const { getNotificationService, getNotificationDryRunDefault } = require("../../
 const {
   listActiveExchangeCreditsForCustomer,
   getExchangeCreditById,
+  checkExchangeCreditCustomerOwnership,
   consumeExchangeCreditForSale
 } = require("../exchanges/pdvExchangeCreditService");
 
@@ -3310,6 +3311,32 @@ function getSessionExchangeCreditApplication(session = {}) {
   return methods.find((item) => item.method === "credito_troca" && roundMoney(item.amount) > 0) || null;
 }
 
+function maskPdvSalePhoneForLog(value = "") {
+  const digits = normalizePhone(value || "");
+  return digits ? `********${digits.slice(-4)}` : "";
+}
+
+function buildExchangeCreditOwnershipLogPayload(session = {}, credit = {}, ownership = {}) {
+  const customer = session.customer || {};
+  return {
+    sessionId: normalizeText(session.session_id || ""),
+    creditId: normalizeText(credit.credit_id || ""),
+    sessionCustomerId: normalizeText(customer.customer_id || ""),
+    sessionContactId: normalizeText(customer.contact_id || ""),
+    sessionMasterCustomerId: normalizeText(customer.master_customer_id || customer.id || ""),
+    sessionPhoneMasked: maskPdvSalePhoneForLog(customer.phone || customer.telefone || ""),
+    creditCustomerId: normalizeText(credit.customer_id || ""),
+    creditContactId: normalizeText(credit.contact_id || ""),
+    creditMasterCustomerId: normalizeText(credit.master_customer_id || ""),
+    creditPhoneMasked: maskPdvSalePhoneForLog(credit.customer_phone || credit.phone || ""),
+    sourceType: normalizeText(credit.source_type || ""),
+    sourceOrigin: normalizeText(credit.source_origin || ""),
+    reason: ownership.reason || "",
+    phoneMatch: Boolean(ownership.phoneMatch),
+    nameConflict: Boolean(ownership.nameConflict)
+  };
+}
+
 function validateExchangeCreditForSession(session = {}, payload = {}) {
   if (!session.customer) {
     throw new Error("Selecione um cliente antes de usar Credito de Troca.");
@@ -3329,15 +3356,17 @@ function validateExchangeCreditForSession(session = {}, payload = {}) {
   if (normalizeText(credit.status || "").toLowerCase() !== "ativo") {
     throw new Error("Este Credito de Troca nao esta ativo.");
   }
-  const sessionCustomerId = normalizeText(session.customer.master_customer_id || session.customer.customer_id || session.customer.id || "");
-  const sessionPhone = normalizePhone(session.customer.phone || "");
-  const creditCustomerId = normalizeText(credit.customer_id || "");
-  const creditPhone = normalizePhone(credit.customer_phone || "");
-  if (sessionCustomerId && creditCustomerId && sessionCustomerId !== creditCustomerId) {
-    throw new Error("Este Credito de Troca pertence a outro cliente.");
+  const ownership = checkExchangeCreditCustomerOwnership(credit, session.customer);
+  if (ownership.belongs && ownership.reason === "manual_phone_match") {
+    console.info("[PDV][exchange-credit] ownership allowed", buildExchangeCreditOwnershipLogPayload(session, credit, ownership));
   }
-  if (sessionPhone && creditPhone && sessionPhone !== creditPhone) {
+  if (!ownership.belongs && ownership.reason === "phone_mismatch") {
+    console.warn("[PDV][exchange-credit] ownership denied", buildExchangeCreditOwnershipLogPayload(session, credit, ownership));
     throw new Error("Este Credito de Troca pertence a outro telefone.");
+  }
+  if (!ownership.belongs) {
+    console.warn("[PDV][exchange-credit] ownership denied", buildExchangeCreditOwnershipLogPayload(session, credit, ownership));
+    throw new Error("Este Credito de Troca pertence a outro cliente.");
   }
   const available = roundMoney(credit.remaining_amount || 0);
   if (amount > available + 0.009) {
