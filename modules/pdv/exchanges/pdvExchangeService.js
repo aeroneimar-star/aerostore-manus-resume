@@ -25,7 +25,9 @@ const {
 } = require("../services/pdvControlService");
 const {
   createExchangeCredit: createExchangeCreditRecord,
+  createManualExchangeCredit: createManualExchangeCreditRecord,
   listActiveExchangeCreditsForCustomer,
+  cancelManualExchangeCredit: cancelManualExchangeCreditRecord,
   buildExchangeSourceKey
 } = require("./pdvExchangeCreditService");
 const { normalizeStoreKey, formatStoreLabel } = require("../utils/pdvStoreUtils");
@@ -115,6 +117,39 @@ function createHttpError(message, statusCode = 400) {
 
 function getActorName(user = {}) {
   return normalizeText(user?.name || user?.email || "sistema");
+}
+
+function maskPhone(value = "") {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits ? `********${digits.slice(-4)}` : "";
+}
+
+function getUserAllowedStores(user = {}) {
+  const rawStores = Array.isArray(user?.allowed_stores)
+    ? user.allowed_stores
+    : (typeof user?.allowed_stores === "string" ? user.allowed_stores.split(",") : []);
+  return [...rawStores, user?.store_id, user?.store]
+    .map((item) => normalizeStoreKey(item || ""))
+    .filter(Boolean);
+}
+
+function ensureManualExchangeCreditPermission(user = {}, storeId = "") {
+  const role = getPdvUserRole(user);
+  const store = normalizeStoreKey(storeId || "");
+  if (!store) {
+    throw createHttpError("Informe a loja do Credito de Troca manual.");
+  }
+  if (!["ADMIN", "GERENTE"].includes(role)) {
+    throw createHttpError("Apenas gestor ou admin pode criar Credito de Troca manual.", 403);
+  }
+  if (role === "ADMIN" || user?.permissions?.can_view_all_stores) {
+    return true;
+  }
+  const allowedStores = getUserAllowedStores(user);
+  if (!allowedStores.length || !allowedStores.includes(store)) {
+    throw createHttpError("Loja fora do escopo do gestor para Credito de Troca manual.", 403);
+  }
+  return true;
 }
 
 function getSaleCustomer(sale = {}) {
@@ -1126,6 +1161,88 @@ function listExchangeCredits(query = {}, user = {}) {
   });
 }
 
+function createManualExchangeCredit(payload = {}, user = {}) {
+  const storeId = normalizeStoreKey(payload.store_id || payload.loja || user?.active_store_id || user?.store_id || user?.store || "");
+  ensureManualExchangeCreditPermission(user, storeId);
+  const credit = createManualExchangeCreditRecord({
+    payload: {
+      ...payload,
+      store_id: storeId
+    },
+    user
+  });
+  appendAuditLog({
+    audit_id: buildId("AUD"),
+    action: "manual_exchange_credit_created",
+    module: "exchange_credit",
+    created_at: nowIso(),
+    actor: getActorName(user),
+    actor_role: getPdvUserRole(user),
+    loja: storeId,
+    after: {
+      credit_id: credit.credit_id,
+      source_type: credit.source_type,
+      source_origin: credit.source_origin,
+      source_reference: credit.source_reference || "",
+      customer_id: credit.customer_id || "",
+      customer_phone_masked: maskPhone(credit.customer_phone || ""),
+      amount: credit.amount,
+      remaining_amount: credit.remaining_amount,
+      reason: credit.reason || "",
+      notes: credit.notes || "",
+      status: credit.status
+    }
+  });
+  return {
+    credit,
+    credits: listActiveExchangeCreditsForCustomer({
+      customer_id: credit.customer_id,
+      phone: credit.customer_phone,
+      name: credit.customer_name
+    })
+  };
+}
+
+function cancelManualExchangeCredit(creditId = "", payload = {}, user = {}) {
+  const creditBefore = loadExchangeCredits().find((item) => normalizeText(item.credit_id || "") === normalizeText(creditId || ""));
+  if (!creditBefore) {
+    throw createHttpError("Credito de Troca nao encontrado.", 404);
+  }
+  const storeId = normalizeStoreKey(creditBefore.store_id || payload.store_id || user?.active_store_id || user?.store_id || user?.store || "");
+  ensureManualExchangeCreditPermission(user, storeId);
+  const credit = cancelManualExchangeCreditRecord({
+    creditId,
+    reason: payload.reason || payload.motivo || "",
+    user
+  });
+  appendAuditLog({
+    audit_id: buildId("AUD"),
+    action: "manual_exchange_credit_cancelled",
+    module: "exchange_credit",
+    created_at: nowIso(),
+    actor: getActorName(user),
+    actor_role: getPdvUserRole(user),
+    loja: storeId,
+    before: {
+      credit_id: creditBefore.credit_id,
+      customer_id: creditBefore.customer_id || "",
+      customer_phone_masked: maskPhone(creditBefore.customer_phone || ""),
+      amount: creditBefore.amount,
+      remaining_amount: creditBefore.remaining_amount,
+      status: creditBefore.status
+    },
+    after: {
+      credit_id: credit.credit_id,
+      customer_id: credit.customer_id || "",
+      customer_phone_masked: maskPhone(credit.customer_phone || ""),
+      remaining_amount: credit.remaining_amount,
+      status: credit.status,
+      cancel_reason: credit.cancel_reason || ""
+    }
+  });
+  return { credit };
+}
+
 function getExchange(exchangeId = "", user = {}) {
   return { exchange: applyExchangeTotals(getExchangeScoped(exchangeId, user).exchange) };
 }
@@ -1155,5 +1272,7 @@ module.exports = {
   finalizeExchange,
   getExchange,
   listExchanges,
-  listExchangeCredits
+  listExchangeCredits,
+  createManualExchangeCredit,
+  cancelManualExchangeCredit
 };

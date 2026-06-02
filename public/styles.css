@@ -19072,6 +19072,9 @@ body[data-route-section="pdv-exchanges"] .pdv-exchange-form-grid select,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-form-grid textarea,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-summary-card input,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-summary-card select,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-form input,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-form select,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-form textarea,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-quick-customer input {
   background: var(--exchange-bg-app);
   border-color: var(--exchange-border-soft);
@@ -19081,6 +19084,8 @@ body[data-route-section="pdv-exchanges"] .pdv-exchange-quick-customer input {
 body[data-route-section="pdv-exchanges"] .pdv-exchange-search input::placeholder,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-form-grid textarea::placeholder,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-summary-card input::placeholder,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-form input::placeholder,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-form textarea::placeholder,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-quick-customer input::placeholder {
   color: var(--exchange-text-subtle);
 }
@@ -19090,10 +19095,105 @@ body[data-route-section="pdv-exchanges"] .pdv-exchange-form-grid select:focus,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-form-grid textarea:focus,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-summary-card input:focus,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-summary-card select:focus,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-form input:focus,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-form select:focus,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-form textarea:focus,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-quick-customer input:focus {
   border-color: var(--exchange-accent-border);
   box-shadow: 0 0 0 3px var(--exchange-accent-soft);
   outline: none;
+}
+
+.pdv-manual-credit-panel {
+  margin: 16px 0 18px;
+}
+
+.pdv-manual-credit-panel.is-locked {
+  opacity: 0.72;
+}
+
+.pdv-manual-credit-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.4fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.pdv-manual-credit-search,
+.pdv-manual-credit-form {
+  min-width: 0;
+}
+
+.pdv-manual-credit-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.pdv-manual-credit-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.pdv-manual-credit-form input,
+.pdv-manual-credit-form select,
+.pdv-manual-credit-form textarea {
+  width: 100%;
+  min-width: 0;
+}
+
+.pdv-manual-credit-wide,
+.pdv-manual-credit-actions {
+  grid-column: 1 / -1;
+}
+
+.pdv-manual-credit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.pdv-manual-credit-actions span {
+  min-width: 0;
+  font-size: 0.82rem;
+}
+
+.pdv-manual-credit-selected,
+.pdv-manual-credit-created {
+  border: 1px solid rgba(45, 212, 191, 0.28);
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(45, 212, 191, 0.1);
+  display: grid;
+  gap: 4px;
+}
+
+.pdv-manual-credit-selected strong,
+.pdv-manual-credit-created strong {
+  color: var(--exchange-text-main, #f4f7fa);
+}
+
+.pdv-manual-credit-selected small,
+.pdv-manual-credit-created small {
+  color: var(--exchange-text-muted, #aab4c0);
+}
+
+.pdv-manual-credit-created {
+  margin-top: 14px;
+}
+
+@media (max-width: 1100px) {
+  .pdv-manual-credit-grid,
+  .pdv-manual-credit-form {
+    grid-template-columns: 1fr;
+  }
 }
 
 body[data-route-section="pdv-exchanges"] .pdv-exchange-origin-card,
@@ -19102,6 +19202,8 @@ body[data-route-section="pdv-exchanges"] .pdv-exchange-product-card,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-selected-sale,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-summary-card,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-receipt,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-selected,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-created,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-customer-panel,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-customer-result,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-mini-cart.empty,
@@ -19146,6 +19248,7 @@ body[data-route-section="pdv-exchanges"] .pdv-exchange-mini-cart {
 
 body[data-route-section="pdv-exchanges"] .pdv-exchange-form-grid label,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-summary-card label,
+body[data-route-section="pdv-exchanges"] .pdv-manual-credit-form label,
 body[data-route-section="pdv-exchanges"] .pdv-exchange-quick-customer label {
   color: var(--exchange-text-muted);
 }

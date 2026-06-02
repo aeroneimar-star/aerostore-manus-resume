@@ -13,7 +13,9 @@ const {
   finalizeExchange,
   getExchange,
   listExchanges,
-  listExchangeCredits
+  listExchangeCredits,
+  createManualExchangeCredit,
+  cancelManualExchangeCredit
 } = require("../exchanges/pdvExchangeService");
 const { ensureOpenCashRegisterForStore } = require("../utils/pdvCashRegisterGuard");
 const { normalizeStoreKey } = require("../utils/pdvStoreUtils");
@@ -66,6 +68,22 @@ router.get("/credits/active", canViewExchange, (req, res) => {
     res.json(listExchangeCredits(req.query || {}, req.user || {}));
   } catch (error) {
     sendRouteError(res, error, "Falha ao consultar Creditos de Troca.");
+  }
+});
+
+router.post("/credits/manual", canGenerateExchangeCredit, (req, res) => {
+  try {
+    res.json(createManualExchangeCredit(req.body || {}, req.user || {}));
+  } catch (error) {
+    sendRouteError(res, error, "Falha ao criar Credito de Troca manual.");
+  }
+});
+
+router.post("/credits/:creditId/cancel", canGenerateExchangeCredit, (req, res) => {
+  try {
+    res.json(cancelManualExchangeCredit(req.params.creditId, req.body || {}, req.user || {}));
+  } catch (error) {
+    sendRouteError(res, error, "Falha ao cancelar Credito de Troca manual.");
   }
 });
 

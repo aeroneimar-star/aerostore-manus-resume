@@ -113,6 +113,20 @@ function normalizeCreditOwner(customer = {}) {
   };
 }
 
+function maskPhone(value = "") {
+  const digits = normalizePhone(value || "");
+  if (!digits) return "";
+  return `********${digits.slice(-4)}`;
+}
+
+function normalizeManualCreditOrigin(value = "") {
+  const origin = normalizeText(value || "").toLowerCase();
+  if (["tiny", "tiny_legacy"].includes(origin)) return "tiny_legacy";
+  if (["venda_externa", "external_sale", "externa"].includes(origin)) return "venda_externa";
+  if (["ajuste_manual", "manual_adjustment", "ajuste"].includes(origin)) return "ajuste_manual";
+  return "";
+}
+
 function normalizeCreditRow(row = {}) {
   const amount = roundMoney(row.amount || 0);
   const remaining = roundMoney(row.remaining_amount ?? amount);
@@ -192,6 +206,91 @@ function createExchangeCredit({ exchange = {}, owner = {}, amount = 0, user = {}
   return credit;
 }
 
+function createManualExchangeCredit({ payload = {}, user = {} } = {}) {
+  const amount = roundMoney(payload.amount || payload.valor || payload.credit_amount || 0);
+  if (amount <= 0) {
+    throw createHttpError("Informe um valor valido para o Credito de Troca manual.");
+  }
+  const owner = normalizeCreditOwner(payload.customer || payload.owner || payload);
+  if (!owner.customer_id) {
+    throw createHttpError("Selecione o cliente que recebera o Credito de Troca manual.");
+  }
+  if (!owner.customer_name) {
+    throw createHttpError("Informe o nome do cliente favorecido.");
+  }
+  const reason = normalizeText(payload.reason || payload.motivo || "");
+  if (!reason) {
+    throw createHttpError("Informe o motivo do Credito de Troca manual.");
+  }
+  const notes = normalizeText(payload.notes || payload.observacao || payload.observation || "");
+  if (notes.length < 20) {
+    throw createHttpError("A observacao do Credito de Troca manual deve ter pelo menos 20 caracteres.");
+  }
+  const sourceOrigin = normalizeManualCreditOrigin(payload.source_origin || payload.origin || payload.origem || "");
+  if (!sourceOrigin) {
+    throw createHttpError("Informe a origem do credito manual: tiny_legacy, venda_externa ou ajuste_manual.");
+  }
+  const storeId = normalizeText(payload.store_id || payload.loja || "");
+  if (!storeId) {
+    throw createHttpError("Informe a loja do Credito de Troca manual.");
+  }
+  const actor = getActorName(user);
+  const credit = normalizeCreditRow({
+    credit_id: buildId("EXCR_MAN"),
+    exchange_id: "",
+    source_type: "manual_exchange_credit",
+    source_origin: sourceOrigin,
+    source_reference: normalizeText(payload.source_reference || payload.reference || payload.referencia || ""),
+    original_sale_id: "",
+    source_item_key: `manual|${sourceOrigin}|${storeId}|${crypto.randomBytes(8).toString("hex")}`,
+    source_item_keys: [],
+    returned_items: [],
+    returned_sku: "",
+    returned_product_id: "",
+    returned_quantity: 0,
+    customer_id: owner.customer_id,
+    customer_name: owner.customer_name,
+    customer_phone: owner.customer_phone,
+    customer_document: owner.customer_document,
+    amount,
+    remaining_amount: amount,
+    available_balance: amount,
+    used_amount: 0,
+    status: "ativo",
+    origin: "credito_manual",
+    store_id: storeId,
+    reason,
+    notes,
+    expires_at: null,
+    created_at: nowIso(),
+    updated_at: nowIso(),
+    created_by: actor,
+    approved_by: actor,
+    created_by_user_id: normalizeText(user?.id || user?.user_id || ""),
+    approved_by_user_id: normalizeText(user?.id || user?.user_id || ""),
+    movements: [{
+      movement_id: buildId("EXCMOV"),
+      type: "criacao_manual",
+      amount,
+      before: 0,
+      after: amount,
+      source_origin: sourceOrigin,
+      source_reference: normalizeText(payload.source_reference || payload.reference || payload.referencia || ""),
+      reason,
+      notes,
+      store_id: storeId,
+      customer_id: owner.customer_id,
+      customer_phone_masked: maskPhone(owner.customer_phone),
+      created_at: nowIso(),
+      created_by: actor
+    }]
+  });
+  const credits = readExchangeCredits().map(normalizeCreditRow);
+  credits.unshift(credit);
+  saveExchangeCredits(credits);
+  return credit;
+}
+
 function listActiveExchangeCreditsForCustomer(customer = {}) {
   const normalizedOwner = normalizeCreditOwner(customer);
   const ownerId = normalizeText(normalizedOwner.customer_id || "");
@@ -263,6 +362,7 @@ function consumeExchangeCreditForSale({ creditId = "", amount = 0, saleId = "", 
     created_by: getActorName(user)
   };
   credit.remaining_amount = after;
+  credit.available_balance = after;
   credit.used_amount = roundMoney((credit.used_amount || 0) + useAmount);
   credit.status = after <= 0 ? "usado" : "ativo";
   credit.updated_at = nowIso();
@@ -272,10 +372,61 @@ function consumeExchangeCreditForSale({ creditId = "", amount = 0, saleId = "", 
   return { credit, movement };
 }
 
+function cancelManualExchangeCredit({ creditId = "", reason = "", user = {} } = {}) {
+  const normalizedId = normalizeText(creditId || "");
+  if (!normalizedId) {
+    throw createHttpError("Informe o Credito de Troca manual.");
+  }
+  const cancelReason = normalizeText(reason || "");
+  if (cancelReason.length < 10) {
+    throw createHttpError("Informe um motivo de cancelamento com pelo menos 10 caracteres.");
+  }
+  const credits = readExchangeCredits().map(normalizeCreditRow);
+  const index = credits.findIndex((credit) => normalizeText(credit.credit_id || "") === normalizedId);
+  if (index < 0) {
+    throw createHttpError("Credito de Troca nao encontrado.", 404);
+  }
+  const credit = credits[index];
+  if (normalizeText(credit.source_type || "") !== "manual_exchange_credit") {
+    throw createHttpError("Apenas creditos manuais podem ser cancelados por este fluxo.");
+  }
+  if (roundMoney(credit.used_amount || 0) > 0.009) {
+    throw createHttpError("Credito ja utilizado. Faca estorno manual supervisionado.");
+  }
+  const status = normalizeText(credit.status || "").toLowerCase();
+  if (["cancelado", "cancelled", "canceled"].includes(status)) {
+    return credit;
+  }
+  const before = roundMoney(credit.remaining_amount || 0);
+  const movement = {
+    movement_id: buildId("EXCMOV"),
+    type: "cancelamento_manual",
+    amount: before,
+    before,
+    after: 0,
+    reason: cancelReason,
+    created_at: nowIso(),
+    created_by: getActorName(user)
+  };
+  credit.remaining_amount = 0;
+  credit.available_balance = 0;
+  credit.status = "cancelado";
+  credit.cancel_reason = cancelReason;
+  credit.cancelled_at = nowIso();
+  credit.cancelled_by = getActorName(user);
+  credit.updated_at = nowIso();
+  credit.movements = [...(Array.isArray(credit.movements) ? credit.movements : []), movement];
+  credits[index] = credit;
+  saveExchangeCredits(credits);
+  return credit;
+}
+
 module.exports = {
   createExchangeCredit,
+  createManualExchangeCredit,
   listActiveExchangeCreditsForCustomer,
   getExchangeCreditById,
+  cancelManualExchangeCredit,
   consumeExchangeCreditForSale,
   buildExchangeSourceKey
 };

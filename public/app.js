@@ -350,6 +350,14 @@ const state = {
     customerCreateName: "",
     customerCreatePhone: "",
     customerCreateDocument: "",
+    manualCreditCustomerQuery: "",
+    manualCreditCustomerResults: [],
+    manualCreditCustomerLoading: false,
+    manualCreditCustomerError: "",
+    manualCreditSelectedCustomer: null,
+    manualCreditSaving: false,
+    manualCreditError: "",
+    manualCreditLastCreated: null,
     selectedNewProductIndex: -1,
     finalizing: false,
     error: "",
@@ -21158,6 +21166,89 @@ async function searchPdvExchangeCustomers(form) {
   }
 }
 
+async function searchPdvManualExchangeCreditCustomers(form) {
+  const query = normalizeText(new FormData(form).get("q") || "");
+  state.pdvExchanges.manualCreditCustomerQuery = query;
+  state.pdvExchanges.manualCreditCustomerError = "";
+  state.pdvExchanges.manualCreditError = "";
+  if (query.length < 2) {
+    state.pdvExchanges.manualCreditCustomerResults = [];
+    renderPdvExchangesFront();
+    return;
+  }
+  state.pdvExchanges.manualCreditCustomerLoading = true;
+  renderPdvExchangesFront();
+  try {
+    const response = await api(`/api/pdv/operational/search/customers?q=${encodeURIComponent(query)}&limit=8`);
+    state.pdvExchanges.manualCreditCustomerResults = toArray(response);
+  } catch (error) {
+    state.pdvExchanges.manualCreditCustomerError = error.message || "Falha ao buscar cliente para crédito manual.";
+    state.pdvExchanges.manualCreditCustomerResults = [];
+  } finally {
+    state.pdvExchanges.manualCreditCustomerLoading = false;
+    renderPdvExchangesFront();
+  }
+}
+
+function selectPdvManualExchangeCreditCustomer(index = -1) {
+  const customer = toArray(state.pdvExchanges.manualCreditCustomerResults)[Number(index)] || null;
+  if (!customer) return;
+  state.pdvExchanges.manualCreditSelectedCustomer = customer;
+  state.pdvExchanges.manualCreditCustomerResults = [];
+  state.pdvExchanges.manualCreditCustomerError = "";
+  state.pdvExchanges.manualCreditError = "";
+  renderPdvExchangesFront();
+}
+
+function clearPdvManualExchangeCreditCustomer() {
+  state.pdvExchanges.manualCreditSelectedCustomer = null;
+  state.pdvExchanges.manualCreditCustomerResults = [];
+  state.pdvExchanges.manualCreditLastCreated = null;
+  renderPdvExchangesFront();
+}
+
+async function createPdvManualExchangeCredit(form) {
+  const customer = getPdvManualExchangeSelectedCustomer();
+  if (!customer) {
+    state.pdvExchanges.manualCreditError = "Selecione o cliente favorecido antes de criar o crédito.";
+    renderPdvExchangesFront();
+    return;
+  }
+  const data = new FormData(form);
+  const payload = {
+    customer_id: customer.master_customer_id || customer.customer_id || customer.id || "",
+    name: customer.name || customer.nome || "",
+    phone: customer.phone || customer.telefone || "",
+    document: customer.document || customer.cpf || customer.cnpj || "",
+    store_id: normalizePdvStoreIdentifier(data.get("store_id") || getCurrentPdvStoreId() || ""),
+    source_origin: normalizeText(data.get("source_origin") || "tiny_legacy"),
+    source_reference: normalizeText(data.get("source_reference") || ""),
+    amount: parseMoneyAmount(data.get("amount") || 0),
+    reason: normalizeText(data.get("reason") || ""),
+    notes: normalizeText(data.get("notes") || "")
+  };
+  state.pdvExchanges.manualCreditSaving = true;
+  state.pdvExchanges.manualCreditError = "";
+  renderPdvExchangesFront();
+  try {
+    const response = await api("/api/pdv/exchanges/credits/manual", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    state.pdvExchanges.manualCreditLastCreated = response.credit || null;
+    state.pdvExchanges.manualCreditCustomerQuery = "";
+    state.pdvExchanges.manualCreditCustomerResults = [];
+    form?.reset?.();
+    showFeedback("Crédito de Troca manual criado e disponível no checkout.", "success");
+  } catch (error) {
+    state.pdvExchanges.manualCreditError = error.message || "Falha ao criar crédito manual.";
+  } finally {
+    state.pdvExchanges.manualCreditSaving = false;
+    renderPdvExchangesFront();
+  }
+}
+
 async function createPdvExchangeQuickCustomer(form) {
   const data = new FormData(form);
   const payload = {
@@ -21353,6 +21444,116 @@ function buildPdvExchangeSummary() {
   `;
 }
 
+function canCreateManualExchangeCreditFrontend() {
+  return isCurrentUserManagerProfile();
+}
+
+function getPdvManualExchangeStoreOptions() {
+  const options = getActiveStoreOptionsForCurrentUser();
+  const currentStore = normalizePdvStoreIdentifier(getCurrentPdvStoreId() || "");
+  if (!options.length && currentStore) {
+    return [{ value: currentStore, label: formatStoreIdLabel(currentStore) }];
+  }
+  return options.length ? options : getOfficialStoreOptions();
+}
+
+function getPdvManualExchangeSelectedCustomer() {
+  return state.pdvExchanges.manualCreditSelectedCustomer || null;
+}
+
+function buildPdvManualExchangeCreditPanel() {
+  const canCreate = canCreateManualExchangeCreditFrontend();
+  const selectedCustomer = getPdvManualExchangeSelectedCustomer();
+  const customerResults = toArray(state.pdvExchanges.manualCreditCustomerResults);
+  const storeOptions = getPdvManualExchangeStoreOptions();
+  const defaultStore = normalizePdvStoreIdentifier(getCurrentPdvStoreId() || storeOptions[0]?.value || "");
+  const lastCredit = state.pdvExchanges.manualCreditLastCreated;
+  if (!canCreate) {
+    return `
+      <section class="pdv-exchange-panel pdv-manual-credit-panel is-locked">
+        <div class="pdv-exchange-panel-head">
+          <span>Crédito manual externo</span>
+          <strong>Restrito à gestão</strong>
+          <small>Vendedores e caixa não podem criar crédito manual.</small>
+        </div>
+      </section>
+    `;
+  }
+  return `
+    <section class="pdv-exchange-panel pdv-manual-credit-panel">
+      <div class="pdv-exchange-panel-head">
+        <span>Crédito manual externo</span>
+        <strong>Criar crédito para venda Tiny/antiga</strong>
+        <small>Use apenas para vendas antigas conferidas ou ajustes aprovados pela gestão.</small>
+      </div>
+      <div class="pdv-manual-credit-grid">
+        <div class="pdv-manual-credit-search">
+          <form class="pdv-exchange-search" data-pdv-manual-credit-customer-search-form>
+            <input name="q" type="search" value="${escapeHtml(state.pdvExchanges.manualCreditCustomerQuery || "")}" placeholder="Buscar cliente por nome, telefone ou CPF" />
+            <button class="secondary-button small" type="submit">${state.pdvExchanges.manualCreditCustomerLoading ? "Buscando..." : "Buscar cliente"}</button>
+          </form>
+          ${state.pdvExchanges.manualCreditCustomerError ? `<div class="pdv-payment-alert warning">${escapeHtml(state.pdvExchanges.manualCreditCustomerError)}</div>` : ""}
+          ${selectedCustomer ? `
+            <div class="pdv-manual-credit-selected">
+              <span>Cliente selecionado</span>
+              <strong>${escapeHtml(selectedCustomer.name || selectedCustomer.nome || "Cliente")}</strong>
+              <small>${escapeHtml(selectedCustomer.phone || selectedCustomer.telefone || "Sem telefone informado")}</small>
+              <button class="ghost-button tiny" type="button" data-pdv-manual-credit-clear-customer>Trocar</button>
+            </div>
+          ` : customerResults.length ? `
+            <div class="pdv-exchange-customer-results">
+              ${customerResults.map((item, index) => `
+                <button type="button" class="pdv-exchange-customer-result" data-pdv-manual-credit-customer-pick="${index}">
+                  <strong>${escapeHtml(item.name || item.nome || "Cliente")}</strong>
+                  <span>${escapeHtml([item.phone || item.telefone || "", item.document || item.cpf || ""].filter(Boolean).join(" • "))}</span>
+                </button>
+              `).join("")}
+            </div>
+          ` : `<div class="empty-state compact"><strong>Selecione o cliente favorecido</strong><span>O crédito manual precisa ficar vinculado a um contato operacional.</span></div>`}
+        </div>
+        <form class="pdv-manual-credit-form" data-pdv-manual-credit-form>
+          <label>Loja
+            <select name="store_id">
+              ${storeOptions.map((option) => `<option value="${escapeHtml(option.value)}"${normalizePdvStoreIdentifier(option.value) === defaultStore ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+            </select>
+          </label>
+          <label>Origem
+            <select name="source_origin">
+              <option value="tiny_legacy">Tiny / venda antiga</option>
+              <option value="venda_externa">Venda externa</option>
+              <option value="ajuste_manual">Ajuste manual</option>
+            </select>
+          </label>
+          <label>Referência externa
+            <input name="source_reference" placeholder="Pedido Tiny, cupom ou observação curta" />
+          </label>
+          <label>Valor do crédito
+            <input name="amount" inputmode="decimal" placeholder="0,00" />
+          </label>
+          <label>Motivo
+            <input name="reason" placeholder="Ex.: troca venda antiga Tiny" />
+          </label>
+          <label class="pdv-manual-credit-wide">Observação detalhada
+            <textarea name="notes" rows="3" minlength="20" placeholder="Mínimo 20 caracteres. Ex.: Troca referente venda antiga Tiny conferida por Milene..."></textarea>
+          </label>
+          ${state.pdvExchanges.manualCreditError ? `<div class="pdv-payment-alert warning pdv-manual-credit-wide">${escapeHtml(state.pdvExchanges.manualCreditError)}</div>` : ""}
+          <div class="pdv-manual-credit-actions">
+            <span>${selectedCustomer ? `Crédito para ${escapeHtml(selectedCustomer.name || selectedCustomer.nome || "cliente")}` : "Selecione um cliente antes de criar."}</span>
+            <button class="primary-button" type="submit"${state.pdvExchanges.manualCreditSaving || !selectedCustomer ? " disabled" : ""}>${state.pdvExchanges.manualCreditSaving ? "Criando..." : "Criar crédito manual"}</button>
+          </div>
+        </form>
+      </div>
+      ${lastCredit ? `
+        <div class="pdv-manual-credit-created">
+          <span>Último crédito criado</span>
+          <strong>${escapeHtml(lastCredit.credit_id || "")} • ${currency(lastCredit.remaining_amount || lastCredit.amount || 0)}</strong>
+          <small>Já disponível no checkout do cliente selecionado.</small>
+        </div>
+      ` : ""}
+    </section>
+  `;
+}
+
 function buildPdvExchangesContent() {
   const draft = state.pdvExchanges.draft;
   const saleSummary = draft?.original_sale_summary;
@@ -21366,6 +21567,7 @@ function buildPdvExchangesContent() {
         </div>
         <strong>MVP seguro</strong>
       </div>
+      ${buildPdvManualExchangeCreditPanel()}
       <div class="pdv-exchange-layout">
         <aside class="pdv-exchange-panel">
           <div class="pdv-exchange-panel-head">
@@ -27161,6 +27363,18 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const pdvManualCreditCustomerPick = event.target.closest("[data-pdv-manual-credit-customer-pick]");
+  if (pdvManualCreditCustomerPick) {
+    selectPdvManualExchangeCreditCustomer(pdvManualCreditCustomerPick.dataset.pdvManualCreditCustomerPick || 0);
+    return;
+  }
+
+  const pdvManualCreditClearCustomer = event.target.closest("[data-pdv-manual-credit-clear-customer]");
+  if (pdvManualCreditClearCustomer) {
+    clearPdvManualExchangeCreditCustomer();
+    return;
+  }
+
   const pdvExchangeFinalize = event.target.closest("[data-pdv-exchange-finalize]");
   if (pdvExchangeFinalize) {
     finalizePdvExchange().catch((error) => handleUiError("Erro ao finalizar troca", error));
@@ -28846,6 +29060,20 @@ function handleDocumentSubmit(event) {
   if (pdvExchangeCustomerCreateForm) {
     event.preventDefault();
     createPdvExchangeQuickCustomer(pdvExchangeCustomerCreateForm).catch((error) => handleUiError("Erro ao cadastrar cliente da troca", error));
+    return;
+  }
+
+  const pdvManualCreditCustomerSearchForm = event.target.closest("[data-pdv-manual-credit-customer-search-form]");
+  if (pdvManualCreditCustomerSearchForm) {
+    event.preventDefault();
+    searchPdvManualExchangeCreditCustomers(pdvManualCreditCustomerSearchForm).catch((error) => handleUiError("Erro ao buscar cliente para credito manual", error));
+    return;
+  }
+
+  const pdvManualCreditForm = event.target.closest("[data-pdv-manual-credit-form]");
+  if (pdvManualCreditForm) {
+    event.preventDefault();
+    createPdvManualExchangeCredit(pdvManualCreditForm).catch((error) => handleUiError("Erro ao criar credito manual", error));
     return;
   }
 
