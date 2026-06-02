@@ -21445,7 +21445,7 @@ function buildPdvExchangeSummary() {
 }
 
 function canCreateManualExchangeCreditFrontend() {
-  return isCurrentUserManagerProfile();
+  return isCurrentUserManagerProfile() || hasPermission("can_create_manual_exchange_credit");
 }
 
 function getPdvManualExchangeStoreOptions() {

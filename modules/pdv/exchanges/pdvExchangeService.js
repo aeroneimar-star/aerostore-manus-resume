@@ -133,23 +133,44 @@ function getUserAllowedStores(user = {}) {
     .filter(Boolean);
 }
 
-function ensureManualExchangeCreditPermission(user = {}, storeId = "") {
-  const role = getPdvUserRole(user);
+function userHasStoreAccess(user = {}, storeId = "") {
   const store = normalizeStoreKey(storeId || "");
   if (!store) {
-    throw createHttpError("Informe a loja do Credito de Troca manual.");
+    return false;
   }
-  if (!["ADMIN", "GERENTE"].includes(role)) {
-    throw createHttpError("Apenas gestor ou admin pode criar Credito de Troca manual.", 403);
+  if (user?.permissions?.can_view_all_stores) {
+    return true;
+  }
+  const allowedStores = getUserAllowedStores(user);
+  return Boolean(allowedStores.length && allowedStores.includes(store));
+}
+
+function ensureManualExchangeCreditPermission(user = {}, storeId = "", options = {}) {
+  const role = getPdvUserRole(user);
+  const store = normalizeStoreKey(storeId || "");
+  const action = normalizeText(options.action || "create").toLowerCase();
+  if (!store) {
+    throw createHttpError("Informe a loja do Credito de Troca manual.");
   }
   if (role === "ADMIN" || user?.permissions?.can_view_all_stores) {
     return true;
   }
-  const allowedStores = getUserAllowedStores(user);
-  if (!allowedStores.length || !allowedStores.includes(store)) {
-    throw createHttpError("Loja fora do escopo do gestor para Credito de Troca manual.", 403);
+  if (role === "GERENTE") {
+    if (!userHasStoreAccess(user, store)) {
+      throw createHttpError("Loja fora do escopo do gestor para Credito de Troca manual.", 403);
+    }
+    return true;
   }
-  return true;
+  if (action === "create" && user?.permissions?.can_create_manual_exchange_credit === true) {
+    if (!userHasStoreAccess(user, store)) {
+      throw createHttpError("Loja fora do escopo do usuario para Credito de Troca manual.", 403);
+    }
+    return true;
+  }
+  if (action === "cancel") {
+    throw createHttpError("Apenas gestor ou admin pode cancelar Credito de Troca manual.", 403);
+  }
+  throw createHttpError("Apenas gestor, admin ou usuario explicitamente autorizado pode criar Credito de Troca manual.", 403);
 }
 
 function getSaleCustomer(sale = {}) {
@@ -1163,7 +1184,7 @@ function listExchangeCredits(query = {}, user = {}) {
 
 function createManualExchangeCredit(payload = {}, user = {}) {
   const storeId = normalizeStoreKey(payload.store_id || payload.loja || user?.active_store_id || user?.store_id || user?.store || "");
-  ensureManualExchangeCreditPermission(user, storeId);
+  ensureManualExchangeCreditPermission(user, storeId, { action: "create" });
   const credit = createManualExchangeCreditRecord({
     payload: {
       ...payload,
@@ -1209,7 +1230,7 @@ function cancelManualExchangeCredit(creditId = "", payload = {}, user = {}) {
     throw createHttpError("Credito de Troca nao encontrado.", 404);
   }
   const storeId = normalizeStoreKey(creditBefore.store_id || payload.store_id || user?.active_store_id || user?.store_id || user?.store || "");
-  ensureManualExchangeCreditPermission(user, storeId);
+  ensureManualExchangeCreditPermission(user, storeId, { action: "cancel" });
   const credit = cancelManualExchangeCreditRecord({
     creditId,
     reason: payload.reason || payload.motivo || "",

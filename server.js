@@ -11933,6 +11933,8 @@ function buildDefaultPermissions(role = "seller") {
     can_release_orders: false,
     can_view_exchanges: false,
     can_generate_exchange_credit: false,
+    can_create_manual_exchange_credit: false,
+    can_cancel_manual_exchange_credit: false,
     can_view_stock: false,
     can_move_stock: false,
     can_export_data: false
@@ -12078,7 +12080,9 @@ const USER_PERMISSION_CATALOG = [
       ["can_view_stock", "Acessar estoque"],
       ["can_move_stock", "Movimentar estoque"],
       ["can_view_exchanges", "Acessar trocas"],
-      ["can_generate_exchange_credit", "Gerar credito de troca"]
+      ["can_generate_exchange_credit", "Gerar credito de troca"],
+      ["can_create_manual_exchange_credit", "Criar credito manual externo"],
+      ["can_cancel_manual_exchange_credit", "Cancelar credito manual externo"]
     ]
   },
   {

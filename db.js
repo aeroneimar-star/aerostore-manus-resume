@@ -118,6 +118,8 @@ function buildRolePermissions(role = "seller") {
     can_release_orders: false,
     can_view_exchanges: false,
     can_generate_exchange_credit: false,
+    can_create_manual_exchange_credit: false,
+    can_cancel_manual_exchange_credit: false,
     can_view_stock: false,
     can_move_stock: false,
     can_export_data: false

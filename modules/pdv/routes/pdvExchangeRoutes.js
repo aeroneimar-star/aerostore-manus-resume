@@ -41,6 +41,8 @@ function requireExchangePermission(permissions = [], message = "Seu perfil nao p
 
 const canViewExchange = requireExchangePermission(["can_view_exchanges", "can_sell"], "Seu perfil nao pode acessar trocas.");
 const canGenerateExchangeCredit = requireExchangePermission(["can_generate_exchange_credit", "can_sell"], "Seu perfil nao pode gerar Credito de Troca.");
+const canCreateManualExchangeCredit = requireExchangePermission(["can_generate_exchange_credit", "can_create_manual_exchange_credit"], "Seu perfil nao pode criar Credito de Troca manual.");
+const canCancelManualExchangeCredit = requireExchangePermission(["can_generate_exchange_credit", "can_cancel_manual_exchange_credit"], "Seu perfil nao pode cancelar Credito de Troca manual.");
 
 function sendRouteError(res, error, fallbackMessage = "Falha ao processar troca do PDV.") {
   const status = error?.statusCode || error?.status || 400;
@@ -71,7 +73,7 @@ router.get("/credits/active", canViewExchange, (req, res) => {
   }
 });
 
-router.post("/credits/manual", canGenerateExchangeCredit, (req, res) => {
+router.post("/credits/manual", canCreateManualExchangeCredit, (req, res) => {
   try {
     res.json(createManualExchangeCredit(req.body || {}, req.user || {}));
   } catch (error) {
@@ -79,7 +81,7 @@ router.post("/credits/manual", canGenerateExchangeCredit, (req, res) => {
   }
 });
 
-router.post("/credits/:creditId/cancel", canGenerateExchangeCredit, (req, res) => {
+router.post("/credits/:creditId/cancel", canCancelManualExchangeCredit, (req, res) => {
   try {
     res.json(cancelManualExchangeCredit(req.params.creditId, req.body || {}, req.user || {}));
   } catch (error) {
