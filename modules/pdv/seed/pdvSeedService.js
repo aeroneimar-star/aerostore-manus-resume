@@ -1045,7 +1045,7 @@ function generateCashRegisters(batchId, sales) {
     authorizations.push({
       authorization_id: buildId("PIN"),
       code: String(100000 + index),
-      type: pick(["DISCOUNT_OVERRIDE", "PERMUTA_APPROVAL", "SALE_CANCELLATION", "CASHBACK_ADJUSTMENT", "REOPEN_CASH_REGISTER", "REOPEN_SALE"]),
+      type: pick(["DISCOUNT_OVERRIDE", "SALE_CANCELLATION", "CASHBACK_ADJUSTMENT", "REOPEN_CASH_REGISTER", "REOPEN_SALE"]),
       status: pick(["ACTIVE", "USED", "EXPIRED", "CANCELLED"]),
       loja: STORES[index % STORES.length],
       reason: DISCOUNT_REASONS[index % DISCOUNT_REASONS.length],

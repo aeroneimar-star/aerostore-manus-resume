@@ -28,7 +28,6 @@ const USER_ROLES = {
 
 const AUTHORIZATION_TYPES = [
   "DISCOUNT_OVERRIDE",
-  "PERMUTA_APPROVAL",
   "SALE_CANCELLATION",
   "CASHBACK_ADJUSTMENT",
   "REOPEN_CASH_REGISTER",
@@ -665,6 +664,33 @@ function buildDiscountAuthorizationFingerprint(context = {}) {
   });
 }
 
+function buildPermutaAuthorizationFingerprint(context = {}) {
+  return hashStableObject({
+    operation_type: "PERMUTA_AUTHORIZATION",
+    reason: normalizeText(context.reason || "empresa").toLowerCase() || "empresa",
+    loja: normalizeStoreKey(context.loja || context.store_id || ""),
+    customer_id: normalizeText(context.customerId || context.customer_id || ""),
+    seller: normalizeText(context.seller || context.sellerId || context.seller_id || ""),
+    subtotal: roundMoney(context.subtotal || 0),
+    item_discount_amount: roundMoney(context.itemDiscountAmount ?? context.item_discount_amount ?? 0),
+    general_discount_amount: roundMoney(context.generalDiscountAmount ?? context.general_discount_amount ?? context.extraDiscount ?? 0),
+    total_before_permuta: roundMoney(context.totalBeforePermuta ?? context.total_before_permuta ?? 0),
+    permuta_amount: roundMoney(context.permutaAmount ?? context.permuta_amount ?? context.amount ?? 0),
+    total_final: roundMoney(context.totalFinal ?? context.total_final ?? context.amountToPay ?? 0),
+    paid_amount: roundMoney(context.paidAmount ?? context.paid_amount ?? 0),
+    payment_methods: normalizeAuthorizationPaymentAmounts(context.paymentMethods || context.payment_methods || context.paymentAmounts || []),
+    items: normalizeAuthorizationItems(context.items || [])
+  });
+}
+
+function buildAuthorizationFingerprint(operationType = "", context = {}) {
+  const normalizedOperationType = normalizeText(operationType || "").toUpperCase();
+  if (normalizedOperationType === "PERMUTA_AUTHORIZATION") {
+    return buildPermutaAuthorizationFingerprint(context);
+  }
+  return buildDiscountAuthorizationFingerprint(context);
+}
+
 function loadCashRegisters() {
   return readJson(controlFiles.cashRegisters, []);
 }
@@ -1079,7 +1105,7 @@ async function validateOperationAuthorization(payload = {}, user = {}) {
   if (!linkedUser || !userCanAuthorizeDiscountForStore(linkedUser, loja)) {
     appendAuditLog({
       audit_id: buildId("AUD"),
-      action: "DISCOUNT_AUTH_STORE_SCOPE_DENIED",
+      action: operationType === "PERMUTA_AUTHORIZATION" ? "PERMUTA_AUTH_STORE_SCOPE_DENIED" : "DISCOUNT_AUTH_STORE_SCOPE_DENIED",
       created_at: nowIso(),
       actor: normalizeText(user?.name || user?.email || "sistema"),
       actor_role: getPdvUserRole(user),
@@ -1098,7 +1124,7 @@ async function validateOperationAuthorization(payload = {}, user = {}) {
   }
   const secret = decryptSensitiveValue(authorizer.totp_secret_encrypted || "");
   const verification = verifyTotpCode(secret, code, { window: TOTP_WINDOW });
-  const authorizationFingerprint = buildDiscountAuthorizationFingerprint({
+  const authorizationFingerprint = buildAuthorizationFingerprint(operationType, {
     ...metadata,
     loja,
     subtotal: metadata.subtotal,
@@ -1106,6 +1132,13 @@ async function validateOperationAuthorization(payload = {}, user = {}) {
     generalDiscountAmount: metadata.general_discount_amount,
     commercialDiscountTotal: metadata.discount_amount,
     commercialDiscountPercent: metadata.discount_percent,
+    totalBeforePermuta: metadata.total_before_permuta,
+    permutaAmount: metadata.permuta_amount || amount,
+    totalFinal: metadata.total_final,
+    paidAmount: metadata.paid_amount,
+    customerId: metadata.customer_id,
+    seller: metadata.seller || metadata.seller_id,
+    reason,
     paymentMethods: metadata.payment_methods || metadata.paymentMethods || [],
     items: metadata.items || []
   });
@@ -1135,7 +1168,7 @@ async function validateOperationAuthorization(payload = {}, user = {}) {
     appendAuthorizationAudit(attempt);
     appendAuditLog({
       audit_id: buildId("AUD"),
-      action: "DISCOUNT_AUTH_INVALID",
+      action: operationType === "PERMUTA_AUTHORIZATION" ? "PERMUTA_AUTH_INVALID" : "DISCOUNT_AUTH_INVALID",
       created_at: nowIso(),
       actor: attempt.requested_by_name,
       actor_role: getPdvUserRole(user),
@@ -1167,7 +1200,7 @@ async function validateOperationAuthorization(payload = {}, user = {}) {
   appendAuthorizationAudit(attempt);
   appendAuditLog({
     audit_id: buildId("AUD"),
-    action: "DISCOUNT_AUTH_APPROVED",
+    action: operationType === "PERMUTA_AUTHORIZATION" ? "PERMUTA_AUTH_APPROVED" : "DISCOUNT_AUTH_APPROVED",
     created_at: nowIso(),
     actor: attempt.requested_by_name,
     actor_role: getPdvUserRole(user),
@@ -1259,10 +1292,13 @@ function consumeValidatedAuthorization({
   items = [],
   loja = "",
   customerId = "",
+  sellerId = "",
   itemDiscountAmount = 0,
   generalDiscountAmount = 0,
   exchangeCredit = 0,
   subtotal = 0,
+  totalBeforePermuta = 0,
+  permutaAmount = 0,
   cashbackApplied = 0,
   amountToPay = 0,
   paidAmount = 0
@@ -1293,23 +1329,30 @@ function consumeValidatedAuthorization({
     throw new Error("Autorizacao emitida para outra venda.");
   }
   if (roundMoney(amount) > roundMoney(entry.amount || 0) + 0.01 || Number(percent || 0) > Number(entry.percent || 0) + 0.01) {
-    throw new Error("Autorizacao insuficiente para o desconto solicitado.");
+    throw new Error(normalizeText(operationType || "").toUpperCase() === "PERMUTA_AUTHORIZATION"
+      ? "Autorizacao insuficiente para a permuta solicitada."
+      : "Autorizacao insuficiente para o desconto solicitado.");
   }
   if (entry.metadata_json && Object.prototype.hasOwnProperty.call(entry.metadata_json, "subtotal")) {
     compareAuthorizedNumber(subtotal, entry.metadata_json.subtotal, "subtotal");
   }
-  const expectedFingerprint = buildDiscountAuthorizationFingerprint({
+  const normalizedOperationType = normalizeText(operationType || "").toUpperCase();
+  const expectedFingerprint = buildAuthorizationFingerprint(normalizedOperationType, {
     loja,
     customerId,
+    seller: sellerId,
     subtotal,
     itemDiscountAmount,
     generalDiscountAmount,
     commercialDiscountTotal: amount,
     commercialDiscountPercent: percent,
+    totalBeforePermuta,
+    permutaAmount: permutaAmount || amount,
     totalFinal: amountToPay,
     paidAmount,
     cashbackApplied,
     exchangeCredit,
+    reason: entry.reason || "empresa",
     paymentMethods: paymentAmounts.length ? paymentAmounts : paymentMethods,
     items
   });
@@ -1321,7 +1364,7 @@ function consumeValidatedAuthorization({
     saveAuthorizationAudit(rows);
     appendAuditLog({
       audit_id: buildId("AUD"),
-      action: "DISCOUNT_AUTH_INVALIDATED",
+      action: normalizedOperationType === "PERMUTA_AUTHORIZATION" ? "PERMUTA_AUTH_INVALIDATED" : "DISCOUNT_AUTH_INVALIDATED",
       created_at: nowIso(),
       actor: normalizeText(user?.name || user?.email || "sistema"),
       actor_role: getPdvUserRole(user),
@@ -1330,7 +1373,9 @@ function consumeValidatedAuthorization({
       before: { authorization_id: entry.authorization_id, fingerprint: approvedFingerprint },
       after: { fingerprint: expectedFingerprint }
     });
-    throw new Error("Alteracao na venda invalidou a autorizacao de desconto. Solicite autorizacao novamente.");
+    throw new Error(normalizedOperationType === "PERMUTA_AUTHORIZATION"
+      ? "Alteracao na venda invalidou a autorizacao de permuta. Solicite autorizacao novamente."
+      : "Alteracao na venda invalidou a autorizacao de desconto. Solicite autorizacao novamente.");
   }
   if (entry.metadata_json?.payment_methods && !paymentRiskAmountSetsMatch(paymentAmounts.length ? paymentAmounts : paymentMethods, entry.metadata_json.payment_methods)) {
     throw new Error("Autorizacao emitida para outra composicao de pagamentos de risco.");
@@ -1848,23 +1893,7 @@ function validateSaleControlsLegacyUnused({ saleContext = {}, authorization = {}
   }
 
   if (permutaAmount > 0) {
-    if (!authorization.permutaPin || !authorization.permutaReason) {
-      throw new Error("Permuta exige PIN temporário e motivo obrigatório.");
-    }
-    if (!DISCOUNT_REASONS.includes(normalizeText(authorization.permutaReason).toUpperCase())) {
-      throw new Error("Motivo de permuta inválido.");
-    }
-    validateAuthorizationPin({
-      code: authorization.permutaPin,
-      type: "PERMUTA_APPROVAL",
-      loja,
-      context: {
-        action: "PERMUTA_APPROVAL",
-        sale_id: saleId,
-        permuta_amount: permutaAmount,
-        reason: normalizeText(authorization.permutaReason).toUpperCase()
-      }
-    }, user);
+    throw new Error("Permuta exige autorização válida.");
   }
 
   return {
@@ -1930,22 +1959,31 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
   }
 
   if (permutaAmount > 0) {
-    if (!authorization.permutaPin || !authorization.permutaReason) {
-      throw new Error("Permuta exige PIN temporario e motivo obrigatorio.");
+    if (!authorization.permutaAuthorizationId) {
+      throw new Error("Permuta exige autorizacao da gestao.");
     }
-    if (!DISCOUNT_REASONS.includes(normalizeText(authorization.permutaReason).toUpperCase())) {
-      throw new Error("Motivo de permuta invalido.");
-    }
-    validateAuthorizationPin({
-      code: authorization.permutaPin,
-      type: "PERMUTA_APPROVAL",
+    consumeValidatedAuthorization({
+      authorizationId: authorization.permutaAuthorizationId,
+      operationType: "PERMUTA_AUTHORIZATION",
+      saleSessionId,
+      saleId,
+      amount: permutaAmount,
+      percent: 0,
+      paymentMethods: saleContext.paymentMethods || [],
+      paymentAmounts: saleContext.paymentMethods || [],
+      items: saleContext.items || [],
       loja,
-      context: {
-        action: "PERMUTA_APPROVAL",
-        sale_id: saleId,
-        permuta_amount: permutaAmount,
-        reason: normalizeText(authorization.permutaReason).toUpperCase()
-      }
+      customerId: saleContext.customerId || "",
+      sellerId: saleContext.sellerId || saleContext.seller || "",
+      itemDiscountAmount,
+      generalDiscountAmount: extraDiscount,
+      exchangeCredit: saleContext.exchangeCredit || 0,
+      subtotal,
+      totalBeforePermuta: saleContext.totalBeforePermuta || 0,
+      permutaAmount,
+      cashbackApplied: saleContext.cashbackUsed || 0,
+      amountToPay: saleContext.totalFinal || 0,
+      paidAmount: saleContext.paidAmount || 0
     }, user);
   }
 

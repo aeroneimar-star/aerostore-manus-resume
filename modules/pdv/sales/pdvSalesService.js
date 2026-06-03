@@ -2070,6 +2070,15 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
     error.store_id = saleStoreKey;
     throw error;
   }
+  const permutaCoverageBase = roundMoney(Math.max(0, totals.subtotalAfterItemDiscount - totals.extraDiscount));
+  if (totals.permutaAmount > 0) {
+    if (totals.cashbackUsed > 0 || totals.exchangeCredit > 0 || totals.giftCardUsed > 0 || totals.paidAmount > 0) {
+      throw new Error("Permuta quita 100% da venda e nao pode ser misturada com cashback, credito de troca, vale-presente ou pagamentos reais.");
+    }
+    if (Math.abs(totals.permutaAmount - permutaCoverageBase) > 0.01) {
+      throw new Error(`Permuta deve cobrir 100% do valor liquido da venda (${permutaCoverageBase.toFixed(2)}).`);
+    }
+  }
   const controlValidation = validateSaleControls({
     saleContext: {
       saleId,
@@ -2081,18 +2090,20 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
       discountPercent: totals.generalDiscountPercent,
       cashbackUsed: totals.cashbackUsed,
       exchangeCredit: totals.exchangeCredit,
+      totalBeforePermuta: permutaCoverageBase,
       totalFinal: totals.totalFinal,
       paidAmount: totals.paidAmount,
       items: session.cart_items,
       customerId: session.customer?.id || session.customer_id || "",
+      sellerId: normalizeText(payload.vendedor || session.seller || ""),
       permutaAmount: totals.permutaAmount,
       loja: saleStoreKey,
       paymentMethods: totals.paymentMethods
     },
     authorization: {
       discountAuthorizationId: payload.discount_authorization_id,
-      permutaPin: payload.permuta_pin,
-      permutaReason: payload.permuta_reason
+      permutaAuthorizationId: payload.permuta_authorization_id,
+      permutaReason: totals.permutaAmount > 0 ? "empresa" : ""
     }
   }, user);
   if (totals.blockedForRedemption && totals.cashbackUsed > 0) {
@@ -2221,6 +2232,8 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
     credito_troca_usado: totals.exchangeCredit,
     exchange_credit_application: session.exchange_credit_application || null,
     permuta_usada: totals.permutaAmount,
+    permuta_authorization_id: normalizeText(payload.permuta_authorization_id || ""),
+    permuta_reason: totals.permutaAmount > 0 ? "empresa" : "",
     total_final: totals.totalFinal,
     net_amount: totals.totalFinal,
     paid_amount: totals.paidAmount,
