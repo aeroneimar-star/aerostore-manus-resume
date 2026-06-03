@@ -1029,7 +1029,8 @@ body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row > strong {
 }
 
 .pdv-cash-movement-modal {
-  max-width: 520px;
+  max-width: 480px;
+  max-height: min(680px, calc(100vh - 36px));
 }
 
 .pdv-cash-movement-modal .pdv-drawer-header span {
@@ -1037,18 +1038,56 @@ body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row > strong {
 }
 
 .pdv-cash-movement-form {
-  gap: 15px;
+  gap: 10px;
+  padding-top: 14px;
+}
+
+.pdv-cash-movement-field {
+  gap: 6px;
+}
+
+.pdv-cash-movement-field input {
+  min-height: 42px;
+}
+
+.pdv-cash-movement-field small,
+.pdv-cash-reason-group > span {
+  color: rgba(203, 213, 225, 0.68);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pdv-cash-reason-group {
+  display: grid;
+  gap: 8px;
 }
 
 .pdv-cash-reason-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 7px;
 }
 
-.pdv-cash-reason-chips .ghost-button {
+.pdv-cash-reason-chips .pdv-cash-reason-button {
   border-radius: 999px;
+  min-height: 34px;
   padding-inline: 12px;
+}
+
+.pdv-cash-reason-chips .pdv-cash-reason-button.is-active,
+.pdv-cash-reason-chips .pdv-cash-reason-button[aria-pressed="true"] {
+  background: rgba(31, 214, 177, 0.18);
+  border-color: rgba(31, 214, 177, 0.72);
+  color: #79ffe2;
+  box-shadow: 0 0 0 1px rgba(31, 214, 177, 0.16), 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.pdv-cash-movement-actions-footer {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
 }
 
 @media (max-width: 920px) {
@@ -22140,6 +22179,14 @@ body[data-route-section="pdv-cash-register"] .danger-button.small {
   padding: 7px 10px !important;
   border-radius: 10px !important;
   font-size: 0.7rem !important;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-cash-reason-chips .pdv-cash-reason-button.is-active,
+body[data-route-section="pdv-cash-register"] .pdv-cash-reason-chips .pdv-cash-reason-button[aria-pressed="true"] {
+  background: rgba(31, 214, 177, 0.18) !important;
+  border-color: rgba(31, 214, 177, 0.72) !important;
+  color: #79ffe2 !important;
+  box-shadow: 0 0 0 1px rgba(31, 214, 177, 0.32), 0 10px 24px rgba(0, 0, 0, 0.22) !important;
 }
 
 body[data-route-section="pdv-cash-register"] input,
