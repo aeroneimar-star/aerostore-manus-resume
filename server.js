@@ -14465,13 +14465,13 @@ function mapInventoryProductToManualProduct(item = {}) {
 }
 
 function buildManualProductMergeKey(item = {}) {
-  return normalizeText(item.product_id || "")
-    || normalizeText(item.inventory_id || "")
-    || normalizeText(item.sku || "")
+  return normalizeText(item.sku || "")
     || normalizeText(item.codigo_interno || "")
     || normalizeText(item.codigo_etiqueta || "")
     || normalizeText(item.codigo || "")
-    || sanitizePhone(item.gtin_ean || item.ean || item.codigo_barras || item.barcode || "");
+    || sanitizePhone(item.gtin_ean || item.ean || item.codigo_barras || item.barcode || "")
+    || normalizeText(item.product_id || "")
+    || normalizeText(item.inventory_id || "");
 }
 
 async function findDuplicateManualProductBySku(sku = "", exceptId = null) {

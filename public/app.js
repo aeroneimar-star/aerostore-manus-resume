@@ -8954,7 +8954,8 @@ function findPreferredPdvCashRegister(registers = [], focusSale = null) {
 }
 
 function canManagePdvAuthorizers() {
-  return hasPermission("can_approve_discount_authorization") && normalizeText(getCurrentRole() || "").toLowerCase() === "admin";
+  const role = normalizeText(getCurrentRole() || "").toLowerCase();
+  return hasPermission("can_approve_discount_authorization") && ["admin", "manager", "gerente"].includes(role);
 }
 
 function canViewPdvAuthorizationAudit() {
@@ -9351,7 +9352,9 @@ async function savePdvAuthorizerSetup() {
   const payload = {
     name: normalizeText(state.pdvCash.authorizerDraft?.name || ""),
     role: normalizeText(state.pdvCash.authorizerDraft?.role || "AUTORIZADOR"),
-    notes: normalizeText(state.pdvCash.authorizerDraft?.notes || "")
+    notes: normalizeText(state.pdvCash.authorizerDraft?.notes || ""),
+    store_id: normalizePdvStoreIdentifier(getCurrentPdvStoreId() || state.currentUser?.active_store_id || state.currentUser?.store_id || ""),
+    current_store_id: normalizePdvStoreIdentifier(getCurrentPdvStoreId() || state.currentUser?.active_store_id || state.currentUser?.store_id || "")
   };
   if (!payload.name) {
     showFeedback("Informe o nome do autorizador.", "error");
@@ -11411,6 +11414,10 @@ function getDefaultPdvProductDraft() {
   };
 }
 
+function isVirtualPdvProductId(productId = "") {
+  return /^[a-z_]+:/i.test(normalizeText(productId || ""));
+}
+
 function ensurePdvProductsCrudState() {
   state.pdvProducts = state.pdvProducts || {};
   const currentPagination = state.pdvProducts.pagination && typeof state.pdvProducts.pagination === "object"
@@ -12208,7 +12215,7 @@ function buildPdvProductDrawer() {
               </label>
               <label>Origem
                 <select name="source">
-                  ${["manual", "tiny", "importacao", "outro"].map((value) => `<option value="${value}"${normalizeText(draft.source || "") === value ? " selected" : ""}>${value}</option>`).join("")}
+                  ${["manual", "tiny_import", "tiny", "pdv_inventory", "importacao", "outro"].map((value) => `<option value="${value}"${normalizeText(draft.source || "") === value ? " selected" : ""}>${value}</option>`).join("")}
                 </select>
               </label>
               <label class="pdv-crud-wide">
@@ -12404,9 +12411,10 @@ async function savePdvProduct(formElement) {
   state.pdvProducts.drawerError = "";
   renderPdvProductsOfficialFront(document.getElementById("pdv-products-content"));
   try {
-    const editingId = state.pdvProducts.drawerMode === "edit" ? state.pdvProducts.drawerDraft?.id : null;
-    const response = await api(editingId ? `/api/products/${editingId}` : "/api/products", {
-      method: editingId ? "PUT" : "POST",
+    const editingId = state.pdvProducts.drawerMode === "edit" ? normalizeText(state.pdvProducts.drawerDraft?.id || "") : "";
+    const shouldUpdateExistingProduct = Boolean(editingId && !isVirtualPdvProductId(editingId));
+    const response = await api(shouldUpdateExistingProduct ? `/api/products/${editingId}` : "/api/products", {
+      method: shouldUpdateExistingProduct ? "PUT" : "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });

@@ -5,7 +5,7 @@ const path = require("path");
 const crypto = require("crypto");
 const QRCode = require("qrcode");
 const { run, get, all } = require("../../../db");
-const { normalizeStoreKey, storesMatch, isActiveOperationalStore, isLegacyOperationalStore } = require("../utils/pdvStoreUtils");
+const { normalizeStoreKey, storesMatch, isActiveOperationalStore, isLegacyOperationalStore, getActiveOperationalStoreOptions } = require("../utils/pdvStoreUtils");
 
 const controlRootDir = path.join(process.cwd(), "data", "pdv", "control");
 const controlFiles = {
@@ -578,6 +578,58 @@ function parseAllowedStores(value = [], fallbackStore = "") {
   return uniqueStrings([...stores, fallback].filter(Boolean));
 }
 
+function getActiveOperationalStoreIds() {
+  return getActiveOperationalStoreOptions().map((item) => normalizeStoreKey(item.value || "")).filter(Boolean);
+}
+
+function parseUserPermissions(user = {}) {
+  if (user?.permissions && typeof user.permissions === "object") return user.permissions;
+  if (typeof user?.permissions_json === "string") {
+    try {
+      return JSON.parse(user.permissions_json || "{}") || {};
+    } catch (error) {
+      return {};
+    }
+  }
+  if (user?.permissions_json && typeof user.permissions_json === "object") return user.permissions_json;
+  return {};
+}
+
+function userHasGlobalStoreScope(user = {}) {
+  const role = getPdvUserRole(user);
+  const permissions = parseUserPermissions(user);
+  return role === "ADMIN"
+    || Boolean(permissions.can_view_all_stores)
+    || parseAllowedStores(user.allowed_stores_json || user.allowed_stores || [], "")
+      .some((storeId) => ["all_stores", "all", "*"].includes(normalizeText(storeId || "").toLowerCase()));
+}
+
+function normalizeAuthorizerRole(role = "") {
+  const normalized = normalizeText(role || "").toUpperCase();
+  if (["GESTOR", "GESTORA", "MANAGER"].includes(normalized)) return "GESTOR";
+  if (["GERENTE"].includes(normalized)) return "GERENTE";
+  return "AUTORIZADOR";
+}
+
+function getAuthorizerAllowedStores(authorizer = {}) {
+  const rawStores = authorizer.allowed_stores_json ?? authorizer.allowed_stores ?? [];
+  const rawStoreText = typeof rawStores === "string" ? rawStores : JSON.stringify(rawStores || []);
+  if (["all_stores", "all", "*"].includes(normalizeText(rawStoreText || "").toLowerCase())) {
+    return getActiveOperationalStoreIds();
+  }
+  const parsed = parseAllowedStores(rawStores, authorizer.store_id || authorizer.store || "");
+  if (parsed.some((storeId) => ["all_stores", "all", "*"].includes(normalizeText(storeId || "").toLowerCase()))) {
+    return getActiveOperationalStoreIds();
+  }
+  return parsed.filter((storeId) => isActiveOperationalStore(storeId) || isLegacyOperationalStore(storeId));
+}
+
+function authorizerCanAuthorizeStore(authorizer = {}, storeId = "") {
+  const store = normalizeStoreKey(storeId || "");
+  if (!store) return false;
+  return getAuthorizerAllowedStores(authorizer).some((allowedStore) => storesMatch(allowedStore, store));
+}
+
 function userCanAuthorizeDiscountForStore(user = {}, storeId = "") {
   const role = getPdvUserRole(user);
   const store = normalizeStoreKey(storeId || "");
@@ -873,6 +925,7 @@ async function generateTotpSetupBundle(name = "") {
 }
 
 function sanitizeAuthorizer(authorizer = {}) {
+  const allowedStores = getAuthorizerAllowedStores(authorizer);
   return {
     authorizer_id: authorizer.authorizer_id,
     name: normalizeText(authorizer.name || ""),
@@ -880,6 +933,9 @@ function sanitizeAuthorizer(authorizer = {}) {
     notes: normalizeText(authorizer.notes || ""),
     linked_user_email: normalizeText(authorizer.linked_user_email || ""),
     linked_user_id: normalizeText(authorizer.linked_user_id || ""),
+    allowed_stores: allowedStores,
+    allowed_stores_json: JSON.stringify(allowedStores),
+    store_id: normalizeStoreKey(authorizer.store_id || authorizer.store || allowedStores[0] || ""),
     is_active: Boolean(authorizer.is_active),
     created_at: authorizer.created_at || "",
     activated_at: authorizer.activated_at || "",
@@ -897,15 +953,25 @@ function listAuthorizers({ activeOnly = false } = {}) {
 }
 
 async function createOrRefreshAuthorizer(payload = {}, user = {}) {
-  requireMinimumRole(user, "ADMIN");
+  requireMinimumRole(user, "GERENTE");
   const name = normalizeText(payload.name || "");
   if (!name) {
     throw new Error("Informe o nome do autorizador.");
   }
-  const role = normalizeText(payload.role || "AUTORIZADOR");
+  const role = normalizeAuthorizerRole(payload.role || "AUTORIZADOR");
   const notes = normalizeText(payload.notes || "");
   const linkedUserEmail = normalizeText(payload.linked_user_email || payload.user_email || "");
   const linkedUserId = normalizeText(payload.linked_user_id || payload.user_id || "");
+  const currentStore = normalizeStoreKey(payload.store_id || payload.current_store_id || payload.loja || user.active_store_id || user.store_id || user.store || "");
+  const explicitAllowedStores = parseAllowedStores(payload.allowed_stores_json ?? payload.allowed_stores ?? [], "");
+  const allowedStores = explicitAllowedStores.length
+    ? explicitAllowedStores
+    : (role === "GESTOR" && userHasGlobalStoreScope(user))
+      ? getActiveOperationalStoreIds()
+      : parseAllowedStores([], currentStore);
+  if (!allowedStores.length) {
+    throw new Error("Informe a loja permitida do autorizador.");
+  }
   const authorizers = loadAuthorizers();
   const existing = authorizers.find((item) => normalizeText(item.name || "").toLowerCase() === name.toLowerCase());
   const setup = await generateTotpSetupBundle(name);
@@ -920,6 +986,9 @@ async function createOrRefreshAuthorizer(payload = {}, user = {}) {
   entry.notes = notes;
   entry.linked_user_email = linkedUserEmail;
   entry.linked_user_id = linkedUserId;
+  entry.allowed_stores_json = JSON.stringify(allowedStores);
+  entry.allowed_stores = allowedStores;
+  entry.store_id = allowedStores.length === 1 ? allowedStores[0] : currentStore;
   entry.totp_secret_encrypted = encryptSensitiveValue(setup.secret);
   entry.totp_algorithm = "SHA1";
   entry.totp_digits = TOTP_DIGITS;
@@ -1102,7 +1171,9 @@ async function validateOperationAuthorization(payload = {}, user = {}) {
     throw new Error("Autorizador indisponivel para uso.");
   }
   const linkedUser = await resolveAuthorizerLinkedUser(authorizer);
-  if (!linkedUser || !userCanAuthorizeDiscountForStore(linkedUser, loja)) {
+  const hasAuthorizerStoreScope = authorizerCanAuthorizeStore(authorizer, loja);
+  const hasLinkedUserStoreScope = linkedUser ? userCanAuthorizeDiscountForStore(linkedUser, loja) : false;
+  if (!hasAuthorizerStoreScope && !hasLinkedUserStoreScope) {
     appendAuditLog({
       audit_id: buildId("AUD"),
       action: operationType === "PERMUTA_AUTHORIZATION" ? "PERMUTA_AUTH_STORE_SCOPE_DENIED" : "DISCOUNT_AUTH_STORE_SCOPE_DENIED",
@@ -1120,7 +1191,7 @@ async function validateOperationAuthorization(payload = {}, user = {}) {
         status: "DENIED_STORE_SCOPE"
       }
     });
-    throw new Error("Autorizador nao possui permissao para esta loja.");
+    throw new Error("Autorizador sem permissao para esta loja. Configure as lojas permitidas do autorizador.");
   }
   const secret = decryptSensitiveValue(authorizer.totp_secret_encrypted || "");
   const verification = verifyTotpCode(secret, code, { window: TOTP_WINDOW });
@@ -1242,10 +1313,16 @@ function normalizeAuthorizationPaymentAmounts(values = []) {
   return (Array.isArray(values) ? values : [])
     .map((item) => ({
       method: normalizeDiscountPaymentMethod(item?.method || ""),
-      amount: roundMoney(item?.amount || 0)
+      amount: roundMoney(item?.amount || 0),
+      installments: Math.max(1, Math.min(10, Math.round(toNumber(item?.installments || 1)))),
+      installment_amount: roundMoney(item?.installment_amount || (toNumber(item?.amount || 0) / Math.max(1, Math.min(10, Math.round(toNumber(item?.installments || 1))))))
     }))
     .filter((item) => item.method && item.amount > 0)
-    .sort((left, right) => left.method.localeCompare(right.method) || left.amount - right.amount);
+    .sort((left, right) =>
+      left.method.localeCompare(right.method)
+      || left.amount - right.amount
+      || left.installments - right.installments
+    );
 }
 
 function normalizeAuthorizationPaymentRiskAmounts(values = []) {
@@ -1265,6 +1342,7 @@ function paymentAmountSetsMatch(left = [], right = []) {
   return normalizedLeft.every((item, index) =>
     item.method === normalizedRight[index].method
     && Math.abs(item.amount - normalizedRight[index].amount) <= 0.01
+    && Number(item.installments || 1) === Number(normalizedRight[index].installments || 1)
   );
 }
 
@@ -1277,7 +1355,48 @@ function paymentRiskAmountSetsMatch(left = [], right = []) {
   return normalizedLeft.every((item, index) =>
     item.method === normalizedRight[index].method
     && Math.abs(item.amount - normalizedRight[index].amount) <= 0.01
+    && Number(item.installments || 1) === Number(normalizedRight[index].installments || 1)
   );
+}
+
+function logAuthorizationFinalizeDenied({
+  saleSessionId = "",
+  saleId = "",
+  authorizationIdReceived = "",
+  authorizationTypeExpected = "",
+  savedFingerprint = "",
+  currentFingerprint = "",
+  fingerprintMatch = false,
+  paymentMethods = [],
+  totalAPagar = 0,
+  totalLancado = 0,
+  discountTotal = 0,
+  itemDiscountTotal = 0,
+  generalDiscount = 0,
+  reason = ""
+} = {}) {
+  const normalizedPayments = normalizeAuthorizationPaymentAmounts(paymentMethods).map((item) => ({
+    method: item.method,
+    amount: item.amount,
+    installments: item.installments
+  }));
+  console.warn("[PDV][authorization] finalize denied", {
+    saleSessionId: normalizeText(saleSessionId || ""),
+    saleId: normalizeText(saleId || ""),
+    authorizationIdReceived: normalizeText(authorizationIdReceived || ""),
+    authorizationTypeExpected: normalizeText(authorizationTypeExpected || ""),
+    savedFingerprint: normalizeText(savedFingerprint || ""),
+    currentFingerprint: normalizeText(currentFingerprint || ""),
+    fingerprintMatch: Boolean(fingerprintMatch),
+    paymentMethods: normalizedPayments.map((item) => item.method),
+    installments: normalizedPayments.map((item) => ({ method: item.method, installments: item.installments })),
+    totalAPagar: roundMoney(totalAPagar || 0),
+    totalLancado: roundMoney(totalLancado || 0),
+    discountTotal: roundMoney(discountTotal || 0),
+    itemDiscountTotal: roundMoney(itemDiscountTotal || 0),
+    generalDiscount: roundMoney(generalDiscount || 0),
+    reason: normalizeText(reason || "")
+  });
 }
 
 function consumeValidatedAuthorization({
@@ -1308,7 +1427,44 @@ function consumeValidatedAuthorization({
   if (!entry) {
     throw new Error("Autorizacao nao encontrada.");
   }
+  const normalizedOperationType = normalizeText(operationType || "").toUpperCase();
+  const authorizationPaymentMethods = paymentAmounts.length ? paymentAmounts : paymentMethods;
+  const expectedFingerprint = buildAuthorizationFingerprint(normalizedOperationType, {
+    loja,
+    customerId,
+    seller: sellerId,
+    subtotal,
+    itemDiscountAmount,
+    generalDiscountAmount,
+    commercialDiscountTotal: amount,
+    commercialDiscountPercent: percent,
+    totalBeforePermuta,
+    permutaAmount: permutaAmount || amount,
+    totalFinal: amountToPay,
+    paidAmount,
+    cashbackApplied,
+    exchangeCredit,
+    reason: entry.reason || "empresa",
+    paymentMethods: authorizationPaymentMethods,
+    items
+  });
   if (entry.status !== "APPROVED") {
+    logAuthorizationFinalizeDenied({
+      saleSessionId,
+      saleId,
+      authorizationIdReceived: authorizationId,
+      authorizationTypeExpected: normalizedOperationType,
+      savedFingerprint: entry.authorization_fingerprint || entry.metadata_json?.authorization_fingerprint || "",
+      currentFingerprint: expectedFingerprint,
+      fingerprintMatch: false,
+      paymentMethods: authorizationPaymentMethods,
+      totalAPagar: amountToPay,
+      totalLancado: paidAmount,
+      discountTotal: amount,
+      itemDiscountTotal: itemDiscountAmount,
+      generalDiscount: generalDiscountAmount,
+      reason: `status_${entry.status || "unknown"}`
+    });
     throw new Error("Autorizacao invalida para concluir a operacao.");
   }
   if (entry.used_at) {
@@ -1336,28 +1492,24 @@ function consumeValidatedAuthorization({
   if (entry.metadata_json && Object.prototype.hasOwnProperty.call(entry.metadata_json, "subtotal")) {
     compareAuthorizedNumber(subtotal, entry.metadata_json.subtotal, "subtotal");
   }
-  const normalizedOperationType = normalizeText(operationType || "").toUpperCase();
-  const expectedFingerprint = buildAuthorizationFingerprint(normalizedOperationType, {
-    loja,
-    customerId,
-    seller: sellerId,
-    subtotal,
-    itemDiscountAmount,
-    generalDiscountAmount,
-    commercialDiscountTotal: amount,
-    commercialDiscountPercent: percent,
-    totalBeforePermuta,
-    permutaAmount: permutaAmount || amount,
-    totalFinal: amountToPay,
-    paidAmount,
-    cashbackApplied,
-    exchangeCredit,
-    reason: entry.reason || "empresa",
-    paymentMethods: paymentAmounts.length ? paymentAmounts : paymentMethods,
-    items
-  });
   const approvedFingerprint = normalizeText(entry.authorization_fingerprint || entry.metadata_json?.authorization_fingerprint || "");
   if (approvedFingerprint && approvedFingerprint !== expectedFingerprint) {
+    logAuthorizationFinalizeDenied({
+      saleSessionId,
+      saleId,
+      authorizationIdReceived: authorizationId,
+      authorizationTypeExpected: normalizedOperationType,
+      savedFingerprint: approvedFingerprint,
+      currentFingerprint: expectedFingerprint,
+      fingerprintMatch: false,
+      paymentMethods: authorizationPaymentMethods,
+      totalAPagar: amountToPay,
+      totalLancado: paidAmount,
+      discountTotal: amount,
+      itemDiscountTotal: itemDiscountAmount,
+      generalDiscount: generalDiscountAmount,
+      reason: "fingerprint_mismatch"
+    });
     entry.status = "INVALIDATED";
     entry.invalidated_at = nowIso();
     entry.invalidated_reason = "SALE_CONTEXT_CHANGED";
@@ -1377,7 +1529,23 @@ function consumeValidatedAuthorization({
       ? "Alteracao na venda invalidou a autorizacao de permuta. Solicite autorizacao novamente."
       : "Alteracao na venda invalidou a autorizacao de desconto. Solicite autorizacao novamente.");
   }
-  if (entry.metadata_json?.payment_methods && !paymentRiskAmountSetsMatch(paymentAmounts.length ? paymentAmounts : paymentMethods, entry.metadata_json.payment_methods)) {
+  if (entry.metadata_json?.payment_methods && !paymentRiskAmountSetsMatch(authorizationPaymentMethods, entry.metadata_json.payment_methods)) {
+    logAuthorizationFinalizeDenied({
+      saleSessionId,
+      saleId,
+      authorizationIdReceived: authorizationId,
+      authorizationTypeExpected: normalizedOperationType,
+      savedFingerprint: approvedFingerprint,
+      currentFingerprint: expectedFingerprint,
+      fingerprintMatch: true,
+      paymentMethods: authorizationPaymentMethods,
+      totalAPagar: amountToPay,
+      totalLancado: paidAmount,
+      discountTotal: amount,
+      itemDiscountTotal: itemDiscountAmount,
+      generalDiscount: generalDiscountAmount,
+      reason: "payment_risk_methods_mismatch"
+    });
     throw new Error("Autorizacao emitida para outra composicao de pagamentos de risco.");
   }
   entry.status = "CONSUMED";
