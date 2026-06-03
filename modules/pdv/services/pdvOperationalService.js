@@ -1442,6 +1442,86 @@ function buildProductMatchKey(product = {}) {
     || normalizeLookup([product.nome, product.marca, product.cor, product.tamanho, product.store_id].join(" "));
 }
 
+function hasValidPromotionalPrice(normalPrice = 0, promotionalPrice = 0) {
+  const normal = toNumber(normalPrice || 0);
+  const promo = toNumber(promotionalPrice || 0);
+  return promo > 0 && normal > 0 && promo < normal;
+}
+
+function applyProductEffectivePricing(product = {}, override = null) {
+  const catalogPrice = toNumber(override?.price || 0);
+  const catalogPromotionalPrice = toNumber(override?.promotional_price || 0);
+  const currentPrice = toNumber(product.preco_venda || product.price || product.sale_price || 0);
+  const normalPrice = catalogPrice > 0 ? catalogPrice : toNumber(product.original_price || product.compare_at_price || currentPrice || 0);
+  const existingPromotionalPrice = toNumber(product.promotional_price || product.promotionalPrice || 0);
+  const promotionalPrice = catalogPromotionalPrice > 0 ? catalogPromotionalPrice : existingPromotionalPrice;
+  if (!hasValidPromotionalPrice(normalPrice, promotionalPrice)) {
+    return {
+      ...product,
+      original_price: toNumber(product.original_price || product.compare_at_price || normalPrice || currentPrice || 0) || null,
+      promotional_price: existingPromotionalPrice > 0 ? existingPromotionalPrice : null,
+      used_promotional_price: Boolean(product.used_promotional_price)
+    };
+  }
+  return {
+    ...product,
+    price: promotionalPrice,
+    preco_venda: promotionalPrice,
+    sale_price: promotionalPrice,
+    original_price: normalPrice,
+    compare_at_price: normalPrice,
+    promotional_price: promotionalPrice,
+    promotionalPrice: promotionalPrice,
+    used_promotional_price: true,
+    price_source: "catalog_promotional_price"
+  };
+}
+
+async function applyCatalogPromotionalPriceOverrides(products = []) {
+  const rows = Array.isArray(products) ? products : [];
+  const lookupCodes = uniqueStrings(rows.flatMap((product) => {
+    const identifiers = buildProductDedupeIdentifiers(product);
+    return identifiers.textIdentifiers;
+  })).slice(0, 220);
+  if (!lookupCodes.length) {
+    return rows.map((product) => applyProductEffectivePricing(product));
+  }
+  try {
+    const placeholders = lookupCodes.map(() => "?").join(", ");
+    const catalogRows = await all(
+      `SELECT id, sku, codigo, tiny_id, price, promotional_price, updated_at
+       FROM ai_products
+       WHERE COALESCE(deleted_at, '') = ''
+         AND (
+           lower(COALESCE(sku, '')) IN (${placeholders})
+           OR lower(COALESCE(codigo, '')) IN (${placeholders})
+           OR lower(COALESCE(tiny_id, '')) IN (${placeholders})
+         )
+       ORDER BY updated_at DESC, id DESC`,
+      [...lookupCodes, ...lookupCodes, ...lookupCodes]
+    );
+    const overrideMap = new Map();
+    (catalogRows || []).forEach((row) => {
+      const keys = uniqueStrings([row.sku, row.codigo, row.tiny_id].map((value) => normalizeCodeLookup(value || "")).filter(Boolean));
+      keys.forEach((key) => {
+        if (!overrideMap.has(key)) {
+          overrideMap.set(key, row);
+        }
+      });
+    });
+    return rows.map((product) => {
+      const identifiers = buildProductDedupeIdentifiers(product);
+      const override = identifiers.textIdentifiers.map((key) => overrideMap.get(key)).find(Boolean) || null;
+      return applyProductEffectivePricing(product, override);
+    });
+  } catch (error) {
+    console.warn("[PDV][products] Falha ao aplicar overlay de preco promocional", {
+      reason: normalizeText(error?.message || "unknown")
+    });
+    return rows.map((product) => applyProductEffectivePricing(product));
+  }
+}
+
 function normalizeUnifiedProductStatusValue(value = "", fallbackQty = 0) {
   const normalized = normalizeLookup(value || "");
   if (normalized === "pending review" || normalized === "pending_review") return "pending_review";
@@ -1470,6 +1550,10 @@ function mergeUnifiedProductRow(target = {}, source = {}) {
   const sourcePrice = toNumber(source.preco_venda || 0);
   const primaryPrice = toNumber(primary.preco_venda || 0);
   const secondaryPrice = toNumber(secondary.preco_venda || 0);
+  const primaryPromotionalPrice = toNumber(primary.promotional_price || primary.promotionalPrice || 0);
+  const secondaryPromotionalPrice = toNumber(secondary.promotional_price || secondary.promotionalPrice || 0);
+  const primaryOriginalPrice = toNumber(primary.original_price || primary.compare_at_price || 0);
+  const secondaryOriginalPrice = toNumber(secondary.original_price || secondary.compare_at_price || 0);
   const priceConflict = Boolean(
     targetPrice > 0
     && sourcePrice > 0
@@ -1496,6 +1580,11 @@ function mergeUnifiedProductRow(target = {}, source = {}) {
     cor: normalizeText(primary.cor || secondary.cor || ""),
     tamanho: normalizeText(primary.tamanho || secondary.tamanho || ""),
     preco_venda: primaryPrice > 0 ? primaryPrice : secondaryPrice,
+    original_price: primaryOriginalPrice > 0 ? primaryOriginalPrice : (secondaryOriginalPrice > 0 ? secondaryOriginalPrice : null),
+    compare_at_price: primaryOriginalPrice > 0 ? primaryOriginalPrice : (secondaryOriginalPrice > 0 ? secondaryOriginalPrice : null),
+    promotional_price: primaryPromotionalPrice > 0 ? primaryPromotionalPrice : (secondaryPromotionalPrice > 0 ? secondaryPromotionalPrice : null),
+    promotionalPrice: primaryPromotionalPrice > 0 ? primaryPromotionalPrice : (secondaryPromotionalPrice > 0 ? secondaryPromotionalPrice : null),
+    used_promotional_price: Boolean(primary.used_promotional_price || secondary.used_promotional_price),
     estoque: Math.max(toNumber(target.estoque || 0), toNumber(source.estoque || 0)),
     available_qty: Math.max(toNumber(target.available_qty || 0), toNumber(source.available_qty || 0)),
     reserved_qty: Math.max(toNumber(target.reserved_qty || 0), toNumber(source.reserved_qty || 0)),
@@ -1875,7 +1964,7 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
         return [tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup];
       });
       const crmCatalogRows = await all(
-        `SELECT id, name, commercial_name, sku, codigo, gtin_ean, marca, category, color, sizes, price, store, short_description, estoque_total, main_media_id
+        `SELECT id, name, commercial_name, sku, codigo, gtin_ean, marca, category, color, sizes, price, promotional_price, store, short_description, estoque_total, main_media_id
          FROM ai_products
          WHERE COALESCE(deleted_at, '') = ''
            AND ${strictCodeSearch
@@ -1909,7 +1998,12 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
           cor: normalizeText(product.color || ""),
           tamanho: normalizeText(product.sizes || ""),
           descricao: normalizeText(product.short_description || ""),
-          preco_venda: toNumber(product.price || 0),
+          preco_venda: hasValidPromotionalPrice(product.price, product.promotional_price) ? toNumber(product.promotional_price || 0) : toNumber(product.price || 0),
+          original_price: toNumber(product.price || 0) || null,
+          compare_at_price: toNumber(product.price || 0) || null,
+          promotional_price: toNumber(product.promotional_price || 0) || null,
+          promotionalPrice: toNumber(product.promotional_price || 0) || null,
+          used_promotional_price: hasValidPromotionalPrice(product.price, product.promotional_price),
           estoque: toNumber(product.estoque_total || 0),
           available_qty: toNumber(product.estoque_total || 0),
           reserved_qty: 0,
@@ -1946,7 +2040,8 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
     });
   });
 
-  const unified = Array.from(mergedMap.values())
+  const pricedUnified = await applyCatalogPromotionalPriceOverrides(Array.from(mergedMap.values()));
+  const unified = pricedUnified
     .map((item) => enrichProductOperationalAvailability(item, storeId))
     .filter((item) => strictCodeSearch
       ? productMatchesExactIdentifier(item, query)
@@ -2990,6 +3085,8 @@ function addProductToCart(sessionId, payload = {}, user = {}) {
   const normalizedInventoryId = normalizeText(fulfillment.inventory_id || payload.inventory_id || payload.selected_inventory_id || "");
   const normalizedProductId = normalizeText(fulfillment.product_id || payload.product_id || payload.selected_product_id || payload.sku || payload.codigo || "");
   const normalizedStoreId = normalizeStoreKey(payload.store_id || payload.selected_loja || payload.loja || session?.loja || "");
+  const pricing = applyProductEffectivePricing(payload);
+  const effectiveUnitPrice = toNumber(pricing.preco_venda || pricing.price || payload.preco_referencia || payload.preco_venda || 0);
   const item = {
     item_id: buildId("ITEM"),
     inventory_id: normalizedInventoryId,
@@ -3022,7 +3119,13 @@ function addProductToCart(sessionId, payload = {}, user = {}) {
     selected_variation_key: normalizeText(payload.selected_variation_key || [payload.cor, payload.tamanho].filter(Boolean).join("::")),
     quantidade: Math.max(1, Math.round(toNumber(payload.quantidade || 1))),
     observacao: normalizeText(payload.observacao || ""),
-    preco_referencia: toNumber(payload.preco_referencia || payload.preco_venda || 0),
+    preco_referencia: effectiveUnitPrice,
+    unit_price: effectiveUnitPrice,
+    price: effectiveUnitPrice,
+    original_price: toNumber(pricing.original_price || payload.original_price || payload.compare_at_price || 0) || null,
+    compare_at_price: toNumber(pricing.compare_at_price || pricing.original_price || payload.compare_at_price || 0) || null,
+    promotional_price: toNumber(pricing.promotional_price || payload.promotional_price || 0) || null,
+    used_promotional_price: Boolean(pricing.used_promotional_price),
     estoque_visual: normalizeText(payload.availability_label || payload.estoque_visual || ""),
     loja_venda: fulfillment.sale_store_id,
     loja_origem_estoque: fulfillment.stock_source_store_id,
