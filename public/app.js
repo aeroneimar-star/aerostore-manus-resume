@@ -6706,7 +6706,7 @@ async function validatePdvSaleDiscountAuthorization() {
           general_discount_amount: discount.amount,
           general_exception_amount: policy.generalExceptionAmount || 0,
           discount_amount: discount.totalDiscountAmount,
-          discount_percent: policy.effectiveDiscountPercent || discount.totalDiscountPercent,
+          discount_percent: policy.authorizationPercent || discount.totalDiscountPercent,
           total_final: totals.total,
           paid_amount: totals.paid,
           cashback_applied: totals.cashbackUsed,
@@ -6849,6 +6849,11 @@ function getPdvSaleDiscountPaymentContextKey(session = null) {
   const discount = getPdvSaleSessionDiscount(session);
   const policy = discount.policy || getPdvSaleDiscountPolicy(session);
   const normalizeForKey = (value) => Number(toNumber(value || 0).toFixed(2));
+  const subtotalForKey = normalizeForKey(totals.subtotal);
+  const commercialDiscountTotalForKey = normalizeForKey(discount.totalDiscountAmount);
+  const commercialDiscountPercentForKey = subtotalForKey > 0
+    ? normalizeForKey((commercialDiscountTotalForKey / subtotalForKey) * 100)
+    : normalizeForKey(policy.authorizationPercent || discount.totalDiscountPercent);
   const items = toArray(session?.cart_items).map((item) => ({
     id: normalizeText(item.item_id || item.id || item.product_id || ""),
     sku: normalizeText(item.sku || item.codigo || item.code || item.codigo_etiqueta || ""),
@@ -6882,8 +6887,8 @@ function getPdvSaleDiscountPaymentContextKey(session = null) {
     subtotal: normalizeForKey(totals.subtotal),
     item_discount_amount: normalizeForKey(discount.itemDiscountAmount),
     general_discount_amount: normalizeForKey(discount.amount),
-    commercial_discount_total: normalizeForKey(discount.totalDiscountAmount),
-    commercial_discount_percent: normalizeForKey(policy.effectiveDiscountPercent || discount.totalDiscountPercent),
+    commercial_discount_total: commercialDiscountTotalForKey,
+    commercial_discount_percent: commercialDiscountPercentForKey,
     payment_risk_methods: paymentRiskMethods,
     items
   });

@@ -693,17 +693,21 @@ function normalizeAuthorizationItems(items = []) {
 }
 
 function buildDiscountAuthorizationFingerprint(context = {}) {
+  return hashStableObject(buildDiscountAuthorizationFingerprintPayload(context));
+}
+
+function buildDiscountAuthorizationFingerprintPayload(context = {}) {
   const subtotal = roundMoney(context.subtotal || 0);
   const itemDiscountAmount = roundMoney(context.itemDiscountAmount ?? context.item_discount_amount ?? 0);
   const generalDiscountAmount = roundMoney(context.generalDiscountAmount ?? context.general_discount_amount ?? context.extraDiscount ?? 0);
   const commercialDiscountTotal = roundMoney(context.commercialDiscountTotal ?? context.discount_amount ?? itemDiscountAmount + generalDiscountAmount);
   const providedCommercialPercent = context.commercialDiscountPercent ?? context.discount_percent;
-  const commercialDiscountPercent = providedCommercialPercent !== undefined && providedCommercialPercent !== null && toNumber(providedCommercialPercent) > 0
-    ? Number(toNumber(providedCommercialPercent).toFixed(2))
-    : (subtotal > 0
-      ? Number(((commercialDiscountTotal / subtotal) * 100).toFixed(2))
+  const commercialDiscountPercent = subtotal > 0
+    ? Number(((commercialDiscountTotal / subtotal) * 100).toFixed(2))
+    : (providedCommercialPercent !== undefined && providedCommercialPercent !== null && toNumber(providedCommercialPercent) > 0
+      ? Number(toNumber(providedCommercialPercent).toFixed(2))
       : 0);
-  return hashStableObject({
+  return {
     loja: normalizeStoreKey(context.loja || context.store_id || ""),
     customer_id: normalizeText(context.customerId || context.customer_id || ""),
     subtotal,
@@ -713,11 +717,15 @@ function buildDiscountAuthorizationFingerprint(context = {}) {
     commercial_discount_percent: commercialDiscountPercent,
     payment_risk_methods: normalizeAuthorizationPaymentRiskAmounts(context.paymentMethods || context.payment_methods || context.paymentAmounts || []),
     items: normalizeAuthorizationItems(context.items || [])
-  });
+  };
 }
 
 function buildPermutaAuthorizationFingerprint(context = {}) {
-  return hashStableObject({
+  return hashStableObject(buildPermutaAuthorizationFingerprintPayload(context));
+}
+
+function buildPermutaAuthorizationFingerprintPayload(context = {}) {
+  return {
     operation_type: "PERMUTA_AUTHORIZATION",
     reason: normalizeText(context.reason || "empresa").toLowerCase() || "empresa",
     loja: normalizeStoreKey(context.loja || context.store_id || ""),
@@ -732,15 +740,29 @@ function buildPermutaAuthorizationFingerprint(context = {}) {
     paid_amount: roundMoney(context.paidAmount ?? context.paid_amount ?? 0),
     payment_methods: normalizeAuthorizationPaymentAmounts(context.paymentMethods || context.payment_methods || context.paymentAmounts || []),
     items: normalizeAuthorizationItems(context.items || [])
-  });
+  };
 }
 
 function buildAuthorizationFingerprint(operationType = "", context = {}) {
+  return hashStableObject(buildAuthorizationFingerprintPayload(operationType, context));
+}
+
+function buildAuthorizationFingerprintPayload(operationType = "", context = {}) {
   const normalizedOperationType = normalizeText(operationType || "").toUpperCase();
   if (normalizedOperationType === "PERMUTA_AUTHORIZATION") {
-    return buildPermutaAuthorizationFingerprint(context);
+    return buildPermutaAuthorizationFingerprintPayload(context);
   }
-  return buildDiscountAuthorizationFingerprint(context);
+  return buildDiscountAuthorizationFingerprintPayload(context);
+}
+
+function getAuthorizationPayloadDivergentFields(left = {}, right = {}) {
+  const fields = new Set([
+    ...Object.keys(left || {}),
+    ...Object.keys(right || {})
+  ]);
+  return Array.from(fields).filter((field) =>
+    JSON.stringify(left?.[field] ?? null) !== JSON.stringify(right?.[field] ?? null)
+  );
 }
 
 function loadCashRegisters() {
@@ -1368,6 +1390,8 @@ function logAuthorizationFinalizeDenied({
   currentFingerprint = "",
   fingerprintMatch = false,
   paymentMethods = [],
+  riskPaymentMethods = [],
+  divergentFields = [],
   totalAPagar = 0,
   totalLancado = 0,
   discountTotal = 0,
@@ -1389,6 +1413,10 @@ function logAuthorizationFinalizeDenied({
     currentFingerprint: normalizeText(currentFingerprint || ""),
     fingerprintMatch: Boolean(fingerprintMatch),
     paymentMethods: normalizedPayments.map((item) => item.method),
+    riskPaymentMethods: Array.isArray(riskPaymentMethods)
+      ? riskPaymentMethods.map((item) => normalizeText(item?.method || item || "")).filter(Boolean)
+      : [],
+    divergentFields: Array.isArray(divergentFields) ? divergentFields.map((item) => normalizeText(item || "")).filter(Boolean) : [],
     installments: normalizedPayments.map((item) => ({ method: item.method, installments: item.installments })),
     totalAPagar: roundMoney(totalAPagar || 0),
     totalLancado: roundMoney(totalLancado || 0),
@@ -1429,7 +1457,7 @@ function consumeValidatedAuthorization({
   }
   const normalizedOperationType = normalizeText(operationType || "").toUpperCase();
   const authorizationPaymentMethods = paymentAmounts.length ? paymentAmounts : paymentMethods;
-  const expectedFingerprint = buildAuthorizationFingerprint(normalizedOperationType, {
+  const expectedFingerprintContext = {
     loja,
     customerId,
     seller: sellerId,
@@ -1447,7 +1475,31 @@ function consumeValidatedAuthorization({
     reason: entry.reason || "empresa",
     paymentMethods: authorizationPaymentMethods,
     items
-  });
+  };
+  const expectedFingerprint = buildAuthorizationFingerprint(normalizedOperationType, expectedFingerprintContext);
+  const expectedFingerprintPayload = buildAuthorizationFingerprintPayload(normalizedOperationType, expectedFingerprintContext);
+  const savedFingerprintPayload = entry.metadata_json && typeof entry.metadata_json === "object"
+    ? buildAuthorizationFingerprintPayload(normalizedOperationType, {
+      ...entry.metadata_json,
+      loja: entry.metadata_json.loja || entry.metadata_json.store_id || loja,
+      customerId: entry.metadata_json.customer_id || customerId,
+      seller: entry.metadata_json.seller || entry.metadata_json.seller_id || sellerId,
+      subtotal: entry.metadata_json.subtotal,
+      itemDiscountAmount: entry.metadata_json.item_discount_amount,
+      generalDiscountAmount: entry.metadata_json.general_discount_amount,
+      commercialDiscountTotal: entry.metadata_json.discount_amount,
+      commercialDiscountPercent: entry.metadata_json.discount_percent,
+      totalBeforePermuta: entry.metadata_json.total_before_permuta,
+      permutaAmount: entry.metadata_json.permuta_amount,
+      totalFinal: entry.metadata_json.total_final,
+      paidAmount: entry.metadata_json.paid_amount,
+      paymentMethods: entry.metadata_json.payment_methods || entry.metadata_json.paymentMethods || [],
+      items: entry.metadata_json.items || [],
+      reason: entry.reason || entry.metadata_json.reason || "empresa"
+    })
+    : {};
+  const divergentFields = getAuthorizationPayloadDivergentFields(savedFingerprintPayload, expectedFingerprintPayload);
+  const riskPaymentMethods = normalizeAuthorizationPaymentRiskAmounts(authorizationPaymentMethods);
   if (entry.status !== "APPROVED") {
     logAuthorizationFinalizeDenied({
       saleSessionId,
@@ -1458,6 +1510,8 @@ function consumeValidatedAuthorization({
       currentFingerprint: expectedFingerprint,
       fingerprintMatch: false,
       paymentMethods: authorizationPaymentMethods,
+      riskPaymentMethods,
+      divergentFields,
       totalAPagar: amountToPay,
       totalLancado: paidAmount,
       discountTotal: amount,
@@ -1503,6 +1557,8 @@ function consumeValidatedAuthorization({
       currentFingerprint: expectedFingerprint,
       fingerprintMatch: false,
       paymentMethods: authorizationPaymentMethods,
+      riskPaymentMethods,
+      divergentFields,
       totalAPagar: amountToPay,
       totalLancado: paidAmount,
       discountTotal: amount,
@@ -1539,6 +1595,8 @@ function consumeValidatedAuthorization({
       currentFingerprint: expectedFingerprint,
       fingerprintMatch: true,
       paymentMethods: authorizationPaymentMethods,
+      riskPaymentMethods,
+      divergentFields,
       totalAPagar: amountToPay,
       totalLancado: paidAmount,
       discountTotal: amount,
@@ -2080,9 +2138,11 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
   const saleSessionId = normalizeText(saleContext.saleSessionId || "");
   const discountBase = roundMoney(saleContext.discountBase || 0);
   const commercialDiscountTotal = roundMoney(itemDiscountAmount + extraDiscount);
-  const discountPercent = saleContext.discountPercent !== undefined && saleContext.discountPercent !== null && toNumber(saleContext.discountPercent) > 0
-    ? Number(toNumber(saleContext.discountPercent).toFixed(2))
-    : (discountBase > 0 ? Number(((commercialDiscountTotal / discountBase) * 100).toFixed(2)) : 0);
+  const discountPercent = discountBase > 0
+    ? Number(((commercialDiscountTotal / discountBase) * 100).toFixed(2))
+    : (saleContext.discountPercent !== undefined && saleContext.discountPercent !== null && toNumber(saleContext.discountPercent) > 0
+      ? Number(toNumber(saleContext.discountPercent).toFixed(2))
+      : 0);
   const discountPolicy = getDiscountLimitForSale({
     subtotal,
     items: saleContext.items || [],
