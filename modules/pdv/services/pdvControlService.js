@@ -150,6 +150,21 @@ function roundMoney(value) {
   return Number(toNumber(value).toFixed(2));
 }
 
+function parseCashRegisterMoneyInput(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : NaN;
+  }
+  const raw = String(value ?? "").trim();
+  if (!raw) return NaN;
+  const sanitized = raw.replace(/[^\d,.-]/g, "");
+  if (!/\d/.test(sanitized)) return NaN;
+  const normalized = sanitized.includes(",")
+    ? sanitized.replace(/\./g, "").replace(",", ".")
+    : sanitized;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
 function safeJsonStringify(value = {}) {
   try {
     return JSON.stringify(value || {});
@@ -1976,8 +1991,12 @@ async function registerManualCashMovement({ type = "", amount = 0, reason = "", 
 
 function computeCashRegisterExpected(register) {
   const movements = register.movements || [];
+  const saleMovements = movements.filter((item) => item.type === "SALE");
   const sumByType = (type) => roundMoney(movements.filter((item) => item.type === type).reduce((sum, item) => sum + toNumber(item.value), 0));
-  const saleMoney = roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.money_amount || 0), 0));
+  const saleMoney = roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.money_amount || 0), 0));
+  const pixTotal = roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.pix_amount || 0), 0));
+  const debitTotal = roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.debito_amount || 0), 0));
+  const creditTotal = roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.credito_amount || 0), 0));
   const suprimentos = sumByType("SUPRIMENTO");
   const sangrias = sumByType("SANGRIA");
   const despesas = sumByType("DESPESA");
@@ -1987,15 +2006,23 @@ function computeCashRegisterExpected(register) {
   return {
     dinheiro_esperado: expectedCash,
     dinheiro_vendas: saleMoney,
-    pix: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.pix_amount || 0), 0)),
-    debito: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.debito_amount || 0), 0)),
-    credito: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.credito_amount || 0), 0)),
-    link_pagamento: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.link_pagamento_amount || 0), 0)),
-    cashback_usado: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.cashback_amount || 0), 0)),
-    vale_presente_usado: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.vale_presente_amount || 0), 0)),
-    permuta: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.permuta_amount || 0), 0)),
-    credito_troca: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.credito_troca_amount || 0), 0)),
-    descontos: roundMoney(movements.filter((item) => item.type === "SALE").reduce((sum, item) => sum + toNumber(item.payload?.desconto_extra || 0), 0)),
+    pix: pixTotal,
+    pix_total: pixTotal,
+    pix_count: saleMovements.filter((item) => toNumber(item.payload?.pix_amount || 0) > 0).length,
+    debito: debitTotal,
+    debit_total: debitTotal,
+    debito_count: saleMovements.filter((item) => toNumber(item.payload?.debito_amount || 0) > 0).length,
+    debit_count: saleMovements.filter((item) => toNumber(item.payload?.debito_amount || 0) > 0).length,
+    credito: creditTotal,
+    credit_total: creditTotal,
+    credito_count: saleMovements.filter((item) => toNumber(item.payload?.credito_amount || 0) > 0).length,
+    credit_count: saleMovements.filter((item) => toNumber(item.payload?.credito_amount || 0) > 0).length,
+    link_pagamento: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.link_pagamento_amount || 0), 0)),
+    cashback_usado: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.cashback_amount || 0), 0)),
+    vale_presente_usado: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.vale_presente_amount || 0), 0)),
+    permuta: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.permuta_amount || 0), 0)),
+    credito_troca: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.credito_troca_amount || 0), 0)),
+    descontos: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.desconto_extra || 0), 0)),
     sangrias,
     suprimentos,
     aportes: suprimentos,
@@ -2013,7 +2040,36 @@ function computeCashRegisterExpected(register) {
   };
 }
 
-function closeCashRegister({ cashRegisterId = "", dinheiro_informado = 0, observacao = "" } = {}, user = {}) {
+function getCashRegisterDifferenceFlag(difference = 0) {
+  const absDifference = Math.abs(roundMoney(difference));
+  if (absDifference < 0.009) return "OK";
+  if (absDifference < 20) return "MINOR";
+  if (absDifference < 100) return "RELEVANT";
+  return "CRITICAL";
+}
+
+function buildCashRegisterTicketSummary(expected = {}) {
+  return {
+    pix_total: roundMoney(expected.pix_total ?? expected.pix ?? 0),
+    pix_count: Math.max(0, Math.round(toNumber(expected.pix_count || 0))),
+    debit_total: roundMoney(expected.debit_total ?? expected.debito ?? 0),
+    debit_count: Math.max(0, Math.round(toNumber(expected.debit_count ?? expected.debito_count ?? 0))),
+    credit_total: roundMoney(expected.credit_total ?? expected.credito ?? 0),
+    credit_count: Math.max(0, Math.round(toNumber(expected.credit_count ?? expected.credito_count ?? 0)))
+  };
+}
+
+function closeCashRegister({
+  cashRegisterId = "",
+  dinheiro_informado = 0,
+  observacao = "",
+  diferenca_categoria = "",
+  diferenca_justificativa = "",
+  tickets_conferidos = null,
+  tickets_pix_conferi = false,
+  tickets_debito_conferi = false,
+  tickets_credito_conferi = false
+} = {}, user = {}) {
   const cashRegisters = loadCashRegisters();
   const register = cashRegisters.find((item) => item.cash_register_id === String(cashRegisterId || "").trim());
   if (!register) {
@@ -2026,7 +2082,52 @@ function closeCashRegister({ cashRegisterId = "", dinheiro_informado = 0, observ
     throw error;
   }
   const expected = computeCashRegisterExpected(register);
-  const countedCash = roundMoney(dinheiro_informado);
+  const hasCountedCash = dinheiro_informado !== null
+    && dinheiro_informado !== undefined
+    && String(dinheiro_informado).trim() !== "";
+  if (!hasCountedCash) {
+    throw new Error("Informe o dinheiro contado para fechar o caixa.");
+  }
+  const parsedCountedCash = parseCashRegisterMoneyInput(dinheiro_informado);
+  if (!Number.isFinite(parsedCountedCash)) {
+    throw new Error("Informe um valor contado valido para fechar o caixa.");
+  }
+  const countedCash = roundMoney(parsedCountedCash);
+  if (countedCash < 0) {
+    throw new Error("Dinheiro contado nao pode ser negativo.");
+  }
+  const difference = roundMoney(countedCash - expected.dinheiro_esperado);
+  const absDifference = Math.abs(difference);
+  const differenceFlag = getCashRegisterDifferenceFlag(difference);
+  const requiresManagerReview = absDifference >= 100;
+  const ticketSummary = buildCashRegisterTicketSummary(expected);
+  const checkedTickets = {
+    pix: Boolean(tickets_conferidos?.pix ?? tickets_pix_conferi),
+    debit: Boolean(tickets_conferidos?.debit ?? tickets_conferidos?.debito ?? tickets_debito_conferi),
+    credit: Boolean(tickets_conferidos?.credit ?? tickets_conferidos?.credito ?? tickets_credito_conferi)
+  };
+
+  // Validate difference handling
+  if (absDifference >= 20 && !diferenca_categoria) {
+    throw new Error("Categoria é obrigatória para diferenças >= R$ 20.");
+  }
+  if (absDifference >= 20 && (!diferenca_justificativa || String(diferenca_justificativa || "").trim().length < 20)) {
+    throw new Error("Justificativa é obrigatória e deve ter no mínimo 20 caracteres para diferenças >= R$ 20.");
+  }
+  if (difference !== 0 && absDifference < 20 && !observacao) {
+    throw new Error("Observação é obrigatória para pequenas diferenças (< R$ 20).");
+  }
+
+  if (ticketSummary.pix_total > 0 && !checkedTickets.pix) {
+    throw new Error("Confira os tickets PIX antes de fechar o caixa.");
+  }
+  if (ticketSummary.debit_total > 0 && !checkedTickets.debit) {
+    throw new Error("Confira os tickets de debito antes de fechar o caixa.");
+  }
+  if (ticketSummary.credit_total > 0 && !checkedTickets.credit) {
+    throw new Error("Confira os tickets de credito antes de fechar o caixa.");
+  }
+
   register.status = CASH_REGISTER_STATUS.CLOSED;
   register.fechado_em = nowIso();
   register.closed_by = user?.name || user?.email || "sistema";
@@ -2034,9 +2135,27 @@ function closeCashRegister({ cashRegisterId = "", dinheiro_informado = 0, observ
   register.close_summary = {
     ...expected,
     dinheiro_informado: countedCash,
-    diferenca_final: roundMoney(countedCash - expected.dinheiro_esperado)
+    diferenca_final: difference,
+    diferenca_percentual: expected.dinheiro_esperado > 0 ? Number((Math.abs(difference) / expected.dinheiro_esperado * 100).toFixed(2)) : 0,
+    diferenca_categoria: normalizeText(diferenca_categoria || ""),
+    diferenca_justificativa: normalizeText(diferenca_justificativa || ""),
+    difference_flag: differenceFlag,
+    requires_manager_review: requiresManagerReview,
+    tem_diferenca_significativa: absDifference >= 20,
+    tem_diferenca_critica: requiresManagerReview,
+    tickets_pix_conferi: checkedTickets.pix,
+    tickets_debito_conferi: checkedTickets.debit,
+    tickets_credito_conferi: checkedTickets.credit,
+    tickets_conferidos: checkedTickets,
+    ticket_summary: ticketSummary
   };
   saveCashRegisters(cashRegisters);
+
+  // Log large differences as warnings
+  if (absDifference >= 20) {
+    console.warn(`[CASH_REGISTER_CLOSE] Large difference detected: R$ ${difference.toFixed(2)} (${register.close_summary.diferenca_percentual.toFixed(2)}%) - Category: ${diferenca_categoria}`);
+  }
+
   appendAuditLog({
     audit_id: buildId("AUD"),
     action: "CLOSE_CASH_REGISTER",
@@ -2045,6 +2164,13 @@ function closeCashRegister({ cashRegisterId = "", dinheiro_informado = 0, observ
     actor_role: getPdvUserRole(user),
     loja: register.loja,
     reason: register.close_observation,
+    difference_amount: difference,
+    difference_category: diferenca_categoria || "",
+    difference_comment: diferenca_justificativa || "",
+    difference_flag: differenceFlag,
+    requires_manager_review: requiresManagerReview,
+    tickets_conferidos: checkedTickets,
+    ticket_summary: ticketSummary,
     before: { status: "OPEN" },
     after: register.close_summary
   });

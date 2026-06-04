@@ -408,7 +408,32 @@ const state = {
     authorizerStatusLoadingId: "",
     authorizerResetLoadingId: "",
     openLoading: false,
-    closeLoadingId: ""
+    closeLoadingId: "",
+    closeModal: {
+      open: false,
+      cashRegisterId: "",
+      expectedAmount: 0,
+      expectedSummary: null,
+      ticketSummary: null,
+      requiredTickets: { pix: false, debit: false, credit: false },
+      countedAmount: 0,
+      countedInput: "",
+      countedHasValue: false,
+      countedInvalid: false,
+      difference: 0,
+      percentageDifference: 0,
+      status: "OK",
+      observation: "",
+      category: "",
+      justification: "",
+      piXChecked: false,
+      debitoChecked: false,
+      creditoChecked: false,
+      loading: false,
+      error: "",
+      cupomPrinted: false,
+      showCouponConfirmation: false
+    }
   },
   pdvProducts: {
     loading: false,
@@ -8845,6 +8870,146 @@ function buildPdvCashExpectedSummaryPanel(register = null) {
   `;
 }
 
+function hasPdvCashNumericValue(value) {
+  return value !== null && value !== undefined && String(value).trim() !== "" && Number.isFinite(Number(value));
+}
+
+function getPdvCashFirstNumber(...values) {
+  const found = values.find((value) => hasPdvCashNumericValue(value));
+  return found === undefined ? 0 : toNumber(found);
+}
+
+function buildPdvCashCloseExpectedSummary(register = null) {
+  const row = register && typeof register === "object" ? register : {};
+  const expected = row.expected && typeof row.expected === "object" ? row.expected : {};
+  const closeSummary = row.close_summary && typeof row.close_summary === "object" ? row.close_summary : {};
+  const hasExpectedCash = hasPdvCashNumericValue(expected.dinheiro_esperado)
+    || hasPdvCashNumericValue(expected.expected_cash_amount);
+  const initial = getPdvCashFirstNumber(row.valor_inicial, closeSummary.valor_inicial, row.saldo_inicial);
+  const cashInSales = getPdvCashFirstNumber(
+    expected.dinheiro_vendas,
+    expected.cash_in_sales_total,
+    closeSummary.dinheiro_vendas,
+    closeSummary.cash_in_sales_total,
+    row.vendas_dinheiro_total,
+    row.vendas_total
+  );
+  const deposits = getPdvCashFirstNumber(
+    expected.aportes,
+    expected.aportes_total,
+    expected.suprimentos,
+    expected.cash_deposits_total,
+    closeSummary.aportes,
+    closeSummary.aportes_total,
+    closeSummary.suprimentos,
+    closeSummary.cash_deposits_total,
+    row.aportes_total
+  );
+  const withdrawals = getPdvCashFirstNumber(
+    expected.sangrias,
+    expected.sangrias_total,
+    expected.cash_withdrawals_total,
+    closeSummary.sangrias,
+    closeSummary.sangrias_total,
+    closeSummary.cash_withdrawals_total,
+    row.sangrias_total
+  );
+  const fallbackExpected = initial + cashInSales + deposits - withdrawals;
+  const expectedCash = hasExpectedCash
+    ? getPdvCashFirstNumber(expected.dinheiro_esperado, expected.expected_cash_amount)
+    : getPdvCashFirstNumber(closeSummary.dinheiro_esperado, closeSummary.expected_cash_amount, fallbackExpected);
+
+  return {
+    initial,
+    cashInSales,
+    deposits,
+    withdrawals,
+    expectedCash: roundMoney(expectedCash)
+  };
+}
+
+function buildPdvCashCloseTicketSummary(register = null) {
+  const row = register && typeof register === "object" ? register : {};
+  const expected = row.expected && typeof row.expected === "object" ? row.expected : {};
+  const closeSummary = row.close_summary && typeof row.close_summary === "object" ? row.close_summary : {};
+  const savedTicketSummary = closeSummary.ticket_summary && typeof closeSummary.ticket_summary === "object" ? closeSummary.ticket_summary : {};
+  return {
+    pix_total: roundMoney(getPdvCashFirstNumber(expected.pix_total, expected.pix, savedTicketSummary.pix_total, closeSummary.pix)),
+    pix_count: Math.max(0, Math.round(getPdvCashFirstNumber(expected.pix_count, savedTicketSummary.pix_count))),
+    debit_total: roundMoney(getPdvCashFirstNumber(expected.debit_total, expected.debito, savedTicketSummary.debit_total, closeSummary.debito)),
+    debit_count: Math.max(0, Math.round(getPdvCashFirstNumber(expected.debit_count, expected.debito_count, savedTicketSummary.debit_count))),
+    credit_total: roundMoney(getPdvCashFirstNumber(expected.credit_total, expected.credito, savedTicketSummary.credit_total, closeSummary.credito)),
+    credit_count: Math.max(0, Math.round(getPdvCashFirstNumber(expected.credit_count, expected.credito_count, savedTicketSummary.credit_count)))
+  };
+}
+
+function getPdvCashTicketRequirements(ticketSummary = {}) {
+  return {
+    pix: toNumber(ticketSummary.pix_total) > 0,
+    debit: toNumber(ticketSummary.debit_total) > 0,
+    credit: toNumber(ticketSummary.credit_total) > 0
+  };
+}
+
+function getPdvCashDifferenceFlag(difference = 0) {
+  const absDifference = Math.abs(roundMoney(difference));
+  if (absDifference < 0.009) return "OK";
+  if (absDifference < 20) return "MINOR";
+  if (absDifference < 100) return "RELEVANT";
+  return "CRITICAL";
+}
+
+function isPdvCashCountedInputValid(value = "") {
+  const raw = normalizeText(value || "");
+  if (!raw) return false;
+  const sanitized = raw.replace(/[^\d,.-]/g, "");
+  return /\d/.test(sanitized) && parseMoneyAmount(raw) >= 0;
+}
+
+function getPdvCashTicketLine(ticketSummary = {}, method = "pix") {
+  const meta = {
+    pix: { label: "PIX", total: "pix_total", count: "pix_count" },
+    debit: { label: "Débito", total: "debit_total", count: "debit_count" },
+    credit: { label: "Crédito", total: "credit_total", count: "credit_count" }
+  }[method] || { label: "Pagamento", total: "", count: "" };
+  const total = toNumber(ticketSummary[meta.total] || 0);
+  const count = Math.max(0, Math.round(toNumber(ticketSummary[meta.count] || 0)));
+  if (total <= 0) return `Sem vendas em ${meta.label} neste caixa`;
+  return `Obrigatório: ${currency(total)}${count ? ` em ${count} venda(s)` : ""}`;
+}
+
+function validatePdvCashCloseModal(modal = {}) {
+  const absDifference = Math.abs(roundMoney(modal.difference || 0));
+  const showCategory = Boolean(modal.countedHasValue) && absDifference >= 20;
+  const showObservation = Boolean(modal.countedHasValue) && modal.difference !== 0 && absDifference < 20;
+  const requiredTickets = modal.requiredTickets || {};
+  if (!modal.countedHasValue) {
+    return { canSubmit: false, showCategory, showObservation, message: "Informe o dinheiro contado para fechar o caixa." };
+  }
+  if (modal.countedInvalid || toNumber(modal.countedAmount) < 0) {
+    return { canSubmit: false, showCategory, showObservation, message: "Informe um valor contado válido e não negativo." };
+  }
+  if (showCategory && !modal.category) {
+    return { canSubmit: false, showCategory, showObservation, message: "Categoria é obrigatória para diferenças >= R$ 20." };
+  }
+  if (showCategory && (!modal.justification || modal.justification.length < 20)) {
+    return { canSubmit: false, showCategory, showObservation, message: "Justificativa é obrigatória e deve ter no mínimo 20 caracteres para diferenças >= R$ 20." };
+  }
+  if (showObservation && !modal.observation) {
+    return { canSubmit: false, showCategory, showObservation, message: "Observação é obrigatória para pequenas diferenças (< R$ 20)." };
+  }
+  if (requiredTickets.pix && !modal.piXChecked) {
+    return { canSubmit: false, showCategory, showObservation, message: "Confira os tickets PIX antes de fechar o caixa." };
+  }
+  if (requiredTickets.debit && !modal.debitoChecked) {
+    return { canSubmit: false, showCategory, showObservation, message: "Confira os tickets de débito antes de fechar o caixa." };
+  }
+  if (requiredTickets.credit && !modal.creditoChecked) {
+    return { canSubmit: false, showCategory, showObservation, message: "Confira os tickets de crédito antes de fechar o caixa." };
+  }
+  return { canSubmit: true, showCategory, showObservation, message: "" };
+}
+
 function buildPdvCashMovementsPanel(register = null) {
   const canRegister = canRegisterPdvCashMovementFrontend() && ["OPEN", "REOPENED"].includes(String(register?.status || "").toUpperCase());
   const movements = getPdvCashManualMovements(register);
@@ -8886,6 +9051,250 @@ function buildPdvCashMovementsPanel(register = null) {
         </div>
       `}
     </article>
+  `;
+}
+
+function buildPdvCashCloseModal() {
+  const modal = state.pdvCash.closeModal || {};
+  if (!modal.open) return "";
+
+  const register = state.pdvCash.currentRegister || {};
+  const selectedCategory = normalizeText(modal.category || "");
+  const expectedSummary = modal.expectedSummary || buildPdvCashCloseExpectedSummary(register);
+  const ticketSummary = modal.ticketSummary || buildPdvCashCloseTicketSummary(register);
+  const requiredTickets = modal.requiredTickets || getPdvCashTicketRequirements(ticketSummary);
+  const validation = validatePdvCashCloseModal({ ...modal, expectedSummary, ticketSummary, requiredTickets });
+  const shouldShowObservation = validation.showObservation;
+  const shouldShowCategory = validation.showCategory;
+  const effectiveDifferenceFlag = modal.status || getPdvCashDifferenceFlag(modal.difference || 0);
+  const effectiveStatusTone = effectiveDifferenceFlag === "OK" ? "is-balanced" : effectiveDifferenceFlag === "MINOR" ? "is-warning" : "is-danger";
+  const effectiveStatusLabel = effectiveDifferenceFlag === "OK"
+    ? "OK"
+    : effectiveDifferenceFlag === "MINOR"
+      ? "Pequena diferenca"
+      : effectiveDifferenceFlag === "RELEVANT"
+        ? "Diferenca relevante"
+        : "Diferenca critica - revisao gerencial";
+
+  return `
+    <div class="pdv-drawer-overlay pdv-cash-close-overlay" data-pdv-cash-close-overlay="true">
+      <aside class="pdv-drawer pdv-cash-close-modal open" role="dialog" aria-modal="true" aria-label="Fechamento de Caixa" data-pdv-cash-close-panel="true">
+        <div class="pdv-drawer-header">
+          <div>
+            <p class="eyebrow">Operações do Caixa</p>
+            <h3>Fechar Caixa</h3>
+            <span>Informe o dinheiro contado e confirme as diferenças</span>
+          </div>
+          <button class="ghost-button pdv-drawer-close" type="button" data-pdv-cash-close-button="close"${modal.loading ? " disabled" : ""}>Fechar</button>
+        </div>
+
+        <div class="pdv-drawer-body pdv-cash-close-body">
+          <div class="pdv-close-summary-box">
+            <div class="pdv-cash-close-section-head">
+              <strong>Resumo do dinheiro</strong>
+              <span>Conferencia do caixa fisico</span>
+            </div>
+            <div class="pdv-close-summary-row">
+              <span>Saldo inicial</span>
+              <strong>${currency(expectedSummary.initial)}</strong>
+            </div>
+            <div class="pdv-close-summary-row">
+              <span>Vendas</span>
+              <strong>${currency(expectedSummary.cashInSales)}</strong>
+            </div>
+            <div class="pdv-close-summary-row">
+              <span>Aportes</span>
+              <strong>${currency(expectedSummary.deposits)}</strong>
+            </div>
+            <div class="pdv-close-summary-row">
+              <span>Sangrias</span>
+              <strong>${currency(expectedSummary.withdrawals)}</strong>
+            </div>
+            <div class="pdv-close-summary-row pdv-close-summary-row-total">
+              <span>Dinheiro esperado</span>
+              <strong>${currency(expectedSummary.expectedCash)}</strong>
+            </div>
+          </div>
+
+          <label class="pdv-cash-close-field pdv-cash-close-input">
+            <span>Dinheiro Contado (Dinheiro em espécie)</span>
+            <div class="pdv-cash-input-group">
+              <span class="pdv-cash-currency">R$</span>
+              <input
+                type="text"
+                inputmode="decimal"
+                placeholder="0,00"
+                value="${escapeHtml(modal.countedInput || "")}"
+                data-pdv-cash-counted-input="true"
+                ${modal.loading ? "disabled" : ""}
+                autofocus
+              />
+            </div>
+          </label>
+
+          <!-- Difference Display -->
+          ${modal.countedHasValue && !modal.countedInvalid ? `
+          <div class="pdv-cash-close-difference-display ${effectiveStatusTone}">
+            <div class="pdv-cash-close-difference-head">
+              <strong>Diferença:</strong>
+              <span>${currency(Math.abs(modal.difference || 0))}</span>
+            </div>
+            <div class="pdv-cash-close-difference-grid">
+              <div><span>Esperado</span><strong>${currency(expectedSummary.expectedCash)}</strong></div>
+              <div><span>Contado</span><strong>${currency(modal.countedAmount || 0)}</strong></div>
+              <div><span>Variacao</span><strong>${Number(modal.percentageDifference || 0).toFixed(2)}%</strong></div>
+            </div>
+            <div class="pdv-cash-close-status-pill">${effectiveStatusLabel}</div>
+          </div>
+          ` : ""}
+
+          <!-- Dynamic Fields Based on Status -->
+          ${shouldShowObservation ? `
+          <label class="pdv-cash-close-field">
+            <span>Observação (obrigatória para pequenas diferenças)</span>
+            <textarea
+              name="observation"
+              placeholder="Descreva o motivo da diferença..."
+              data-pdv-cash-observation="true"
+              ${modal.loading ? "disabled" : ""}
+            >${escapeHtml(modal.observation || "")}</textarea>
+          </label>
+          ` : ""}
+
+          ${shouldShowCategory ? `
+          <div class="pdv-cash-close-exception-box">
+          <label class="pdv-cash-close-field">
+            <span>Categoria da Diferença (obrigatória para diferenças >= R$ 20)</span>
+            <select
+              name="category"
+              value="${escapeHtml(modal.category)}"
+              data-pdv-cash-category="true"
+              ${modal.loading ? "disabled" : ""}
+            >
+              <option value=""${selectedCategory ? "" : " selected"}>-- Selecione uma categoria --</option>
+              <option value="erro_operacional"${selectedCategory === "erro_operacional" ? " selected" : ""}>Erro Operacional</option>
+              <option value="sangria_nao_registrada"${selectedCategory === "sangria_nao_registrada" ? " selected" : ""}>Sangria Não Registrada</option>
+              <option value="venda_nao_registrada"${selectedCategory === "venda_nao_registrada" ? " selected" : ""}>Venda Não Registrada</option>
+              <option value="dano_perda"${selectedCategory === "dano_perda" ? " selected" : ""}>Dano ou Perda</option>
+              <option value="discrepancia_sistema"${selectedCategory === "discrepancia_sistema" ? " selected" : ""}>Discrepância do Sistema</option>
+              <option value="outro"${selectedCategory === "outro" ? " selected" : ""}>Outro</option>
+            </select>
+          </label>
+          <label class="pdv-cash-close-field">
+            <span>Justificativa (mínimo 20 caracteres)</span>
+            <textarea
+              name="justification"
+              placeholder="Descreva detalhadamente o motivo da diferença..."
+              data-pdv-cash-justification="true"
+              ${modal.loading ? "disabled" : ""}
+            >${escapeHtml(modal.justification || "")}</textarea>
+            <small>${modal.justification.length || 0}/20 caracteres</small>
+          </label>
+          </div>
+          ` : ""}
+
+          <div class="pdv-cash-close-field pdv-cash-ticket-group">
+            <div class="pdv-cash-close-section-head">
+              <strong>Conferencia de tickets</strong>
+              <span>Marque apenas o que ja foi conferido na maquina</span>
+            </div>
+            <label class="pdv-cash-checkbox-label${modal.piXChecked ? " is-checked" : ""}">
+              <input
+                type="checkbox"
+                ${modal.piXChecked ? "checked" : ""}
+                data-pdv-cash-ticket-check="pix"
+                ${modal.loading ? "disabled" : ""}
+              />
+              <span><strong>Tickets PIX conferidos${requiredTickets.pix ? " *" : ""}</strong><small>${escapeHtml(getPdvCashTicketLine(ticketSummary, "pix"))}</small></span>
+            </label>
+            <label class="pdv-cash-checkbox-label${modal.debitoChecked ? " is-checked" : ""}">
+              <input
+                type="checkbox"
+                ${modal.debitoChecked ? "checked" : ""}
+                data-pdv-cash-ticket-check="debito"
+                ${modal.loading ? "disabled" : ""}
+              />
+              <span><strong>Tickets Debito conferidos${requiredTickets.debit ? " *" : ""}</strong><small>${escapeHtml(getPdvCashTicketLine(ticketSummary, "debit"))}</small></span>
+            </label>
+            <label class="pdv-cash-checkbox-label${modal.creditoChecked ? " is-checked" : ""}">
+              <input
+                type="checkbox"
+                ${modal.creditoChecked ? "checked" : ""}
+                data-pdv-cash-ticket-check="credito"
+                ${modal.loading ? "disabled" : ""}
+              />
+              <span><strong>Tickets Credito conferidos${requiredTickets.credit ? " *" : ""}</strong><small>${escapeHtml(getPdvCashTicketLine(ticketSummary, "credit"))}</small></span>
+            </label>
+          </div>
+
+          <!-- Error Display -->
+          ${modal.error ? `
+          <div class="pdv-cash-close-error-box">
+            ${escapeHtml(modal.error)}
+          </div>
+          ` : ""}
+        </div>
+
+        <div class="pdv-drawer-actions pdv-cash-close-actions-footer">
+          <button
+            class="secondary-button"
+            type="button"
+            data-pdv-cash-close-button="close"
+            ${modal.loading ? "disabled" : ""}
+          >
+            Cancelar
+          </button>
+          <button
+            class="primary-button"
+            type="button"
+            data-pdv-cash-close-button="submit"
+            ${modal.loading || !validation.canSubmit ? "disabled" : ""}
+          >
+            ${modal.loading ? "Processando..." : "Gerar Cupom e Fechar"}
+          </button>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Coupon Confirmation Modal -->
+    ${modal.showCouponConfirmation ? `
+    <div class="pdv-drawer-overlay pdv-coupon-confirmation-overlay" data-pdv-coupon-confirmation="true">
+      <aside class="pdv-drawer pdv-coupon-confirmation-modal open" role="dialog" aria-modal="true" aria-label="Confirmar Impressão do Cupom">
+        <div class="pdv-drawer-header">
+          <div>
+            <p class="eyebrow">Fechamento de Caixa</p>
+            <h3>Cupom Impresso?</h3>
+            <span>Confirme que o cupom foi impresso e assinado</span>
+          </div>
+        </div>
+        <div class="pdv-drawer-body" style="padding: 20px; text-align: center;">
+          <p style="margin: 20px 0; font-size: 16px;">
+            <strong>⚠️ Antes de continuar:</strong><br/>
+            O cupom foi impresso?<br/>
+            O cupom foi assinado pelo operador e gerente?
+          </p>
+        </div>
+        <div class="pdv-drawer-actions pdv-cash-close-actions-footer">
+          <button
+            class="secondary-button"
+            type="button"
+            data-pdv-coupon-confirmation="cancel"
+            ${modal.loading ? "disabled" : ""}
+          >
+            Voltar
+          </button>
+          <button
+            class="primary-button"
+            type="button"
+            data-pdv-coupon-confirmation="confirm"
+            ${modal.loading ? "disabled" : ""}
+          >
+            ${modal.loading ? "Finalizando..." : "Confirmar e Fechar"}
+          </button>
+        </div>
+      </aside>
+    </div>
+    ` : ""}
   `;
 }
 
@@ -9226,36 +9635,138 @@ async function openPdvCashRegisterFromUi(formElement = null) {
   }
 }
 
-async function closePdvCashRegisterFromUi(cashRegisterId = "") {
+async function openPdvCashCloseModal(cashRegisterId = "") {
   const normalizedId = normalizeText(cashRegisterId || "");
   if (!normalizedId) return;
   if (!canClosePdvCashRegisterFrontend()) {
-    showFeedback("Seu perfil nao pode fechar caixa.", "error");
+    showFeedback("Seu perfil não pode fechar caixa.", "error");
     return;
   }
-  const countedCashInput = window.prompt("Informe o dinheiro contado no caixa para fechamento:", "0");
-  if (countedCashInput === null) {
-    showFeedback("Fechamento de caixa cancelado.", "info");
+
+  // Get current register and calculate expected amount
+  const register = state.pdvCash.currentRegister;
+  if (!register) {
+    showFeedback("Caixa não encontrado.", "error");
     return;
   }
-  const observation = window.prompt("Observacao do fechamento (opcional):", "") || "";
-  state.pdvCash.closeLoadingId = normalizedId;
+
+  const expectedSummary = buildPdvCashCloseExpectedSummary(register);
+  const ticketSummary = buildPdvCashCloseTicketSummary(register);
+
+  state.pdvCash.closeModal = {
+    open: true,
+    cashRegisterId: normalizedId,
+    expectedAmount: expectedSummary.expectedCash,
+    expectedSummary,
+    ticketSummary,
+    requiredTickets: getPdvCashTicketRequirements(ticketSummary),
+    countedAmount: 0,
+    countedInput: "",
+    countedHasValue: false,
+    countedInvalid: false,
+    difference: 0,
+    percentageDifference: 0,
+    status: "OK",
+    observation: "",
+    category: "",
+    justification: "",
+    piXChecked: false,
+    debitoChecked: false,
+    creditoChecked: false,
+    loading: false,
+    error: "",
+    cupomPrinted: false,
+    showCouponConfirmation: false
+  };
   renderPdvCashRegisterOfficialFront();
-  try {
-    await api(`/api/pdv/control/registers/${encodeURIComponent(normalizedId)}/close`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        dinheiro_informado: toNumber(countedCashInput || 0),
-        observacao: normalizeText(observation || "")
-      })
-    });
-    showFeedback("Caixa fechado com sucesso.");
-    await loadPdvCashRegisterFront();
-  } finally {
-    state.pdvCash.closeLoadingId = "";
-    renderPdvCashRegisterOfficialFront();
+}
+
+function closePdvCashCloseModal() {
+  state.pdvCash.closeModal = {
+    open: false,
+    cashRegisterId: "",
+    expectedAmount: 0,
+    expectedSummary: null,
+    ticketSummary: null,
+    requiredTickets: { pix: false, debit: false, credit: false },
+    countedAmount: 0,
+    countedInput: "",
+    countedHasValue: false,
+    countedInvalid: false,
+    difference: 0,
+    percentageDifference: 0,
+    status: "OK",
+    observation: "",
+    category: "",
+    justification: "",
+    piXChecked: false,
+    debitoChecked: false,
+    creditoChecked: false,
+    loading: false,
+    error: "",
+    cupomPrinted: false,
+    showCouponConfirmation: false
+  };
+  renderPdvCashRegisterOfficialFront();
+}
+
+function updatePdvCashCloseCountedAmount(value) {
+  const input = String(value ?? "").trim();
+  const hasValue = normalizeText(input) !== "";
+  const valid = hasValue ? isPdvCashCountedInputValid(input) : false;
+  const counted = valid ? parseMoneyAmount(input) : 0;
+  const expected = state.pdvCash.closeModal.expectedAmount || 0;
+  const difference = roundMoney(counted - expected);
+  const percentageDifference = expected > 0 ? Math.abs(difference / expected * 100) : 0;
+  const status = hasValue && valid ? getPdvCashDifferenceFlag(difference) : "OK";
+
+  state.pdvCash.closeModal.countedAmount = counted;
+  state.pdvCash.closeModal.countedInput = input;
+  state.pdvCash.closeModal.countedHasValue = hasValue;
+  state.pdvCash.closeModal.countedInvalid = hasValue && !valid;
+  state.pdvCash.closeModal.difference = difference;
+  state.pdvCash.closeModal.percentageDifference = percentageDifference;
+  state.pdvCash.closeModal.status = status;
+  state.pdvCash.closeModal.error = "";
+  renderPdvCashRegisterOfficialFront();
+}
+
+function updatePdvCashCloseObservation(value) {
+  state.pdvCash.closeModal.observation = normalizeText(value || "");
+  state.pdvCash.closeModal.error = "";
+  renderPdvCashRegisterOfficialFront();
+}
+
+function updatePdvCashCloseCategory(value) {
+  state.pdvCash.closeModal.category = normalizeText(value || "");
+  state.pdvCash.closeModal.error = "";
+  renderPdvCashRegisterOfficialFront();
+}
+
+function updatePdvCashCloseJustification(value) {
+  state.pdvCash.closeModal.justification = normalizeText(value || "");
+  state.pdvCash.closeModal.error = "";
+  renderPdvCashRegisterOfficialFront();
+}
+
+function updatePdvCashCloseTicketCheck(paymentMethod) {
+  if (paymentMethod === "pix") {
+    state.pdvCash.closeModal.piXChecked = !state.pdvCash.closeModal.piXChecked;
+  } else if (paymentMethod === "debito") {
+    state.pdvCash.closeModal.debitoChecked = !state.pdvCash.closeModal.debitoChecked;
+  } else if (paymentMethod === "credito") {
+    state.pdvCash.closeModal.creditoChecked = !state.pdvCash.closeModal.creditoChecked;
   }
+  state.pdvCash.closeModal.error = "";
+  renderPdvCashRegisterOfficialFront();
+}
+
+async function closePdvCashRegisterFromUi(cashRegisterId = "") {
+  const normalizedId = normalizeText(cashRegisterId || "");
+  if (!normalizedId) return;
+
+  // Open the new modal instead of using window.prompt
+  await openPdvCashCloseModal(normalizedId);
 }
 
 function openPdvCashMovementModal(type = "aporte") {
@@ -9295,6 +9806,236 @@ function applyPdvCashMovementReasonButton(reasonButton) {
     input.focus();
   }
   return true;
+}
+
+async function submitPdvCashCloseFromUi() {
+  const modal = state.pdvCash.closeModal;
+  const validation = validatePdvCashCloseModal(modal);
+
+  if (!validation.canSubmit) {
+    state.pdvCash.closeModal.error = validation.message || "Revise os dados do fechamento.";
+    renderPdvCashRegisterOfficialFront();
+    return;
+  }
+
+  state.pdvCash.closeModal.loading = true;
+  renderPdvCashRegisterOfficialFront();
+
+  try {
+    const payload = {
+      dinheiro_informado: modal.countedAmount,
+      observacao: modal.observation || "",
+      diferenca_categoria: modal.category || "",
+      diferenca_justificativa: modal.justification || "",
+      tickets_conferidos: {
+        pix: Boolean(modal.piXChecked),
+        debit: Boolean(modal.debitoChecked),
+        credit: Boolean(modal.creditoChecked)
+      },
+      tickets_pix_conferi: Boolean(modal.piXChecked),
+      tickets_debito_conferi: Boolean(modal.debitoChecked),
+      tickets_credito_conferi: Boolean(modal.creditoChecked)
+    };
+
+    const closedRegister = await api(`/api/pdv/control/registers/${encodeURIComponent(modal.cashRegisterId)}/close`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const couponHtml = buildCashClosingCoupon(modal, closedRegister);
+    const printWindow = window.open("", "PrintCoupon", "height=800,width=600");
+    if (printWindow) {
+      printWindow.document.write(couponHtml);
+      printWindow.document.close();
+      printWindow.print();
+    } else {
+      showFeedback("Caixa fechado. O navegador bloqueou a janela do cupom.", "error");
+    }
+
+    showFeedback("Caixa fechado com sucesso.");
+    closePdvCashCloseModal();
+    await loadPdvCashRegisterFront();
+  } catch (error) {
+    state.pdvCash.closeModal.error = error.message || "Erro ao fechar o caixa.";
+    state.pdvCash.closeModal.loading = false;
+    renderPdvCashRegisterOfficialFront();
+  }
+}
+
+async function confirmCouponPrintingAndClose() {
+  return submitPdvCashCloseFromUi();
+}
+
+function calculateDuration(startTime, endTime) {
+  if (!startTime || !endTime) return "";
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  const diffMs = Math.abs(end - start);
+  const hours = Math.floor(diffMs / (1000 * 60 * 60));
+  const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+  return `${hours}h ${minutes}m`;
+}
+
+function buildCashClosingCoupon(modal, closedRegister = null) {
+  const register = closedRegister && typeof closedRegister === "object" ? closedRegister : state.pdvCash.currentRegister || {};
+  const summary = register.close_summary && typeof register.close_summary === "object" ? register.close_summary : {};
+  const expectedSummary = modal.expectedSummary || buildPdvCashCloseExpectedSummary(register);
+  const ticketSummary = summary.ticket_summary && typeof summary.ticket_summary === "object" ? summary.ticket_summary : modal.ticketSummary || {};
+  const ticketsChecked = summary.tickets_conferidos && typeof summary.tickets_conferidos === "object"
+    ? summary.tickets_conferidos
+    : {
+        pix: Boolean(summary.tickets_pix_conferi ?? modal.piXChecked),
+        debit: Boolean(summary.tickets_debito_conferi ?? modal.debitoChecked),
+        credit: Boolean(summary.tickets_credito_conferi ?? modal.creditoChecked)
+      };
+  const openingTime = register.abertura_timestamp || register.criado_em || register.opened_at || Date.now();
+  const closingTime = register.fechamento_timestamp || register.fechado_em || register.closed_at || Date.now();
+  const duration = calculateDuration(openingTime, closingTime);
+  const initialAmount = getPdvCashFirstNumber(summary.valor_inicial, register.valor_inicial, expectedSummary.initial, register.saldo_inicial);
+  const salesAmount = getPdvCashFirstNumber(summary.dinheiro_vendas, summary.cash_in_sales_total, expectedSummary.cashInSales, register.vendas_total);
+  const depositsAmount = getPdvCashFirstNumber(summary.aportes, summary.aportes_total, summary.suprimentos, expectedSummary.deposits, register.aportes_total);
+  const withdrawalsAmount = getPdvCashFirstNumber(summary.sangrias, summary.sangrias_total, expectedSummary.withdrawals, register.sangrias_total);
+  const expectedAmount = getPdvCashFirstNumber(summary.dinheiro_esperado, summary.expected_cash_amount, expectedSummary.expectedCash, modal.expectedAmount);
+  const countedAmount = getPdvCashFirstNumber(summary.dinheiro_informado, summary.counted_cash_amount, modal.countedAmount);
+  const differenceAmount = getPdvCashFirstNumber(summary.diferenca_final, summary.cash_difference, modal.difference);
+  const percentageDifference = getPdvCashFirstNumber(summary.diferenca_percentual, modal.percentageDifference);
+  const differenceFlag = normalizeText(summary.difference_flag || modal.status || getPdvCashDifferenceFlag(differenceAmount));
+  const statusColor = differenceFlag === "OK" ? "#4CAF50" : differenceFlag === "MINOR" ? "#FFA500" : "#f44336";
+  const statusText = differenceFlag === "OK"
+    ? "OK - Caixa Fechado"
+    : differenceFlag === "MINOR"
+      ? "Pequena Diferenca"
+      : differenceFlag === "RELEVANT"
+        ? "Diferenca Relevante"
+        : "Diferenca Critica - Revisao Gerencial";
+  const category = normalizeText(summary.diferenca_categoria || modal.category || "");
+  const justification = normalizeText(summary.diferenca_justificativa || modal.justification || "");
+  const observation = normalizeText(summary.observacao || modal.observation || "");
+  const couponMoney = (value = 0) => toNumber(value || 0).toFixed(2).replace(".", ",");
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>Cupom de Fechamento - ${register.loja_nome || "PDV"}</title>
+      <style>
+        body { font-family: monospace; margin: 0; padding: 10mm; background: white; }
+        .cupom { max-width: 80mm; margin: 0 auto; border: 1px solid #ccc; padding: 10mm; }
+        .header { text-align: center; border-bottom: 1px dashed #000; margin-bottom: 5mm; padding-bottom: 5mm; }
+        .header h2 { margin: 0; font-size: 14px; }
+        .section { margin-bottom: 5mm; }
+        .section-title { background: #f0f0f0; padding: 2mm; font-weight: bold; border-bottom: 1px solid #000; margin-bottom: 2mm; }
+        .row { display: flex; justify-content: space-between; font-size: 11px; padding: 1mm 0; }
+        .label { flex: 1; }
+        .value { text-align: right; font-weight: bold; }
+        .signature-line { border-top: 1px solid #000; margin-top: 5mm; padding-top: 2mm; text-align: center; font-size: 10px; height: 15mm; }
+        .status-box {
+          border: 2px solid ${statusColor};
+          padding: 5mm;
+          text-align: center;
+          margin: 5mm 0;
+          background: ${statusColor}20;
+          font-weight: bold;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="cupom">
+        <div class="header">
+          <h2>CUPOM DE FECHAMENTO DE CAIXA</h2>
+          <p style="margin: 2mm 0; font-size: 10px;">${register.loja_nome || "PDV"} - ${register.loja_numero || ""}</p>
+        </div>
+
+        <div class="section">
+          <div class="section-title">INFORMAÇÕES GERAIS</div>
+          <div class="row">
+            <span class="label">Operador:</span>
+            <span class="value">${escapeHtml(register.operador_nome || register.operador || "N/A")}</span>
+          </div>
+          <div class="row">
+            <span class="label">Abertura:</span>
+            <span class="value">${new Date(openingTime).toLocaleString("pt-BR")}</span>
+          </div>
+          <div class="row">
+            <span class="label">Fechamento:</span>
+            <span class="value">${new Date(closingTime).toLocaleString("pt-BR")}</span>
+          </div>
+          <div class="row">
+            <span class="label">Duração:</span>
+            <span class="value">${duration}</span>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">RESUMO DO PERÍODO</div>
+          <div class="row">
+            <span class="label">Saldo Inicial:</span>
+            <span class="value">R$ ${couponMoney(initialAmount)}</span>
+          </div>
+          <div class="row">
+            <span class="label">Vendas:</span>
+            <span class="value">R$ ${couponMoney(salesAmount)}</span>
+          </div>
+          <div class="row">
+            <span class="label">Aportes:</span>
+            <span class="value">R$ ${couponMoney(depositsAmount)}</span>
+          </div>
+          <div class="row">
+            <span class="label">Sangrias:</span>
+            <span class="value">R$ ${couponMoney(withdrawalsAmount)}</span>
+          </div>
+          <div class="row" style="border-top: 1px solid #000; padding-top: 2mm; margin-top: 2mm;">
+            <span class="label"><strong>Esperado:</strong></span>
+            <span class="value"><strong>R$ ${couponMoney(expectedAmount)}</strong></span>
+          </div>
+          <div class="row">
+            <span class="label"><strong>Contado:</strong></span>
+            <span class="value"><strong>R$ ${couponMoney(countedAmount)}</strong></span>
+          </div>
+        </div>
+
+        <div class="status-box">
+          ${statusText}<br/>
+          Diferença: R$ ${couponMoney(Math.abs(differenceAmount))} (${toNumber(percentageDifference).toFixed(2)}%)
+        </div>
+
+        ${observation ? `
+        <div class="section">
+          <div class="section-title">OBSERVAÇÃO</div>
+          <div style="font-size: 11px; padding: 2mm;">${escapeHtml(observation)}</div>
+        </div>
+        ` : ""}
+
+        ${justification ? `
+        <div class="section">
+          <div class="section-title">JUSTIFICATIVA DA DIFERENÇA</div>
+          <div style="font-size: 11px; padding: 2mm;">
+            <strong>Categoria:</strong> ${escapeHtml(category)}<br/>
+            ${escapeHtml(justification)}
+          </div>
+        </div>
+        ` : ""}
+
+        <div class="section">
+          <div class="section-title">CONFERÊNCIAS</div>
+          <div style="font-size: 11px; padding: 2mm;">
+            ${ticketsChecked.pix ? "✓" : "○"} Tickets PIX conferidos - R$ ${couponMoney(ticketSummary.pix_total || 0)}<br/>
+            ${ticketsChecked.debit ? "✓" : "○"} Tickets Débito conferidos - R$ ${couponMoney(ticketSummary.debit_total || 0)}<br/>
+            ${ticketsChecked.credit ? "✓" : "○"} Tickets Crédito conferidos - R$ ${couponMoney(ticketSummary.credit_total || 0)}
+          </div>
+        </div>
+
+        <div style="text-align: center; font-size: 10px; margin-top: 10mm; padding-top: 5mm; border-top: 1px dashed #000;">
+          Assinaturas:<br/>
+          <div class="signature-line">Operador: _____________</div>
+          <div class="signature-line">Gerente: _____________</div>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
 }
 
 async function submitPdvCashMovementFromUi(formElement) {
@@ -9746,6 +10487,7 @@ function buildPdvCashRegisterFrontHtml() {
             `}
           </article>
         </section>
+        ${buildPdvCashCloseModal()}
         ${buildPdvCashMovementModal()}
       </div>
     `
@@ -20088,6 +20830,10 @@ function toNumber(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function roundMoney(value) {
+  return Number(toNumber(value).toFixed(2));
+}
+
 function parseMoneyAmount(value) {
   const raw = String(value ?? "").trim();
   if (!raw) return 0;
@@ -28965,10 +29711,79 @@ function handleDocumentClick(event) {
     return;
   }
 
-  const pdvCashCloseButton = event.target.closest("[data-pdv-cash-close]");
+  const pdvCashCloseRegisterButton = event.target.closest("[data-pdv-cash-close]");
+  if (pdvCashCloseRegisterButton) {
+    event.preventDefault();
+    closePdvCashRegisterFromUi(pdvCashCloseRegisterButton.dataset.pdvCashClose || "").catch((error) => handleUiError("Erro ao fechar o caixa do PDV", error));
+    return;
+  }
+
+  // Cash closing modal handlers
+  const pdvCashCloseOverlay = event.target.closest("[data-pdv-cash-close-overlay]");
+  const pdvCashClosePanel = event.target.closest("[data-pdv-cash-close-panel]");
+  if (pdvCashCloseOverlay && !pdvCashClosePanel && event.target === pdvCashCloseOverlay) {
+    event.preventDefault();
+    closePdvCashCloseModal();
+    return;
+  }
+
+  const pdvCashCloseCountedInput = event.target.closest("[data-pdv-cash-counted-input]");
+  if (pdvCashCloseCountedInput) {
+    event.preventDefault();
+    updatePdvCashCloseCountedAmount(pdvCashCloseCountedInput.value || "");
+    return;
+  }
+
+  const pdvCashObservationInput = event.target.closest("[data-pdv-cash-observation]");
+  if (pdvCashObservationInput) {
+    event.preventDefault();
+    updatePdvCashCloseObservation(pdvCashObservationInput.value || "");
+    return;
+  }
+
+  const pdvCashCategorySelect = event.target.closest("[data-pdv-cash-category]");
+  if (pdvCashCategorySelect) {
+    event.preventDefault();
+    updatePdvCashCloseCategory(pdvCashCategorySelect.value || "");
+    return;
+  }
+
+  const pdvCashJustificationInput = event.target.closest("[data-pdv-cash-justification]");
+  if (pdvCashJustificationInput) {
+    event.preventDefault();
+    updatePdvCashCloseJustification(pdvCashJustificationInput.value || "");
+    return;
+  }
+
+  const pdvCashTicketCheck = event.target.closest("[data-pdv-cash-ticket-check]");
+  if (pdvCashTicketCheck) {
+    event.preventDefault();
+    updatePdvCashCloseTicketCheck(pdvCashTicketCheck.dataset.pdvCashTicketCheck || "");
+    return;
+  }
+
+  const pdvCashCloseButton = event.target.closest("[data-pdv-cash-close-button]");
   if (pdvCashCloseButton) {
     event.preventDefault();
-    closePdvCashRegisterFromUi(pdvCashCloseButton.dataset.pdvCashClose || "").catch((error) => handleUiError("Erro ao fechar o caixa do PDV", error));
+    const action = pdvCashCloseButton.dataset.pdvCashCloseButton || "";
+    if (action === "close") {
+      closePdvCashCloseModal();
+    } else if (action === "submit") {
+      submitPdvCashCloseFromUi().catch((error) => handleUiError("Erro ao processar fechamento", error));
+    }
+    return;
+  }
+
+  const pdvCouponConfirmation = event.target.closest("[data-pdv-coupon-confirmation]");
+  if (pdvCouponConfirmation) {
+    event.preventDefault();
+    const action = event.target.closest("[data-pdv-coupon-confirmation]")?.dataset?.pdvCouponConfirmation || "";
+    if (action === "confirm") {
+      confirmCouponPrintingAndClose().catch((error) => handleUiError("Erro ao fechar caixa", error));
+    } else if (action === "cancel") {
+      state.pdvCash.closeModal.showCouponConfirmation = false;
+      renderPdvCashRegisterOfficialFront();
+    }
     return;
   }
 
@@ -29845,6 +30660,12 @@ function handleDocumentSubmit(event) {
 }
 
 function handleDocumentChange(event) {
+  const pdvCashCategorySelect = event.target.closest("[data-pdv-cash-category]");
+  if (pdvCashCategorySelect) {
+    updatePdvCashCloseCategory(pdvCashCategorySelect.value || "");
+    return;
+  }
+
   const activeStoreSelect = event.target.closest("[data-active-store-select]");
   if (activeStoreSelect) {
     changeActiveStore(activeStoreSelect.value).catch((error) => handleUiError("Erro ao trocar a loja ativa", error));
@@ -30167,6 +30988,24 @@ function handleDocumentChange(event) {
 }
 
 function handleDocumentInput(event) {
+  const pdvCashCloseCountedInput = event.target.closest("[data-pdv-cash-counted-input]");
+  if (pdvCashCloseCountedInput) {
+    updatePdvCashCloseCountedAmount(pdvCashCloseCountedInput.value || "");
+    return;
+  }
+
+  const pdvCashObservationInput = event.target.closest("[data-pdv-cash-observation]");
+  if (pdvCashObservationInput) {
+    updatePdvCashCloseObservation(pdvCashObservationInput.value || "");
+    return;
+  }
+
+  const pdvCashJustificationInput = event.target.closest("[data-pdv-cash-justification]");
+  if (pdvCashJustificationInput) {
+    updatePdvCashCloseJustification(pdvCashJustificationInput.value || "");
+    return;
+  }
+
   const pdvCashMovementReasonInput = event.target.closest('[data-pdv-cash-movement-form] input[name="reason"]');
   if (pdvCashMovementReasonInput) {
     state.pdvCash.movementModal = {

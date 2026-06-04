@@ -277,7 +277,13 @@ router.post("/registers/:cashRegisterId/close", async (req, res) => {
     res.json(closeCashRegister({
       cashRegisterId: req.params.cashRegisterId,
       dinheiro_informado: req.body?.dinheiro_informado,
-      observacao: req.body?.observacao
+      observacao: req.body?.observacao,
+      diferenca_categoria: req.body?.diferenca_categoria,
+      diferenca_justificativa: req.body?.diferenca_justificativa,
+      tickets_conferidos: req.body?.tickets_conferidos,
+      tickets_pix_conferi: req.body?.tickets_pix_conferi,
+      tickets_debito_conferi: req.body?.tickets_debito_conferi,
+      tickets_credito_conferi: req.body?.tickets_credito_conferi
     }, req.user || {}));
   } catch (error) {
     res.status(error.statusCode || 400).json({ error: error.message || "Falha ao fechar o caixa operacional do PDV." });
