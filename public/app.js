@@ -9710,7 +9710,24 @@ function closePdvCashCloseModal() {
   renderPdvCashRegisterOfficialFront();
 }
 
-function updatePdvCashCloseCountedAmount(value) {
+function renderPdvCashRegisterPreservingCloseField(selector = "", selectionStart = null, selectionEnd = null) {
+  renderPdvCashRegisterOfficialFront();
+  if (!selector) return;
+  window.setTimeout(() => {
+    const field = document.querySelector(selector);
+    if (!field || state.pdvCash.closeModal?.loading) return;
+    field.focus({ preventScroll: true });
+    if (typeof field.setSelectionRange === "function" && selectionStart !== null && selectionEnd !== null) {
+      const valueLength = String(field.value || "").length;
+      field.setSelectionRange(
+        Math.min(selectionStart, valueLength),
+        Math.min(selectionEnd, valueLength)
+      );
+    }
+  }, 0);
+}
+
+function updatePdvCashCloseCountedAmount(value, { render = true } = {}) {
   const input = String(value ?? "").trim();
   const hasValue = normalizeText(input) !== "";
   const valid = hasValue ? isPdvCashCountedInputValid(input) : false;
@@ -9728,13 +9745,17 @@ function updatePdvCashCloseCountedAmount(value) {
   state.pdvCash.closeModal.percentageDifference = percentageDifference;
   state.pdvCash.closeModal.status = status;
   state.pdvCash.closeModal.error = "";
-  renderPdvCashRegisterOfficialFront();
+  if (render) {
+    renderPdvCashRegisterOfficialFront();
+  }
 }
 
-function updatePdvCashCloseObservation(value) {
+function updatePdvCashCloseObservation(value, { render = true } = {}) {
   state.pdvCash.closeModal.observation = normalizeText(value || "");
   state.pdvCash.closeModal.error = "";
-  renderPdvCashRegisterOfficialFront();
+  if (render) {
+    renderPdvCashRegisterOfficialFront();
+  }
 }
 
 function updatePdvCashCloseCategory(value) {
@@ -9743,10 +9764,12 @@ function updatePdvCashCloseCategory(value) {
   renderPdvCashRegisterOfficialFront();
 }
 
-function updatePdvCashCloseJustification(value) {
+function updatePdvCashCloseJustification(value, { render = true } = {}) {
   state.pdvCash.closeModal.justification = normalizeText(value || "");
   state.pdvCash.closeModal.error = "";
-  renderPdvCashRegisterOfficialFront();
+  if (render) {
+    renderPdvCashRegisterOfficialFront();
+  }
 }
 
 function updatePdvCashCloseTicketCheck(paymentMethod) {
@@ -29727,34 +29750,6 @@ function handleDocumentClick(event) {
     return;
   }
 
-  const pdvCashCloseCountedInput = event.target.closest("[data-pdv-cash-counted-input]");
-  if (pdvCashCloseCountedInput) {
-    event.preventDefault();
-    updatePdvCashCloseCountedAmount(pdvCashCloseCountedInput.value || "");
-    return;
-  }
-
-  const pdvCashObservationInput = event.target.closest("[data-pdv-cash-observation]");
-  if (pdvCashObservationInput) {
-    event.preventDefault();
-    updatePdvCashCloseObservation(pdvCashObservationInput.value || "");
-    return;
-  }
-
-  const pdvCashCategorySelect = event.target.closest("[data-pdv-cash-category]");
-  if (pdvCashCategorySelect) {
-    event.preventDefault();
-    updatePdvCashCloseCategory(pdvCashCategorySelect.value || "");
-    return;
-  }
-
-  const pdvCashJustificationInput = event.target.closest("[data-pdv-cash-justification]");
-  if (pdvCashJustificationInput) {
-    event.preventDefault();
-    updatePdvCashCloseJustification(pdvCashJustificationInput.value || "");
-    return;
-  }
-
   const pdvCashTicketCheck = event.target.closest("[data-pdv-cash-ticket-check]");
   if (pdvCashTicketCheck) {
     event.preventDefault();
@@ -30990,19 +30985,28 @@ function handleDocumentChange(event) {
 function handleDocumentInput(event) {
   const pdvCashCloseCountedInput = event.target.closest("[data-pdv-cash-counted-input]");
   if (pdvCashCloseCountedInput) {
-    updatePdvCashCloseCountedAmount(pdvCashCloseCountedInput.value || "");
+    const selectionStart = pdvCashCloseCountedInput.selectionStart;
+    const selectionEnd = pdvCashCloseCountedInput.selectionEnd;
+    updatePdvCashCloseCountedAmount(pdvCashCloseCountedInput.value || "", { render: false });
+    renderPdvCashRegisterPreservingCloseField("[data-pdv-cash-counted-input]", selectionStart, selectionEnd);
     return;
   }
 
   const pdvCashObservationInput = event.target.closest("[data-pdv-cash-observation]");
   if (pdvCashObservationInput) {
-    updatePdvCashCloseObservation(pdvCashObservationInput.value || "");
+    const selectionStart = pdvCashObservationInput.selectionStart;
+    const selectionEnd = pdvCashObservationInput.selectionEnd;
+    updatePdvCashCloseObservation(pdvCashObservationInput.value || "", { render: false });
+    renderPdvCashRegisterPreservingCloseField("[data-pdv-cash-observation]", selectionStart, selectionEnd);
     return;
   }
 
   const pdvCashJustificationInput = event.target.closest("[data-pdv-cash-justification]");
   if (pdvCashJustificationInput) {
-    updatePdvCashCloseJustification(pdvCashJustificationInput.value || "");
+    const selectionStart = pdvCashJustificationInput.selectionStart;
+    const selectionEnd = pdvCashJustificationInput.selectionEnd;
+    updatePdvCashCloseJustification(pdvCashJustificationInput.value || "", { render: false });
+    renderPdvCashRegisterPreservingCloseField("[data-pdv-cash-justification]", selectionStart, selectionEnd);
     return;
   }
 
