@@ -530,7 +530,8 @@ const state = {
       email: "",
       store_id: "",
       notes: ""
-    }
+    },
+    saleAttachAfterCreate: null
   },
   pdvStock: {
     loading: false,
@@ -3935,6 +3936,7 @@ function buildPdvSaleCustomerCard(customer = null) {
       <div class="pdv-sale-empty-state compact">
         <strong>Sem cliente identificado</strong>
         <span>Busque por nome, telefone ou use o cadastro oficial para continuar a venda.</span>
+        ${canCreatePdvCustomers() ? `<button class="secondary-button small" type="button" data-pdv-sale-customer-full-register="true">Cadastrar cliente</button>` : ""}
       </div>
     `;
   }
@@ -4051,6 +4053,29 @@ function buildPdvSaleCustomerResults() {
     </article>
   `;
   }).join("");
+}
+
+function openPdvSaleCustomerFullRegistration() {
+  if (!canCreatePdvCustomers()) {
+    showFeedback("Seu perfil nao pode cadastrar clientes nesta frente.", "error");
+    return;
+  }
+  ensurePdvCustomersCrudState();
+  state.pdvCustomers.sourceMode = "operational";
+  state.pdvCustomers.drawerMode = "create";
+  state.pdvCustomers.drawerOpen = true;
+  state.pdvCustomers.drawerSaving = false;
+  state.pdvCustomers.drawerError = "";
+  state.pdvCustomers.drawerDraft = getDefaultPdvCustomerCrudDraft();
+  state.pdvCustomers.saleAttachAfterCreate = {
+    active: true,
+    sessionId: state.pdvSale.sessionId || "",
+    returnRoute: "/pdv/venda"
+  };
+  window.history.pushState({}, "", "/pdv/clientes");
+  setActiveSection("pdv-customers");
+  renderSidebarMenu();
+  showFeedback("Cadastro normal de cliente aberto.");
 }
 
 function buildPdvSaleDraftsPanel() {
@@ -9269,7 +9294,7 @@ function buildPdvCashCloseModal() {
           <button class="ghost-button pdv-drawer-close" type="button" data-pdv-cash-close-button="close"${modal.loading ? " disabled" : ""}>Fechar</button>
         </div>
 
-        <div class="pdv-drawer-body pdv-cash-close-body">
+        <div class="pdv-drawer-body pdv-cash-close-body" data-pdv-cash-close-modal-body="true">
           <div class="pdv-close-summary-box">
             <div class="pdv-cash-close-section-head">
               <strong>Resumo do dinheiro</strong>
@@ -9315,17 +9340,17 @@ function buildPdvCashCloseModal() {
 
           <!-- Difference Display -->
           ${modal.countedHasValue && !modal.countedInvalid ? `
-          <div class="pdv-cash-close-difference-display ${effectiveStatusTone}">
+          <div class="pdv-cash-close-difference-display ${effectiveStatusTone}" data-pdv-cash-difference-display="true">
             <div class="pdv-cash-close-difference-head">
               <strong>Diferença:</strong>
-              <span>${currency(Math.abs(modal.difference || 0))}</span>
+              <span data-pdv-cash-difference-amount="true">${currency(Math.abs(modal.difference || 0))}</span>
             </div>
             <div class="pdv-cash-close-difference-grid">
               <div><span>Esperado</span><strong>${currency(expectedSummary.expectedCash)}</strong></div>
-              <div><span>Contado</span><strong>${currency(modal.countedAmount || 0)}</strong></div>
-              <div><span>Variacao</span><strong>${Number(modal.percentageDifference || 0).toFixed(2)}%</strong></div>
+              <div><span>Contado</span><strong data-pdv-cash-difference-counted="true">${currency(modal.countedAmount || 0)}</strong></div>
+              <div><span>Variacao</span><strong data-pdv-cash-difference-variation="true">${Number(modal.percentageDifference || 0).toFixed(2)}%</strong></div>
             </div>
-            <div class="pdv-cash-close-status-pill">${effectiveStatusLabel}</div>
+            <div class="pdv-cash-close-status-pill" data-pdv-cash-difference-status="true">${effectiveStatusLabel}</div>
           </div>
           ` : ""}
 
@@ -9345,7 +9370,7 @@ function buildPdvCashCloseModal() {
           ${shouldShowCategory ? `
           <div class="pdv-cash-close-exception-box">
           <label class="pdv-cash-close-field">
-            <span>Categoria da Diferença (obrigatória para diferenças >= R$ 20)</span>
+            <span>Categoria da Diferença</span>
             <select
               name="category"
               value="${escapeHtml(modal.category)}"
@@ -9369,7 +9394,7 @@ function buildPdvCashCloseModal() {
               data-pdv-cash-justification="true"
               ${modal.loading ? "disabled" : ""}
             >${escapeHtml(modal.justification || "")}</textarea>
-            <small>${modal.justification.length || 0}/20 caracteres</small>
+            <small data-pdv-cash-justification-counter="true">${modal.justification.length || 0}/20 caracteres</small>
           </label>
           </div>
           ` : ""}
@@ -9379,7 +9404,7 @@ function buildPdvCashCloseModal() {
               <strong>Conferencia de tickets</strong>
               <span>Marque apenas o que ja foi conferido na maquina</span>
             </div>
-            <label class="pdv-cash-checkbox-label${modal.piXChecked ? " is-checked" : ""}">
+            <label class="pdv-cash-checkbox-label${modal.piXChecked ? " is-checked" : ""}" data-pdv-cash-ticket-card="pix">
               <input
                 type="checkbox"
                 ${modal.piXChecked ? "checked" : ""}
@@ -9388,7 +9413,7 @@ function buildPdvCashCloseModal() {
               />
               <span><strong>Tickets PIX conferidos${requiredTickets.pix ? " *" : ""}</strong><small>${escapeHtml(getPdvCashTicketLine(ticketSummary, "pix"))}</small></span>
             </label>
-            <label class="pdv-cash-checkbox-label${modal.debitoChecked ? " is-checked" : ""}">
+            <label class="pdv-cash-checkbox-label${modal.debitoChecked ? " is-checked" : ""}" data-pdv-cash-ticket-card="debito">
               <input
                 type="checkbox"
                 ${modal.debitoChecked ? "checked" : ""}
@@ -9397,7 +9422,7 @@ function buildPdvCashCloseModal() {
               />
               <span><strong>Tickets Debito conferidos${requiredTickets.debit ? " *" : ""}</strong><small>${escapeHtml(getPdvCashTicketLine(ticketSummary, "debit"))}</small></span>
             </label>
-            <label class="pdv-cash-checkbox-label${modal.creditoChecked ? " is-checked" : ""}">
+            <label class="pdv-cash-checkbox-label${modal.creditoChecked ? " is-checked" : ""}" data-pdv-cash-ticket-card="credito">
               <input
                 type="checkbox"
                 ${modal.creditoChecked ? "checked" : ""}
@@ -9429,6 +9454,7 @@ function buildPdvCashCloseModal() {
             class="primary-button"
             type="button"
             data-pdv-cash-close-button="submit"
+            data-pdv-cash-close-submit="true"
             ${modal.loading || !validation.canSubmit ? "disabled" : ""}
           >
             ${modal.loading ? "Processando..." : "Gerar Cupom e Fechar"}
@@ -10099,10 +10125,37 @@ function closePdvCashCloseModal() {
   renderPdvCashRegisterOfficialFront();
 }
 
+function isPdvCashModalOpen() {
+  return Boolean(state.pdvCash.openModal?.open || state.pdvCash.closeModal?.open);
+}
+
 function renderPdvCashRegisterPreservingCloseField(selector = "", selectionStart = null, selectionEnd = null) {
-  renderPdvCashRegisterOfficialFront();
+  const previousModalBody = document.querySelector("[data-pdv-cash-close-modal-body]");
+  const previousScrollTop = previousModalBody ? previousModalBody.scrollTop : 0;
+  const previousWindowScrollX = window.scrollX || 0;
+  const previousWindowScrollY = window.scrollY || 0;
+  const previousOverlay = document.querySelector("[data-pdv-cash-close-overlay]");
+  if (previousOverlay && state.pdvCash.closeModal?.open) {
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = buildPdvCashCloseModal();
+    const nextOverlay = wrapper.querySelector("[data-pdv-cash-close-overlay]");
+    if (nextOverlay) {
+      previousOverlay.replaceWith(nextOverlay);
+    } else {
+      renderPdvCashRegisterOfficialFront();
+    }
+  } else {
+    renderPdvCashRegisterOfficialFront();
+  }
   if (!selector) return;
   window.setTimeout(() => {
+    const modalBody = document.querySelector("[data-pdv-cash-close-modal-body]");
+    if (modalBody) {
+      modalBody.scrollTop = previousScrollTop;
+    }
+    if (typeof window.scrollTo === "function") {
+      window.scrollTo(previousWindowScrollX, previousWindowScrollY);
+    }
     const field = document.querySelector(selector);
     if (!field || state.pdvCash.closeModal?.loading) return;
     field.focus({ preventScroll: true });
@@ -10114,6 +10167,137 @@ function renderPdvCashRegisterPreservingCloseField(selector = "", selectionStart
       );
     }
   }, 0);
+}
+
+function formatPdvCashCloseCountedInputValue(value = "") {
+  const input = String(value ?? "").trim();
+  if (!input || !isPdvCashCountedInputValid(input)) return input;
+  return parseMoneyAmount(input).toFixed(2).replace(".", ",");
+}
+
+function syncPdvCashCloseModalValidationState() {
+  const modal = state.pdvCash.closeModal || {};
+  if (!modal.open) return;
+
+  const register = state.pdvCash.currentRegister || {};
+  const expectedSummary = modal.expectedSummary || buildPdvCashCloseExpectedSummary(register);
+  const ticketSummary = modal.ticketSummary || buildPdvCashCloseTicketSummary(register);
+  const requiredTickets = modal.requiredTickets || getPdvCashTicketRequirements(ticketSummary);
+  const validation = validatePdvCashCloseModal({ ...modal, expectedSummary, ticketSummary, requiredTickets });
+  const submitButton = document.querySelector("[data-pdv-cash-close-submit]");
+  if (submitButton) {
+    if (modal.loading || !validation.canSubmit) {
+      submitButton.setAttribute("disabled", "disabled");
+    } else {
+      submitButton.removeAttribute("disabled");
+    }
+  }
+
+  const justificationCounter = document.querySelector("[data-pdv-cash-justification-counter]");
+  if (justificationCounter) {
+    justificationCounter.textContent = `${modal.justification.length || 0}/20 caracteres`;
+  }
+
+  if (!modal.error) {
+    document.querySelector(".pdv-cash-close-error-box")?.remove?.();
+  }
+}
+
+function getPdvCashCloseDynamicMode(modal = {}) {
+  if (!modal.countedHasValue || modal.countedInvalid) return "empty";
+  const absDifference = Math.abs(roundMoney(modal.difference || 0));
+  if (absDifference >= 20) return "category";
+  if (modal.difference !== 0 && absDifference < 20) return "observation";
+  return "balanced";
+}
+
+function getPdvCashCloseStatusMeta(flag = "OK") {
+  const normalizedFlag = normalizeText(flag || "OK").toUpperCase();
+  if (normalizedFlag === "OK") {
+    return { label: "OK", tone: "is-balanced" };
+  }
+  if (normalizedFlag === "MINOR") {
+    return { label: "Pequena diferenca", tone: "is-warning" };
+  }
+  if (normalizedFlag === "RELEVANT") {
+    return { label: "Diferenca relevante", tone: "is-danger" };
+  }
+  return { label: "Diferenca critica - revisao gerencial", tone: "is-danger" };
+}
+
+function syncPdvCashCloseDifferenceDisplay() {
+  const modal = state.pdvCash.closeModal || {};
+  const display = document.querySelector("[data-pdv-cash-difference-display]");
+  if (!display || !modal.countedHasValue || modal.countedInvalid) return;
+
+  const statusMeta = getPdvCashCloseStatusMeta(modal.status || getPdvCashDifferenceFlag(modal.difference || 0));
+  display.classList.remove("is-balanced", "is-warning", "is-danger");
+  display.classList.add(statusMeta.tone);
+
+  const differenceAmount = document.querySelector("[data-pdv-cash-difference-amount]");
+  if (differenceAmount) {
+    differenceAmount.textContent = currency(Math.abs(modal.difference || 0));
+  }
+  const countedAmount = document.querySelector("[data-pdv-cash-difference-counted]");
+  if (countedAmount) {
+    countedAmount.textContent = currency(modal.countedAmount || 0);
+  }
+  const variation = document.querySelector("[data-pdv-cash-difference-variation]");
+  if (variation) {
+    variation.textContent = `${Number(modal.percentageDifference || 0).toFixed(2)}%`;
+  }
+  const status = document.querySelector("[data-pdv-cash-difference-status]");
+  if (status) {
+    status.textContent = statusMeta.label;
+  }
+}
+
+function syncPdvCashCloseLiveState() {
+  syncPdvCashCloseDifferenceDisplay();
+  syncPdvCashCloseTicketCardsState();
+  syncPdvCashCloseModalValidationState();
+}
+
+function getPdvCashCloseTicketChecked(paymentMethod = "") {
+  const modal = state.pdvCash.closeModal || {};
+  if (paymentMethod === "pix") return Boolean(modal.piXChecked);
+  if (paymentMethod === "debito") return Boolean(modal.debitoChecked);
+  if (paymentMethod === "credito") return Boolean(modal.creditoChecked);
+  return false;
+}
+
+function syncPdvCashCloseTicketCardState(paymentMethod = "") {
+  const method = normalizeText(paymentMethod || "");
+  if (!method) return;
+  const input = document.querySelector(`[data-pdv-cash-ticket-check="${CSS.escape(method)}"]`);
+  if (!input) return;
+  const checked = getPdvCashCloseTicketChecked(method);
+  input.checked = checked;
+  input.closest(".pdv-cash-checkbox-label")?.classList?.toggle("is-checked", checked);
+}
+
+function syncPdvCashCloseTicketCardsState() {
+  ["pix", "debito", "credito"].forEach((method) => syncPdvCashCloseTicketCardState(method));
+}
+
+function formatPdvCashCloseCountedInputField(inputElement) {
+  const input = inputElement?.closest?.("[data-pdv-cash-counted-input]") ? inputElement : null;
+  if (!input) return;
+  const raw = String(input.value ?? "").trim();
+  if (!raw) {
+    updatePdvCashCloseCountedAmount("", { render: false });
+    syncPdvCashCloseModalValidationState();
+    return;
+  }
+  if (!isPdvCashCountedInputValid(raw)) {
+    updatePdvCashCloseCountedAmount(raw, { render: false });
+    syncPdvCashCloseModalValidationState();
+    return;
+  }
+  const formatted = formatPdvCashCloseCountedInputValue(raw);
+  input.value = formatted;
+  updatePdvCashCloseCountedAmount(formatted, { render: false });
+  syncPdvCashCloseModalValidationState();
 }
 
 function updatePdvCashCloseCountedAmount(value, { render = true } = {}) {
@@ -10147,10 +10331,12 @@ function updatePdvCashCloseObservation(value, { render = true } = {}) {
   }
 }
 
-function updatePdvCashCloseCategory(value) {
+function updatePdvCashCloseCategory(value, { render = true } = {}) {
   state.pdvCash.closeModal.category = normalizeText(value || "");
   state.pdvCash.closeModal.error = "";
-  renderPdvCashRegisterOfficialFront();
+  if (render) {
+    renderPdvCashRegisterOfficialFront();
+  }
 }
 
 function updatePdvCashCloseJustification(value, { render = true } = {}) {
@@ -10161,16 +10347,19 @@ function updatePdvCashCloseJustification(value, { render = true } = {}) {
   }
 }
 
-function updatePdvCashCloseTicketCheck(paymentMethod) {
+function updatePdvCashCloseTicketCheck(paymentMethod, { render = true, checked = null } = {}) {
+  const hasExplicitChecked = typeof checked === "boolean";
   if (paymentMethod === "pix") {
-    state.pdvCash.closeModal.piXChecked = !state.pdvCash.closeModal.piXChecked;
+    state.pdvCash.closeModal.piXChecked = hasExplicitChecked ? checked : !state.pdvCash.closeModal.piXChecked;
   } else if (paymentMethod === "debito") {
-    state.pdvCash.closeModal.debitoChecked = !state.pdvCash.closeModal.debitoChecked;
+    state.pdvCash.closeModal.debitoChecked = hasExplicitChecked ? checked : !state.pdvCash.closeModal.debitoChecked;
   } else if (paymentMethod === "credito") {
-    state.pdvCash.closeModal.creditoChecked = !state.pdvCash.closeModal.creditoChecked;
+    state.pdvCash.closeModal.creditoChecked = hasExplicitChecked ? checked : !state.pdvCash.closeModal.creditoChecked;
   }
   state.pdvCash.closeModal.error = "";
-  renderPdvCashRegisterOfficialFront();
+  if (render) {
+    renderPdvCashRegisterOfficialFront();
+  }
 }
 
 async function closePdvCashRegisterFromUi(cashRegisterId = "") {
@@ -10626,6 +10815,8 @@ function buildPdvCashRegisterFrontHtml() {
             <span>Estamos buscando o caixa ativo, os movimentos e as vendas da loja.</span>
           </div>
         </article>
+        ${buildPdvCashCloseModal()}
+        ${buildPdvCashOpenModal()}
       `
     });
   }
@@ -10943,7 +11134,9 @@ async function loadPdvCashRegisterFront() {
 
   state.pdvCash.loading = true;
   state.pdvCash.error = "";
-  renderPdvCashRegisterOfficialFront(container);
+  if (!isPdvCashModalOpen()) {
+    renderPdvCashRegisterOfficialFront(container);
+  }
 
   try {
     const highlightSaleId = getPdvCashHighlightSaleId();
@@ -11027,7 +11220,12 @@ async function loadPdvCashRegisterFront() {
     state.pdvCash.selectedSaleId = "";
   } finally {
     state.pdvCash.loading = false;
-    renderPdvCashRegisterOfficialFront(container);
+    if (isPdvCashModalOpen()) {
+      syncPdvCashCloseLiveState();
+      syncPdvCashOpenModalFormState();
+    } else {
+      renderPdvCashRegisterOfficialFront(container);
+    }
   }
 }
 
@@ -13260,6 +13458,7 @@ async function removePdvProductPhoto() {
 
 function openPdvCustomerCreateDrawer(mode = "create", customer = null) {
   ensurePdvCustomersCrudState();
+  state.pdvCustomers.saleAttachAfterCreate = null;
   if (mode === "edit" && isUnifiedReadOnlyCustomer(customer)) {
     state.pdvCustomers.unifiedActivationError = "Ative este cliente para atendimento antes de editar.";
     showFeedback("Ative este cliente para atendimento antes de editar.");
@@ -13301,6 +13500,7 @@ function closePdvCustomerCreateDrawer() {
   state.pdvCustomers.drawerSaving = false;
   state.pdvCustomers.drawerError = "";
   state.pdvCustomers.drawerDraft = getDefaultPdvCustomerCrudDraft();
+  state.pdvCustomers.saleAttachAfterCreate = null;
   renderPdvCustomersOfficialFront(document.getElementById("pdv-customers-content"));
 }
 
@@ -14061,6 +14261,9 @@ async function createPdvQuickCustomer(formElement) {
   };
   state.pdvCustomers.drawerSaving = true;
   state.pdvCustomers.drawerError = "";
+  const saleAttachContext = state.pdvCustomers.drawerMode === "create" && state.pdvCustomers.saleAttachAfterCreate?.active
+    ? { ...state.pdvCustomers.saleAttachAfterCreate }
+    : null;
   renderPdvCustomersOfficialFront(document.getElementById("pdv-customers-content"));
   try {
     const editingId = state.pdvCustomers.drawerMode === "edit" ? state.pdvCustomers.drawerDraft?.id : null;
@@ -14070,7 +14273,21 @@ async function createPdvQuickCustomer(formElement) {
       body: JSON.stringify(payload)
     });
     showFeedback(editingId ? "Cliente atualizado com sucesso." : "Cliente cadastrado com sucesso.");
-    state.pdvCustomers.selectedCustomerId = normalizeText(response.customer?.id || "");
+    const savedCustomer = response.customer || null;
+    const savedCustomerLookup = normalizeText(savedCustomer?.id || savedCustomer?.master_customer_id || savedCustomer?.mobile || savedCustomer?.phone || savedCustomer?.name || "");
+    state.pdvCustomers.selectedCustomerId = savedCustomerLookup;
+    if (saleAttachContext && savedCustomer) {
+      state.pdvCustomers.drawerOpen = false;
+      state.pdvCustomers.drawerError = "";
+      state.pdvCustomers.drawerDraft = getDefaultPdvCustomerCrudDraft();
+      state.pdvCustomers.saleAttachAfterCreate = null;
+      await attachCreatedCustomerToPdvSale(savedCustomer, { lookupKey: savedCustomerLookup });
+      window.history.replaceState({}, "", saleAttachContext.returnRoute || "/pdv/venda");
+      setActiveSection("pdv-sale");
+      renderSidebarMenu();
+      showFeedback("Cliente cadastrado e fixado na venda.");
+      return;
+    }
     closePdvCustomerCreateDrawer();
     await loadPdvCustomersFront({ preserveSelection: false, preferredSelectionId: state.pdvCustomers.selectedCustomerId });
   } catch (error) {
@@ -29408,6 +29625,13 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const openPdvSaleCustomerFullRegisterButton = event.target.closest("[data-pdv-sale-customer-full-register]");
+  if (openPdvSaleCustomerFullRegisterButton) {
+    event.preventDefault();
+    openPdvSaleCustomerFullRegistration();
+    return;
+  }
+
   const pickPdvSaleCustomerButton = event.target.closest("[data-pdv-sale-customer-pick]");
   if (pickPdvSaleCustomerButton) {
     attachPdvSaleCustomerByLookup(pickPdvSaleCustomerButton.dataset.pdvSaleCustomerPick).catch((error) => {
@@ -30174,13 +30398,6 @@ function handleDocumentClick(event) {
   if (pdvCashCloseOverlay && !pdvCashClosePanel && event.target === pdvCashCloseOverlay) {
     event.preventDefault();
     closePdvCashCloseModal();
-    return;
-  }
-
-  const pdvCashTicketCheck = event.target.closest("[data-pdv-cash-ticket-check]");
-  if (pdvCashTicketCheck) {
-    event.preventDefault();
-    updatePdvCashCloseTicketCheck(pdvCashTicketCheck.dataset.pdvCashTicketCheck || "");
     return;
   }
 
@@ -31082,9 +31299,21 @@ function handleDocumentSubmit(event) {
 }
 
 function handleDocumentChange(event) {
+  const pdvCashTicketCheck = event.target.closest("[data-pdv-cash-ticket-check]");
+  if (pdvCashTicketCheck) {
+    updatePdvCashCloseTicketCheck(pdvCashTicketCheck.dataset.pdvCashTicketCheck || "", {
+      render: false,
+      checked: Boolean(pdvCashTicketCheck.checked)
+    });
+    syncPdvCashCloseTicketCardsState();
+    syncPdvCashCloseModalValidationState();
+    return;
+  }
+
   const pdvCashCategorySelect = event.target.closest("[data-pdv-cash-category]");
   if (pdvCashCategorySelect) {
-    updatePdvCashCloseCategory(pdvCashCategorySelect.value || "");
+    updatePdvCashCloseCategory(pdvCashCategorySelect.value || "", { render: false });
+    syncPdvCashCloseModalValidationState();
     return;
   }
 
@@ -31418,28 +31647,30 @@ function handleDocumentChange(event) {
 function handleDocumentInput(event) {
   const pdvCashCloseCountedInput = event.target.closest("[data-pdv-cash-counted-input]");
   if (pdvCashCloseCountedInput) {
+    const previousMode = getPdvCashCloseDynamicMode(state.pdvCash.closeModal || {});
     const selectionStart = pdvCashCloseCountedInput.selectionStart;
     const selectionEnd = pdvCashCloseCountedInput.selectionEnd;
     updatePdvCashCloseCountedAmount(pdvCashCloseCountedInput.value || "", { render: false });
-    renderPdvCashRegisterPreservingCloseField("[data-pdv-cash-counted-input]", selectionStart, selectionEnd);
+    const nextMode = getPdvCashCloseDynamicMode(state.pdvCash.closeModal || {});
+    if (previousMode !== nextMode || !document.querySelector("[data-pdv-cash-difference-display]")) {
+      renderPdvCashRegisterPreservingCloseField("[data-pdv-cash-counted-input]", selectionStart, selectionEnd);
+    } else {
+      syncPdvCashCloseLiveState();
+    }
     return;
   }
 
   const pdvCashObservationInput = event.target.closest("[data-pdv-cash-observation]");
   if (pdvCashObservationInput) {
-    const selectionStart = pdvCashObservationInput.selectionStart;
-    const selectionEnd = pdvCashObservationInput.selectionEnd;
     updatePdvCashCloseObservation(pdvCashObservationInput.value || "", { render: false });
-    renderPdvCashRegisterPreservingCloseField("[data-pdv-cash-observation]", selectionStart, selectionEnd);
+    syncPdvCashCloseModalValidationState();
     return;
   }
 
   const pdvCashJustificationInput = event.target.closest("[data-pdv-cash-justification]");
   if (pdvCashJustificationInput) {
-    const selectionStart = pdvCashJustificationInput.selectionStart;
-    const selectionEnd = pdvCashJustificationInput.selectionEnd;
     updatePdvCashCloseJustification(pdvCashJustificationInput.value || "", { render: false });
-    renderPdvCashRegisterPreservingCloseField("[data-pdv-cash-justification]", selectionStart, selectionEnd);
+    syncPdvCashCloseModalValidationState();
     return;
   }
 
@@ -31684,6 +31915,12 @@ function handleDocumentInput(event) {
 }
 
 function handleDocumentFocusout(event) {
+  const pdvCashCloseCountedInput = event.target.closest?.("[data-pdv-cash-counted-input]");
+  if (pdvCashCloseCountedInput) {
+    formatPdvCashCloseCountedInputField(pdvCashCloseCountedInput);
+    return;
+  }
+
   const cashbackInput = event.target.closest?.("[data-pdv-sale-cashback-input]");
   if (cashbackInput) {
     formatPdvSaleCashbackInputField(cashbackInput);
