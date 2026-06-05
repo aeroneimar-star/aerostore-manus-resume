@@ -158,11 +158,23 @@ function parseCashRegisterMoneyInput(value) {
   if (!raw) return NaN;
   const sanitized = raw.replace(/[^\d,.-]/g, "");
   if (!/\d/.test(sanitized)) return NaN;
-  const normalized = sanitized.includes(",")
-    ? sanitized.replace(/\./g, "").replace(",", ".")
-    : sanitized;
+  const lastComma = sanitized.lastIndexOf(",");
+  const lastDot = sanitized.lastIndexOf(".");
+  const decimalIndex = Math.max(lastComma, lastDot);
+  let normalized = sanitized;
+  if (decimalIndex >= 0) {
+    const integerPart = sanitized.slice(0, decimalIndex).replace(/[.,]/g, "");
+    const decimalPart = sanitized.slice(decimalIndex + 1).replace(/[.,]/g, "");
+    normalized = `${integerPart || "0"}.${decimalPart}`;
+  } else {
+    normalized = sanitized.replace(/[.,]/g, "");
+  }
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function parseCashRegisterOpeningAmount(value) {
+  return parseCashRegisterMoneyInput(value);
 }
 
 function safeJsonStringify(value = {}) {
@@ -1723,7 +1735,7 @@ function validateAuthorizationPin({ code = "", type = "", loja = "", context = {
 
 function openCashRegister(payload = {}, user = {}) {
   const role = getPdvUserRole(user);
-  const loja = normalizeStoreKey(payload.loja || "");
+  const loja = normalizeStoreKey(payload.loja || payload.store_id || "");
   if (!loja) {
     throw new Error("Informe a loja para abrir o caixa do PDV.");
   }
@@ -1737,16 +1749,39 @@ function openCashRegister(payload = {}, user = {}) {
     }
     throw new Error("Já existe um caixa aberto para esta loja.");
   }
+  const hasInitialAmount = payload.valor_inicial !== null
+    && payload.valor_inicial !== undefined
+    && String(payload.valor_inicial).trim() !== "";
+  if (!hasInitialAmount) {
+    throw new Error("Informe o saldo inicial para abrir o caixa.");
+  }
+  const parsedInitialAmount = parseCashRegisterOpeningAmount(payload.valor_inicial);
+  if (!Number.isFinite(parsedInitialAmount)) {
+    throw new Error("Informe um saldo inicial valido.");
+  }
+  const initialAmount = roundMoney(parsedInitialAmount);
+  if (initialAmount < 0) {
+    throw new Error("Saldo inicial não pode ser negativo.");
+  }
   const cashRegisters = loadCashRegisters();
+  const openedAt = nowIso();
+  const openedBy = normalizeText(payload.operador || user?.name || user?.email || "sistema");
+  const openingObservation = normalizeText(payload.observacao_abertura || payload.open_observation || payload.observacao || "");
   const entry = {
     cash_register_id: buildId("CX"),
     loja,
-    operador: normalizeText(payload.operador || user?.name || user?.email || "sistema"),
+    operador: openedBy,
     operator_role: role,
+    opened_by: openedBy,
+    opened_by_role: role,
     status: CASH_REGISTER_STATUS.OPEN,
-    valor_inicial: roundMoney(payload.valor_inicial || 0),
-    observacao: normalizeText(payload.observacao || ""),
-    criado_em: nowIso(),
+    valor_inicial: initialAmount,
+    observacao: openingObservation,
+    observacao_abertura: openingObservation,
+    open_observation: openingObservation,
+    criado_em: openedAt,
+    aberto_em: openedAt,
+    opened_at: openedAt,
     confirmado_em: "",
     reaberto_em: "",
     fechado_em: "",
@@ -1764,6 +1799,11 @@ function openCashRegister(payload = {}, user = {}) {
     actor: user?.name || user?.email || "sistema",
     actor_role: role,
     loja,
+    cash_register_id: entry.cash_register_id,
+    valor_inicial: entry.valor_inicial,
+    observacao_abertura: openingObservation,
+    open_observation: openingObservation,
+    status: entry.status,
     reason: entry.observacao,
     before: null,
     after: entry

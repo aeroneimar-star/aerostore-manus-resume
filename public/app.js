@@ -408,6 +408,15 @@ const state = {
     authorizerStatusLoadingId: "",
     authorizerResetLoadingId: "",
     openLoading: false,
+    openModal: {
+      open: false,
+      loja: "",
+      initialAmount: "",
+      initialAmountNumber: 0,
+      observation: "",
+      loading: false,
+      error: ""
+    },
     closeLoadingId: "",
     closeModal: {
       open: false,
@@ -8569,6 +8578,179 @@ function getPdvCashStoreOptions() {
   return PDV_CASH_OPERATIONAL_STORE_OPTIONS.filter((item) => scopedStores.includes(item.value));
 }
 
+function getDefaultPdvCashOpenModalState(overrides = {}) {
+  return {
+    open: false,
+    loja: "",
+    initialAmount: "",
+    initialAmountNumber: 0,
+    observation: "",
+    loading: false,
+    error: "",
+    ...overrides
+  };
+}
+
+function validatePdvCashOpenModal(modal = {}) {
+  const storeId = normalizePdvStoreIdentifier(modal.loja || getCurrentPdvStoreId() || "");
+  const input = String(modal.initialAmount ?? "").trim();
+  const hasValue = normalizeText(input) !== "";
+  const sanitized = input.replace(/[^\d,.-]/g, "");
+  const hasDigits = /\d/.test(sanitized);
+  const amount = hasValue && hasDigits ? Number(parseMoneyAmount(input).toFixed(2)) : 0;
+  const validAmount = hasValue && hasDigits && Number.isFinite(amount);
+  if (!storeId) {
+    return { canSubmit: false, amount, message: "Selecione a loja antes de abrir o caixa." };
+  }
+  if (!hasValue) {
+    return { canSubmit: false, amount, message: "Informe o saldo inicial para abrir o caixa." };
+  }
+  if (!validAmount) {
+    return { canSubmit: false, amount, message: "Informe um saldo inicial válido." };
+  }
+  if (amount < 0) {
+    return { canSubmit: false, amount, message: "Saldo inicial não pode ser negativo." };
+  }
+  return { canSubmit: true, amount, message: "" };
+}
+
+function getPdvCashOpenSelectedStoreLabel(storeId = "") {
+  const normalizedStoreId = normalizePdvStoreIdentifier(storeId || getCurrentPdvStoreId() || "");
+  const option = getPdvCashStoreOptions().find((item) => normalizePdvStoreIdentifier(item.value) === normalizedStoreId);
+  return option?.label || formatStoreIdLabel(normalizedStoreId || "");
+}
+
+function openPdvCashOpenModal(storeId = "") {
+  if (!canOpenPdvCashRegisterFrontend()) {
+    showFeedback("Seu perfil não pode abrir caixa.", "error");
+    return;
+  }
+  const storeOptions = getPdvCashStoreOptions();
+  const selectedStore = normalizePdvStoreIdentifier(storeId || getCurrentPdvStoreId() || storeOptions[0]?.value || "");
+  state.pdvCash.openModal = getDefaultPdvCashOpenModalState({
+    open: true,
+    loja: selectedStore
+  });
+  renderPdvCashRegisterOfficialFront();
+}
+
+function closePdvCashOpenModal() {
+  if (state.pdvCash.openModal?.loading) return;
+  state.pdvCash.openModal = getDefaultPdvCashOpenModalState();
+  state.pdvCash.openLoading = false;
+  renderPdvCashRegisterOfficialFront();
+}
+
+function updatePdvCashOpenModalField(field = "", value = "", { render = true } = {}) {
+  const modal = state.pdvCash.openModal || getDefaultPdvCashOpenModalState();
+  const next = { ...modal, error: "" };
+  if (field === "loja") {
+    next.loja = normalizePdvStoreIdentifier(value || "");
+  } else if (field === "initialAmount") {
+    const input = String(value ?? "");
+    next.initialAmount = input;
+    next.initialAmountNumber = validatePdvCashOpenModal({ ...next, initialAmount: input }).amount;
+  } else if (field === "observation") {
+    next.observation = String(value || "");
+  }
+  state.pdvCash.openModal = next;
+  if (render) {
+    renderPdvCashRegisterOfficialFront();
+  }
+}
+
+function syncPdvCashOpenModalFormState(fieldElement = null) {
+  const form = fieldElement?.closest?.("[data-pdv-cash-open-modal-form]")
+    || document.querySelector("[data-pdv-cash-open-modal-form]");
+  if (!form) return;
+  const validation = validatePdvCashOpenModal(state.pdvCash.openModal || {});
+  const submitButton = form.querySelector('button[type="submit"]');
+  if (submitButton) {
+    submitButton.disabled = Boolean(state.pdvCash.openModal?.loading) || !validation.canSubmit;
+  }
+  if (!state.pdvCash.openModal?.error) {
+    form.querySelector(".pdv-cash-open-error")?.remove();
+  }
+}
+
+function buildPdvCashOpenModal() {
+  const modal = state.pdvCash.openModal || {};
+  if (!modal.open) return "";
+  const storeOptions = getPdvCashStoreOptions();
+  const selectedStore = normalizePdvStoreIdentifier(modal.loja || getCurrentPdvStoreId() || storeOptions[0]?.value || "");
+  const canChooseStore = canViewAllStores() && storeOptions.length > 1;
+  const validation = validatePdvCashOpenModal({ ...modal, loja: selectedStore });
+  const submitDisabled = modal.loading || !validation.canSubmit;
+
+  return `
+    <div class="pdv-drawer-overlay pdv-cash-open-overlay" data-pdv-cash-open-close="overlay">
+      <aside class="pdv-drawer pdv-cash-open-modal open" role="dialog" aria-modal="true" aria-label="Abertura de Caixa" data-pdv-cash-open-panel="true">
+        <form class="pdv-cash-open-form" data-pdv-cash-open-modal-form="true">
+          <div class="pdv-drawer-header pdv-cash-open-header">
+            <div>
+              <p class="eyebrow">Operação do Caixa</p>
+              <h3>Abertura de Caixa</h3>
+              <span>Informe o saldo inicial em dinheiro para iniciar a operação.</span>
+            </div>
+            <button class="ghost-button pdv-drawer-close" type="button" data-pdv-cash-open-close="button"${modal.loading ? " disabled" : ""}>Fechar</button>
+          </div>
+
+          <div class="pdv-drawer-body pdv-cash-open-body">
+            <div class="pdv-cash-open-summary">
+              <span>Loja de operação</span>
+              <strong>${escapeHtml(getPdvCashOpenSelectedStoreLabel(selectedStore) || "-")}</strong>
+              <small>O caixa será vinculado à loja selecionada e ao operador logado.</small>
+            </div>
+
+            <label class="pdv-cash-open-field">
+              <span>Loja</span>
+              ${canChooseStore ? `
+                <select data-pdv-cash-open-field="loja" ${modal.loading ? "disabled" : ""}>
+                  ${storeOptions.map((option) => `<option value="${escapeHtml(option.value)}"${normalizePdvStoreIdentifier(option.value) === selectedStore ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+                </select>
+              ` : `
+                <input type="text" value="${escapeHtml(getPdvCashOpenSelectedStoreLabel(selectedStore) || "-")}" readonly />
+              `}
+            </label>
+
+            <label class="pdv-cash-open-field pdv-cash-open-input">
+              <span>Saldo inicial em dinheiro</span>
+              <div class="pdv-cash-open-money">
+                <span>R$</span>
+                <input
+                  type="text"
+                  inputmode="decimal"
+                  placeholder="R$ 0,00"
+                  value="${escapeHtml(modal.initialAmount || "")}"
+                  data-pdv-cash-open-field="initialAmount"
+                  ${modal.loading ? "disabled" : ""}
+                  autofocus
+                />
+              </div>
+            </label>
+
+            <label class="pdv-cash-open-field">
+              <span>Observação</span>
+              <textarea
+                placeholder="Ex: Saldo conferido na abertura."
+                data-pdv-cash-open-field="observation"
+                ${modal.loading ? "disabled" : ""}
+              >${escapeHtml(modal.observation || "")}</textarea>
+            </label>
+
+            ${modal.error ? `<div class="pdv-cash-open-error">${escapeHtml(modal.error)}</div>` : ""}
+          </div>
+
+          <div class="pdv-drawer-actions pdv-cash-open-actions">
+            <button class="secondary-button" type="button" data-pdv-cash-open-close="button"${modal.loading ? " disabled" : ""}>Cancelar</button>
+            <button class="primary-button" type="submit"${submitDisabled ? " disabled" : ""}>${modal.loading ? "Abrindo..." : "Confirmar abertura"}</button>
+          </div>
+        </form>
+      </aside>
+    </div>
+  `;
+}
+
 function buildPdvCashOpenRegisterCard() {
   const storeOptions = getPdvCashStoreOptions();
   const defaultStore = normalizeText(getCurrentPdvStoreId() || storeOptions[0]?.value || "").toLowerCase();
@@ -8581,24 +8763,21 @@ function buildPdvCashOpenRegisterCard() {
     `;
   }
   return `
-    <form class="pdv-register-open-card" data-pdv-cash-open-form="true">
+    <div class="pdv-register-open-card" data-pdv-cash-open-entry="true">
       <div>
         <strong>Abrir caixa da loja</strong>
-        <span>Selecione a loja operacional, informe o fundo inicial e confirme a abertura do caixa.</span>
+        <span>Abra um modal de conferência, informe o saldo inicial e imprima o cupom de abertura.</span>
       </div>
-      <label>Loja
-        <select name="store_id" required>
-          ${storeOptions.map((option) => `<option value="${escapeHtml(option.value)}"${option.value === defaultStore ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-        </select>
-      </label>
-      <label>Fundo inicial
-        <input type="number" name="valor_inicial" min="0" step="0.01" value="0" />
-      </label>
-      <label>Observação
-        <input type="text" name="observacao" placeholder="Ex.: abertura do turno" />
-      </label>
-      <button class="primary-button" type="submit"${state.pdvCash.openLoading || !storeOptions.length ? " disabled" : ""}>${state.pdvCash.openLoading ? "Abrindo..." : "Abrir caixa"}</button>
-    </form>
+      <div class="pdv-cash-open-card-meta">
+        <span>Loja sugerida</span>
+        <strong>${escapeHtml(getPdvCashOpenSelectedStoreLabel(defaultStore) || "-")}</strong>
+      </div>
+      <div class="pdv-cash-open-card-meta">
+        <span>Cupom</span>
+        <strong>80mm com assinatura</strong>
+      </div>
+      <button class="primary-button" type="button" data-pdv-cash-open-modal="${escapeHtml(defaultStore)}"${state.pdvCash.openLoading || !storeOptions.length ? " disabled" : ""}>${state.pdvCash.openLoading ? "Abrindo..." : "Abrir caixa"}</button>
+    </div>
   `;
 }
 
@@ -8611,6 +8790,7 @@ function buildPdvCashRegisterEmptyState(message = "", detail = "") {
       </div>
       ${buildPdvCashOpenRegisterCard()}
     </article>
+    ${buildPdvCashOpenModal()}
   `;
 }
 
@@ -8685,6 +8865,7 @@ function buildPdvCashRegisterClosedState(register = null, dashboard = {}) {
 
         ${canManagePdvAuthorizers() ? buildPdvCashAuthorizersPanel() : ""}
         ${buildPdvCashPendingPaymentPanel(sortPdvCashPendingPaymentLinks(state.pdvCash.pendingPaymentLinks || []))}
+        ${buildPdvCashOpenModal()}
       </div>
     `
   });
@@ -9605,30 +9786,238 @@ async function openPdvCashRegisterFromUi(formElement = null) {
     showFeedback("Seu perfil nao pode abrir caixa.", "error");
     return;
   }
-  const formData = new FormData(formElement || undefined);
-  const storeId = normalizeText(formData.get("store_id") || getCurrentPdvStoreId() || "").toLowerCase();
-  if (!storeId) {
-    showFeedback("Selecione a loja antes de abrir o caixa.", "error");
+  const formData = formElement ? new FormData(formElement) : null;
+  const storeId = normalizePdvStoreIdentifier(formData?.get("store_id") || getCurrentPdvStoreId() || "");
+  state.pdvCash.openModal = getDefaultPdvCashOpenModalState({
+    open: true,
+    loja: storeId,
+    initialAmount: formData ? String(formData.get("valor_inicial") ?? "") : "",
+    observation: formData ? String(formData.get("observacao") ?? "") : ""
+  });
+  renderPdvCashRegisterOfficialFront();
+}
+
+function buildPdvCashOpeningCoupon(register = {}, { secondCopy = false } = {}) {
+  const registerId = normalizeText(register.cash_register_id || register.id || "");
+  const storeId = normalizePdvStoreIdentifier(register.loja || register.store_id || getCurrentPdvStoreId() || "");
+  const storeLabel = getPdvStoreDisplayName(storeId, formatStoreIdLabel(storeId || "Loja"));
+  const openedAt = register.opened_at || register.aberto_em || register.criado_em || register.created_at || new Date().toISOString();
+  const operator = normalizeText(register.opened_by || register.operador || state.currentUser?.name || state.currentUser?.email || "-");
+  const role = normalizeText(register.opened_by_role || register.operator_role || getCurrentRole() || "");
+  const observation = normalizeText(register.observacao_abertura || register.open_observation || register.observacao || "") || "-";
+  const receiptTitle = secondCopy ? "CUPOM DE ABERTURA DE CAIXA - 2ª VIA" : "CUPOM DE ABERTURA DE CAIXA";
+  const row = (label, value) => `
+    <div class="row">
+      <span>${escapeHtml(label)}:</span>
+      <strong>${escapeHtml(value || "-")}</strong>
+    </div>
+  `;
+
+  return `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(receiptTitle)}</title>
+  <style>
+    @page { size: 80mm auto; margin: 4mm; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #ffffff;
+      color: #000000;
+      font-family: "Courier New", monospace;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .receipt {
+      width: 72mm;
+      margin: 0 auto;
+      padding: 2mm 0;
+    }
+    .brand {
+      text-align: center;
+      font-weight: 800;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+    }
+    .title {
+      margin-top: 4px;
+      padding-bottom: 6px;
+      border-bottom: 1px dashed #000;
+      text-align: center;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .rows {
+      display: grid;
+      gap: 4px;
+      margin-top: 8px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 25mm 1fr;
+      gap: 3mm;
+      align-items: start;
+    }
+    .row span {
+      font-weight: 700;
+    }
+    .row strong {
+      overflow-wrap: anywhere;
+      font-weight: 400;
+      text-align: right;
+    }
+    .amount strong {
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .signature {
+      margin-top: 12px;
+      padding-top: 8px;
+      border-top: 1px dashed #000;
+    }
+    .line {
+      margin-top: 14px;
+      border-bottom: 1px solid #000;
+      height: 14px;
+    }
+    .hint {
+      margin-top: 10px;
+      padding-top: 6px;
+      border-top: 1px dashed #000;
+      text-align: center;
+      font-size: 10px;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <main class="receipt">
+    <div class="brand">AEROSTORE OS</div>
+    <div class="title">${escapeHtml(receiptTitle)}</div>
+    <section class="rows">
+      ${row("Caixa", registerId || "-")}
+      ${row("Data/Hora", formatDateTimeBR(openedAt))}
+      ${row("Loja", storeLabel)}
+      ${row("Operador", operator)}
+      ${row("Função", role ? getRoleLabel(role) : "-")}
+      <div class="row amount">
+        <span>Saldo inicial:</span>
+        <strong>${escapeHtml(currency(register.valor_inicial || 0))}</strong>
+      </div>
+      ${row("Observação", observation)}
+    </section>
+    <section class="signature">
+      <strong>Assinatura do operador:</strong>
+      <div class="line"></div>
+      <strong>Visto do gerente:</strong>
+      <div class="line"></div>
+    </section>
+    <div class="hint">Guardar este cupom junto com o fechamento.</div>
+  </main>
+</body>
+</html>`;
+}
+
+function printPdvCashOpeningCoupon(register = {}, options = {}) {
+  const html = buildPdvCashOpeningCoupon(register, options);
+  const printWindow = window.open("", `pdv-cash-opening-${Date.now()}`, "width=420,height=760");
+  if (!printWindow) {
+    showFeedback("Caixa aberto. O navegador bloqueou a janela do cupom; use a reimpressao.", "error");
+    return false;
+  }
+  printWindow.document.open();
+  printWindow.document.write(html);
+  printWindow.document.close();
+  window.setTimeout(() => {
+    try {
+      printWindow.focus();
+      printWindow.print();
+    } catch (error) {
+      console.warn("Falha ao abrir a impressao do cupom de abertura.", error);
+    }
+  }, 120);
+  return true;
+}
+
+function reprintPdvCashOpeningCoupon(registerId = "") {
+  const normalizedId = normalizeText(registerId || "");
+  const register = [
+    state.pdvCash.currentRegister,
+    ...toArray(state.pdvCash.registers)
+  ].find((item) => normalizeText(item?.cash_register_id || "") === normalizedId);
+  if (!register) {
+    showFeedback("Nao encontrei os dados deste caixa para reimprimir o cupom.", "error");
     return;
   }
+  printPdvCashOpeningCoupon(register, { secondCopy: true });
+}
+
+async function submitPdvCashOpenModal() {
+  if (!canOpenPdvCashRegisterFrontend()) {
+    showFeedback("Seu perfil nao pode abrir caixa.", "error");
+    return;
+  }
+  const modal = state.pdvCash.openModal || getDefaultPdvCashOpenModalState();
+  const storeId = normalizePdvStoreIdentifier(modal.loja || getCurrentPdvStoreId() || "");
+  const validation = validatePdvCashOpenModal({ ...modal, loja: storeId });
+  if (!validation.canSubmit) {
+    state.pdvCash.openModal = {
+      ...modal,
+      open: true,
+      loja: storeId,
+      initialAmountNumber: validation.amount,
+      error: validation.message
+    };
+    renderPdvCashRegisterOfficialFront();
+    return;
+  }
+
   state.pdvCash.openLoading = true;
+  state.pdvCash.openModal = {
+    ...modal,
+    open: true,
+    loja: storeId,
+    initialAmountNumber: validation.amount,
+    loading: true,
+    error: ""
+  };
   renderPdvCashRegisterOfficialFront();
+
   try {
-    await api("/api/pdv/control/registers/open", {
+    const openedRegister = await api("/api/pdv/control/registers/open", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         loja: storeId,
         store_id: storeId,
-        valor_inicial: toNumber(formData.get("valor_inicial") || 0),
-        observacao: normalizeText(formData.get("observacao") || "")
+        valor_inicial: validation.amount,
+        observacao: normalizeText(modal.observation || ""),
+        observacao_abertura: normalizeText(modal.observation || ""),
+        open_observation: normalizeText(modal.observation || "")
       })
     });
-    showFeedback(`Caixa aberto para ${formatStoreIdLabel(storeId)}.`);
-    await loadPdvCashRegisterFront();
-    if (normalizeText(getPdvSaleCashRegisterStoreId()).toLowerCase() === storeId) {
-      await loadPdvSaleCashRegisterStatus({ silent: true });
+    state.pdvCash.openModal = getDefaultPdvCashOpenModalState();
+    state.pdvCash.openLoading = false;
+    renderPdvCashRegisterOfficialFront();
+    await loadPdvCashRegisterFront().catch((refreshError) => {
+      console.warn("Caixa aberto, mas a tela do caixa nao atualizou automaticamente.", refreshError);
+    });
+    showFeedback("Caixa aberto com sucesso. Imprima, assine e guarde o cupom para anexar ao fechamento.");
+    printPdvCashOpeningCoupon(openedRegister || {});
+    if (normalizePdvStoreIdentifier(getPdvSaleCashRegisterStoreId()) === storeId) {
+      await loadPdvSaleCashRegisterStatus({ silent: true }).catch((statusError) => {
+        console.warn("Caixa aberto, mas o status da venda nao atualizou automaticamente.", statusError);
+      });
     }
+  } catch (error) {
+    state.pdvCash.openModal = {
+      ...(state.pdvCash.openModal || modal),
+      open: true,
+      loading: false,
+      error: normalizeVisibleText(error?.message || "Falha ao abrir o caixa.")
+    };
+    showFeedback(error?.message || "Falha ao abrir o caixa.", "error");
   } finally {
     state.pdvCash.openLoading = false;
     renderPdvCashRegisterOfficialFront();
@@ -10339,7 +10728,10 @@ function buildPdvCashRegisterFrontHtml() {
           <article class="panel">
             <div class="panel-header">
               <h3>Caixa ativo da loja</h3>
-              ${canClosePdvCashRegisterFrontend() && ["OPEN", "REOPENED"].includes(String(register.status || "").toUpperCase()) ? `<button class="secondary-button small" type="button" data-pdv-cash-close="${escapeHtml(register.cash_register_id || "")}"${state.pdvCash.closeLoadingId === register.cash_register_id ? " disabled" : ""}>${state.pdvCash.closeLoadingId === register.cash_register_id ? "Fechando..." : "Fechar caixa"}</button>` : ""}
+              <div class="pdv-cash-active-actions">
+                ${register.cash_register_id ? `<button class="ghost-button small" type="button" data-pdv-cash-open-reprint="${escapeHtml(register.cash_register_id || "")}">Reimprimir cupom de abertura</button>` : ""}
+                ${canClosePdvCashRegisterFrontend() && ["OPEN", "REOPENED"].includes(String(register.status || "").toUpperCase()) ? `<button class="secondary-button small" type="button" data-pdv-cash-close="${escapeHtml(register.cash_register_id || "")}"${state.pdvCash.closeLoadingId === register.cash_register_id ? " disabled" : ""}>${state.pdvCash.closeLoadingId === register.cash_register_id ? "Fechando..." : "Fechar caixa"}</button>` : ""}
+              </div>
             </div>
             <div class="pdv-register-highlight-list">
               <div class="pdv-register-highlight-card">
@@ -10512,6 +10904,7 @@ function buildPdvCashRegisterFrontHtml() {
         </section>
         ${buildPdvCashCloseModal()}
         ${buildPdvCashMovementModal()}
+        ${buildPdvCashOpenModal()}
       </div>
     `
   });
@@ -10524,6 +10917,11 @@ function renderPdvCashRegisterOfficialFront(container = document.getElementById(
   openForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     openPdvCashRegisterFromUi(openForm).catch((error) => handleUiError("Erro ao abrir o caixa do PDV", error));
+  });
+  const openModalForm = container.querySelector("[data-pdv-cash-open-modal-form]");
+  openModalForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitPdvCashOpenModal().catch((error) => handleUiError("Erro ao abrir o caixa do PDV", error));
   });
   const movementForm = container.querySelector("[data-pdv-cash-movement-form]");
   movementForm?.addEventListener("submit", (event) => {
@@ -29727,6 +30125,35 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const pdvCashOpenModalButton = event.target.closest("[data-pdv-cash-open-modal]");
+  if (pdvCashOpenModalButton) {
+    event.preventDefault();
+    openPdvCashOpenModal(pdvCashOpenModalButton.dataset.pdvCashOpenModal || "");
+    return;
+  }
+
+  const pdvCashOpenCloseButton = event.target.closest('[data-pdv-cash-open-close="button"]');
+  if (pdvCashOpenCloseButton) {
+    event.preventDefault();
+    closePdvCashOpenModal();
+    return;
+  }
+
+  const pdvCashOpenOverlay = event.target.closest('[data-pdv-cash-open-close="overlay"]');
+  const pdvCashOpenPanel = event.target.closest("[data-pdv-cash-open-panel]");
+  if (pdvCashOpenOverlay && !pdvCashOpenPanel && event.target === pdvCashOpenOverlay) {
+    event.preventDefault();
+    closePdvCashOpenModal();
+    return;
+  }
+
+  const pdvCashOpenReprintButton = event.target.closest("[data-pdv-cash-open-reprint]");
+  if (pdvCashOpenReprintButton) {
+    event.preventDefault();
+    reprintPdvCashOpeningCoupon(pdvCashOpenReprintButton.dataset.pdvCashOpenReprint || "");
+    return;
+  }
+
   const pdvCashOpenForm = event.target.closest("[data-pdv-cash-open-form]");
   if (pdvCashOpenForm && event.target.closest('button[type="submit"]')) {
     event.preventDefault();
@@ -30667,6 +31094,12 @@ function handleDocumentChange(event) {
     return;
   }
 
+  const pdvCashOpenStoreField = event.target.closest('[data-pdv-cash-open-field="loja"]');
+  if (pdvCashOpenStoreField) {
+    updatePdvCashOpenModalField("loja", pdvCashOpenStoreField.value || "");
+    return;
+  }
+
   const usersAdminRoleSelect = event.target.closest('[data-users-admin-form] select[name="role"]');
   if (usersAdminRoleSelect) {
     const form = usersAdminRoleSelect.closest("[data-users-admin-form]");
@@ -31007,6 +31440,13 @@ function handleDocumentInput(event) {
     const selectionEnd = pdvCashJustificationInput.selectionEnd;
     updatePdvCashCloseJustification(pdvCashJustificationInput.value || "", { render: false });
     renderPdvCashRegisterPreservingCloseField("[data-pdv-cash-justification]", selectionStart, selectionEnd);
+    return;
+  }
+
+  const pdvCashOpenField = event.target.closest("[data-pdv-cash-open-field]");
+  if (pdvCashOpenField) {
+    updatePdvCashOpenModalField(pdvCashOpenField.dataset.pdvCashOpenField || "", pdvCashOpenField.value || "", { render: false });
+    syncPdvCashOpenModalFormState(pdvCashOpenField);
     return;
   }
 

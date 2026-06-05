@@ -1028,6 +1028,204 @@ body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row > strong {
   white-space: nowrap;
 }
 
+.pdv-cash-active-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-drawer-overlay.pdv-cash-open-overlay {
+  align-items: center;
+  justify-content: flex-end;
+  padding: 12px;
+  background: rgba(2, 6, 12, 0.68);
+  backdrop-filter: blur(14px);
+}
+
+body[data-route-section="pdv-cash-register"] .pdv-drawer.pdv-cash-open-modal {
+  width: min(560px, calc(100vw - 24px));
+  height: auto;
+  max-height: calc(100vh - 24px);
+  margin-left: auto;
+  overflow: hidden;
+  padding: 0;
+  display: block;
+  border: 1px solid rgba(45, 212, 191, 0.26);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(19, 26, 35, 0.98), rgba(9, 13, 18, 0.98)),
+    #111827;
+  box-shadow: -24px 28px 58px rgba(0, 0, 0, 0.42);
+}
+
+.pdv-cash-open-form {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100vh - 24px);
+  min-height: min(560px, calc(100vh - 24px));
+}
+
+.pdv-cash-open-header,
+.pdv-cash-open-actions {
+  padding: 18px 20px;
+}
+
+.pdv-cash-open-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pdv-cash-open-header .eyebrow {
+  margin: 0 0 6px;
+  color: #2dd4bf;
+}
+
+.pdv-cash-open-header h3 {
+  color: #f8fafc;
+  font-size: 1.15rem;
+}
+
+.pdv-cash-open-header span {
+  color: rgba(203, 213, 225, 0.72);
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
+.pdv-cash-open-body {
+  gap: 14px;
+  padding: 18px 20px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(45, 212, 191, 0.4) transparent;
+}
+
+.pdv-cash-open-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pdv-cash-open-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pdv-cash-open-body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(45, 212, 191, 0.36);
+}
+
+.pdv-cash-open-summary,
+.pdv-cash-open-field {
+  display: grid;
+  gap: 7px;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(45, 212, 191, 0.07), rgba(255, 255, 255, 0.02)),
+    rgba(15, 23, 42, 0.68);
+}
+
+.pdv-cash-open-summary span,
+.pdv-cash-open-field > span,
+.pdv-cash-open-card-meta span {
+  color: rgba(148, 163, 184, 0.9);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pdv-cash-open-summary strong,
+.pdv-cash-open-card-meta strong {
+  color: #f8fafc;
+}
+
+.pdv-cash-open-summary small {
+  color: rgba(203, 213, 225, 0.7);
+  line-height: 1.4;
+}
+
+.pdv-cash-open-field input,
+.pdv-cash-open-field select,
+.pdv-cash-open-field textarea {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  background: #0b1118;
+  color: #f8fafc;
+  outline: none;
+}
+
+.pdv-cash-open-field input,
+.pdv-cash-open-field select {
+  padding: 0 13px;
+}
+
+.pdv-cash-open-field textarea {
+  min-height: 88px;
+  padding: 12px 13px;
+  resize: vertical;
+}
+
+.pdv-cash-open-field input:focus,
+.pdv-cash-open-field select:focus,
+.pdv-cash-open-field textarea:focus {
+  border-color: rgba(45, 212, 191, 0.5);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.13);
+}
+
+.pdv-cash-open-money {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 12px;
+  border: 1px solid rgba(45, 212, 191, 0.24);
+  border-radius: 16px;
+  background: rgba(8, 13, 20, 0.92);
+}
+
+.pdv-cash-open-money span {
+  color: #2dd4bf;
+  font-weight: 900;
+}
+
+.pdv-cash-open-money input {
+  min-height: 50px;
+  padding: 0;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  font-size: 1.22rem;
+  font-weight: 800;
+}
+
+.pdv-cash-open-error {
+  padding: 12px 14px;
+  border: 1px solid rgba(239, 68, 68, 0.34);
+  border-radius: 14px;
+  background: rgba(127, 29, 29, 0.22);
+  color: #fecdd3;
+  font-weight: 700;
+}
+
+.pdv-cash-open-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(8, 13, 20, 0.82);
+}
+
+.pdv-cash-open-actions button {
+  min-height: 44px;
+}
+
+.pdv-cash-open-card-meta {
+  display: grid;
+  gap: 5px;
+}
+
 .pdv-cash-movement-modal {
   max-width: 480px;
   max-height: min(680px, calc(100vh - 36px));
@@ -1097,6 +1295,36 @@ body[data-route-section="pdv-cash-register"] .pdv-cash-movement-row > strong {
 }
 
 @media (max-width: 640px) {
+  body[data-route-section="pdv-cash-register"] .pdv-drawer-overlay.pdv-cash-open-overlay {
+    align-items: stretch;
+    padding: 8px;
+  }
+
+  body[data-route-section="pdv-cash-register"] .pdv-drawer.pdv-cash-open-modal,
+  .pdv-cash-open-form {
+    width: 100%;
+    max-height: calc(100vh - 16px);
+  }
+
+  .pdv-cash-open-form {
+    min-height: calc(100vh - 16px);
+  }
+
+  .pdv-cash-open-header,
+  .pdv-cash-open-body,
+  .pdv-cash-open-actions {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .pdv-cash-open-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .pdv-cash-active-actions {
+    flex-direction: column;
+  }
+
   body[data-route-section="pdv-cash-register"] .pdv-cash-balance-grid {
     grid-template-columns: 1fr;
   }
