@@ -21562,6 +21562,85 @@ function formatPdvPaymentAmountField(inputElement, { syncState = true } = {}) {
   return amount;
 }
 
+function getPdvPaymentSelectorValue(value = "") {
+  const normalized = normalizeText(value || "");
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(normalized);
+  }
+  return normalized.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function syncPdvPaymentDraftField(method = "") {
+  const normalizedMethod = normalizeText(method || "");
+  if (!normalizedMethod) return;
+  const selectorValue = getPdvPaymentSelectorValue(normalizedMethod);
+  const draft = getPdvPaymentDraftEntry(normalizedMethod);
+  const input = document.querySelector(`[data-pdv-payment-amount="${selectorValue}"]`);
+  if (input) {
+    input.value = formatPdvPaymentDraftInputValue(draft);
+    updatePdvPaymentCardVisual(input);
+  }
+  const installmentsInput = document.querySelector(`[data-pdv-payment-installments="${selectorValue}"]`);
+  if (installmentsInput) {
+    installmentsInput.value = String(getInstallmentCount(draft.installments || 1));
+  }
+}
+
+function renderPdvSaleOfficialFrontPreservingPaymentPosition(method = "") {
+  const container = document.getElementById("pdv-sale-content");
+  if (!container) return;
+  const normalizedMethod = normalizeText(method || "");
+  const selectorValue = normalizedMethod ? getPdvPaymentSelectorValue(normalizedMethod) : "";
+  const scroller = document.querySelector(".pdv-payment-scroller-v4");
+  const anchor = selectorValue
+    ? document.querySelector(`[data-pdv-payment-amount="${selectorValue}"]`)?.closest(".pdv-payment-method-row")
+      || document.querySelector(`[data-pdv-payment-add="${selectorValue}"]`)?.closest(".pdv-payment-method-row")
+      || document.querySelector(`[data-pdv-payment-fill="${selectorValue}"]`)?.closest(".pdv-payment-method-row")
+    : null;
+  const previousScrollerTop = scroller?.scrollTop || 0;
+  const previousScrollerLeft = scroller?.scrollLeft || 0;
+  const previousWindowX = window.scrollX || 0;
+  const previousWindowY = window.scrollY || 0;
+  const previousAnchorTop = anchor?.getBoundingClientRect?.().top ?? null;
+  const previousScrollerRect = scroller?.getBoundingClientRect?.() || null;
+  const previousAnchorTopInScroller = anchor && previousScrollerRect
+    ? anchor.getBoundingClientRect().top - previousScrollerRect.top
+    : null;
+
+  renderPdvSaleOfficialFront(container);
+
+  const restorePosition = () => {
+    const nextScroller = document.querySelector(".pdv-payment-scroller-v4");
+    if (nextScroller) {
+      nextScroller.scrollTop = previousScrollerTop;
+      nextScroller.scrollLeft = previousScrollerLeft;
+    }
+    if (selectorValue && previousAnchorTop !== null) {
+      const nextAnchor = document.querySelector(`[data-pdv-payment-amount="${selectorValue}"]`)?.closest(".pdv-payment-method-row")
+        || document.querySelector(`[data-pdv-payment-add="${selectorValue}"]`)?.closest(".pdv-payment-method-row")
+        || document.querySelector(`[data-pdv-payment-fill="${selectorValue}"]`)?.closest(".pdv-payment-method-row");
+      const nextScrollerRect = nextScroller?.getBoundingClientRect?.() || null;
+      const nextAnchorTop = nextAnchor?.getBoundingClientRect?.().top ?? previousAnchorTop;
+      const delta = nextScroller && nextAnchor && previousAnchorTopInScroller !== null && nextScrollerRect
+        ? (nextAnchor.getBoundingClientRect().top - nextScrollerRect.top) - previousAnchorTopInScroller
+        : nextAnchorTop - previousAnchorTop;
+      if (Math.abs(delta) > 1) {
+        if (nextScroller) {
+          nextScroller.scrollTop = Math.max(0, previousScrollerTop + delta);
+          window.scrollTo(previousWindowX, previousWindowY);
+        } else {
+          window.scrollTo(previousWindowX, previousWindowY + delta);
+        }
+        return;
+      }
+    }
+    window.scrollTo(previousWindowX, previousWindowY);
+  };
+
+  restorePosition();
+  window.requestAnimationFrame?.(restorePosition);
+}
+
 function normalizeText(value = "") {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
@@ -30539,17 +30618,18 @@ function handleDocumentClick(event) {
 
   const fillPdvPaymentButton = event.target.closest("[data-pdv-payment-fill]");
   if (fillPdvPaymentButton) {
+    event.preventDefault();
     const method = normalizeText(fillPdvPaymentButton.dataset.pdvPaymentFill || "");
     const totals = getPdvSaleCartTotals(state.pdvSale.session);
     if (totals.change > 0) {
       setPdvSalePaymentAmount(method, 0, getPdvPaymentDraftEntry(method).installments || 1, { forceDisplayZero: true });
-      renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+      syncPdvPaymentDraftField(method);
       showFeedback("A venda já possui valor lançado acima do subtotal. Revise os pagamentos antes de usar Restante.", "error");
       return;
     }
     const current = getPdvPaymentDraftEntry(method);
     setPdvSalePaymentAmount(method, getPdvSalePredictedRemaining(method, state.pdvSale.session), current.installments || 1);
-    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    syncPdvPaymentDraftField(method);
     return;
   }
 
@@ -30619,7 +30699,7 @@ function handleDocumentClick(event) {
     setPdvSalePaymentAmount(method, parsedAmount, liveInstallments ?? (getPdvPaymentDraftEntry(method).installments || 1));
     commitPdvSalePaymentMethod(method, parsedAmount, liveInstallments ?? (getPdvPaymentDraftEntry(method).installments || 1))
       .then(() => {
-        renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+        renderPdvSaleOfficialFrontPreservingPaymentPosition(method);
       })
       .catch((error) => handleUiError("Erro ao lançar pagamento", error));
     return;
@@ -31970,7 +32050,6 @@ function handleDocumentFocusout(event) {
       method: normalizeText(paymentAmountInput.dataset.pdvPaymentAmount || "")
     });
     formatPdvPaymentAmountField(paymentAmountInput);
-    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
     endAeroStorePerfMeasure(perfToken);
     return;
   }
@@ -31983,7 +32062,7 @@ function handleDocumentFocusout(event) {
     const installments = getInstallmentCount(paymentInstallmentsInput.value || 1);
     paymentInstallmentsInput.value = String(installments);
     setPdvSalePaymentAmount(method, current.amount, installments);
-    renderPdvSaleOfficialFront(document.getElementById("pdv-sale-content"));
+    syncPdvPaymentDraftField(method);
   }
 }
 

@@ -11017,7 +11017,7 @@ body.theme-dark .pdv-sale-zone .secondary-button:hover {
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(10, 14, 20, 0.4);
-  transition: all 0.2s ease;
+  transition: border-color 0.16s ease, background-color 0.16s ease;
 }
 
 .pdv-payment-method-row:hover {
@@ -11187,7 +11187,7 @@ body.theme-dark .pdv-sale-zone .secondary-button:hover {
   background: rgba(255, 255, 255, 0.05);
   color: rgba(255, 255, 255, 0.85);
   font-weight: 500;
-  transition: all 0.2s ease;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
 }
 
 .pdv-payment-fill-btn:hover {
@@ -11203,12 +11203,11 @@ body.theme-dark .pdv-sale-zone .secondary-button:hover {
   font-weight: 700;
   font-size: 0.8rem;
   box-shadow: 0 2px 8px rgba(203, 162, 90, 0.3);
-  transition: all 0.2s ease;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .pdv-payment-add-btn:hover {
   background: #e2b971;
-  transform: translateY(-1px);
 }
 
 .pdv-credit-installment-panel {
@@ -20086,10 +20085,25 @@ body[data-route-section="pdv-sale"] .pdv-payment-method-input {
   height: 42px !important;
 }
 body[data-route-section="pdv-sale"] .pdv-payment-card-foot {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex-wrap: nowrap !important;
   margin-top: 8px !important;
+  min-height: 36px !important;
 }
 body[data-route-section="pdv-sale"] .pdv-payment-card-foot button {
+  width: 100% !important;
+  min-width: 0 !important;
   min-height: 36px !important;
+  transform: none !important;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease !important;
+}
+body[data-route-section="pdv-sale"] .pdv-payment-card-foot button:hover,
+body[data-route-section="pdv-sale"] .pdv-payment-card-foot button:active,
+body[data-route-section="pdv-sale"] .pdv-payment-card-foot button:focus {
+  transform: none !important;
 }
 
 /* OBJETIVO 3 — REDUZIR O CARD DE AVISO PELA METADE */
