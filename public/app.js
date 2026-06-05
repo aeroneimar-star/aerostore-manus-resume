@@ -13496,11 +13496,20 @@ function openPdvCustomerCreateDrawer(mode = "create", customer = null) {
 
 function closePdvCustomerCreateDrawer() {
   ensurePdvCustomersCrudState();
+  const saleAttachContext = state.pdvCustomers.drawerMode === "create" && state.pdvCustomers.saleAttachAfterCreate?.active
+    ? { ...state.pdvCustomers.saleAttachAfterCreate }
+    : null;
   state.pdvCustomers.drawerOpen = false;
   state.pdvCustomers.drawerSaving = false;
   state.pdvCustomers.drawerError = "";
   state.pdvCustomers.drawerDraft = getDefaultPdvCustomerCrudDraft();
   state.pdvCustomers.saleAttachAfterCreate = null;
+  if (saleAttachContext) {
+    window.history.replaceState({}, "", saleAttachContext.returnRoute || "/pdv/venda");
+    setActiveSection("pdv-sale");
+    renderSidebarMenu();
+    return;
+  }
   renderPdvCustomersOfficialFront(document.getElementById("pdv-customers-content"));
 }
 
