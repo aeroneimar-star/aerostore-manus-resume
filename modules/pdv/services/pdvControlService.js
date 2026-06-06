@@ -742,7 +742,7 @@ function buildDiscountAuthorizationFingerprintPayload(context = {}) {
     general_discount_amount: generalDiscountAmount,
     commercial_discount_total: commercialDiscountTotal,
     commercial_discount_percent: commercialDiscountPercent,
-    payment_risk_methods: normalizeAuthorizationPaymentRiskAmounts(context.paymentMethods || context.payment_methods || context.paymentAmounts || []),
+    payment_risk_methods: normalizeAuthorizationPaymentRiskMethods(context.paymentMethods || context.payment_methods || context.paymentAmounts || []),
     items: normalizeAuthorizationItems(context.items || [])
   };
 }
@@ -1382,6 +1382,18 @@ function normalizeAuthorizationPaymentRiskAmounts(values = []) {
     );
 }
 
+function normalizeAuthorizationPaymentRiskMethods(values = []) {
+  return normalizeAuthorizationPaymentRiskAmounts(values)
+    .map((item) => ({
+      method: item.method,
+      installments: item.installments
+    }))
+    .sort((left, right) =>
+      left.method.localeCompare(right.method)
+      || left.installments - right.installments
+    );
+}
+
 function paymentAmountSetsMatch(left = [], right = []) {
   const normalizedLeft = normalizeAuthorizationPaymentAmounts(left);
   const normalizedRight = normalizeAuthorizationPaymentAmounts(right);
@@ -1404,6 +1416,18 @@ function paymentRiskAmountSetsMatch(left = [], right = []) {
   return normalizedLeft.every((item, index) =>
     item.method === normalizedRight[index].method
     && Math.abs(item.amount - normalizedRight[index].amount) <= 0.01
+    && Number(item.installments || 1) === Number(normalizedRight[index].installments || 1)
+  );
+}
+
+function paymentRiskMethodSetsMatch(left = [], right = []) {
+  const normalizedLeft = normalizeAuthorizationPaymentRiskMethods(left);
+  const normalizedRight = normalizeAuthorizationPaymentRiskMethods(right);
+  if (normalizedLeft.length !== normalizedRight.length) {
+    return false;
+  }
+  return normalizedLeft.every((item, index) =>
+    item.method === normalizedRight[index].method
     && Number(item.installments || 1) === Number(normalizedRight[index].installments || 1)
   );
 }
@@ -1454,7 +1478,7 @@ function logAuthorizationFinalizeDenied({
   });
 }
 
-function consumeValidatedAuthorization({
+function validateValidatedAuthorization({
   authorizationId = "",
   operationType = "",
   saleSessionId = "",
@@ -1476,7 +1500,8 @@ function consumeValidatedAuthorization({
   cashbackApplied = 0,
   amountToPay = 0,
   paidAmount = 0
-} = {}, user = {}) {
+} = {}, user = {}, options = {}) {
+  const shouldConsume = options?.consume !== false;
   const rows = loadAuthorizationAudit();
   const entry = rows.find((item) => item.authorization_id === normalizeText(authorizationId || ""));
   if (!entry) {
@@ -1612,7 +1637,10 @@ function consumeValidatedAuthorization({
       ? "Alteracao na venda invalidou a autorizacao de permuta. Solicite autorizacao novamente."
       : "Alteracao na venda invalidou a autorizacao de desconto. Solicite autorizacao novamente.");
   }
-  if (entry.metadata_json?.payment_methods && !paymentRiskAmountSetsMatch(authorizationPaymentMethods, entry.metadata_json.payment_methods)) {
+  const paymentRiskMatches = normalizedOperationType === "PERMUTA_AUTHORIZATION"
+    ? paymentRiskAmountSetsMatch(authorizationPaymentMethods, entry.metadata_json?.payment_methods || [])
+    : paymentRiskMethodSetsMatch(authorizationPaymentMethods, entry.metadata_json?.payment_methods || []);
+  if (entry.metadata_json?.payment_methods && !paymentRiskMatches) {
     logAuthorizationFinalizeDenied({
       saleSessionId,
       saleId,
@@ -1633,11 +1661,21 @@ function consumeValidatedAuthorization({
     });
     throw new Error("Autorizacao emitida para outra composicao de pagamentos de risco.");
   }
-  entry.status = "CONSUMED";
-  entry.used_at = nowIso();
-  entry.used_by = normalizeText(user?.name || user?.email || "sistema");
-  saveAuthorizationAudit(rows);
+  if (shouldConsume) {
+    entry.status = "CONSUMED";
+    entry.used_at = nowIso();
+    entry.used_by = normalizeText(user?.name || user?.email || "sistema");
+    saveAuthorizationAudit(rows);
+  }
   return entry;
+}
+
+function consumeValidatedAuthorization(payload = {}, user = {}) {
+  return validateValidatedAuthorization(payload, user, { consume: true });
+}
+
+function assertValidatedAuthorization(payload = {}, user = {}) {
+  return validateValidatedAuthorization(payload, user, { consume: false });
 }
 
 function getOpenCashRegisterByStore(store = "") {
@@ -2326,17 +2364,12 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
     throw new Error(buildDiscountAuthorizationError(discountPolicy));
   }
 
+  const pendingAuthorizations = [];
   if (discountPolicy.requiresAuthorization) {
     if (!authorization.discountAuthorizationId) {
       throw new Error(buildDiscountAuthorizationError(discountPolicy));
     }
-    consumeValidatedAuthorization({
-      authorizationId: authorization.discountAuthorizationId,
-      operationType: "DISCOUNT_ABOVE_LIMIT",
-      saleSessionId,
-      saleId,
-      amount: discountPolicy.authorizationAmount || (itemDiscountAmount + extraDiscount),
-      percent: discountPolicy.authorizationPercent || discountPercent,
+    const currentDiscountAuthorizationContext = {
       paymentMethods: saleContext.paymentMethods || [],
       paymentAmounts: saleContext.paymentMethods || [],
       items: saleContext.items || [],
@@ -2349,14 +2382,66 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
       cashbackApplied: saleContext.cashbackUsed || 0,
       amountToPay: saleContext.totalFinal || 0,
       paidAmount: saleContext.paidAmount || 0
-    }, user);
+    };
+    const savedDiscountAuthorizationContext = saleContext.discountAuthorizationContext && typeof saleContext.discountAuthorizationContext === "object"
+      ? saleContext.discountAuthorizationContext
+      : null;
+    if (savedDiscountAuthorizationContext) {
+      const savedPayload = buildDiscountAuthorizationFingerprintPayload(savedDiscountAuthorizationContext);
+      const currentPayload = buildDiscountAuthorizationFingerprintPayload(currentDiscountAuthorizationContext);
+      const divergentFields = getAuthorizationPayloadDivergentFields(savedPayload, currentPayload);
+      if (divergentFields.length) {
+        logAuthorizationFinalizeDenied({
+          saleSessionId,
+          saleId,
+          authorizationIdReceived: authorization.discountAuthorizationId,
+          authorizationTypeExpected: "DISCOUNT_ABOVE_LIMIT",
+          savedFingerprint: buildDiscountAuthorizationFingerprint(savedDiscountAuthorizationContext),
+          currentFingerprint: buildDiscountAuthorizationFingerprint(currentDiscountAuthorizationContext),
+          fingerprintMatch: false,
+          paymentMethods: saleContext.paymentMethods || [],
+          riskPaymentMethods: normalizeAuthorizationPaymentRiskAmounts(saleContext.paymentMethods || []),
+          divergentFields,
+          totalAPagar: saleContext.totalFinal || 0,
+          totalLancado: saleContext.paidAmount || 0,
+          discountTotal: itemDiscountAmount + extraDiscount,
+          itemDiscountTotal: itemDiscountAmount,
+          generalDiscount: extraDiscount,
+          reason: "sale_context_changed_after_discount_authorization"
+        });
+        throw new Error("A venda foi alterada depois da solicitacao de autorizacao. Solicite uma nova autorizacao.");
+      }
+    }
+    const validatedDiscountAuthorizationContext = savedDiscountAuthorizationContext || currentDiscountAuthorizationContext;
+    const discountAuthorizationPayload = {
+      authorizationId: authorization.discountAuthorizationId,
+      operationType: "DISCOUNT_ABOVE_LIMIT",
+      saleSessionId,
+      saleId,
+      amount: discountPolicy.authorizationAmount || (itemDiscountAmount + extraDiscount),
+      percent: discountPolicy.authorizationPercent || discountPercent,
+      paymentMethods: validatedDiscountAuthorizationContext.payment_methods || validatedDiscountAuthorizationContext.paymentMethods || saleContext.paymentMethods || [],
+      paymentAmounts: validatedDiscountAuthorizationContext.payment_methods || validatedDiscountAuthorizationContext.paymentMethods || saleContext.paymentMethods || [],
+      items: validatedDiscountAuthorizationContext.items || saleContext.items || [],
+      loja,
+      customerId: validatedDiscountAuthorizationContext.customer_id || validatedDiscountAuthorizationContext.customerId || saleContext.customerId || "",
+      itemDiscountAmount: validatedDiscountAuthorizationContext.item_discount_amount ?? validatedDiscountAuthorizationContext.itemDiscountAmount ?? itemDiscountAmount,
+      generalDiscountAmount: validatedDiscountAuthorizationContext.general_discount_amount ?? validatedDiscountAuthorizationContext.generalDiscountAmount ?? extraDiscount,
+      exchangeCredit: validatedDiscountAuthorizationContext.exchange_credit ?? validatedDiscountAuthorizationContext.exchangeCredit ?? saleContext.exchangeCredit ?? 0,
+      subtotal: validatedDiscountAuthorizationContext.subtotal ?? subtotal,
+      cashbackApplied: validatedDiscountAuthorizationContext.cashback_applied ?? validatedDiscountAuthorizationContext.cashbackApplied ?? saleContext.cashbackUsed ?? 0,
+      amountToPay: validatedDiscountAuthorizationContext.total_final ?? validatedDiscountAuthorizationContext.amountToPay ?? saleContext.totalFinal ?? 0,
+      paidAmount: validatedDiscountAuthorizationContext.paid_amount ?? validatedDiscountAuthorizationContext.paidAmount ?? saleContext.paidAmount ?? 0
+    };
+    assertValidatedAuthorization(discountAuthorizationPayload, user);
+    pendingAuthorizations.push(discountAuthorizationPayload);
   }
 
   if (permutaAmount > 0) {
     if (!authorization.permutaAuthorizationId) {
       throw new Error("Permuta exige autorizacao da gestao.");
     }
-    consumeValidatedAuthorization({
+    const permutaAuthorizationPayload = {
       authorizationId: authorization.permutaAuthorizationId,
       operationType: "PERMUTA_AUTHORIZATION",
       saleSessionId,
@@ -2378,14 +2463,28 @@ function validateSaleControls({ saleContext = {}, authorization = {} } = {}, use
       cashbackApplied: saleContext.cashbackUsed || 0,
       amountToPay: saleContext.totalFinal || 0,
       paidAmount: saleContext.paidAmount || 0
-    }, user);
+    };
+    assertValidatedAuthorization(permutaAuthorizationPayload, user);
+    pendingAuthorizations.push(permutaAuthorizationPayload);
   }
 
   return {
     discount_limit: discountLimit,
     discount_percent: discountPercent,
-    discount_policy: discountPolicy
+    discount_policy: discountPolicy,
+    pending_authorizations: pendingAuthorizations
   };
+}
+
+function consumeSaleControlAuthorizations(controlValidation = {}, user = {}) {
+  const pendingAuthorizations = Array.isArray(controlValidation.pending_authorizations)
+    ? controlValidation.pending_authorizations
+    : [];
+  const consumed = [];
+  for (const authorizationPayload of pendingAuthorizations) {
+    consumed.push(consumeValidatedAuthorization(authorizationPayload, user));
+  }
+  return consumed;
 }
 
 function listCashRegisters() {
@@ -2433,6 +2532,7 @@ module.exports = {
   issueAuthorizationPin,
   validateAuthorizationPin,
   validateSaleControls,
+  consumeSaleControlAuthorizations,
   listCashRegisters,
   getCashRegisterById,
   getOpenCashRegisterByStore,
@@ -2447,5 +2547,8 @@ module.exports = {
   setAuthorizerStatus,
   validateOperationAuthorization,
   consumeValidatedAuthorization,
-  loadAuthorizationAudit
+  buildDiscountAuthorizationFingerprint,
+  buildDiscountAuthorizationFingerprintPayload,
+  loadAuthorizationAudit,
+  saveAuthorizationAudit
 };

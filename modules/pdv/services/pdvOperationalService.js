@@ -6,7 +6,11 @@ const crypto = require("crypto");
 const { get, all } = require("../../../db");
 const { PDV_PAYMENT_METHODS } = require("../utils/pdvConfig");
 const { normalizeStoreKey, storesMatch, formatStoreLabel, getStoreDisplayText } = require("../utils/pdvStoreUtils");
-const { getDiscountPolicyForSale } = require("./pdvControlService");
+const {
+  getDiscountPolicyForSale,
+  buildDiscountAuthorizationFingerprint,
+  buildDiscountAuthorizationFingerprintPayload
+} = require("./pdvControlService");
 
 const GENERAL_DISCOUNT_ALLOWED_PAYMENT_METHODS = new Set(["pix", "dinheiro"]);
 const GENERAL_DISCOUNT_IGNORED_PAYMENT_METHODS = new Set([
@@ -291,6 +295,53 @@ function getSessionDiscountPolicy(session = {}) {
     cashbackUsed,
     exchangeCredit
   });
+}
+
+function computeSessionDiscountUpdate(session = {}, payload = {}) {
+  const cartItems = Array.isArray(session.cart_items) ? session.cart_items : [];
+  const discountBase = getSessionGeneralDiscountBase(session);
+  const mode = normalizeText(payload.mode || payload.discount_mode || "percent").toLowerCase() === "value" ? "value" : "percent";
+  const rawValue = toNumber(payload.value ?? payload.amount ?? payload.percent ?? 0);
+  const reason = normalizeText(payload.reason || "");
+  let discountAmount = 0;
+  let discountPercent = 0;
+  if (mode === "percent") {
+    discountPercent = Number(Math.max(0, rawValue).toFixed(2));
+    if (discountPercent > 0 && discountBase <= 0) {
+      throw new Error("Nao ha base elegivel para aplicar desconto geral apos Cashback e Credito de Troca.");
+    }
+    discountAmount = Number(((discountBase * discountPercent) / 100).toFixed(2));
+  } else {
+    discountAmount = Number(Math.max(0, rawValue).toFixed(2));
+    if (discountAmount > discountBase + 0.009) {
+      throw new Error("O desconto geral nao pode superar a base elegivel apos Cashback e Credito de Troca.");
+    }
+    discountPercent = discountBase > 0 ? Number(((discountAmount / discountBase) * 100).toFixed(2)) : 0;
+  }
+  discountAmount = Number(Math.min(discountAmount, discountBase).toFixed(2));
+  discountPercent = mode === "percent"
+    ? Number(Math.max(0, rawValue).toFixed(2))
+    : (discountBase > 0 ? Number(((discountAmount / discountBase) * 100).toFixed(2)) : 0);
+  return {
+    cartItems,
+    discountBase,
+    mode,
+    rawValue,
+    reason,
+    discountAmount,
+    discountPercent
+  };
+}
+
+function assignSessionGeneralDiscount(session = {}, discountUpdate = {}) {
+  session.desconto_extra = toNumber(discountUpdate.discountAmount || 0);
+  session.extra_discount = toNumber(discountUpdate.discountAmount || 0);
+  session.discount_amount = toNumber(discountUpdate.discountAmount || 0);
+  session.discount_percent = toNumber(discountUpdate.discountPercent || 0);
+  session.discount_mode = normalizeText(discountUpdate.mode || "percent");
+  session.discount_reason = normalizeText(discountUpdate.reason || "");
+  applySessionDiscountPolicy(session);
+  return session;
 }
 
 function applySessionDiscountPolicy(session = {}) {
@@ -3567,48 +3618,265 @@ function updateSessionDiscount(sessionId, payload = {}) {
   if (!session) {
     throw new Error("Sessao do atendimento nao encontrada.");
   }
-  const cartItems = Array.isArray(session.cart_items) ? session.cart_items : [];
-  const subtotal = Number(Math.max(0, getCartItemsNetSubtotal(cartItems)).toFixed(2));
-  const discountBase = getSessionGeneralDiscountBase(session);
-  const mode = normalizeText(payload.mode || payload.discount_mode || "percent").toLowerCase() === "value" ? "value" : "percent";
-  const rawValue = toNumber(payload.value ?? payload.amount ?? payload.percent ?? 0);
-  const reason = normalizeText(payload.reason || "");
-  if (rawValue > 0) {
+  const discountUpdate = computeSessionDiscountUpdate(session, payload);
+  if (discountUpdate.rawValue > 0) {
     const blockingMethods = getGeneralDiscountBlockingPaymentMethods(session);
     if (blockingMethods.length) {
       const labels = [...new Set(blockingMethods.map((item) => getPaymentMethodPolicyLabel(item.method)).filter(Boolean))];
       throw new Error(`Desconto geral permitido somente para Pix ou Dinheiro. ${labels.length ? `Esta venda possui pagamento em ${labels.join(" + ")}. ` : ""}Remova ou ajuste os pagamentos lancados antes de aplicar este desconto.`);
     }
   }
-  let discountAmount = 0;
-  let discountPercent = 0;
-  if (mode === "percent") {
-    discountPercent = Number(Math.max(0, rawValue).toFixed(2));
-    if (discountPercent > 0 && discountBase <= 0) {
-      throw new Error("Nao ha base elegivel para aplicar desconto geral apos Cashback e Credito de Troca.");
-    }
-    discountAmount = Number(((discountBase * discountPercent) / 100).toFixed(2));
-  } else {
-    discountAmount = Number(Math.max(0, rawValue).toFixed(2));
-    if (discountAmount > discountBase + 0.009) {
-      throw new Error("O desconto geral nao pode superar a base elegivel apos Cashback e Credito de Troca.");
-    }
-    discountPercent = discountBase > 0 ? Number(((discountAmount / discountBase) * 100).toFixed(2)) : 0;
-  }
-  discountAmount = Number(Math.min(discountAmount, discountBase).toFixed(2));
-  discountPercent = mode === "percent"
-    ? Number(Math.max(0, rawValue).toFixed(2))
-    : (discountBase > 0 ? Number(((discountAmount / discountBase) * 100).toFixed(2)) : 0);
-  session.desconto_extra = discountAmount;
-  session.extra_discount = discountAmount;
-  session.discount_amount = discountAmount;
-  session.discount_percent = discountPercent;
-  session.discount_mode = mode;
-  session.discount_reason = reason;
-  applySessionDiscountPolicy(session);
+  assignSessionGeneralDiscount(session, discountUpdate);
   session.updated_at = nowIso();
   saveSession(session);
   return session;
+}
+
+function buildSessionAuthorizationTotals(session = {}) {
+  const cartItems = Array.isArray(session.cart_items) ? session.cart_items : [];
+  const subtotal = getCartItemsGrossSubtotal(cartItems);
+  const itemDiscountAmount = getCartItemsDiscountTotal(cartItems);
+  const subtotalAfterItemDiscount = getCartItemsNetSubtotal(cartItems);
+  const paymentMethods = (Array.isArray(session.payment_plan?.methods) ? session.payment_plan.methods : [])
+    .map((item) => ({
+      method: normalizeText(item?.method || "").toLowerCase(),
+      amount: Number(Math.max(0, toNumber(item?.amount || 0)).toFixed(2)),
+      installments: Math.max(1, Math.min(10, Math.round(toNumber(item?.installments || 1)))),
+      installment_amount: Number(Math.max(0, toNumber(item?.installment_amount || 0)).toFixed(2)),
+      credit_id: normalizeText(item?.credit_id || item?.exchange_credit_id || ""),
+      customer_id: normalizeText(item?.customer_id || "")
+    }))
+    .filter((item) => item.method && item.amount > 0);
+  const cashbackUsed = toNumber(session?.cashback_application?.amount || 0);
+  const giftCardUsed = Number(paymentMethods.filter((item) => item.method === "vale_presente").reduce((sum, item) => sum + item.amount, 0).toFixed(2));
+  const exchangeCredit = Number(paymentMethods.filter((item) => item.method === "credito_troca").reduce((sum, item) => sum + item.amount, 0).toFixed(2))
+    || toNumber(session?.exchange_credit_application?.amount || 0);
+  const permutaAmount = Number(paymentMethods.filter((item) => item.method === "permuta").reduce((sum, item) => sum + item.amount, 0).toFixed(2));
+  const paidAmount = Number(paymentMethods
+    .filter((item) => !["cashback", "credito_troca", "permuta", "vale_presente"].includes(item.method))
+    .reduce((sum, item) => sum + item.amount, 0).toFixed(2));
+  const extraDiscount = toNumber(session.desconto_extra || session.extra_discount || session.discount_amount || 0);
+  const totalFinal = Number(Math.max(0, subtotalAfterItemDiscount - extraDiscount - giftCardUsed - exchangeCredit - permutaAmount - cashbackUsed).toFixed(2));
+  const generalDiscountBase = getSessionGeneralDiscountBase(session);
+  return {
+    subtotal,
+    itemDiscountAmount,
+    subtotalAfterItemDiscount,
+    extraDiscount,
+    totalDiscountAmount: Number((itemDiscountAmount + extraDiscount).toFixed(2)),
+    generalDiscountBase,
+    generalDiscountPercent: toNumber(session.discount_percent || 0),
+    cashbackUsed,
+    giftCardUsed,
+    exchangeCredit,
+    permutaAmount,
+    totalFinal,
+    paidAmount,
+    paymentMethods
+  };
+}
+
+function buildPendingDiscountSession(session = {}, payload = {}) {
+  const pendingSession = cloneSerializable(session);
+  const discountUpdate = computeSessionDiscountUpdate(pendingSession, payload);
+  assignSessionGeneralDiscount(pendingSession, discountUpdate);
+  normalizePendingDiscountPaymentPlan(pendingSession);
+  return { pendingSession, discountUpdate };
+}
+
+const PENDING_DISCOUNT_AUTO_ADJUST_PAYMENT_METHODS = new Set([
+  "pix",
+  "dinheiro",
+  "debito",
+  "credito_ate_10x",
+  "link_pagamento"
+]);
+
+function normalizePendingDiscountPaymentPlan(session = {}) {
+  const totals = buildSessionAuthorizationTotals(session);
+  const excess = Number(Math.max(0, totals.paidAmount - totals.totalFinal).toFixed(2));
+  if (excess <= 0.01) {
+    return session;
+  }
+  const methods = Array.isArray(session.payment_plan?.methods)
+    ? session.payment_plan.methods.map((item) => ({ ...item }))
+    : [];
+  const candidates = methods
+    .map((item, index) => ({
+      item,
+      index,
+      method: normalizeText(item.method || "")
+    }))
+    .filter(({ item, method }) =>
+      PENDING_DISCOUNT_AUTO_ADJUST_PAYMENT_METHODS.has(method)
+      && toNumber(item.amount || 0) > 0
+    );
+  const target = candidates[candidates.length - 1] || null;
+  if (!target || toNumber(target.item.amount || 0) + 0.01 < excess) {
+    return session;
+  }
+  const installments = Math.max(1, Math.min(10, Math.round(toNumber(target.item.installments || 1))));
+  const nextAmount = Number(Math.max(0, toNumber(target.item.amount || 0) - excess).toFixed(2));
+  session.payment_plan = {
+    methods: methods
+      .map((item, index) => index === target.index
+        ? {
+            ...item,
+            amount: nextAmount,
+            installments,
+            installment_amount: Number((nextAmount / installments).toFixed(2))
+          }
+        : item)
+      .filter((item) =>
+        toNumber(item.amount || 0) > 0.01
+        || !PENDING_DISCOUNT_AUTO_ADJUST_PAYMENT_METHODS.has(normalizeText(item.method || ""))
+      )
+  };
+  applySessionDiscountPolicy(session);
+  return session;
+}
+
+function buildDiscountAuthorizationContext(session = {}) {
+  const totals = buildSessionAuthorizationTotals(session);
+  const policy = session.discount_policy || getSessionDiscountPolicy(session);
+  return {
+    session_id: normalizeText(session.session_id || ""),
+    loja: normalizeStoreKey(session.loja || session.store_id || ""),
+    subtotal: totals.subtotal,
+    item_discount_amount: totals.itemDiscountAmount,
+    general_discount_amount: totals.extraDiscount,
+    general_exception_amount: policy.generalExceptionAmount || 0,
+    discount_amount: totals.totalDiscountAmount,
+    discount_percent: policy.authorizationPercent || totals.generalDiscountPercent,
+    total_final: totals.totalFinal,
+    paid_amount: totals.paidAmount,
+    cashback_applied: totals.cashbackUsed,
+    exchange_credit: totals.exchangeCredit,
+    excess_balance_before_discount: policy.excessBalanceBeforeDiscount || policy.policyBase || totals.generalDiscountBase || 0,
+    excess_balance_after_discount: policy.excessBalanceAfterDiscount || 0,
+    payment_methods: totals.paymentMethods,
+    items: Array.isArray(session.cart_items) ? session.cart_items : [],
+    customer_id: normalizeText(session.customer?.id || session.customer_id || ""),
+    pix_money_policy_base: policy.policyBase || totals.generalDiscountBase || 0,
+    pix_money_policy_limit: policy.automaticLimitAmount || 0
+  };
+}
+
+function getDiscountAuthorizationContextKey(context = {}) {
+  return buildDiscountAuthorizationFingerprint(context || {});
+}
+
+function getDiscountAuthorizationContextPayload(context = {}) {
+  return buildDiscountAuthorizationFingerprintPayload(context || {});
+}
+
+function getDiscountAuthorizationContextDivergences(originalContext = {}, currentContext = {}) {
+  const originalPayload = getDiscountAuthorizationContextPayload(originalContext);
+  const currentPayload = getDiscountAuthorizationContextPayload(currentContext);
+  const keys = new Set([
+    ...Object.keys(originalPayload || {}),
+    ...Object.keys(currentPayload || {})
+  ]);
+  return Array.from(keys).filter((key) =>
+    JSON.stringify(originalPayload?.[key] ?? null) !== JSON.stringify(currentPayload?.[key] ?? null)
+  );
+}
+
+function assertPendingDiscountAuthorizationContextMatches(originalContext = {}, currentContext = {}) {
+  if (!originalContext || typeof originalContext !== "object" || !Object.keys(originalContext).length) {
+    throw new Error("Contexto original da autorizacao nao informado. Solicite uma nova autorizacao.");
+  }
+  const originalSessionId = normalizeText(originalContext.session_id || originalContext.sale_session_id || "");
+  const currentSessionId = normalizeText(currentContext.session_id || currentContext.sale_session_id || "");
+  if (originalSessionId && currentSessionId && originalSessionId !== currentSessionId) {
+    throw new Error("A venda foi alterada depois da solicitacao de autorizacao. Solicite uma nova autorizacao.");
+  }
+  const originalKey = getDiscountAuthorizationContextKey(originalContext);
+  const currentKey = getDiscountAuthorizationContextKey(currentContext);
+  if (originalKey !== currentKey) {
+    const error = new Error("A venda foi alterada depois da solicitacao de autorizacao. Solicite uma nova autorizacao.");
+    error.code = "DISCOUNT_AUTHORIZATION_CONTEXT_CHANGED";
+    error.divergent_fields = getDiscountAuthorizationContextDivergences(originalContext, currentContext);
+    throw error;
+  }
+}
+
+function requestPendingSessionDiscountAuthorization(sessionId, payload = {}) {
+  const session = getSessionById(sessionId);
+  if (!session) {
+    throw new Error("Sessao do atendimento nao encontrada.");
+  }
+  if (!Array.isArray(session.cart_items) || !session.cart_items.length) {
+    throw new Error("Adicione itens ao carrinho antes de solicitar autorizacao de desconto.");
+  }
+  const { pendingSession, discountUpdate } = buildPendingDiscountSession(session, payload);
+  const policy = pendingSession.discount_policy || getSessionDiscountPolicy(pendingSession);
+  if (discountUpdate.discountAmount <= 0) {
+    throw new Error("Informe um desconto valido para solicitar autorizacao.");
+  }
+  if (!policy.requiresAuthorization) {
+    throw new Error("Este desconto nao exige autorizacao gerencial.");
+  }
+  if (!Array.isArray(policy.invalidMethods) || !policy.invalidMethods.length) {
+    throw new Error("Use o fluxo normal de desconto para esta condicao.");
+  }
+  const authorizationContext = buildDiscountAuthorizationContext(pendingSession);
+  return {
+    authorization_required: true,
+    reason: policy.reason,
+    pending_discount: {
+      mode: discountUpdate.mode,
+      value: discountUpdate.rawValue,
+      amount: discountUpdate.discountAmount,
+      percent: discountUpdate.discountPercent,
+      reason: discountUpdate.reason
+    },
+    discount_policy: policy,
+    authorization_context: authorizationContext,
+    authorization_context_key: getDiscountAuthorizationContextKey(authorizationContext),
+    preview_session: buildSessionSnapshot(pendingSession)
+  };
+}
+
+function applyAuthorizedPendingSessionDiscount(sessionId, payload = {}, authorization = {}, options = {}) {
+  const session = getSessionById(sessionId);
+  if (!session) {
+    throw new Error("Sessao do atendimento nao encontrada.");
+  }
+  const { pendingSession, discountUpdate } = buildPendingDiscountSession(session, payload);
+  const policy = pendingSession.discount_policy || getSessionDiscountPolicy(pendingSession);
+  if (discountUpdate.discountAmount <= 0) {
+    throw new Error("Informe um desconto valido para aplicar.");
+  }
+  if (!policy.requiresAuthorization || !Array.isArray(policy.invalidMethods) || !policy.invalidMethods.length) {
+    throw new Error("Este desconto deve ser aplicado pelo fluxo normal.");
+  }
+  const authorizationId = normalizeText(authorization.authorization_id || authorization.authorizationId || "");
+  if (!authorizationId) {
+    throw new Error("Autorizacao gerencial obrigatoria para aplicar este desconto.");
+  }
+  const currentAuthorizationContext = buildDiscountAuthorizationContext(pendingSession);
+  const originalAuthorizationContext = options.authorizationContext && typeof options.authorizationContext === "object"
+    ? options.authorizationContext
+    : currentAuthorizationContext;
+  assertPendingDiscountAuthorizationContextMatches(originalAuthorizationContext, currentAuthorizationContext);
+  assignSessionGeneralDiscount(session, discountUpdate);
+  session.payment_plan = cloneSerializable(pendingSession.payment_plan) || { methods: [] };
+  applySessionDiscountPolicy(session);
+  session.discount_authorization_id = authorizationId;
+  session.discount_authorization_context_key = getDiscountAuthorizationContextKey(originalAuthorizationContext);
+  session.discount_authorization_context = cloneSerializable(originalAuthorizationContext);
+  session.authorization_required = true;
+  session.discount_authorization_required = true;
+  session.updated_at = nowIso();
+  saveSession(session);
+  return {
+    session,
+    authorization_id: authorizationId,
+    discount_policy: session.discount_policy,
+    authorization_context: cloneSerializable(originalAuthorizationContext),
+    authorization_context_key: session.discount_authorization_context_key
+  };
 }
 
 function buildSessionSnapshot(session) {
@@ -3767,6 +4035,9 @@ module.exports = {
   restoreCartDraft,
   updatePaymentPlan,
   updateSessionDiscount,
+  requestPendingSessionDiscountAuthorization,
+  applyAuthorizedPendingSessionDiscount,
+  assertPendingDiscountAuthorizationContextMatches,
   createQuoteFromSession,
   createReservationFromSession,
   createInternalConsumption,

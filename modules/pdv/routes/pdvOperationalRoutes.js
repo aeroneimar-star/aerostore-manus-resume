@@ -22,6 +22,9 @@ const {
   restoreCartDraft,
   updatePaymentPlan,
   updateSessionDiscount,
+  requestPendingSessionDiscountAuthorization,
+  applyAuthorizedPendingSessionDiscount,
+  assertPendingDiscountAuthorizationContextMatches,
   createQuoteFromSession,
   createReservationFromSession,
   createInternalConsumption,
@@ -35,6 +38,7 @@ const {
   listCustomersCatalog,
   debugUnifiedSearch
 } = require("../services/pdvOperationalService");
+const { validateOperationAuthorization } = require("../services/pdvControlService");
 const { ensureOpenCashRegisterForStore } = require("../utils/pdvCashRegisterGuard");
 
 ensureOperationalDirs();
@@ -406,6 +410,69 @@ router.post("/cart/:sessionId/payment-plan", canOperatePaymentPlan, async (req, 
     res.json(updatePaymentPlan(req.params.sessionId, req.body?.methods || []));
   } catch (error) {
     res.status(error.statusCode || 400).json({ error: error.message || "Falha ao preparar os meios de pagamento do PDV." });
+  }
+});
+
+router.post("/cart/:sessionId/discount/authorization-request", canApplyDiscount, async (req, res) => {
+  try {
+    const session = getSessionById(req.params.sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "Sessao operacional do PDV nao encontrada." });
+    }
+    if (!ensureStoreAccess(req, res, session.store_id || session.loja || "")) {
+      return;
+    }
+    res.json(requestPendingSessionDiscountAuthorization(req.params.sessionId, req.body?.discount || req.body || {}));
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao preparar a autorizacao do desconto da venda." });
+  }
+});
+
+router.post("/cart/:sessionId/discount/authorize-and-apply", canApplyDiscount, async (req, res) => {
+  try {
+    if (!hasPermission(req.user || {}, "can_request_discount_authorization")) {
+      return res.status(403).json({ error: "Seu perfil nao pode solicitar autorizacoes do PDV." });
+    }
+    const session = getSessionById(req.params.sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "Sessao operacional do PDV nao encontrada." });
+    }
+    if (!ensureStoreAccess(req, res, session.store_id || session.loja || "")) {
+      return;
+    }
+    const discountPayload = req.body?.discount || req.body?.pending_discount || {};
+    const authorizationPreview = requestPendingSessionDiscountAuthorization(req.params.sessionId, discountPayload);
+    const pendingDiscount = authorizationPreview.pending_discount || {};
+    const discountPolicy = authorizationPreview.discount_policy || {};
+    const originalAuthorizationContext = req.body?.authorization_context && typeof req.body.authorization_context === "object"
+      ? req.body.authorization_context
+      : authorizationPreview.authorization_context || {};
+    assertPendingDiscountAuthorizationContextMatches(originalAuthorizationContext, authorizationPreview.authorization_context || {});
+    const approval = await validateOperationAuthorization({
+      ...(req.body || {}),
+      operation_type: "DISCOUNT_ABOVE_LIMIT",
+      sale_session_id: req.params.sessionId,
+      amount: discountPolicy.authorizationAmount || pendingDiscount.amount || 0,
+      percent: discountPolicy.authorizationPercent || pendingDiscount.percent || 0,
+      reason: req.body?.reason || pendingDiscount.reason || "Autorizacao gerencial de desconto pendente no PDV",
+      context: originalAuthorizationContext,
+      ip: req.ip || "",
+      user_agent: req.headers["user-agent"] || ""
+    }, req.user || {});
+    const applied = applyAuthorizedPendingSessionDiscount(req.params.sessionId, discountPayload, approval, {
+      authorizationContext: originalAuthorizationContext
+    });
+    res.json({
+      success: true,
+      authorization: approval,
+      session: applied.session,
+      pending_discount: pendingDiscount,
+      discount_policy: applied.discount_policy,
+      authorization_context: applied.authorization_context,
+      authorization_context_key: applied.authorization_context_key
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao autorizar e aplicar o desconto da venda." });
   }
 });
 

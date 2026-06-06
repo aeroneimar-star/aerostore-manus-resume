@@ -15,8 +15,11 @@ const {
   getOpenCashRegisterByStore,
   registerCashMovement,
   validateSaleControls,
+  consumeSaleControlAuthorizations,
   appendAuditLog,
-  getPdvUserRole
+  getPdvUserRole,
+  loadAuthorizationAudit,
+  saveAuthorizationAudit
 } = require("../services/pdvControlService");
 const { registerGiftExperienceFromSale } = require("../services/pdvExperienceService");
 const {
@@ -2094,6 +2097,9 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
       totalFinal: totals.totalFinal,
       paidAmount: totals.paidAmount,
       items: session.cart_items,
+      discountAuthorizationContext: session.discount_authorization_context && typeof session.discount_authorization_context === "object"
+        ? session.discount_authorization_context
+        : null,
       customerId: session.customer?.id || session.customer_id || "",
       sellerId: normalizeText(payload.vendedor || session.seller || ""),
       permutaAmount: totals.permutaAmount,
@@ -2448,6 +2454,159 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
       permuta_amount: sale.permuta_usada
     }
   }, user);
+
+  // CONSUMO DE AUTORIZAÇÃO: Crítico para evitar reutilização
+  // Se falhar por regra de negócio (fingerprint, status), falha a finalização
+  // Se falhar por erro técnico após venda salva, bloqueia autorização
+  let consumedAuthorizations = [];
+  const pendingAuthorizations = Array.isArray(controlValidation.pending_authorizations)
+    ? controlValidation.pending_authorizations
+    : [];
+
+  if (pendingAuthorizations.length > 0) {
+    try {
+      consumedAuthorizations = consumeSaleControlAuthorizations(controlValidation, user);
+      // Sucesso: registra no sale
+      sale.control_validation = {
+        ...(sale.control_validation || {}),
+        consumed_authorizations: consumedAuthorizations.map((item) => ({
+          authorization_id: item.authorization_id,
+          operation_type: item.operation_type,
+          status: item.status,
+          used_at: item.used_at
+        }))
+      };
+      saveSales(sales);
+    } catch (consumptionError) {
+      // FALHA: Verificar se é erro de regra de negócio ou técnico
+      // Erros conhecidos de regra de negócio que devem bloquear antes de venda concluir:
+      // - "Autorizacao nao encontrada" → não deveria ser consumida
+      // - "Autorizacao invalida" → fingerprint mudou
+      // - "Alteracao na venda invalidou a autorizacao" → contexto divergiu
+      // - "Autorizacao emitida para outra..." → session/sale mismatch
+      // - "Autorizacao ja utilizada" → múltiplo consumo
+      // - "Autorizacao expirada" → timeout
+
+      const errorMsg = String(consumptionError.message || "");
+      const isValidationError = errorMsg.includes("Autorizacao") && (
+        errorMsg.includes("nao encontrada") ||
+        errorMsg.includes("invalida") ||
+        errorMsg.includes("alteracao na venda") ||
+        errorMsg.includes("emitida para outra") ||
+        errorMsg.includes("ja utilizada") ||
+        errorMsg.includes("expirada")
+      );
+
+      if (isValidationError) {
+        // Erro de validação: deve bloquear a finalização ANTES de salvar venda
+        // Mas se chegou aqui, venda já foi salva, então deve bloquear autorização
+        // para evitar reutilização
+        appendAuditLog({
+          audit_id: buildId("AUD"),
+          action: "AUTHORIZATION_VALIDATION_FAILED_AFTER_SALE_PERSISTED",
+          created_at: nowIso(),
+          actor: user?.name || user?.email || "sistema",
+          actor_role: getPdvUserRole(user),
+          loja: sale.loja,
+          reason: "Autorização não passou na validação final após venda ser persistida",
+          before: { authorization_ids: pendingAuthorizations.map(a => a.authorizationId) },
+          after: { error: errorMsg, sale_id: sale.sale_id }
+        });
+
+        // Força bloqueio das autorizações
+        const authAudit = loadAuthorizationAudit();
+        let blockedAnyAuth = false;
+        for (const authPayload of pendingAuthorizations) {
+          const entry = authAudit.find(a => a.authorization_id === normalizeText(authPayload.authorizationId || ""));
+          if (entry && entry.status === "APPROVED") {
+            entry.status = "BLOCKED_PENDING_RECONCILIATION";
+            entry.blocked_reason = errorMsg;
+            entry.blocked_at = nowIso();
+            entry.blocked_for_sale_id = sale.sale_id;
+            blockedAnyAuth = true;
+          }
+        }
+        if (blockedAnyAuth) {
+          saveAuthorizationAudit(authAudit);
+        }
+
+        // Marca venda como tendo pendência crítica
+        sale.authorization_validation_failed = true;
+        sale.authorization_validation_error = errorMsg;
+        sale.authorization_validation_failed_at = nowIso();
+        saveSales(sales);
+
+        // Lança erro: falha foi em validação, não em erro técnico
+        throw consumptionError;
+      } else {
+        // Erro técnico (arquivo, permissão, etc): venda foi salva, autorização pode estar não consumida
+        appendAuditLog({
+          audit_id: buildId("AUD"),
+          action: "AUTHORIZATION_CONSUMPTION_TECHNICAL_ERROR",
+          created_at: nowIso(),
+          actor: user?.name || user?.email || "sistema",
+          actor_role: getPdvUserRole(user),
+          loja: sale.loja,
+          reason: "Erro técnico ao consumir autorização após venda ser persistida",
+          before: { authorization_ids: pendingAuthorizations.map(a => a.authorizationId) },
+          after: { error: errorMsg, sale_id: sale.sale_id }
+        });
+
+        // Tenta bloquear autorizações para evitar reutilização
+        try {
+          const authAudit = loadAuthorizationAudit();
+          let blockedAnyAuth = false;
+          for (const authPayload of pendingAuthorizations) {
+            const entry = authAudit.find(a => a.authorization_id === normalizeText(authPayload.authorizationId || ""));
+            if (entry && entry.status === "APPROVED") {
+              entry.status = "BLOCKED_PENDING_RECONCILIATION";
+              entry.blocked_reason = "Erro técnico durante consumo: " + errorMsg;
+              entry.blocked_at = nowIso();
+              entry.blocked_for_sale_id = sale.sale_id;
+              blockedAnyAuth = true;
+            }
+          }
+          if (blockedAnyAuth) {
+            saveAuthorizationAudit(authAudit);
+          }
+        } catch (blockError) {
+          // Falhou bloquear também: registra e continua
+          appendAuditLog({
+            audit_id: buildId("AUD"),
+            action: "AUTHORIZATION_BLOCK_FAILED",
+            created_at: nowIso(),
+            actor: user?.name || user?.email || "sistema",
+            actor_role: getPdvUserRole(user),
+            loja: sale.loja,
+            reason: "Falha ao tentar bloquear autorização após erro técnico de consumo",
+            before: null,
+            after: { sale_id: sale.sale_id, error: blockError.message }
+          });
+        }
+
+        // Marca venda como tendo pendência
+        sale.authorization_consumption_pending = true;
+        sale.authorization_consumption_error = errorMsg;
+        sale.authorization_consumption_attempted_at = nowIso();
+        sale.pending_authorizations = pendingAuthorizations.map(a => ({
+          authorization_id: a.authorizationId,
+          operation_type: a.operationType,
+          amount: a.amount,
+          percent: a.percent
+        }));
+        saveSales(sales);
+
+        // Retorna erro crítico ao usuário: não bloqueia operação final, mas alerta
+        const criticalError = new Error("AUTHORIZATION_CONSUMPTION_FAILED_TECHNICAL");
+        criticalError.statusCode = 500;
+        criticalError.message = `Venda foi finalizada mas o consumo da autorização de ${pendingAuthorizations[0]?.operationType === "PERMUTA_AUTHORIZATION" ? "permuta" : "desconto"} falhou. Contate o suporte. Venda ID: ${sale.sale_id}`;
+        criticalError.code = "AUTHORIZATION_CONSUMPTION_TECHNICAL_ERROR";
+        criticalError.saleId = sale.sale_id;
+        criticalError.originalError = errorMsg;
+        throw criticalError;
+      }
+    }
+  }
 
   appendAuditLog({
     audit_id: buildId("AUD"),
