@@ -28,8 +28,17 @@ assert(
   !appSource.includes("if (event.repeat || state.pdvSale.productSearching) return;"),
   "Enter deve iniciar nova busca mesmo quando uma requisicao anterior ficou presa."
 );
+assert(
+  appSource.includes('directMatchKind = "barcode"') && appSource.includes("direct_match_kind: directMatchKind"),
+  "Barcode exato de variacao deve ser identificado separadamente de SKU."
+);
+assert(
+  appSource.includes("addPdvSaleProductByLookup(autoAddItem.variation_id)"),
+  "Barcode exato vendavel deve adicionar a variacao diretamente ao carrinho."
+);
 
 console.log(JSON.stringify({
   normalized_first: true,
-  stale_search_recovery: true
+  stale_search_recovery: true,
+  barcode_direct_add: true
 }, null, 2));

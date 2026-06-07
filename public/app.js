@@ -6308,10 +6308,20 @@ async function searchPdvSaleProducts({ append = false } = {}) {
     const exactIdentifier = normalizeText(query).toUpperCase();
     const nextItems = toArray(response.items || response).map((item) => {
       if (!item?.normalized_product || !Array.isArray(item.variants)) return item;
+      let directMatchKind = "";
       const matchedVariant = item.variants.find((variant) => {
         const sku = normalizeText(variant.sku || "").toUpperCase();
         const barcode = normalizeText(variant.barcode || "").toUpperCase();
-        return exactIdentifier && (sku === exactIdentifier || barcode === exactIdentifier);
+        if (!exactIdentifier) return false;
+        if (barcode === exactIdentifier) {
+          directMatchKind = "barcode";
+          return true;
+        }
+        if (sku === exactIdentifier) {
+          directMatchKind = "sku";
+          return true;
+        }
+        return false;
       });
       if (!matchedVariant) return item;
       const matchedStatus = normalizeText(matchedVariant.status || "").toLowerCase();
@@ -6330,6 +6340,7 @@ async function searchPdvSaleProducts({ append = false } = {}) {
         variation_id: matchedVariant.variation_id,
         normalized_parent_product_id: item.normalized_parent_product_id || item.product_id,
         direct_variation_match: true,
+        direct_match_kind: directMatchKind,
         skip_variation_modal: true,
         operational_summary: matchedAvailabilityLabel,
         operational_detail: "Variação localizada diretamente pelo SKU ou código de barras.",
@@ -6368,6 +6379,24 @@ async function searchPdvSaleProducts({ append = false } = {}) {
       hasMore: pagination.has_more !== undefined ? Boolean(pagination.has_more) : currentPage < totalPages
     };
     state.pdvSale.productSearchError = "";
+    const autoAddItem = !isAppending
+      ? nextItems.find((item) => item?.direct_match_kind === "barcode" && normalizeText(item.variation_id || ""))
+      : null;
+    if (autoAddItem) {
+      const autoAddStatus = normalizeText(autoAddItem.status || autoAddItem.variation_status || "").toLowerCase();
+      const autoAddAvailableQty = toNumber(autoAddItem.available_qty ?? autoAddItem.sellable_available_qty ?? 0);
+      state.pdvSale.productSearching = false;
+      state.pdvSale.productSearchAppending = false;
+      if (autoAddStatus === "ativo" && autoAddAvailableQty > 0) {
+        await addPdvSaleProductByLookup(autoAddItem.variation_id);
+      } else if (autoAddStatus === "bloqueado_para_venda") {
+        showFeedback("VariaÃ§Ã£o bloqueada.", "error");
+      } else if (autoAddStatus === "inativo") {
+        showFeedback("VariaÃ§Ã£o inativa.", "error");
+      } else {
+        showFeedback("VariaÃ§Ã£o sem estoque.", "error");
+      }
+    }
   } catch (error) {
     if (requestId === state.pdvSale.productSearchRequestId) {
       state.pdvSale.productSearchError = "Tente novamente.";
