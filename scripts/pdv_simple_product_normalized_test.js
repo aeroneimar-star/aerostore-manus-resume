@@ -124,7 +124,7 @@ async function main() {
       store_id: "vila",
       sku: "qa-ciclo2-simple-001"
     }, actor),
-    /codigo interno|sku.*existe/i
+    /ja existe uma variacao com o sku/i
   );
 
   const updated = await updateSimpleProduct(created.product.legacy_ai_product_id, {

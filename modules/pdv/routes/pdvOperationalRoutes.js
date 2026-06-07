@@ -538,7 +538,7 @@ router.post("/reservations/from-session/:sessionId", async (req, res) => {
     if (!ensureStoreAccess(req, res, session.store_id || session.loja || "")) {
       return;
     }
-    res.json(createReservationFromSession(req.params.sessionId, req.body || {}, req.user || {}));
+    res.json(await createReservationFromSession(req.params.sessionId, req.body || {}, req.user || {}));
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao criar a reserva do PDV." });
   }

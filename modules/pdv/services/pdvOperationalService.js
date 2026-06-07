@@ -1375,6 +1375,7 @@ function scoreProductTokenSearchMatch(product = {}, query = "", tokens = null) {
 }
 
 function buildProductSearchIdentifiers(product = {}) {
+  const variants = Array.isArray(product.variants) ? product.variants : [];
   return {
     textCodes: [
       product.sku,
@@ -1384,14 +1385,27 @@ function buildProductSearchIdentifiers(product = {}) {
       product.codigo_interno,
       product.codigo,
       product.product_id,
-      product.id
+      product.id,
+      ...variants.flatMap((variant) => [
+        variant.sku,
+        variant.codigo,
+        variant.product_id,
+        variant.variation_id
+      ])
     ].map((value) => normalizeCodeLookup(value)).filter(Boolean),
     digitCodes: [
       product.ean,
       product.codigo_barras,
       product.barcode,
       product.gtin,
-      product.gtin_ean
+      product.gtin_ean,
+      ...variants.flatMap((variant) => [
+        variant.ean,
+        variant.codigo_barras,
+        variant.barcode,
+        variant.gtin,
+        variant.gtin_ean
+      ])
     ].map((value) => normalizeDigits(value)).filter(Boolean),
     name: normalizeLookup(product.nome || product.name || ""),
     text: buildUnifiedProductSearchText(product)
@@ -1441,6 +1455,7 @@ function productMatchesExactIdentifier(product = {}, query = "") {
 }
 
 const PRODUCT_SOURCE_PRIORITY = {
+  PDV_NORMALIZED: 400,
   PDV_ESTOQUE: 300,
   PDV_IMPORT: 200,
   CRM_CATALOG: 100
@@ -1453,6 +1468,7 @@ function getProductSourcePriority(product = {}) {
   }
   const label = normalizeLookup([product.origin_label, ...(product.origins || [])].join(" "));
   if (label.includes("estoque operacional")) return PRODUCT_SOURCE_PRIORITY.PDV_ESTOQUE;
+  if (label.includes("pdv normalizado")) return PRODUCT_SOURCE_PRIORITY.PDV_NORMALIZED;
   if (label.includes("pdv import")) return PRODUCT_SOURCE_PRIORITY.PDV_IMPORT;
   if (label.includes("crm") || label.includes("tiny") || label.includes("vitrine")) return PRODUCT_SOURCE_PRIORITY.CRM_CATALOG;
   return 0;
@@ -1830,6 +1846,33 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
 
 function enrichProductOperationalAvailability(item = {}, saleStoreId = "") {
   const normalizedSaleStore = normalizeStoreKey(saleStoreId || item.sale_store_id || item.loja || item.store_id || "");
+  if (item.normalized_product) {
+    const availableQty = toNumber(item.available_qty || 0);
+    return {
+      ...item,
+      sale_store_id: normalizedSaleStore,
+      sale_store_name: formatStoreLabel(normalizedSaleStore),
+      stock_source_store_id: normalizedSaleStore,
+      stock_source_store_name: formatStoreLabel(normalizedSaleStore),
+      resolved_inventory_id: normalizeText(item.variation_id || item.inventory_id || ""),
+      resolved_product_id: normalizeText(item.variation_id || item.product_id || ""),
+      operational_stock_status: availableQty > 0 ? "AVAILABLE_LOCAL" : "OUT_OF_STOCK",
+      operational_summary: availableQty > 0 ? `${availableQty} disponivel` : "Sem estoque",
+      operational_detail: "Disponibilidade calculada pelo saldo normalizado da variacao.",
+      action_label: "Adicionar",
+      can_add_directly: availableQty > 0,
+      requires_resolution: false,
+      requires_logistics_review: false,
+      is_unavailable: availableQty <= 0,
+      fulfillment_type: "LOCAL_STOCK",
+      fulfillment_mode: "venda_normal",
+      fulfillment_status: availableQty > 0 ? "confirmado" : "bloqueado_sem_estoque",
+      is_adjacent_store: false,
+      available_in_sale_store_qty: availableQty,
+      adjacent_store_name: "",
+      adjacent_available_qty: 0
+    };
+  }
   let availability = null;
   try {
     const { getProductOperationalAvailability, FULFILLMENT_MODES, FULFILLMENT_STATUS } = require("../inventory/pdvInventoryService");
@@ -1920,6 +1963,128 @@ function filterUnifiedProducts(items = [], { storeId = "", status = "", pendingO
   });
 }
 
+async function searchNormalizedProductParents(query = "", storeId = "", limit = 24) {
+  const normalizedQuery = normalizeText(query);
+  const like = `%${normalizedQuery.toLowerCase()}%`;
+  const normalizedStore = normalizeStoreKey(storeId || "");
+  const rows = await all(
+    `SELECT
+       p.id AS parent_product_id,
+       p.legacy_ai_product_id,
+       p.name,
+       p.product_type,
+       p.status AS product_status,
+       p.base_sku,
+       p.sale_price_cents AS product_sale_price_cents,
+       p.cost_price_cents AS product_cost_price_cents,
+       v.id AS variation_id,
+       v.sku,
+       v.barcode,
+       v.status AS variation_status,
+       v.attributes_json,
+       v.is_default,
+       v.sale_price_cents AS variation_sale_price_cents,
+       v.cost_price_cents AS variation_cost_price_cents,
+       b.store_id,
+       b.available_qty AS physical_qty,
+       b.reserved_qty
+     FROM pdv_products_v2 p
+     INNER JOIN pdv_product_variants v ON v.product_id = p.id
+     LEFT JOIN pdv_inventory_balances_v2 b
+       ON b.variant_id = v.id
+      AND (? = '' OR b.store_id = ? COLLATE NOCASE)
+     WHERE p.status = 'ativo'
+       AND (
+       lower(p.name) LIKE ?
+       OR lower(p.base_sku) LIKE ?
+       OR lower(v.sku) LIKE ?
+       OR lower(COALESCE(v.barcode, '')) LIKE ?
+       )
+     ORDER BY p.updated_at DESC, p.id DESC, v.created_at, v.id
+     LIMIT ?`,
+    [normalizedStore, normalizedStore, like, like, like, like, Math.max(1, Number(limit || 24)) * 20]
+  );
+  const parents = new Map();
+  rows.forEach((row) => {
+    if (!parents.has(row.parent_product_id)) {
+      parents.set(row.parent_product_id, {
+        id: `NORMALIZED_PARENT:${row.parent_product_id}`,
+        parent_product_id: row.parent_product_id,
+        normalized_parent_product_id: row.parent_product_id,
+        legacy_ai_product_id: row.legacy_ai_product_id,
+        product_type: row.product_type,
+        product_status: row.product_status,
+        status: row.product_status,
+        nome: row.name,
+        name: row.name,
+        sku: row.base_sku,
+        codigo: row.base_sku,
+        parent_sku: row.base_sku,
+        preco_venda: toNumber(row.product_sale_price_cents) / 100,
+        store_id: normalizedStore,
+        origin: "PDV_NORMALIZED",
+        origin_label: "PDV normalizado",
+        origins: ["PDV normalizado"],
+        normalized_product: true,
+        variants: []
+      });
+    }
+    let attributes = {};
+    try {
+      attributes = JSON.parse(row.attributes_json || "{}") || {};
+    } catch (error) {
+      attributes = {};
+    }
+    const physicalQty = toNumber(row.physical_qty);
+    const reservedQty = toNumber(row.reserved_qty);
+    const availableQty = physicalQty - reservedQty;
+    parents.get(row.parent_product_id).variants.push({
+      variation_id: row.variation_id,
+      product_id: row.variation_id,
+      parent_product_id: row.parent_product_id,
+      normalized_parent_product_id: row.parent_product_id,
+      sku: row.sku,
+      codigo: row.sku,
+      barcode: row.barcode || "",
+      codigo_barras: row.barcode || "",
+      nome: row.name,
+      cor: normalizeText(attributes.color || ""),
+      color: normalizeText(attributes.color || ""),
+      tamanho: normalizeText(attributes.size || ""),
+      size: normalizeText(attributes.size || ""),
+      status: row.variation_status,
+      product_status: row.product_status,
+      is_default: Boolean(row.is_default),
+      store_id: row.store_id || normalizedStore,
+      preco_venda: toNumber(row.variation_sale_price_cents ?? row.product_sale_price_cents) / 100,
+      physical_qty: physicalQty,
+      reserved_qty: reservedQty,
+      available_qty: availableQty,
+      estoque: availableQty,
+      sale_enabled: row.product_status === "ativo" && row.variation_status === "ativo" && availableQty > 0
+    });
+  });
+  return Array.from(parents.values()).map((parent) => {
+    const physicalQty = parent.variants.reduce((sum, item) => sum + item.physical_qty, 0);
+    const reservedQty = parent.variants.reduce((sum, item) => sum + item.reserved_qty, 0);
+    const availableQty = physicalQty - reservedQty;
+    const defaultVariant = parent.variants.find((item) => item.is_default) || null;
+    return {
+      ...parent,
+      product_id: defaultVariant ? defaultVariant.variation_id : String(parent.parent_product_id),
+      normalized_variant_id: defaultVariant?.variation_id || "",
+      physical_qty: physicalQty,
+      reserved_qty: reservedQty,
+      available_qty: availableQty,
+      estoque: availableQty,
+      available_in_sale_store_qty: availableQty,
+      operational_stock_status: availableQty > 0 ? "AVAILABLE_LOCAL" : "OUT_OF_STOCK",
+      sale_enabled: parent.product_status === "ativo"
+        && parent.variants.some((item) => item.sale_enabled)
+    };
+  }).slice(0, Math.max(1, Number(limit || 24)));
+}
+
 async function searchProductsDetailed(query = "", { storeId = "", page = 1, limit = 24 } = {}) {
   const safePage = Math.max(1, Number(page || 1));
   const safeLimit = normalizeSearchLimit(limit, 24, 100);
@@ -1960,6 +2125,8 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
     inventoryPagination = inventoryPayload.pagination || null;
     resultsBySource.inventory = (inventoryPayload.items || [])
       .filter((item) => (
+        normalizeLookup(item.source || "") !== "pdv_product_v2"
+        &&
         item.sale_enabled !== false
         && !["bloqueado_para_venda", "inativo", "deleted", "hidden"].includes(normalizeLookup(item.product_status || ""))
       ))
@@ -1974,6 +2141,36 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
       }));
   } catch (error) {
     resultsBySource.inventory = [];
+  }
+
+  try {
+    resultsBySource.normalized = await searchNormalizedProductParents(query, storeId, safeLimit);
+  } catch (error) {
+    resultsBySource.normalized = [];
+  }
+  const exactNormalized = resultsBySource.normalized.filter((item) => (
+    normalizeLookup(item.nome || item.name || "") === normalizedQuery
+    || productMatchesExactIdentifier(item, query)
+  ));
+  if (exactNormalized.length) {
+    const unified = exactNormalized
+      .map((item) => enrichProductOperationalAvailability(item, storeId))
+      .sort((left, right) => scoreProductSearchMatch(right, query) - scoreProductSearchMatch(left, query))
+      .slice(0, safeLimit);
+    return {
+      sources_consulted: ["normalized"],
+      results_by_source: resultsBySource,
+      discarded,
+      unified,
+      pagination: {
+        page: 1,
+        limit: safeLimit,
+        total: unified.length,
+        totalPages: 1,
+        total_pages: 1,
+        has_more: false
+      }
+    };
   }
 
   const datasetProducts = loadProductsDataset();
@@ -3174,16 +3371,41 @@ function addProductToCart(sessionId, payload = {}, user = {}) {
   if (!session) {
     throw new Error("Sessao do atendimento nao encontrada.");
   }
-  const fulfillment = buildCartItemFulfillmentSnapshot(payload, session || {});
+  const variationId = normalizeText(payload.variation_id || payload.normalized_variant_id || "");
+  const normalizedStoreId = normalizeStoreKey(payload.store_id || payload.selected_loja || payload.loja || session?.loja || "");
+  const isNormalizedVariation = Boolean(
+    variationId
+    && (payload.normalized_product || payload.normalized_parent_product_id)
+  );
+  const fulfillment = isNormalizedVariation
+    ? {
+      sale_store_id: normalizedStoreId,
+      sale_store_name: formatStoreLabel(normalizedStoreId),
+      stock_source_store_id: normalizedStoreId,
+      stock_source_store_name: formatStoreLabel(normalizedStoreId),
+      inventory_id: variationId,
+      product_id: variationId,
+      fulfillment_type: "LOCAL_STOCK",
+      fulfillment_mode: "venda_normal",
+      fulfillment_status: "confirmado",
+      requires_logistics_review: false,
+      is_adjacent_store: false,
+      operational_stock_status: "AVAILABLE_LOCAL"
+    }
+    : buildCartItemFulfillmentSnapshot(payload, session || {});
   const normalizedInventoryId = normalizeText(fulfillment.inventory_id || payload.inventory_id || payload.selected_inventory_id || "");
   const normalizedProductId = normalizeText(fulfillment.product_id || payload.product_id || payload.selected_product_id || payload.sku || payload.codigo || "");
-  const normalizedStoreId = normalizeStoreKey(payload.store_id || payload.selected_loja || payload.loja || session?.loja || "");
+  if ((payload.normalized_product || payload.normalized_parent_product_id) && !variationId) {
+    throw buildOperationalError("O PDV nao pode vender um produto pai sem selecionar a variacao.", 400);
+  }
   const pricing = applyProductEffectivePricing(payload);
   const effectiveUnitPrice = toNumber(pricing.preco_venda || pricing.price || payload.preco_referencia || payload.preco_venda || 0);
   const item = {
     item_id: buildId("ITEM"),
     inventory_id: normalizedInventoryId,
     product_id: normalizedProductId,
+    variation_id: variationId,
+    normalized_parent_product_id: normalizeText(payload.normalized_parent_product_id || payload.parent_product_id || ""),
     codigo: normalizeText(payload.codigo || ""),
     sku: normalizeText(payload.sku || payload.codigo || ""),
     codigo_tiny: normalizeText(payload.codigo_tiny || ""),
@@ -3972,7 +4194,7 @@ function createQuoteFromSession(sessionId, payload = {}, user = {}) {
   return quote;
 }
 
-function createReservationFromSession(sessionId, payload = {}, user = {}) {
+async function createReservationFromSession(sessionId, payload = {}, user = {}) {
   const session = getSessionById(sessionId);
   if (!session) {
     throw new Error("SessÃ£o do atendimento nÃ£o encontrada.");
@@ -3989,8 +4211,51 @@ function createReservationFromSession(sessionId, payload = {}, user = {}) {
     created_at: nowIso(),
     created_by: user?.name || user?.email || "sistema"
   };
-  const { holdReservationInventory } = require("../inventory/pdvInventoryService");
-  holdReservationInventory(reservation, user);
+  const normalizedItems = (session.cart_items || []).filter((item) => item.variation_id);
+  const missingVariationItems = (session.cart_items || []).filter((item) => (
+    item.normalized_parent_product_id && !item.variation_id
+  ));
+  if (missingVariationItems.length) {
+    throw new Error("Nao e possivel reservar este produto sem selecionar cor e tamanho.");
+  }
+  reservation.normalized = normalizedItems.length > 0;
+  reservation.normalized_holds = [];
+  if (normalizedItems.length) {
+    const { holdNormalizedReservations } = require("../products/pdvSimpleProductService");
+    const { syncNormalizedProductProjection } = require("../inventory/pdvInventoryService");
+    const holdPayloads = normalizedItems.map((item) => ({
+        reservation_id: reservation.reservation_id,
+        variation_id: item.variation_id,
+        store_id: item.loja_origem_estoque || item.store_id || reservation.loja,
+        quantity: item.quantidade,
+        idempotency_key: `reservation:${reservation.reservation_id}:variant:${item.variation_id}:hold`
+    }));
+    const holdResults = await holdNormalizedReservations(holdPayloads, user, {
+      projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, user)
+    });
+    normalizedItems.forEach((item, index) => {
+      const result = holdResults[index];
+      reservation.normalized_holds.push({
+        variation_id: item.variation_id,
+        store_id: result.balance.store_id,
+        quantity: item.quantidade,
+        movement_id: result.movement.id
+      });
+    });
+  }
+  const legacyItems = (session.cart_items || []).filter((item) => !item.variation_id);
+  if (legacyItems.length) {
+    const { holdReservationInventory } = require("../inventory/pdvInventoryService");
+    holdReservationInventory({
+      ...reservation,
+      session_snapshot: {
+        ...reservation.session_snapshot,
+        cart_items: legacyItems
+      }
+    }, user);
+    reservation.legacy_inventory_held = true;
+  }
+  reservation.inventory_status = "HELD";
   reservations.unshift(reservation);
   saveReservations(reservations);
   session.status = SESSION_STATUS.RESERVED;

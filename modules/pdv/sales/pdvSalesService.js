@@ -29,11 +29,13 @@ const {
   applyExchangeInboundFromSale,
   convertReservationInventory,
   resolveSaleFulfillmentPlan,
+  syncNormalizedProductProjection,
   FULFILLMENT_MODES,
   FULFILLMENT_STATUS
 } = require("../inventory/pdvInventoryService");
 const {
-  applyNormalizedInventoryMovement
+  applyNormalizedInventoryMovement,
+  convertNormalizedReservationToSale
 } = require("../products/pdvSimpleProductService");
 const { normalizeStoreKey, formatStoreLabel, storesMatch } = require("../utils/pdvStoreUtils");
 const { getStorePublicContext } = require("../../../services/storeSettingsService");
@@ -146,8 +148,13 @@ async function syncNormalizedSaleInventory(sale = {}, user = {}, { cancellation 
   const results = [];
   for (const item of (sale.items || [])) {
     if (Boolean(item.physical_confirmation_done)) continue;
-    const variantId = normalizeText(item.product_id || item.selected_product_id || "");
-    if (!variantId.startsWith("VAR_")) continue;
+    const variantId = normalizeText(item.variation_id || "");
+    if (!variantId) {
+      if (item.normalized_parent_product_id) {
+        throw new Error("O PDV nao pode vender um produto pai sem selecionar a variacao.");
+      }
+      continue;
+    }
     const quantity = Math.max(1, Math.round(toNumber(item.quantidade || 1)));
     const storeId = normalizeStoreKey(
       item.loja_origem_estoque
@@ -174,9 +181,61 @@ async function syncNormalizedSaleInventory(sale = {}, user = {}, { cancellation 
         customer_name: sale.customer?.name || "",
         cancellation
       }
-    }, user));
+    }, user, {
+      projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, user)
+    }));
   }
   return results;
+}
+
+async function validateNormalizedStockAvailability(items = [], storeId = "") {
+  const errors = [];
+  for (const item of (items || []).filter((entry) => normalizeText(entry.variation_id || ""))) {
+    const variationId = normalizeText(item.variation_id || "");
+    const normalizedStoreId = normalizeStoreKey(
+      item.loja_origem_estoque
+      || item.stock_source_store_id
+      || item.store_id
+      || storeId
+      || ""
+    );
+    const requestedQty = Math.max(1, Math.round(toNumber(item.quantidade || 1)));
+    const context = await get(
+      `SELECT v.status AS variation_status, p.status AS product_status,
+              b.available_qty AS physical_qty, b.reserved_qty
+       FROM pdv_product_variants v
+       INNER JOIN pdv_products_v2 p ON p.id = v.product_id
+       LEFT JOIN pdv_inventory_balances_v2 b
+         ON b.variant_id = v.id AND b.store_id = ? COLLATE NOCASE
+       WHERE v.id = ?`,
+      [normalizedStoreId, variationId]
+    );
+    const physicalQty = toNumber(context?.physical_qty || 0);
+    const reservedQty = toNumber(context?.reserved_qty || 0);
+    const availableQty = Math.max(0, physicalQty - reservedQty);
+    let reason = "";
+    if (!context) reason = "Variacao normalizada nao encontrada.";
+    else if (context.product_status !== "ativo") reason = "Produto bloqueado para venda.";
+    else if (context.variation_status === "bloqueado_para_venda") reason = "Variacao bloqueada.";
+    else if (context.variation_status === "inativo") reason = "Variacao inativa.";
+    else if (availableQty < requestedQty) reason = "Disponibilidade liquida insuficiente.";
+    if (reason) {
+      errors.push({
+        inventory_id: variationId,
+        product_id: variationId,
+        variation_id: variationId,
+        sku: normalizeText(item.sku || item.codigo || ""),
+        nome: normalizeText(item.nome || ""),
+        store_id: normalizedStoreId,
+        requested_qty: requestedQty,
+        physical_qty: physicalQty,
+        reserved_qty: reservedQty,
+        available_qty: availableQty,
+        reason
+      });
+    }
+  }
+  return { ok: errors.length === 0, errors };
 }
 
 function addDays(date, days) {
@@ -2214,7 +2273,18 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
       throw new Error(`Produto disponÃ­vel em outra loja. SerÃ¡ necessÃ¡rio definir entrega direta ou transferÃªncia antes de concluir a venda.${originSuffix}`);
     }
   }
-  const stockValidation = validateStockAvailability(session.cart_items || [], saleStoreKey);
+  const legacyStockValidation = validateStockAvailability(
+    (session.cart_items || []).filter((item) => !normalizeText(item.variation_id || "")),
+    saleStoreKey
+  );
+  const normalizedStockValidation = await validateNormalizedStockAvailability(
+    session.cart_items || [],
+    saleStoreKey
+  );
+  const stockValidation = {
+    ok: legacyStockValidation.ok && normalizedStockValidation.ok,
+    errors: [...legacyStockValidation.errors, ...normalizedStockValidation.errors]
+  };
   if (!matchedReservation && !stockValidation.ok) {
     const saleStore = formatStoreLabel(saleStoreKey || "");
     const missingProducts = Array.from(new Set(
@@ -2463,17 +2533,44 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
   });
 
   if (matchedReservation) {
-    sale.inventory_movements = convertReservationInventory(matchedReservation, sale, user).map((item) => item.movement_id);
+    sale.inventory_movements = matchedReservation.legacy_inventory_held
+      ? convertReservationInventory(matchedReservation, sale, user).map((item) => item.movement_id)
+      : [];
+    if (Array.isArray(matchedReservation.normalized_holds) && matchedReservation.normalized_holds.length) {
+      const normalizedConversions = [];
+      for (const hold of matchedReservation.normalized_holds) {
+        normalizedConversions.push(await convertNormalizedReservationToSale({
+          reservation_id: matchedReservation.reservation_id,
+          sale_id: sale.sale_id,
+          variation_id: hold.variation_id,
+          store_id: hold.store_id,
+          quantity: hold.quantity,
+          idempotency_key: `reservation:${matchedReservation.reservation_id}:variant:${hold.variation_id}:convert`
+        }, user, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, user)
+        }));
+      }
+      sale.normalized_inventory_movements = normalizedConversions
+        .map((item) => item.movement?.id)
+        .filter(Boolean);
+    }
     matchedReservation.inventory_status = "CONVERTED";
     matchedReservation.converted_at = nowIso();
     matchedReservation.converted_sale_id = sale.sale_id;
     writeJson(reservationsFilePath, reservations);
   } else {
-    sale.inventory_movements = applySaleInventory(sale, user).map((item) => item.movement_id);
+    const legacySale = {
+      ...sale,
+      items: (sale.items || []).filter((item) => !normalizeText(item.variation_id || ""))
+    };
+    sale.inventory_movements = legacySale.items.length
+      ? applySaleInventory(legacySale, user).map((item) => item.movement_id)
+      : [];
+    sale.normalized_inventory_movements = (await syncNormalizedSaleInventory(sale, user))
+      .map((item) => item.movement?.id)
+      .filter(Boolean);
   }
-  sale.normalized_inventory_movements = (await syncNormalizedSaleInventory(sale, user))
-    .map((item) => item.movement?.id)
-    .filter(Boolean);
+  sale.normalized_inventory_movements = sale.normalized_inventory_movements || [];
   saveSales(sales);
 
   registerCashMovement({

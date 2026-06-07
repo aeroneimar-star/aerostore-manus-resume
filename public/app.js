@@ -243,6 +243,12 @@ const state = {
     productSearchRequestId: 0,
     productSearchLastQuery: "",
     productAddingKey: "",
+    variationModal: {
+      open: false,
+      product: null,
+      selectedColor: "",
+      busyVariationId: ""
+    },
     labelProductDrawerOpen: false,
     labelProductSaving: false,
     labelProductDraft: null,
@@ -4383,6 +4389,80 @@ function buildPdvSaleResolutionModal() {
   `;
 }
 
+function buildPdvVariationModal() {
+  const modal = state.pdvSale.variationModal || {};
+  const product = modal.product || null;
+  if (!modal.open || !product) return "";
+  const variants = toArray(product.variants);
+  const colors = Array.from(new Set(variants.map((item) => normalizeText(item.cor || item.color || "")).filter(Boolean)));
+  const selectedColor = colors.length === 1 ? colors[0] : normalizeText(modal.selectedColor || "");
+  const colorOptions = colors.map((color) => {
+    const colorVariants = variants.filter((item) => normalizeText(item.cor || item.color || "") === color);
+    const sellable = colorVariants.some((item) => (
+      normalizeText(item.status || "ativo") === "ativo"
+      && toNumber(item.available_qty) > 0
+    ));
+    return `
+      <button type="button" class="pdv-variation-option${selectedColor === color ? " is-selected" : ""}" data-pdv-variation-color="${escapeHtml(color)}"${sellable ? "" : " disabled"}>
+        <strong>${escapeHtml(color)}</strong>
+        <span>${sellable ? `${colorVariants.filter((item) => toNumber(item.available_qty) > 0 && normalizeText(item.status || "ativo") === "ativo").length} opcoes` : "Sem opcoes disponiveis"}</span>
+      </button>
+    `;
+  }).join("");
+  const sizeVariants = selectedColor
+    ? variants.filter((item) => normalizeText(item.cor || item.color || "") === selectedColor)
+    : [];
+  const sizeOptions = sizeVariants.map((variant) => {
+    const status = normalizeText(variant.status || "ativo");
+    const physicalQty = toNumber(variant.physical_qty);
+    const reservedQty = toNumber(variant.reserved_qty);
+    const availableQty = toNumber(variant.available_qty);
+    const blocked = status === "bloqueado_para_venda";
+    const inactive = status === "inativo";
+    const unavailable = availableQty <= 0;
+    const reason = blocked
+      ? "Bloqueada"
+      : inactive
+        ? "Inativa"
+        : unavailable
+          ? (physicalQty > 0 && reservedQty >= physicalQty ? "Sem disponivel" : "Sem estoque")
+          : `${availableQty} disponivel`;
+    const disabled = blocked || inactive || unavailable;
+    return `
+      <button type="button" class="pdv-variation-option pdv-variation-size${disabled ? " is-disabled" : ""}" data-pdv-variation-size="${escapeHtml(variant.variation_id || "")}"${disabled ? " disabled" : ""}>
+        <strong>${escapeHtml(variant.tamanho || variant.size || "UN")}</strong>
+        <span>${escapeHtml(reason)}</span>
+      </button>
+    `;
+  }).join("");
+  return `
+    <div class="pdv-drawer-overlay pdv-variation-modal-overlay" data-pdv-variation-modal="true">
+      <section class="pdv-variation-modal" role="dialog" aria-modal="true" aria-label="Selecionar variacao">
+        <header>
+          <div>
+            <span class="eyebrow">Selecionar variacao</span>
+            <h3>${escapeHtml(product.nome || product.name || "Produto")}</h3>
+            <strong>${currency(product.preco_venda || product.price || 0)}</strong>
+          </div>
+          <button class="ghost-button" type="button" data-pdv-variation-close="true">Fechar</button>
+        </header>
+        ${colors.length > 1 ? `
+          <div class="pdv-variation-step">
+            <span>1. Escolha a cor</span>
+            <div class="pdv-variation-options">${colorOptions}</div>
+          </div>
+        ` : `<div class="pdv-variation-selected-color">Cor: <strong>${escapeHtml(selectedColor || "-")}</strong></div>`}
+        <div class="pdv-variation-step">
+          <span>${colors.length > 1 ? "2. Escolha o tamanho" : "Escolha o tamanho"}</span>
+          ${selectedColor
+            ? `<div class="pdv-variation-options">${sizeOptions || "<span>Nenhuma variacao cadastrada para esta cor.</span>"}</div>`
+            : `<p class="table-meta">Selecione uma cor para ver os tamanhos.</p>`}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function buildPdvSaleProductResults() {
   const rows = toArray(state.pdvSale.productResults);
   const pagination = state.pdvSale.productPagination || {};
@@ -5939,6 +6019,7 @@ function buildPdvSaleActiveContent() {
 
       </div>
       ${buildPdvSaleResolutionModal()}
+      ${buildPdvVariationModal()}
       ${buildPdvSaleItemDiscountModal(session)}
       ${buildPdvSaleLabelProductDrawer()}
       ${buildPdvSaleCustomerRegistrationDrawer()}
@@ -6224,7 +6305,37 @@ async function searchPdvSaleProducts({ append = false } = {}) {
     if (requestId !== state.pdvSale.productSearchRequestId || query !== normalizeText(state.pdvSale.productQuery || "")) {
       return;
     }
-    const nextItems = toArray(response.items || response);
+    const exactIdentifier = normalizeText(query).toUpperCase();
+    const nextItems = toArray(response.items || response).map((item) => {
+      if (!item?.normalized_product || !Array.isArray(item.variants)) return item;
+      const matchedVariant = item.variants.find((variant) => {
+        const sku = normalizeText(variant.sku || "").toUpperCase();
+        const barcode = normalizeText(variant.barcode || "").toUpperCase();
+        return exactIdentifier && (sku === exactIdentifier || barcode === exactIdentifier);
+      });
+      if (!matchedVariant) return item;
+      const matchedStatus = normalizeText(matchedVariant.status || "").toLowerCase();
+      const matchedAvailableQty = toNumber(matchedVariant.available_qty || 0);
+      const matchedAvailabilityLabel = matchedStatus === "bloqueado_para_venda"
+        ? "Bloqueada"
+        : matchedStatus === "inativo"
+          ? "Inativa"
+          : matchedAvailableQty > 0
+            ? `${matchedAvailableQty} disponivel`
+            : "Sem estoque";
+      return {
+        ...item,
+        ...matchedVariant,
+        product_id: matchedVariant.variation_id,
+        variation_id: matchedVariant.variation_id,
+        normalized_parent_product_id: item.normalized_parent_product_id || item.product_id,
+        direct_variation_match: true,
+        skip_variation_modal: true,
+        operational_summary: matchedAvailabilityLabel,
+        operational_detail: "Variação localizada diretamente pelo SKU ou código de barras.",
+        action_label: matchedStatus === "ativo" && matchedAvailableQty > 0 ? "Adicionar" : matchedAvailabilityLabel
+      };
+    });
     if (isAppending) {
       const merged = new Map();
       [...toArray(state.pdvSale.productResults), ...nextItems].forEach((item, index) => {
@@ -6377,17 +6488,17 @@ async function addPdvSaleProductByLookup(lookupValue = "") {
     endAeroStorePerfMeasure(perfToken, { skipped: "already_adding" });
     return;
   }
-  const selected = toArray(state.pdvSale.productResults).find((item) => [item.inventory_id, item.product_id, item.sku, item.codigo].map((value) => String(value || "")).includes(String(lookupValue || "")));
+  let selected = toArray(state.pdvSale.productResults).find((item) => [item.variation_id, item.inventory_id, item.product_id, item.sku, item.codigo].map((value) => String(value || "")).includes(String(lookupValue || "")));
   if (!selected || !state.pdvSale.sessionId) {
     endAeroStorePerfMeasure(perfToken, { skipped: "missing_selection_or_session" });
     return;
   }
-  if (selected.is_unavailable) {
+  if (selected.is_unavailable && !selected.normalized_product) {
     showFeedback("Produto indisponível em todas as lojas.", "error");
     endAeroStorePerfMeasure(perfToken, { skipped: "unavailable" });
     return;
   }
-  if (selected.requires_resolution || selected.requires_logistics_review) {
+  if (!selected.normalized_product && (selected.requires_resolution || selected.requires_logistics_review)) {
     state.pdvSale.productResolutionItem = selected;
     state.pdvSale.productResolutionOpen = true;
     state.pdvSale.productResolutionSubmitting = false;
@@ -6395,6 +6506,50 @@ async function addPdvSaleProductByLookup(lookupValue = "") {
     renderPdvSaleSurface();
     endAeroStorePerfMeasure(perfToken, { skipped: "requires_resolution" });
     return;
+  }
+  if (selected.normalized_product && !selected.skip_variation_modal) {
+    const variants = toArray(selected.variants);
+    if (selected.product_type === "variable" || variants.length > 1) {
+      const colors = Array.from(new Set(variants.map((item) => normalizeText(item.cor || item.color || "")).filter(Boolean)));
+      state.pdvSale.variationModal = {
+        open: true,
+        product: selected,
+        selectedColor: colors.length === 1 ? colors[0] : "",
+        busyVariationId: ""
+      };
+      renderPdvSaleSurface();
+      endAeroStorePerfMeasure(perfToken, { skipped: "variation_required" });
+      return;
+    }
+    if (variants.length === 1) {
+      selected = {
+        ...selected,
+        ...variants[0],
+        variation_id: variants[0].variation_id,
+        normalized_parent_product_id: selected.normalized_parent_product_id,
+        normalized_product: true,
+        skip_variation_modal: true
+      };
+    }
+  }
+  if (selected.normalized_product && selected.variation_id) {
+    const normalizedStatus = normalizeText(selected.status || selected.variation_status || "").toLowerCase();
+    const availableQty = toNumber(selected.available_qty ?? selected.sellable_available_qty ?? 0);
+    if (normalizedStatus === "bloqueado_para_venda") {
+      showFeedback("Variação bloqueada.", "error");
+      endAeroStorePerfMeasure(perfToken, { skipped: "normalized_variant_blocked" });
+      return;
+    }
+    if (normalizedStatus === "inativo") {
+      showFeedback("Variação inativa.", "error");
+      endAeroStorePerfMeasure(perfToken, { skipped: "normalized_variant_inactive" });
+      return;
+    }
+    if (availableQty <= 0) {
+      showFeedback("Variação sem estoque.", "error");
+      endAeroStorePerfMeasure(perfToken, { skipped: "normalized_variant_without_stock" });
+      return;
+    }
   }
   state.pdvSale.productAddingKey = normalizeText(lookupValue || "");
   renderPdvSaleSurface();
@@ -6424,6 +6579,38 @@ async function addPdvSaleProductByLookup(lookupValue = "") {
       cart_items_after: toArray(state.pdvSale.session?.cart_items).length
     });
   }
+}
+
+function closePdvVariationModal() {
+  state.pdvSale.variationModal = {
+    open: false,
+    product: null,
+    selectedColor: "",
+    busyVariationId: ""
+  };
+}
+
+async function addPdvSaleVariationById(variationId = "") {
+  const modal = state.pdvSale.variationModal || {};
+  const product = modal.product || null;
+  const variant = toArray(product?.variants).find((item) => normalizeText(item.variation_id || "") === normalizeText(variationId || ""));
+  if (!product || !variant) return;
+  const selected = {
+    ...product,
+    ...variant,
+    variation_id: variant.variation_id,
+    product_id: variant.variation_id,
+    normalized_parent_product_id: product.normalized_parent_product_id || product.parent_product_id,
+    normalized_product: true,
+    skip_variation_modal: true
+  };
+  state.pdvSale.productResults = [
+    selected,
+    ...toArray(state.pdvSale.productResults).filter((item) => normalizeText(item.variation_id || "") !== normalizeText(variant.variation_id || ""))
+  ];
+  closePdvVariationModal();
+  renderPdvSaleSurface();
+  await addPdvSaleProductByLookup(variant.variation_id);
 }
 
 function closePdvSaleResolutionModal() {
@@ -12940,6 +13127,8 @@ document.addEventListener("error", (event) => {
 
 function getDefaultPdvProductDraft() {
   return {
+    product_type: "simple",
+    variants: [],
     sku: "",
     codigo: "",
     auto_generate_code: true,
@@ -13554,6 +13743,39 @@ function buildPdvProductSizeStockRow(item = {}) {
   `;
 }
 
+function buildPdvProductVariantRow(item = {}) {
+  return `
+    <div class="pdv-product-variant-row" data-pdv-product-variant-row="true">
+      <input type="hidden" data-pdv-product-variant-id="true" value="${escapeHtml(item.variation_id || "")}" />
+      <label>Cor
+        <input data-pdv-grade-color="true" type="text" value="${escapeHtml(item.color || item.cor || "")}" placeholder="Ex.: Verde" />
+      </label>
+      <label>Tamanho
+        <input data-pdv-grade-size="true" type="text" value="${escapeHtml(item.size || item.tamanho || "")}" list="pdv-product-size-stock-options" placeholder="Ex.: M" />
+      </label>
+      <label>Quantidade
+        <input data-pdv-grade-quantity="true" type="number" min="0" step="1" value="${escapeHtml(item.desired_stock ?? item.physical_qty ?? item.initial_stock ?? 0)}" />
+      </label>
+      <label>Barcode
+        <input data-pdv-grade-barcode="true" type="text" value="${escapeHtml(item.barcode || "")}" placeholder="Opcional" />
+      </label>
+      <button class="ghost-button icon-only" type="button" data-pdv-product-variant-remove="true" aria-label="Remover variacao">&times;</button>
+      <span class="login-error" data-pdv-grade-error="${escapeHtml(item.attribute_key || "")}">${escapeHtml(item.error || "")}</span>
+    </div>
+  `;
+}
+
+function readPdvProductVariantRows(formElement) {
+  return Array.from(formElement?.querySelectorAll?.("[data-pdv-product-variant-row]") || []).map((row) => ({
+    variation_id: normalizeText(row.querySelector("[data-pdv-product-variant-id]")?.value || ""),
+    color: normalizeText(row.querySelector("[data-pdv-grade-color]")?.value || ""),
+    size: normalizeText(row.querySelector("[data-pdv-grade-size]")?.value || ""),
+    desired_stock: normalizeText(row.querySelector("[data-pdv-grade-quantity]")?.value || "0"),
+    initial_stock: normalizeText(row.querySelector("[data-pdv-grade-quantity]")?.value || "0"),
+    barcode: normalizeText(row.querySelector("[data-pdv-grade-barcode]")?.value || "")
+  })).filter((item) => item.color || item.size || item.desired_stock !== "0" || item.barcode);
+}
+
 function readPdvProductSizeStockRows(formElement) {
   return Array.from(formElement?.querySelectorAll?.("[data-pdv-product-size-stock-row]") || []).map((row) => ({
     size: normalizeText(row.querySelector("[data-pdv-product-size-stock-size]")?.value || "").toUpperCase(),
@@ -13825,6 +14047,8 @@ function closePdvCustomerCreateDrawer() {
 function buildPdvProductDrawer() {
   ensurePdvProductsCrudState();
   const draft = state.pdvProducts.drawerDraft || getDefaultPdvProductDraft();
+  const productType = normalizeText(draft.product_type || "simple") === "variable" ? "variable" : "simple";
+  const productVariants = toArray(draft.variants);
   const sizeStock = normalizePdvProductSizeStock(draft.size_stock || draft.size_stock_json);
   const sizeStockTotal = sizeStock.reduce((total, item) => total + item.quantity, 0);
   const internalCode = normalizeText(draft.codigo || draft.codigo_interno || draft.sku || "");
@@ -13884,6 +14108,12 @@ function buildPdvProductDrawer() {
               <label>Codigo Tiny<input name="tiny_id" type="text" value="${escapeHtml(draft.tiny_id || "")}" /></label>
               <label>Nome interno<input name="name" type="text" value="${escapeHtml(draft.name || "")}" required /></label>
               <label>Nome comercial<input name="commercial_name" type="text" value="${escapeHtml(draft.commercial_name || "")}" /></label>
+              <label>Tipo de produto
+                <select name="product_type" data-pdv-product-type="true">
+                  <option value="simple"${productType === "simple" ? " selected" : ""}>Simples</option>
+                  <option value="variable"${productType === "variable" ? " selected" : ""}>Com variacoes</option>
+                </select>
+              </label>
               <label>Categoria<input name="category" type="text" value="${escapeHtml(draft.category || "")}" /></label>
               <label>Genero<input name="gender" type="text" value="${escapeHtml(draft.gender || "")}" /></label>
               <label>Cor<input name="color" type="text" value="${escapeHtml(draft.color || "")}" /></label>
@@ -13921,6 +14151,23 @@ function buildPdvProductDrawer() {
                 Tamanhos estruturados
                 ${buildSelectionChips(PDV_PRODUCT_SIZE_OPTIONS, draft.sizes || [], "productSizes", "product-size-")}
               </label>
+              ${productType === "variable" ? `
+              <section class="panel pdv-crud-inline-panel pdv-product-size-stock-panel pdv-crud-wide">
+                <div class="panel-header pdv-product-size-stock-header">
+                  <div>
+                    <h3>Grade por cor e tamanho</h3>
+                    <span class="table-meta">Cada linha cria uma variacao vendavel com SKU proprio.</span>
+                  </div>
+                  <button class="secondary-button" type="button" data-pdv-product-variant-add="true">Adicionar variacao</button>
+                </div>
+                <datalist id="pdv-product-size-stock-options">
+                  ${PDV_PRODUCT_SIZE_OPTIONS.map((size) => `<option value="${escapeHtml(size)}"></option>`).join("")}
+                </datalist>
+                <div class="pdv-product-variant-list" data-pdv-product-variant-list="true">
+                  ${(productVariants.length ? productVariants : [{ color: "", size: "", initial_stock: 0 }]).map((item) => buildPdvProductVariantRow(item)).join("")}
+                </div>
+              </section>
+              ` : `
               <section class="panel pdv-crud-inline-panel pdv-product-size-stock-panel pdv-crud-wide">
                 <div class="panel-header pdv-product-size-stock-header">
                   <div>
@@ -13945,6 +14192,7 @@ function buildPdvProductDrawer() {
                   </div>
                 </div>
               </section>
+              `}
               <label class="pdv-crud-wide">Descricao curta<textarea name="short_description" placeholder="Resumo rapido para vitrine e atendimento.">${escapeHtml(draft.short_description || "")}</textarea></label>
               <label class="pdv-crud-wide">Argumento de venda<textarea name="sales_argument" placeholder="Frase comercial curta e objetiva.">${escapeHtml(draft.sales_argument || "")}</textarea></label>
               <label class="pdv-crud-wide">Tags<input name="tags" type="text" value="${escapeHtml(Array.isArray(draft.tags) ? draft.tags.join(", ") : (draft.tags || draft.tagsText || ""))}" placeholder="camiseta, casual, preto" /></label>
@@ -14103,8 +14351,13 @@ async function savePdvProduct(formElement) {
   if (!formElement || state.pdvProducts.drawerSaving) return;
   const formData = new FormData(formElement);
   const internalCode = normalizeText(formData.get("internal_code") || "");
-  const sizeStock = readPdvProductSizeStockRows(formElement);
+  const productType = normalizeText(formData.get("product_type") || "simple") === "variable" ? "variable" : "simple";
+  const sizeStock = productType === "simple" ? readPdvProductSizeStockRows(formElement) : [];
+  const variants = productType === "variable" ? readPdvProductVariantRows(formElement) : [];
   const payload = {
+    product_type: productType,
+    base_sku: internalCode,
+    variants,
     sku: internalCode,
     codigo: internalCode,
     auto_generate_code: formData.get("auto_generate_code") ? 1 : 0,
@@ -14140,6 +14393,7 @@ async function savePdvProduct(formElement) {
     ...payload,
     sizes: [...payload.sizes],
     size_stock: payload.size_stock.map((item) => ({ ...item })),
+    variants: payload.variants.map((item) => ({ ...item })),
     use_in_ai: Boolean(payload.use_in_ai),
     use_in_pos: Boolean(payload.use_in_pos)
   };
@@ -14174,6 +14428,13 @@ async function savePdvProduct(formElement) {
     closePdvProductDrawer();
     await loadPdvProductsFront({ preserveSelection: false });
   } catch (error) {
+    const attributeKey = normalizeText(error.payload?.details?.attribute_key || "");
+    if (attributeKey && Array.isArray(state.pdvProducts.drawerDraft?.variants)) {
+      state.pdvProducts.drawerDraft.variants = state.pdvProducts.drawerDraft.variants.map((item) => {
+        const key = `${normalizeText(item.color || "").toUpperCase()}|${normalizeText(item.size || "").toUpperCase()}`;
+        return key === attributeKey ? { ...item, attribute_key: key, error: error.message || "" } : item;
+      });
+    }
     state.pdvProducts.drawerError = productSaved
       ? `Produto salvo, mas a foto nao foi enviada: ${error.message || "tente novamente."}`
       : (error.message || "Falha ao salvar o produto.");
@@ -14400,9 +14661,30 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
     state.pdvProducts.selectedProductId = normalizeText(button.dataset.pdvProductDetail || "");
     renderPdvProductsOfficialFront(container);
   }));
-  Array.from(container.querySelectorAll("[data-pdv-product-edit]")).forEach((button) => button.addEventListener("click", () => {
+  Array.from(container.querySelectorAll("[data-pdv-product-edit]")).forEach((button) => button.addEventListener("click", async () => {
     const product = items.find((item) => normalizeText(item.id || "") === normalizeText(button.dataset.pdvProductEdit || ""));
-    openPdvProductDrawer("edit", product || null);
+    if (!product) return;
+    try {
+      const detail = await api(`/api/products/${encodeURIComponent(product.id)}`);
+      const normalized = detail.normalized || null;
+      openPdvProductDrawer("edit", {
+        ...product,
+        ...(detail.product || {}),
+        product_type: normalized?.product?.product_type || product.product_type || "simple",
+        variants: toArray(normalized?.variants).map((item) => ({
+          variation_id: item.variation_id,
+          attribute_key: item.attribute_key,
+          color: item.color,
+          size: item.size,
+          desired_stock: item.physical_qty,
+          physical_qty: item.physical_qty,
+          barcode: item.barcode || "",
+          status: item.status
+        }))
+      });
+    } catch (error) {
+      handleUiError("Erro ao carregar produto para edicao", error);
+    }
   }));
   Array.from(container.querySelectorAll("[data-pdv-product-hide]")).forEach((button) => button.addEventListener("click", async () => {
     await api(`/api/products/${button.dataset.pdvProductHide}/hide`, { method: "POST" });
@@ -14441,6 +14723,48 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
     }
     loadPdvProductSuggestedCode(productForm).catch((error) => handleUiError("Erro ao gerar codigo interno", error));
   });
+  productForm?.querySelector("[data-pdv-product-type]")?.addEventListener("change", (event) => {
+    const formData = new FormData(productForm);
+    state.pdvProducts.drawerOpen = true;
+    state.pdvProducts.drawerDraft = {
+      ...(state.pdvProducts.drawerDraft || getDefaultPdvProductDraft()),
+      product_type: normalizeText(event.currentTarget.value || "simple"),
+      sku: normalizeText(formData.get("internal_code") || ""),
+      codigo: normalizeText(formData.get("internal_code") || ""),
+      tiny_id: normalizeText(formData.get("tiny_id") || ""),
+      name: normalizeText(formData.get("name") || ""),
+      commercial_name: normalizeText(formData.get("commercial_name") || ""),
+      category: normalizeText(formData.get("category") || ""),
+      gender: normalizeText(formData.get("gender") || ""),
+      color: normalizeText(formData.get("color") || ""),
+      brand: normalizeText(formData.get("brand") || ""),
+      price: normalizeText(formData.get("price") || ""),
+      promotional_price: normalizeText(formData.get("promotional_price") || ""),
+      cost_price: normalizeText(formData.get("cost_price") || ""),
+      store: normalizeText(formData.get("store") || ""),
+      location: normalizeText(formData.get("location") || ""),
+      gtin_ean: normalizeText(formData.get("gtin_ean") || ""),
+      ncm: normalizeText(formData.get("ncm") || ""),
+      status: normalizeText(formData.get("status") || "ativo"),
+      priority: normalizeText(formData.get("priority") || "media"),
+      source: normalizeText(formData.get("source") || "manual"),
+      short_description: normalizeText(formData.get("short_description") || ""),
+      sales_argument: normalizeText(formData.get("sales_argument") || ""),
+      tags: normalizeText(formData.get("tags") || ""),
+      notes: normalizeText(formData.get("notes") || ""),
+      use_in_ai: formData.get("use_in_ai") === "on",
+      use_in_pos: formData.get("use_in_pos") === "on",
+      variants: readPdvProductVariantRows(productForm),
+      size_stock: readPdvProductSizeStockRows(productForm)
+    };
+    renderPdvProductsOfficialFront(container);
+  });
+  productForm?.querySelector("[data-pdv-product-variant-add]")?.addEventListener("click", () => {
+    const list = productForm.querySelector("[data-pdv-product-variant-list]");
+    if (!list) return;
+    list.insertAdjacentHTML("beforeend", buildPdvProductVariantRow({ color: "", size: "", initial_stock: 0 }));
+    list.lastElementChild?.querySelector("[data-pdv-grade-color]")?.focus();
+  });
   productForm?.querySelector("[data-pdv-product-size-stock-add]")?.addEventListener("click", () => {
     const list = productForm.querySelector("[data-pdv-product-size-stock-list]");
     if (!list) return;
@@ -14449,6 +14773,11 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
     list.lastElementChild?.querySelector("[data-pdv-product-size-stock-size]")?.focus();
   });
   productForm?.addEventListener("click", (event) => {
+    const variantRemoveButton = event.target.closest("[data-pdv-product-variant-remove]");
+    if (variantRemoveButton) {
+      variantRemoveButton.closest("[data-pdv-product-variant-row]")?.remove();
+      return;
+    }
     const removeButton = event.target.closest("[data-pdv-product-size-stock-remove]");
     if (!removeButton) return;
     removeButton.closest("[data-pdv-product-size-stock-row]")?.remove();
@@ -30424,6 +30753,27 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const pdvVariationColor = event.target.closest("[data-pdv-variation-color]");
+  if (pdvVariationColor) {
+    state.pdvSale.variationModal.selectedColor = normalizeText(pdvVariationColor.dataset.pdvVariationColor || "");
+    renderPdvSaleSurface();
+    return;
+  }
+
+  const pdvVariationSize = event.target.closest("[data-pdv-variation-size]");
+  if (pdvVariationSize) {
+    addPdvSaleVariationById(pdvVariationSize.dataset.pdvVariationSize || "")
+      .catch((error) => handleUiError("Erro ao adicionar variacao", error));
+    return;
+  }
+
+  const pdvVariationClose = event.target.closest("[data-pdv-variation-close]");
+  if (pdvVariationClose) {
+    closePdvVariationModal();
+    renderPdvSaleSurface();
+    return;
+  }
+
   const savePdvSaleDraftButton = event.target.closest("[data-pdv-sale-save-draft]");
   if (savePdvSaleDraftButton) {
     savePdvSaleDraft().catch((error) => handleUiError("Erro ao salvar o rascunho da venda", error));
@@ -32500,6 +32850,14 @@ function handleDocumentFocusout(event) {
 }
 
 function handleDocumentKeydown(event) {
+  const pdvProductSearchInput = event.target.closest?.('input[name="pdv_query_search_product_v2"]');
+  if (pdvProductSearchInput && event.key === "Enter" && !event.isComposing) {
+    event.preventDefault();
+    if (event.repeat || state.pdvSale.productSearching) return;
+    state.pdvSale.productQuery = normalizeText(pdvProductSearchInput.value || "");
+    searchPdvSaleProducts().catch((error) => handleUiError("Erro ao buscar produtos da venda", error));
+    return;
+  }
   const successSale = state.pdvSale.lastCompletedSale;
   const isPdvSaleRoute = window.location.pathname.startsWith("/pdv/venda");
   const hasPostSaleActions = Boolean(document.querySelector("[data-pdv-sale-new-session]"));

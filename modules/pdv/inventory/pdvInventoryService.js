@@ -2412,7 +2412,7 @@ function syncManualProductSizeStock(payload = {}, user = {}, options = {}) {
   };
 }
 
-function syncNormalizedSimpleProductProjection(aggregate = {}, user = {}, options = {}) {
+function syncNormalizedVariantProjection(aggregate = {}, user = {}, options = {}) {
   const product = aggregate.product && typeof aggregate.product === "object" ? aggregate.product : {};
   const variant = aggregate.variant && typeof aggregate.variant === "object" ? aggregate.variant : {};
   const balance = aggregate.balance && typeof aggregate.balance === "object" ? aggregate.balance : {};
@@ -2421,7 +2421,7 @@ function syncNormalizedSimpleProductProjection(aggregate = {}, user = {}, option
   const sku = normalizeText(variant.sku || product.base_sku || "");
   const storeId = normalizeStoreId(balance.store_id || "");
   if (!productId || !variantId || !sku || !normalizeStoreKey(balance.store_id || "")) {
-    throw new Error("Produto simples normalizado invalido para projetar no estoque operacional.");
+    throw new Error("Variacao normalizada invalida para projetar no estoque operacional.");
   }
 
   const records = Array.isArray(options.records) ? options.records : ensureInventorySeeded();
@@ -2447,7 +2447,13 @@ function syncNormalizedSimpleProductProjection(aggregate = {}, user = {}, option
   }
 
   const before = cloneInventorySnapshot(record);
-  const targetQuantity = roundQty(balance.available_qty || 0);
+  const physicalQty = roundQty(balance.physical_qty ?? balance.available_qty ?? 0);
+  const reservedQty = roundQty(balance.reserved_qty || 0);
+  const targetQuantity = roundQty(
+    balance.sellable_available_qty
+    ?? (balance.physical_qty === undefined ? balance.available_qty : physicalQty - reservedQty)
+    ?? 0
+  );
   changeInventoryRecord(record, {
     available_delta: targetQuantity - before.available_qty
   });
@@ -2459,8 +2465,9 @@ function syncNormalizedSimpleProductProjection(aggregate = {}, user = {}, option
     codigo_etiqueta: sku,
     parent_sku: normalizeText(product.base_sku || sku),
     nome: normalizeText(product.name || record.nome || ""),
-    tipo: "simple",
-    tamanho: "UN",
+    tipo: normalizeText(product.product_type || "simple"),
+    cor: normalizeText(variant.color || ""),
+    tamanho: normalizeText(variant.size || (variant.is_default ? "UN" : "")),
     preco_venda: roundMoneyLike((variant.sale_price_cents ?? product.sale_price_cents ?? 0) / 100),
     preco_custo: roundMoneyLike((variant.cost_price_cents ?? product.cost_price_cents ?? 0) / 100),
     store_id: storeId,
@@ -2468,6 +2475,8 @@ function syncNormalizedSimpleProductProjection(aggregate = {}, user = {}, option
     origem: "normalized_product_projection",
     normalized_product_id: Number(product.id),
     normalized_variant_id: variantId,
+    physical_qty: physicalQty,
+    reserved_qty: reservedQty,
     legacy_ai_product_id: Number(product.legacy_ai_product_id || 0) || null,
     stock_count_confirmed: true,
     estoque_status: "confirmed_normalized_balance",
@@ -2523,6 +2532,53 @@ function syncNormalizedSimpleProductProjection(aggregate = {}, user = {}, option
     before,
     after
   };
+}
+
+function syncNormalizedProductProjection(aggregate = {}, user = {}, options = {}) {
+  const product = aggregate.product && typeof aggregate.product === "object" ? aggregate.product : {};
+  const variants = Array.isArray(aggregate.variants)
+    ? aggregate.variants
+    : (aggregate.variant ? [aggregate.variant] : []);
+  if (!product.id || !variants.length) {
+    throw new Error("Agregado normalizado invalido para projetar no estoque operacional.");
+  }
+  const records = Array.isArray(options.records) ? options.records : ensureInventorySeeded();
+  const results = [];
+  variants.forEach((variant) => {
+    const balances = Array.isArray(variant.balances) && variant.balances.length
+      ? variant.balances
+      : (aggregate.balance ? [aggregate.balance] : []);
+    balances.forEach((balance) => {
+      results.push(syncNormalizedVariantProjection({
+        product,
+        variant,
+        balance
+      }, user, {
+        ...options,
+        records,
+        persist: false
+      }));
+    });
+  });
+  if (options.persist !== false) {
+    saveInventoryRecords(records);
+    saveInventoryAudit("PDV_NORMALIZED_PRODUCT_PROJECTED", {
+      normalized_product_id: Number(product.id),
+      projected_variants: results.map((item) => item.record.normalized_variant_id)
+    }, user);
+  }
+  return {
+    records: results.map((item) => item.record),
+    results
+  };
+}
+
+function syncNormalizedSimpleProductProjection(aggregate = {}, user = {}, options = {}) {
+  const projection = syncNormalizedProductProjection(aggregate, user, options);
+  const first = projection.results[0] || null;
+  return first
+    ? { ...first, records: projection.records }
+    : { record: null, records: [], results: [] };
 }
 
 function createTransfer(payload = {}, user = {}) {
@@ -4294,6 +4350,7 @@ module.exports = {
   createManualAdjustment,
   syncManualProductSizeStock,
   syncNormalizedSimpleProductProjection,
+  syncNormalizedProductProjection,
   createTransfer,
   getProductOperationalAvailability,
   resolveSaleItemFulfillment,

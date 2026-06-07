@@ -48,10 +48,16 @@ const {
   previewTinyInventoryImport,
   commitTinyInventoryImport,
   syncManualProductSizeStock,
+  syncNormalizedProductProjection,
   syncNormalizedSimpleProductProjection
 } = require("./modules/pdv/inventory/pdvInventoryService");
 const {
+  createProductAggregate,
   createSimpleProduct,
+  findVariantByIdentifier,
+  getProductAggregateById,
+  updateProductAggregate,
+  updateVariantStatus,
   updateSimpleProduct,
   getSimpleProductByLegacyId
 } = require("./modules/pdv/products/pdvSimpleProductService");
@@ -23408,9 +23414,58 @@ app.get("/api/products/:id", async (req, res) => {
     if (!product || product.deleted_at) {
       return res.status(404).json({ success: false, error: "Produto nao encontrado." });
     }
-    res.json({ success: true, product });
+    const normalized = await getSimpleProductByLegacyId(req.params.id);
+    res.json({ success: true, product, normalized });
   } catch (error) {
     res.status(500).json({ success: false, error: "Falha ao carregar o produto." });
+  }
+});
+
+app.get("/api/pdv/products/resolve", async (req, res) => {
+  try {
+    const variant = await findVariantByIdentifier(
+      req.query.identifier || req.query.sku || req.query.barcode || "",
+      req.query.store || req.query.store_id || ""
+    );
+    if (!variant) {
+      return res.status(404).json({ success: false, error: "Variacao nao encontrada." });
+    }
+    res.json({ success: true, variant });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      code: error.code || "",
+      error: error.message || "Falha ao resolver a variacao.",
+      details: error.details || {}
+    });
+  }
+});
+
+app.post("/api/pdv/products/:id/variants/:variationId/status", async (req, res) => {
+  try {
+    if (!canManageProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode alterar variacoes." });
+    }
+    const current = await getProductAggregateById(req.params.id);
+    if (!current || !current.variants.some((item) => item.variation_id === req.params.variationId)) {
+      return res.status(404).json({ success: false, error: "Variacao nao encontrada neste produto." });
+    }
+    const normalized = await updateVariantStatus(
+      req.params.variationId,
+      req.body?.status,
+      req.user || {},
+      {
+        projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+      }
+    );
+    res.json({ success: true, normalized });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      code: error.code || "",
+      error: error.message || "Falha ao alterar o status da variacao.",
+      details: error.details || {}
+    });
   }
 });
 
@@ -23489,15 +23544,18 @@ app.post("/api/products", async (req, res) => {
     if (!canManageProductsCrud(req.user)) {
       return res.status(403).json({ success: false, error: "Seu perfil nao pode cadastrar produtos." });
     }
-    let payload = await buildManualProductPayload(req.body || {});
+    const rawPayload = req.body || {};
+    let payload = await buildManualProductPayload(rawPayload);
     if (payload.size_stock_error) {
       return res.status(400).json({ success: false, error: payload.size_stock_error });
     }
+    const isNormalizedVariableProduct = normalizeLookup(rawPayload.product_type || "") === "variable";
     const isNormalizedSimpleProduct = (
       normalizeLookup(payload.source || "manual") === "manual"
       && !payload.size_stock.length
+      && !isNormalizedVariableProduct
     );
-    if (isNormalizedSimpleProduct) {
+    if (isNormalizedSimpleProduct || isNormalizedVariableProduct) {
       const operationalStoreId = normalizeStoreKey(
         payload.store
         || getManualProductOperationalStoreId(req)
@@ -23505,27 +23563,40 @@ app.post("/api/products", async (req, res) => {
       if (!operationalStoreId) {
         return res.status(400).json({ success: false, error: "Selecione uma loja ativa antes de cadastrar o estoque inicial." });
       }
-      const normalized = await createSimpleProduct({
+      const normalizedPayload = {
         ...payload,
+        ...rawPayload,
         store_id: operationalStoreId,
+        product_type: isNormalizedVariableProduct ? "variable" : "simple",
+        base_sku: rawPayload.base_sku || payload.sku || payload.codigo,
         sku: payload.sku || payload.codigo,
-        barcode: payload.gtin_ean
-      }, req.user || {});
+        barcode: payload.gtin_ean,
+        variants: Array.isArray(rawPayload.variants) ? rawPayload.variants : undefined
+      };
+      const normalized = isNormalizedVariableProduct
+        ? await createProductAggregate(normalizedPayload, req.user || {}, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+        })
+        : await createSimpleProduct(normalizedPayload, req.user || {}, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+        });
       await upsertAiProductBrandMeta(normalized.product.legacy_ai_product_id, payload.marca);
       await syncAiProductMedia(
         normalized.product.legacy_ai_product_id,
         payload.media_ids || (payload.main_media_id ? [payload.main_media_id] : [])
       );
-      const projection = syncNormalizedSimpleProductProjection(normalized, req.user || {});
+      const projection = normalized.operational_projection;
       const product = await getAiProductById(normalized.product.legacy_ai_product_id);
       return res.status(201).json({
         success: true,
         product,
         normalized,
         operational_projection: {
-          inventory_id: projection.record.inventory_id,
-          product_id: projection.record.product_id,
-          store_id: projection.record.store_id
+          records: projection.records.map((record) => ({
+            inventory_id: record.inventory_id,
+            product_id: record.product_id,
+            store_id: record.store_id
+          }))
         }
       });
     }
@@ -23605,7 +23676,12 @@ app.post("/api/products", async (req, res) => {
     res.status(201).json({ success: true, product });
   } catch (error) {
     console.error("Erro ao criar produto manual:", error);
-    res.status(error.statusCode || 500).json({ success: false, error: error.message || "Falha ao salvar o produto." });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "",
+      error: error.message || "Falha ao salvar o produto.",
+      details: error.details || {}
+    });
   }
 });
 
@@ -23618,13 +23694,24 @@ app.put("/api/products/:id", async (req, res) => {
     if (!current) {
       return res.status(404).json({ success: false, error: "Produto nao encontrado." });
     }
-    const payload = await buildManualProductPayload(req.body || {}, current);
+    const rawPayload = req.body || {};
+    const payload = await buildManualProductPayload(rawPayload, current);
     const currentNormalized = await getSimpleProductByLegacyId(req.params.id);
     if (currentNormalized) {
-      const normalized = await updateSimpleProduct(req.params.id, {
-        ...payload,
-        stock: undefined
-      }, req.user || {});
+      const normalized = currentNormalized.product.product_type === "variable"
+        ? await updateProductAggregate(currentNormalized.product.id, {
+          ...payload,
+          ...rawPayload,
+          variants: Array.isArray(rawPayload.variants) ? rawPayload.variants : undefined
+        }, req.user || {}, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+        })
+        : await updateSimpleProduct(req.params.id, {
+          ...payload,
+          stock: undefined
+        }, req.user || {}, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+        });
       await run(
         `UPDATE ai_products
          SET commercial_name = ?, category_id = ?, gender_id = ?, color_id = ?,
@@ -23651,7 +23738,7 @@ app.put("/api/products/:id", async (req, res) => {
           payload.ncm,
           payload.tiny_id,
           payload.marca,
-          normalized.balance.store_id,
+          normalized.balance?.store_id || normalized.variants?.[0]?.balances?.[0]?.store_id || payload.store || "",
           payload.short_description || "",
           payload.sales_argument || "",
           stringifyDelimitedValues(payload.tags || ""),
@@ -23669,16 +23756,18 @@ app.put("/api/products/:id", async (req, res) => {
       );
       await upsertAiProductBrandMeta(req.params.id, payload.marca);
       await syncAiProductMedia(req.params.id, payload.media_ids || (payload.main_media_id ? [payload.main_media_id] : []));
-      const projection = syncNormalizedSimpleProductProjection(normalized, req.user || {});
+      const projection = normalized.operational_projection;
       const product = await getAiProductById(req.params.id);
       return res.json({
         success: true,
         product,
         normalized,
         operational_projection: {
-          inventory_id: projection.record.inventory_id,
-          product_id: projection.record.product_id,
-          store_id: projection.record.store_id
+          records: projection.records.map((record) => ({
+            inventory_id: record.inventory_id,
+            product_id: record.product_id,
+            store_id: record.store_id
+          }))
         }
       });
     }
@@ -23759,7 +23848,12 @@ app.put("/api/products/:id", async (req, res) => {
     res.json({ success: true, product });
   } catch (error) {
     console.error("Erro ao atualizar produto manual:", error);
-    res.status(error.statusCode || 500).json({ success: false, error: error.message || "Falha ao atualizar o produto." });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "",
+      error: error.message || "Falha ao atualizar o produto.",
+      details: error.details || {}
+    });
   }
 });
 
@@ -23770,8 +23864,13 @@ app.post("/api/products/:id/hide", async (req, res) => {
     }
     const currentNormalized = await getSimpleProductByLegacyId(req.params.id);
     if (currentNormalized) {
-      const normalized = await updateSimpleProduct(req.params.id, { status: "bloqueado_para_venda" }, req.user || {});
-      syncNormalizedSimpleProductProjection(normalized, req.user || {});
+      const normalized = currentNormalized.product.product_type === "variable"
+        ? await updateProductAggregate(currentNormalized.product.id, { status: "bloqueado_para_venda" }, req.user || {}, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+        })
+        : await updateSimpleProduct(req.params.id, { status: "bloqueado_para_venda" }, req.user || {}, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+        });
     } else {
       await run("UPDATE ai_products SET status = 'hidden', updated_at = datetime('now') WHERE id = ?", [req.params.id]);
     }
@@ -23789,9 +23888,14 @@ app.post("/api/products/:id/reactivate", async (req, res) => {
     }
     const currentNormalized = await getSimpleProductByLegacyId(req.params.id);
     if (currentNormalized) {
-      const normalized = await updateSimpleProduct(req.params.id, { status: "ativo" }, req.user || {});
+      const normalized = currentNormalized.product.product_type === "variable"
+        ? await updateProductAggregate(currentNormalized.product.id, { status: "ativo" }, req.user || {}, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+        })
+        : await updateSimpleProduct(req.params.id, { status: "ativo" }, req.user || {}, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+        });
       await run("UPDATE ai_products SET deleted_at = '' WHERE id = ?", [req.params.id]);
-      syncNormalizedSimpleProductProjection(normalized, req.user || {});
     } else {
       await run("UPDATE ai_products SET status = 'ativo', deleted_at = '', updated_at = datetime('now') WHERE id = ?", [req.params.id]);
     }
@@ -23809,9 +23913,14 @@ app.delete("/api/products/:id", async (req, res) => {
     }
     const currentNormalized = await getSimpleProductByLegacyId(req.params.id);
     if (currentNormalized) {
-      const normalized = await updateSimpleProduct(req.params.id, { status: "inativo" }, req.user || {});
+      const normalized = currentNormalized.product.product_type === "variable"
+        ? await updateProductAggregate(currentNormalized.product.id, { status: "inativo" }, req.user || {}, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+        })
+        : await updateSimpleProduct(req.params.id, { status: "inativo" }, req.user || {}, {
+          projectAggregate: (aggregate) => syncNormalizedProductProjection(aggregate, req.user || {})
+        });
       await run("UPDATE ai_products SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [req.params.id]);
-      syncNormalizedSimpleProductProjection(normalized, req.user || {});
     } else {
       await run("UPDATE ai_products SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [req.params.id]);
     }
