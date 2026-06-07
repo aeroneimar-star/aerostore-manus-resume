@@ -11098,16 +11098,32 @@ body.theme-dark .pdv-sale-zone .secondary-button:hover {
   font-size: 0.78rem;
 }
 
-.pdv-variation-option:hover,
-.pdv-variation-option.is-selected {
-  border-color: #2d7ef7;
-  box-shadow: 0 0 0 2px rgba(45, 126, 247, 0.12);
+.pdv-variation-option:hover:not(:disabled):not(.is-disabled) {
+  border-color: rgba(45, 212, 191, 0.35);
+  background: rgba(45, 212, 191, 0.06);
+}
+
+.pdv-variation-option.is-selected:not(:disabled):not(.is-disabled),
+.pdv-variation-option:active:not(:disabled):not(.is-disabled) {
+  border-color: rgba(45, 212, 191, 0.66);
+  background: linear-gradient(135deg, rgba(45, 212, 191, 0.18), rgba(12, 28, 27, 0.86));
+  color: #7fffea;
+  box-shadow:
+    inset 0 0 0 1px rgba(45, 212, 191, 0.22),
+    0 0 0 2px rgba(45, 212, 191, 0.10),
+    0 14px 30px rgba(45, 212, 191, 0.08);
+}
+
+.pdv-variation-option.is-selected:not(:disabled):not(.is-disabled) span,
+.pdv-variation-option:active:not(:disabled):not(.is-disabled) span {
+  color: rgba(127, 255, 234, 0.86);
 }
 
 .pdv-variation-option:disabled,
 .pdv-variation-option.is-disabled {
   cursor: not-allowed;
   opacity: 0.58;
+  background: var(--surface, #fff);
   box-shadow: none;
 }
 
