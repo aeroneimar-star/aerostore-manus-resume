@@ -11022,20 +11022,31 @@ body.theme-dark .pdv-sale-zone .secondary-button:hover {
 
 .pdv-variation-modal-overlay {
   z-index: 1400;
+  position: fixed;
+  inset: 0;
   display: grid;
   place-items: center;
-  padding: 20px;
+  justify-content: center;
+  align-content: center;
+  padding: clamp(16px, 4vh, 32px);
+  background: rgba(8, 14, 13, 0.68);
+  backdrop-filter: blur(10px);
+  overflow: auto;
 }
 
 .pdv-variation-modal {
-  width: min(620px, 100%);
-  max-height: min(760px, calc(100vh - 40px));
-  overflow: auto;
+  width: min(620px, calc(100vw - 32px));
+  max-width: 620px;
+  max-height: min(760px, calc(100dvh - 32px));
+  overflow-y: auto;
+  overflow-x: hidden;
   border-radius: 20px;
   background: var(--surface, #fff);
   border: 1px solid var(--border-color, #dfe4ea);
   box-shadow: 0 24px 80px rgba(15, 23, 42, 0.22);
   padding: 22px;
+  box-sizing: border-box;
+  margin: auto;
 }
 
 .pdv-variation-modal > header {
@@ -11121,14 +11132,16 @@ body.theme-dark .pdv-sale-zone .secondary-button:hover {
 
 @media (max-width: 640px) {
   .pdv-variation-modal-overlay {
-    align-items: end;
-    padding: 0;
+    place-items: center;
+    justify-content: center;
+    align-content: center;
+    padding: 12px;
   }
 
   .pdv-variation-modal {
-    width: 100%;
-    max-height: 88vh;
-    border-radius: 20px 20px 0 0;
+    width: min(100%, calc(100vw - 24px));
+    max-height: calc(100dvh - 24px);
+    border-radius: 18px;
   }
 
   .pdv-variation-options {
