@@ -4239,6 +4239,15 @@ function getPdvSaleProductOperationalPresentation(item = null) {
       disabled: false
     };
   }
+  if (status === "OUT_OF_STOCK_LOCAL") {
+    return {
+      tone: "unavailable",
+      summary: item?.operational_summary || `Sem estoque ${saleStoreText.in || "na loja atual"}`,
+      detail: item?.operational_detail || "Contagem fisica confirmada: 0 un. disponiveis.",
+      buttonLabel: "Indisponivel",
+      disabled: true
+    };
+  }
   if (status === "AVAILABLE_ADJACENT_STORE") {
     return {
       tone: "adjacent",
@@ -4299,6 +4308,7 @@ function getPdvSaleCartStatusLabel(item = null) {
   if (status === "PROVISIONAL_DIVERGENT_LOCAL") return "Divergente/provisório";
   if (status === "PENDING_OTHER_STORE_CONFIRMATION") return "Consultar outra loja";
   if (status === "NO_KNOWN_STOCK") return "Sem saldo conhecido";
+  if (status === "OUT_OF_STOCK_LOCAL") return "Sem estoque nesta loja";
   return "Pendente de confirmação";
 }
 
@@ -11455,10 +11465,12 @@ function getPdvProductsActiveStoreLabel() {
 
 function getPdvProductEffectiveStatus(product = {}) {
   const normalizedStatus = normalizeText(product.status || "").toLowerCase();
+  if (normalizedStatus === "bloqueado_para_venda" || normalizedStatus === "hidden") return "blocked";
+  if (normalizedStatus === "inativo") return "inactive";
   if (normalizedStatus === "pending_review") return "pending_review";
   if (normalizedStatus === "pending_migration") return "pending_migration";
   if (normalizedStatus === "out" || normalizedStatus === "inactive") return "out";
-  if (normalizedStatus === "active") return "active";
+  if (normalizedStatus === "active" || normalizedStatus === "ativo") return "active";
   return toNumber(product.available_qty ?? product.estoque ?? 0) > 0 ? "active" : "out";
 }
 
@@ -11467,6 +11479,8 @@ function getPdvProductStatusLabel(product = {}) {
     return normalizeText(product.status_label);
   }
   const effectiveStatus = getPdvProductEffectiveStatus(product);
+  if (effectiveStatus === "blocked") return "Bloqueado para venda";
+  if (effectiveStatus === "inactive") return "Inativo";
   if (effectiveStatus === "pending_review") return "Pendente de revisao";
   if (effectiveStatus === "pending_migration") return "Migracao pendente";
   if (effectiveStatus === "out") return "Sem saldo";
@@ -12927,6 +12941,8 @@ document.addEventListener("error", (event) => {
 function getDefaultPdvProductDraft() {
   return {
     sku: "",
+    codigo: "",
+    auto_generate_code: true,
     tiny_id: "",
     name: "",
     commercial_name: "",
@@ -12934,6 +12950,7 @@ function getDefaultPdvProductDraft() {
     gender: "",
     color: "",
     sizes: [],
+    size_stock: [],
     brand: "",
     price: "",
     promotional_price: "",
@@ -12998,6 +13015,8 @@ function ensurePdvProductsCrudState() {
   state.pdvProducts.drawerPhotoRemoving = Boolean(state.pdvProducts.drawerPhotoRemoving);
   state.pdvProducts.drawerPhotoMessage = state.pdvProducts.drawerPhotoMessage || "";
   state.pdvProducts.drawerPhotoPreviewUrl = state.pdvProducts.drawerPhotoPreviewUrl || "";
+  state.pdvProducts.drawerPhotoFile = state.pdvProducts.drawerPhotoFile || null;
+  state.pdvProducts.drawerCodeLoading = Boolean(state.pdvProducts.drawerCodeLoading);
 }
 
 function getDefaultPdvCustomerCrudDraft() {
@@ -13504,6 +13523,103 @@ function exportPdvReactivationSegments() {
   showFeedback("Exportacao da segmentacao de giftback iniciada.");
 }
 
+function normalizePdvProductSizeStock(value = []) {
+  let source = value;
+  if (typeof source === "string") {
+    try {
+      source = JSON.parse(source || "[]");
+    } catch {
+      source = [];
+    }
+  }
+  return toArray(source).map((item) => ({
+    size: normalizeText(item?.size ?? item?.tamanho ?? "").toUpperCase(),
+    quantity: Math.max(0, Math.floor(toNumber(item?.quantity ?? item?.quantidade ?? 0)))
+  })).filter((item) => item.size);
+}
+
+function buildPdvProductSizeStockRow(item = {}) {
+  return `
+    <div class="pdv-product-size-stock-row" data-pdv-product-size-stock-row="true">
+      <label>
+        Tamanho / numeracao
+        <input data-pdv-product-size-stock-size="true" type="text" value="${escapeHtml(item.size || "")}" list="pdv-product-size-stock-options" placeholder="Ex.: P, 38, Unico" />
+      </label>
+      <label>
+        Quantidade
+        <input data-pdv-product-size-stock-quantity="true" type="number" min="0" step="1" value="${escapeHtml(item.quantity ?? 0)}" />
+      </label>
+      <button class="ghost-button icon-only pdv-product-size-stock-remove" type="button" data-pdv-product-size-stock-remove="true" title="Remover tamanho" aria-label="Remover tamanho">&times;</button>
+    </div>
+  `;
+}
+
+function readPdvProductSizeStockRows(formElement) {
+  return Array.from(formElement?.querySelectorAll?.("[data-pdv-product-size-stock-row]") || []).map((row) => ({
+    size: normalizeText(row.querySelector("[data-pdv-product-size-stock-size]")?.value || "").toUpperCase(),
+    quantity: normalizeText(row.querySelector("[data-pdv-product-size-stock-quantity]")?.value ?? "")
+  })).filter((item) => item.size || item.quantity !== "");
+}
+
+function updatePdvProductSizeStockTotal(formElement) {
+  if (!formElement) return;
+  const rows = readPdvProductSizeStockRows(formElement);
+  const hasRows = Boolean(formElement.querySelector("[data-pdv-product-size-stock-row]"));
+  const total = rows.reduce((sum, item) => sum + Math.max(0, Math.floor(toNumber(item.quantity || 0))), 0);
+  const stockInput = formElement.querySelector("[data-pdv-product-stock-total]");
+  const totalOutput = formElement.querySelector("[data-pdv-product-size-stock-total]");
+  if (stockInput) {
+    stockInput.readOnly = hasRows;
+    if (hasRows) stockInput.value = String(total);
+  }
+  if (totalOutput) totalOutput.textContent = String(total);
+}
+
+async function loadPdvProductSuggestedCode(formElement = null) {
+  ensurePdvProductsCrudState();
+  state.pdvProducts.drawerCodeLoading = true;
+  const targetForm = formElement || document.querySelector('[data-pdv-product-form="true"]');
+  const codeInput = targetForm?.querySelector("[data-pdv-product-internal-code]");
+  const codeStatus = targetForm?.querySelector("[data-pdv-product-code-status]");
+  if (codeInput) {
+    codeInput.readOnly = true;
+    codeInput.value = "";
+    codeInput.placeholder = "Gerando codigo...";
+  }
+  if (codeStatus) codeStatus.textContent = "Gerando codigo interno unico...";
+  try {
+    const response = await api("/api/products/internal-code/reserve", { method: "POST" });
+    const code = normalizeText(response.code || "");
+    state.pdvProducts.drawerDraft = {
+      ...(state.pdvProducts.drawerDraft || getDefaultPdvProductDraft()),
+      sku: code,
+      codigo: code,
+      auto_generate_code: true
+    };
+    if (codeInput && codeInput.isConnected) {
+      codeInput.value = code;
+      codeInput.placeholder = "AERO-000001";
+      codeInput.readOnly = true;
+    }
+    if (codeStatus && codeStatus.isConnected) {
+      codeStatus.textContent = "Codigo reservado pelo sistema. O backend confirma a unicidade ao salvar.";
+    }
+  } catch (error) {
+    state.pdvProducts.drawerDraft.auto_generate_code = false;
+    const autoToggle = targetForm?.querySelector("[data-pdv-product-auto-code]");
+    if (autoToggle && autoToggle.isConnected) autoToggle.checked = false;
+    if (codeInput && codeInput.isConnected) {
+      codeInput.readOnly = false;
+      codeInput.placeholder = "Digite o codigo interno";
+    }
+    if (codeStatus && codeStatus.isConnected) {
+      codeStatus.textContent = error.message || "Nao foi possivel gerar o codigo. Digite manualmente.";
+    }
+  } finally {
+    state.pdvProducts.drawerCodeLoading = false;
+  }
+}
+
 function openPdvProductDrawer(mode = "create", product = null) {
   ensurePdvProductsCrudState();
   if (state.pdvProducts.drawerPhotoPreviewUrl) {
@@ -13514,15 +13630,23 @@ function openPdvProductDrawer(mode = "create", product = null) {
   state.pdvProducts.drawerError = "";
   state.pdvProducts.drawerPhotoMessage = "";
   state.pdvProducts.drawerPhotoPreviewUrl = "";
+  state.pdvProducts.drawerPhotoFile = null;
   state.pdvProducts.drawerDraft = product ? {
     ...getDefaultPdvProductDraft(),
     ...product,
+    codigo: product.codigo_interno || product.codigo || product.sku || "",
+    auto_generate_code: false,
     brand: product.brand || product.marca || "",
     sizes: toArray(product.sizes),
+    size_stock: normalizePdvProductSizeStock(product.size_stock || product.size_stock_json),
     use_in_ai: Boolean(product.use_in_ai),
     use_in_pos: Boolean(product.use_in_pos)
   } : getDefaultPdvProductDraft();
+  state.pdvProducts.drawerCodeLoading = !product;
   renderPdvProductsOfficialFront(document.getElementById("pdv-products-content"));
+  if (!product) {
+    loadPdvProductSuggestedCode().catch((error) => handleUiError("Erro ao gerar codigo interno", error));
+  }
 }
 
 function closePdvProductDrawer() {
@@ -13537,6 +13661,8 @@ function closePdvProductDrawer() {
   state.pdvProducts.drawerPhotoRemoving = false;
   state.pdvProducts.drawerPhotoMessage = "";
   state.pdvProducts.drawerPhotoPreviewUrl = "";
+  state.pdvProducts.drawerPhotoFile = null;
+  state.pdvProducts.drawerCodeLoading = false;
   state.pdvProducts.drawerDraft = getDefaultPdvProductDraft();
   renderPdvProductsOfficialFront(document.getElementById("pdv-products-content"));
 }
@@ -13564,12 +13690,17 @@ function previewPdvProductPhotoFile(input) {
   if (!file) return;
   if (!["image/jpeg", "image/png", "image/webp"].includes(file.type || "") || file.size > 5 * 1024 * 1024) {
     input.value = "";
+    state.pdvProducts.drawerPhotoFile = null;
     state.pdvProducts.drawerPhotoMessage = file.size > 5 * 1024 * 1024 ? "A foto precisa ter no maximo 5MB." : "Use uma foto JPG, PNG ou WEBP.";
     renderPdvProductsOfficialFront(document.getElementById("pdv-products-content"));
     return;
   }
+  state.pdvProducts.drawerPhotoFile = file;
   state.pdvProducts.drawerPhotoPreviewUrl = URL.createObjectURL(file);
-  state.pdvProducts.drawerPhotoMessage = `${file.name} pronta para envio.`;
+  const productId = normalizeText(state.pdvProducts.drawerDraft?.id || "");
+  state.pdvProducts.drawerPhotoMessage = productId
+    ? `${file.name} pronta para envio.`
+    : `${file.name} sera enviada ao salvar o produto.`;
   const card = input.closest("[data-pdv-product-photo-card]");
   const preview = card?.querySelector("[data-pdv-product-photo-preview]");
   if (preview) {
@@ -13578,12 +13709,14 @@ function previewPdvProductPhotoFile(input) {
   }
   const status = card?.querySelector("[data-pdv-product-photo-message]");
   if (status) status.textContent = state.pdvProducts.drawerPhotoMessage;
+  const uploadButton = card?.querySelector("[data-pdv-product-photo-upload]");
+  if (uploadButton && !productId) uploadButton.textContent = "Envia ao salvar";
 }
 
-async function uploadPdvProductPhoto(card) {
+async function uploadPdvProductPhoto(card, options = {}) {
   ensurePdvProductsCrudState();
-  const productId = normalizeText(state.pdvProducts.drawerDraft?.id || "");
-  const file = card?.querySelector("[data-pdv-product-photo-file]")?.files?.[0];
+  const productId = normalizeText(options.productId || state.pdvProducts.drawerDraft?.id || "");
+  const file = options.file || state.pdvProducts.drawerPhotoFile || card?.querySelector("[data-pdv-product-photo-file]")?.files?.[0];
   if (!productId || !file) {
     state.pdvProducts.drawerPhotoMessage = productId ? "Escolha uma foto para enviar." : "Salve o produto antes de enviar a foto.";
     renderPdvProductsOfficialFront(document.getElementById("pdv-products-content"));
@@ -13600,7 +13733,8 @@ async function uploadPdvProductPhoto(card) {
     state.pdvProducts.drawerPhotoMessage = "Foto salva no cadastro.";
     if (state.pdvProducts.drawerPhotoPreviewUrl) URL.revokeObjectURL(state.pdvProducts.drawerPhotoPreviewUrl);
     state.pdvProducts.drawerPhotoPreviewUrl = "";
-    showFeedback("Foto do produto atualizada.");
+    state.pdvProducts.drawerPhotoFile = null;
+    if (!options.suppressFeedback) showFeedback("Foto do produto atualizada.");
   } catch (error) {
     state.pdvProducts.drawerPhotoMessage = error.message || "Falha ao enviar a foto.";
     throw error;
@@ -13691,6 +13825,10 @@ function closePdvCustomerCreateDrawer() {
 function buildPdvProductDrawer() {
   ensurePdvProductsCrudState();
   const draft = state.pdvProducts.drawerDraft || getDefaultPdvProductDraft();
+  const sizeStock = normalizePdvProductSizeStock(draft.size_stock || draft.size_stock_json);
+  const sizeStockTotal = sizeStock.reduce((total, item) => total + item.quantity, 0);
+  const internalCode = normalizeText(draft.codigo || draft.codigo_interno || draft.sku || "");
+  const automaticCode = Boolean(draft.auto_generate_code);
   const draftPrice = toNumber(draft.price || 0);
   const draftPromotionalPrice = toNumber(draft.promotional_price || 0);
   const draftHasPromotion = draftPrice > 0 && draftPromotionalPrice > 0 && draftPromotionalPrice < draftPrice;
@@ -13698,6 +13836,7 @@ function buildPdvProductDrawer() {
   const photoFallback = (photoLabel || "PR").slice(0, 2).toUpperCase();
   const currentPhotoUrl = normalizeText(state.pdvProducts.drawerPhotoPreviewUrl || draft.preview_url || draft.media_url || "");
   const canUploadPhoto = state.pdvProducts.drawerMode === "edit" && normalizeText(draft.id || "");
+  const hasPendingPhoto = Boolean(state.pdvProducts.drawerPhotoFile);
   return `
     <div class="pdv-drawer-overlay${state.pdvProducts.drawerOpen ? "" : " hidden"}" data-pdv-product-drawer-close="overlay">
       <aside class="pdv-drawer pdv-crud-drawer${state.pdvProducts.drawerOpen ? " open" : ""}" role="dialog" aria-modal="true" aria-label="Cadastro manual de produto">
@@ -13715,38 +13854,46 @@ function buildPdvProductDrawer() {
                 <span class="eyebrow">Foto do produto</span>
                 <strong>${currentPhotoUrl ? "Foto principal cadastrada" : "Produto sem foto"}</strong>
                 <small>Use foto nitida da peca. Formatos aceitos: JPG, PNG ou WEBP ate 5MB.</small>
-                <span class="table-meta" data-pdv-product-photo-message>${escapeHtml(state.pdvProducts.drawerPhotoMessage || (canUploadPhoto ? "A foto salva aparece nas listas e buscas que leem a foto principal." : "Salve o produto para liberar o envio da foto."))}</span>
+                <span class="table-meta" data-pdv-product-photo-message>${escapeHtml(state.pdvProducts.drawerPhotoMessage || (canUploadPhoto ? "A foto salva aparece nas listas e buscas que leem a foto principal." : "Selecione uma foto agora. Ela sera enviada depois que o produto for salvo."))}</span>
               </div>
               <div class="pdv-product-photo-editor">
                 <div class="pdv-products-photo is-product-media is-featured pdv-product-photo-preview" data-pdv-product-photo-preview="true">
                   ${buildPdvProductImageMarkup(currentPhotoUrl, photoLabel, photoFallback)}
                 </div>
                 <label class="pdv-product-photo-file">
-                  <span>${currentPhotoUrl ? "Trocar foto" : "Enviar foto"}</span>
-                  <input data-pdv-product-photo-file="true" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"${canUploadPhoto ? "" : " disabled"} />
+                  <span>${currentPhotoUrl ? "Trocar foto" : "Selecionar foto"}</span>
+                  <input data-pdv-product-photo-file="true" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"${state.pdvProducts.drawerPhotoUploading ? " disabled" : ""} />
                 </label>
                 <div class="action-row">
-                  <button class="secondary-button" type="button" data-pdv-product-photo-upload="true"${canUploadPhoto && !state.pdvProducts.drawerPhotoUploading ? "" : " disabled"}>${state.pdvProducts.drawerPhotoUploading ? "Enviando..." : "Confirmar foto"}</button>
+                  <button class="secondary-button" type="button" data-pdv-product-photo-upload="true"${canUploadPhoto && !state.pdvProducts.drawerPhotoUploading ? "" : " disabled"}>${state.pdvProducts.drawerPhotoUploading ? "Enviando..." : (canUploadPhoto ? "Confirmar foto" : (hasPendingPhoto ? "Envia ao salvar" : "Envio apos salvar"))}</button>
                   ${normalizeText(draft.preview_url || draft.media_url || "") ? `<button class="ghost-button" type="button" data-pdv-product-photo-remove="true"${state.pdvProducts.drawerPhotoRemoving ? " disabled" : ""}>${state.pdvProducts.drawerPhotoRemoving ? "Removendo..." : "Remover foto"}</button>` : ""}
                 </div>
               </div>
             </section>
             <div class="form-grid pdv-crud-grid">
-              <label>SKU / Codigo<input name="sku" type="text" value="${escapeHtml(draft.sku || "")}" /></label>
+              <div class="pdv-product-code-field">
+                <label>Codigo interno
+                  <input name="internal_code" data-pdv-product-internal-code="true" type="text" value="${escapeHtml(internalCode)}" placeholder="${state.pdvProducts.drawerCodeLoading ? "Gerando codigo..." : "AERO-000001"}"${automaticCode ? " readonly" : ""} />
+                </label>
+                <label class="checkbox-field pdv-product-auto-code-toggle">
+                  <input name="auto_generate_code" data-pdv-product-auto-code="true" type="checkbox"${automaticCode ? " checked" : ""} />
+                  <span>Gerar automaticamente</span>
+                </label>
+                <small data-pdv-product-code-status="true">${escapeHtml(automaticCode ? (state.pdvProducts.drawerCodeLoading ? "Gerando codigo interno unico..." : "Codigo reservado pelo sistema e validado novamente ao salvar.") : "Desmarcado: o codigo pode ser informado manualmente.")}</small>
+              </div>
               <label>Codigo Tiny<input name="tiny_id" type="text" value="${escapeHtml(draft.tiny_id || "")}" /></label>
-              <label>Nome interno<input name="name" type="text" value="${escapeHtml(draft.name || "")}" /></label>
+              <label>Nome interno<input name="name" type="text" value="${escapeHtml(draft.name || "")}" required /></label>
               <label>Nome comercial<input name="commercial_name" type="text" value="${escapeHtml(draft.commercial_name || "")}" /></label>
               <label>Categoria<input name="category" type="text" value="${escapeHtml(draft.category || "")}" /></label>
               <label>Genero<input name="gender" type="text" value="${escapeHtml(draft.gender || "")}" /></label>
               <label>Cor<input name="color" type="text" value="${escapeHtml(draft.color || "")}" /></label>
               <label>Marca<input name="brand" type="text" value="${escapeHtml(draft.brand || "")}" /></label>
-              <label>Preco de venda<input name="price" type="text" value="${escapeHtml(draft.price ?? "")}" placeholder="99,90" /></label>
+              <label>Preco de venda<input name="price" type="text" value="${escapeHtml(draft.price ?? "")}" placeholder="99,90" required /></label>
               <label>Preco promocional
                 <input name="promotional_price" type="text" value="${escapeHtml(draft.promotional_price ?? "")}" placeholder="Opcional: 79,90" />
                 <small>Usado na etiqueta DE/POR. Nao altera a venda automaticamente nesta etapa.</small>
               </label>
               <label>Preco de custo<input name="cost_price" type="text" value="${escapeHtml(draft.cost_price ?? "")}" /></label>
-              <label>Estoque informativo<input name="stock" type="number" min="0" step="1" value="${escapeHtml(draft.stock ?? "")}" /></label>
               <label>Loja / unidade<input name="store" type="text" value="${escapeHtml(draft.store || "")}" /></label>
               <label>Localizacao<input name="location" type="text" value="${escapeHtml(draft.location || "")}" /></label>
               <label>GTIN / EAN<input name="gtin_ean" type="text" value="${escapeHtml(draft.gtin_ean || "")}" /></label>
@@ -13754,8 +13901,8 @@ function buildPdvProductDrawer() {
               <label>Status
                 <select name="status">
                   <option value="ativo"${normalizeText(draft.status || "") === "ativo" ? " selected" : ""}>Ativo</option>
+                  <option value="bloqueado_para_venda"${["bloqueado_para_venda", "hidden"].includes(normalizeText(draft.status || "")) ? " selected" : ""}>Bloqueado para venda</option>
                   <option value="inativo"${normalizeText(draft.status || "") === "inativo" ? " selected" : ""}>Inativo</option>
-                  <option value="hidden"${normalizeText(draft.status || "") === "hidden" ? " selected" : ""}>Oculto</option>
                 </select>
               </label>
               <label>Prioridade
@@ -13774,6 +13921,30 @@ function buildPdvProductDrawer() {
                 Tamanhos estruturados
                 ${buildSelectionChips(PDV_PRODUCT_SIZE_OPTIONS, draft.sizes || [], "productSizes", "product-size-")}
               </label>
+              <section class="panel pdv-crud-inline-panel pdv-product-size-stock-panel pdv-crud-wide">
+                <div class="panel-header pdv-product-size-stock-header">
+                  <div>
+                    <h3>Quantidade por tamanho/numeracao</h3>
+                    <span class="table-meta">Estoque real por tamanho da loja ativa. As quantidades ficam disponiveis no PDV.</span>
+                  </div>
+                  <button class="secondary-button" type="button" data-pdv-product-size-stock-add="true">Adicionar tamanho</button>
+                </div>
+                <datalist id="pdv-product-size-stock-options">
+                  ${PDV_PRODUCT_SIZE_OPTIONS.map((size) => `<option value="${escapeHtml(size)}"></option>`).join("")}
+                </datalist>
+                <div class="pdv-product-size-stock-list" data-pdv-product-size-stock-list="true">
+                  ${sizeStock.map((item) => buildPdvProductSizeStockRow(item)).join("")}
+                </div>
+                <div class="pdv-product-size-stock-summary">
+                  <label>Total em estoque
+                    <input name="stock" data-pdv-product-stock-total="true" type="number" min="0" step="1" value="${escapeHtml(sizeStock.length ? sizeStockTotal : (draft.stock ?? ""))}"${sizeStock.length ? " readonly" : ""} />
+                  </label>
+                  <div>
+                    <span>Total calculado pela grade</span>
+                    <strong data-pdv-product-size-stock-total="true">${escapeHtml(String(sizeStockTotal))}</strong>
+                  </div>
+                </div>
+              </section>
               <label class="pdv-crud-wide">Descricao curta<textarea name="short_description" placeholder="Resumo rapido para vitrine e atendimento.">${escapeHtml(draft.short_description || "")}</textarea></label>
               <label class="pdv-crud-wide">Argumento de venda<textarea name="sales_argument" placeholder="Frase comercial curta e objetiva.">${escapeHtml(draft.sales_argument || "")}</textarea></label>
               <label class="pdv-crud-wide">Tags<input name="tags" type="text" value="${escapeHtml(Array.isArray(draft.tags) ? draft.tags.join(", ") : (draft.tags || draft.tagsText || ""))}" placeholder="camiseta, casual, preto" /></label>
@@ -13931,8 +14102,12 @@ function applyPdvProductsFiltersFromForm(formElement) {
 async function savePdvProduct(formElement) {
   if (!formElement || state.pdvProducts.drawerSaving) return;
   const formData = new FormData(formElement);
+  const internalCode = normalizeText(formData.get("internal_code") || "");
+  const sizeStock = readPdvProductSizeStockRows(formElement);
   const payload = {
-    sku: normalizeText(formData.get("sku") || ""),
+    sku: internalCode,
+    codigo: internalCode,
+    auto_generate_code: formData.get("auto_generate_code") ? 1 : 0,
     tiny_id: normalizeText(formData.get("tiny_id") || ""),
     name: normalizeText(formData.get("name") || ""),
     commercial_name: normalizeText(formData.get("commercial_name") || ""),
@@ -13940,6 +14115,7 @@ async function savePdvProduct(formElement) {
     gender: normalizeText(formData.get("gender") || ""),
     color: normalizeText(formData.get("color") || ""),
     sizes: readCheckedValues(formElement, "productSizes"),
+    size_stock: sizeStock,
     brand: normalizeText(formData.get("brand") || ""),
     price: normalizeText(formData.get("price") || ""),
     promotional_price: normalizeText(formData.get("promotional_price") || ""),
@@ -13959,6 +14135,16 @@ async function savePdvProduct(formElement) {
     use_in_ai: formData.get("use_in_ai") ? 1 : 0,
     use_in_pos: formData.get("use_in_pos") ? 1 : 0
   };
+  state.pdvProducts.drawerDraft = {
+    ...(state.pdvProducts.drawerDraft || getDefaultPdvProductDraft()),
+    ...payload,
+    sizes: [...payload.sizes],
+    size_stock: payload.size_stock.map((item) => ({ ...item })),
+    use_in_ai: Boolean(payload.use_in_ai),
+    use_in_pos: Boolean(payload.use_in_pos)
+  };
+  const pendingPhotoFile = state.pdvProducts.drawerPhotoFile;
+  let productSaved = false;
   state.pdvProducts.drawerSaving = true;
   state.pdvProducts.drawerError = "";
   renderPdvProductsOfficialFront(document.getElementById("pdv-products-content"));
@@ -13970,12 +14156,27 @@ async function savePdvProduct(formElement) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+    productSaved = true;
+    refreshPdvProductDraftPhoto(response.product || {});
+    state.pdvProducts.drawerMode = "edit";
+    if (pendingPhotoFile) {
+      await uploadPdvProductPhoto(
+        document.querySelector("[data-pdv-product-photo-card]"),
+        {
+          productId: response.product?.id,
+          file: pendingPhotoFile,
+          suppressFeedback: true
+        }
+      );
+    }
     showFeedback(editingId ? "Produto atualizado com sucesso." : "Produto cadastrado com sucesso.");
     state.pdvProducts.selectedProductId = normalizeText(response.product?.id || "");
     closePdvProductDrawer();
     await loadPdvProductsFront({ preserveSelection: false });
   } catch (error) {
-    state.pdvProducts.drawerError = error.message || "Falha ao salvar o produto.";
+    state.pdvProducts.drawerError = productSaved
+      ? `Produto salvo, mas a foto nao foi enviada: ${error.message || "tente novamente."}`
+      : (error.message || "Falha ao salvar o produto.");
     renderPdvProductsOfficialFront(document.getElementById("pdv-products-content"));
     throw error;
   } finally {
@@ -13991,6 +14192,8 @@ function buildManualProductDetailCard(product = {}) {
   const normalPrice = toNumber(product.price || 0);
   const promotionalPrice = toNumber(product.promotional_price || product.promotionalPrice || 0);
   const hasPromotion = normalPrice > 0 && promotionalPrice > 0 && promotionalPrice < normalPrice;
+  const sizeStock = normalizePdvProductSizeStock(product.size_stock || product.size_stock_json);
+  const sizeStockTotal = sizeStock.reduce((total, item) => total + item.quantity, 0);
   return `
     <div class="pdv-products-detail-card">
       <div class="pdv-products-detail-hero">
@@ -14016,6 +14219,17 @@ function buildManualProductDetailCard(product = {}) {
         <strong>Tamanhos</strong>
         <span>${escapeHtml(toArray(product.sizes).join(", ") || "Sem grade estruturada.")}</span>
       </div>
+      ${sizeStock.length ? `
+        <div class="pdv-customers-callout">
+          <strong>Estoque por tamanho</strong>
+          <div class="pdv-product-size-stock-detail">
+            ${sizeStock.map((item) => `
+              <span><b>${escapeHtml(item.size)}</b>${escapeHtml(String(item.quantity))}</span>
+            `).join("")}
+            <span class="is-total"><b>Total</b>${escapeHtml(String(sizeStockTotal))}</span>
+          </div>
+        </div>
+      ` : ""}
       ${normalizeText(product.short_description || "") ? `<div class="pdv-customers-callout"><strong>Descricao curta</strong><span>${escapeHtml(product.short_description)}</span></div>` : ""}
       ${normalizeText(product.sales_argument || "") ? `<div class="pdv-customers-callout"><strong>Argumento de venda</strong><span>${escapeHtml(product.sales_argument)}</span></div>` : ""}
       <div class="action-row">
@@ -14100,7 +14314,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
         <label class="pdv-products-search-label">Buscar por nome, SKU, etiqueta, barcode ou marca<input name="productsQuery" type="search" value="${escapeHtml(state.pdvProducts.query || "")}" placeholder="Ex.: 118511, 7890001185110, camiseta" /></label>
         <div class="pdv-products-toolbar-filters">
           <label>Loja<select name="storeFilter">${storeOptions.map((option) => `<option value="${escapeHtml(option.value)}"${normalizeText(state.pdvProducts.filters.store || "") === normalizeText(option.value || "") ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label>
-          <label>Status<select name="statusFilter"><option value="">Todos</option><option value="ativo"${state.pdvProducts.filters.status === "ativo" ? " selected" : ""}>Ativos</option><option value="inativo"${state.pdvProducts.filters.status === "inativo" ? " selected" : ""}>Inativos</option><option value="hidden"${state.pdvProducts.filters.status === "hidden" ? " selected" : ""}>Ocultos</option></select></label>
+          <label>Status<select name="statusFilter"><option value="">Todos</option><option value="ativo"${state.pdvProducts.filters.status === "ativo" ? " selected" : ""}>Ativos</option><option value="bloqueado_para_venda"${["bloqueado_para_venda", "hidden"].includes(state.pdvProducts.filters.status) ? " selected" : ""}>Bloqueados</option><option value="inativo"${state.pdvProducts.filters.status === "inativo" ? " selected" : ""}>Inativos</option></select></label>
           <label>Vitrine IA<select name="useInAiFilter"><option value="0">Todos</option><option value="1"${state.pdvProducts.filters.useInAi === "1" ? " selected" : ""}>So elegiveis</option></select></label>
           <label>PDV<select name="useInPosFilter"><option value="0">Todos</option><option value="1"${state.pdvProducts.filters.useInPos === "1" ? " selected" : ""}>So PDV</option></select></label>
           <label>Sem preco<select name="withoutPriceFilter"><option value="0">Todos</option><option value="1"${state.pdvProducts.filters.withoutPrice === "1" ? " selected" : ""}>Somente sem preco</option></select></label>
@@ -14204,10 +14418,47 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
     if (button.dataset.pdvProductDrawerClose === "overlay" && event.target !== button) return;
     closePdvProductDrawer();
   }));
-  container.querySelector('[data-pdv-product-form="true"]')?.addEventListener("submit", (event) => {
+  const productForm = container.querySelector('[data-pdv-product-form="true"]');
+  productForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     savePdvProduct(event.currentTarget).catch((error) => handleUiError("Erro ao salvar o produto", error));
   });
+  productForm?.querySelector("[data-pdv-product-auto-code]")?.addEventListener("change", (event) => {
+    const automatic = Boolean(event.currentTarget.checked);
+    const codeInput = productForm.querySelector("[data-pdv-product-internal-code]");
+    const codeStatus = productForm.querySelector("[data-pdv-product-code-status]");
+    state.pdvProducts.drawerDraft.auto_generate_code = automatic;
+    if (!automatic) {
+      if (codeInput) codeInput.readOnly = false;
+      if (codeStatus) codeStatus.textContent = "Desmarcado: o codigo pode ser informado manualmente.";
+      codeInput?.focus();
+      return;
+    }
+    if (state.pdvProducts.drawerMode === "edit" && normalizeText(codeInput?.value || "")) {
+      if (codeInput) codeInput.readOnly = true;
+      if (codeStatus) codeStatus.textContent = "Codigo atual preservado. A edicao nao sobrescreve o identificador existente.";
+      return;
+    }
+    loadPdvProductSuggestedCode(productForm).catch((error) => handleUiError("Erro ao gerar codigo interno", error));
+  });
+  productForm?.querySelector("[data-pdv-product-size-stock-add]")?.addEventListener("click", () => {
+    const list = productForm.querySelector("[data-pdv-product-size-stock-list]");
+    if (!list) return;
+    list.insertAdjacentHTML("beforeend", buildPdvProductSizeStockRow({ size: "", quantity: 0 }));
+    updatePdvProductSizeStockTotal(productForm);
+    list.lastElementChild?.querySelector("[data-pdv-product-size-stock-size]")?.focus();
+  });
+  productForm?.addEventListener("click", (event) => {
+    const removeButton = event.target.closest("[data-pdv-product-size-stock-remove]");
+    if (!removeButton) return;
+    removeButton.closest("[data-pdv-product-size-stock-row]")?.remove();
+    updatePdvProductSizeStockTotal(productForm);
+  });
+  productForm?.addEventListener("input", (event) => {
+    if (!event.target.matches("[data-pdv-product-size-stock-size], [data-pdv-product-size-stock-quantity]")) return;
+    updatePdvProductSizeStockTotal(productForm);
+  });
+  updatePdvProductSizeStockTotal(productForm);
   container.querySelector("[data-pdv-product-photo-file]")?.addEventListener("change", (event) => {
     previewPdvProductPhotoFile(event.currentTarget);
   });

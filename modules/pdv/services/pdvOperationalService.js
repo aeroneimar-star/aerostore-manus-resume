@@ -7,6 +7,10 @@ const { get, all } = require("../../../db");
 const { PDV_PAYMENT_METHODS } = require("../utils/pdvConfig");
 const { normalizeStoreKey, storesMatch, formatStoreLabel, getStoreDisplayText } = require("../utils/pdvStoreUtils");
 const {
+  normalizeManualProductSizeStockEntries,
+  buildManualProductSizeVariantIdentity
+} = require("../inventory/pdvManualProductStockUtils");
+const {
   getDiscountPolicyForSale,
   buildDiscountAuthorizationFingerprint,
   buildDiscountAuthorizationFingerprintPayload
@@ -1681,6 +1685,7 @@ function cloneOperationalSourceOption(option = null) {
     estoque_status: normalizeText(option.estoque_status || ""),
     inventory_status: normalizeText(option.inventory_status || ""),
     needs_physical_confirmation: Boolean(option.needs_physical_confirmation),
+    stock_count_confirmed: Boolean(option.stock_count_confirmed),
     is_provisional: Boolean(option.is_provisional),
     is_divergent: Boolean(option.is_divergent),
     logistics_group: normalizeText(option.logistics_group || ""),
@@ -1717,6 +1722,18 @@ function buildOperationalProductSummary(item = {}, availability = null, saleStor
       requires_resolution: false,
       requires_logistics_review: false,
       is_unavailable: false
+    };
+  }
+  if (availability.status === "OUT_OF_STOCK_LOCAL") {
+    return {
+      status: availability.status,
+      summary: `Sem estoque ${saleStoreText.in || "na loja atual"}`,
+      detail: "Contagem fisica confirmada: 0 un. disponiveis.",
+      button_label: "Indisponivel",
+      can_add_directly: false,
+      requires_resolution: false,
+      requires_logistics_review: false,
+      is_unavailable: true
     };
   }
   if (availability.status === "AVAILABLE_ADJACENT_STORE") {
@@ -1941,15 +1958,20 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
     const { listInventoryProducts } = require("../inventory/pdvInventoryService");
     const inventoryPayload = listInventoryProducts({ q: query, storeId, page: safePage, limit: safeLimit });
     inventoryPagination = inventoryPayload.pagination || null;
-    resultsBySource.inventory = (inventoryPayload.items || []).map((item) => ({
-      ...item,
-      id: normalizeText(item.id || item.product_id || item.sku || item.codigo || ""),
-      estoque: toNumber(item.available_qty ?? item.estoque ?? 0),
-      origin: "PDV_ESTOQUE",
-      origin_label: "PDV + estoque operacional",
-      origins: ["PDV + estoque operacional"],
-      cashback_blocked_for_redemption: Boolean(item.cashback_blocked_for_redemption)
-    }));
+    resultsBySource.inventory = (inventoryPayload.items || [])
+      .filter((item) => (
+        item.sale_enabled !== false
+        && !["bloqueado_para_venda", "inativo", "deleted", "hidden"].includes(normalizeLookup(item.product_status || ""))
+      ))
+      .map((item) => ({
+        ...item,
+        id: normalizeText(item.id || item.product_id || item.sku || item.codigo || ""),
+        estoque: toNumber(item.available_qty ?? item.estoque ?? 0),
+        origin: "PDV_ESTOQUE",
+        origin_label: "PDV + estoque operacional",
+        origins: ["PDV + estoque operacional"],
+        cashback_blocked_for_redemption: Boolean(item.cashback_blocked_for_redemption)
+      }));
   } catch (error) {
     resultsBySource.inventory = [];
   }
@@ -2015,7 +2037,7 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
         return [tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup, tokenLookup];
       });
       const crmCatalogRows = await all(
-        `SELECT id, name, commercial_name, sku, codigo, gtin_ean, marca, category, color, sizes, price, promotional_price, store, short_description, estoque_total, main_media_id
+        `SELECT id, name, commercial_name, sku, codigo, gtin_ean, marca, category, color, sizes, price, promotional_price, cost_price, store, short_description, estoque_total, size_stock_json, source, status, main_media_id
          FROM ai_products
          WHERE COALESCE(deleted_at, '') = ''
            AND ${strictCodeSearch
@@ -2029,46 +2051,66 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
         ]
       );
       resultsBySource.crm_catalog = crmCatalogRows
+        .filter((product) => normalizeLookup(product.status || "ativo") === "ativo")
         .filter((product) => strictCodeSearch
           ? productMatchesExactIdentifier(product, query)
           : productMatchesTokenSearch(product, query, searchTokens))
-        .map((product) => ({
-          id: normalizeText(product.sku || product.codigo || `AI_${product.id}`),
-          product_id: normalizeText(`AI_${product.id}`),
-          codigo: normalizeText(product.codigo || ""),
-          sku: normalizeText(product.sku || product.codigo || ""),
-          codigo_tiny: "",
-          codigo_etiqueta: "",
-          ean: normalizeDigits(product.gtin_ean || ""),
-          codigo_barras: normalizeDigits(product.gtin_ean || ""),
-          codigo_interno: normalizeText(product.codigo || ""),
-          nome: normalizeText(product.name || product.commercial_name || ""),
-          marca: normalizeText(product.marca || ""),
-          categoria: normalizeText(product.category || ""),
-          tipo: "",
-          cor: normalizeText(product.color || ""),
-          tamanho: normalizeText(product.sizes || ""),
-          descricao: normalizeText(product.short_description || ""),
-          preco_venda: hasValidPromotionalPrice(product.price, product.promotional_price) ? toNumber(product.promotional_price || 0) : toNumber(product.price || 0),
-          original_price: toNumber(product.price || 0) || null,
-          compare_at_price: toNumber(product.price || 0) || null,
-          promotional_price: toNumber(product.promotional_price || 0) || null,
-          promotionalPrice: toNumber(product.promotional_price || 0) || null,
-          used_promotional_price: hasValidPromotionalPrice(product.price, product.promotional_price),
-          estoque: toNumber(product.estoque_total || 0),
-          available_qty: toNumber(product.estoque_total || 0),
-          reserved_qty: 0,
-          unavailable_qty: 0,
-          store_id: normalizeStoreKey(product.store || storeId || "CRM"),
-          image: product.main_media_id ? `/api/uploads/media/${Number(product.main_media_id)}/preview` : "",
-          photo_preview_url: product.main_media_id ? `/api/uploads/media/${Number(product.main_media_id)}/preview` : "",
-          media_id: Number(product.main_media_id || 0) || null,
-          origin: "CRM_CATALOG",
-          origin_label: "CRM/Tiny/Vitrine",
-          origins: ["CRM/Tiny/Vitrine"],
-          cashback_blocked_for_redemption: normalizeLookup(product.category || "").includes("perfume"),
-          tags: [normalizeText(product.marca || ""), normalizeText(product.category || "")].filter(Boolean)
-        }));
+        .flatMap((product) => {
+          const sizeStock = normalizeLookup(product.source || "") === "manual"
+            ? normalizeManualProductSizeStockEntries(product.size_stock_json || [])
+            : [];
+          const variants = sizeStock.length
+            ? sizeStock
+            : [{ size: normalizeText(product.sizes || ""), quantity: toNumber(product.estoque_total || 0) }];
+          return variants.map((variant) => {
+            const variantIdentity = sizeStock.length
+              ? buildManualProductSizeVariantIdentity(product, variant.size)
+              : null;
+            const baseCode = normalizeText(product.sku || product.codigo || "");
+            return {
+              id: normalizeText(variantIdentity?.sku || baseCode || `AI_${product.id}`),
+              product_id: normalizeText(variantIdentity?.productId || `AI_${product.id}`),
+              codigo: normalizeText(variantIdentity?.sku || product.codigo || ""),
+              sku: normalizeText(variantIdentity?.sku || baseCode),
+              codigo_tiny: "",
+              codigo_etiqueta: sizeStock.length ? baseCode : "",
+              ean: normalizeDigits(product.gtin_ean || ""),
+              codigo_barras: normalizeDigits(product.gtin_ean || ""),
+              codigo_interno: baseCode,
+              parent_sku: sizeStock.length ? baseCode : "",
+              manual_parent_product_id: sizeStock.length ? variantIdentity.parentProductId : "",
+              manual_size_key: sizeStock.length ? variantIdentity.sizeKey : "",
+              stock_count_confirmed: sizeStock.length,
+              nome: normalizeText(product.name || product.commercial_name || ""),
+              marca: normalizeText(product.marca || ""),
+              categoria: normalizeText(product.category || ""),
+              tipo: "",
+              cor: normalizeText(product.color || ""),
+              tamanho: normalizeText(variant.size || product.sizes || ""),
+              grade: normalizeText(product.sizes || ""),
+              descricao: normalizeText(product.short_description || ""),
+              preco_venda: hasValidPromotionalPrice(product.price, product.promotional_price) ? toNumber(product.promotional_price || 0) : toNumber(product.price || 0),
+              original_price: toNumber(product.price || 0) || null,
+              compare_at_price: toNumber(product.price || 0) || null,
+              promotional_price: toNumber(product.promotional_price || 0) || null,
+              promotionalPrice: toNumber(product.promotional_price || 0) || null,
+              used_promotional_price: hasValidPromotionalPrice(product.price, product.promotional_price),
+              estoque: toNumber(variant.quantity || 0),
+              available_qty: toNumber(variant.quantity || 0),
+              reserved_qty: 0,
+              unavailable_qty: 0,
+              store_id: normalizeStoreKey(product.store || storeId || "CRM"),
+              image: product.main_media_id ? `/api/uploads/media/${Number(product.main_media_id)}/preview` : "",
+              photo_preview_url: product.main_media_id ? `/api/uploads/media/${Number(product.main_media_id)}/preview` : "",
+              media_id: Number(product.main_media_id || 0) || null,
+              origin: "CRM_CATALOG",
+              origin_label: "CRM/Tiny/Vitrine",
+              origins: ["CRM/Tiny/Vitrine"],
+              cashback_blocked_for_redemption: normalizeLookup(product.category || "").includes("perfume"),
+              tags: [normalizeText(product.marca || ""), normalizeText(product.category || "")].filter(Boolean)
+            };
+          });
+        });
     } catch (error) {
       resultsBySource.crm_catalog = [];
     }

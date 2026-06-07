@@ -32,6 +32,9 @@ const {
   FULFILLMENT_MODES,
   FULFILLMENT_STATUS
 } = require("../inventory/pdvInventoryService");
+const {
+  applyNormalizedInventoryMovement
+} = require("../products/pdvSimpleProductService");
 const { normalizeStoreKey, formatStoreLabel, storesMatch } = require("../utils/pdvStoreUtils");
 const { getStorePublicContext } = require("../../../services/storeSettingsService");
 const { PagBankError, createPagBankCheckout, getPagBankCheckout } = require("../../../services/pagbankService");
@@ -137,6 +140,43 @@ function toNumber(value) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+async function syncNormalizedSaleInventory(sale = {}, user = {}, { cancellation = false } = {}) {
+  const results = [];
+  for (const item of (sale.items || [])) {
+    if (Boolean(item.physical_confirmation_done)) continue;
+    const variantId = normalizeText(item.product_id || item.selected_product_id || "");
+    if (!variantId.startsWith("VAR_")) continue;
+    const quantity = Math.max(1, Math.round(toNumber(item.quantidade || 1)));
+    const storeId = normalizeStoreKey(
+      item.loja_origem_estoque
+      || sale.loja_origem_estoque
+      || sale.loja_venda
+      || sale.loja
+      || ""
+    );
+    const movementType = cancellation
+      ? "SALE_CANCEL_RETURN"
+      : (sale.exchange_mode ? "EXCHANGE_OUT" : "SALE_OUT");
+    results.push(await applyNormalizedInventoryMovement({
+      variant_id: variantId,
+      store_id: storeId,
+      movement_type: movementType,
+      quantity_delta: cancellation ? quantity : -quantity,
+      origin: cancellation ? "sale_cancel" : (sale.exchange_mode ? "exchange" : "sale"),
+      reference_type: "SALE",
+      reference_id: sale.sale_id,
+      idempotency_key: `sale:${sale.sale_id}:variant:${variantId}:${cancellation ? "cancel-return" : "out"}`,
+      metadata: {
+        legacy_inventory_id: normalizeText(item.inventory_id || item.selected_inventory_id || ""),
+        seller: sale.vendedor || "",
+        customer_name: sale.customer?.name || "",
+        cancellation
+      }
+    }, user));
+  }
+  return results;
 }
 
 function addDays(date, days) {
@@ -2431,6 +2471,9 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
   } else {
     sale.inventory_movements = applySaleInventory(sale, user).map((item) => item.movement_id);
   }
+  sale.normalized_inventory_movements = (await syncNormalizedSaleInventory(sale, user))
+    .map((item) => item.movement?.id)
+    .filter(Boolean);
   saveSales(sales);
 
   registerCashMovement({
@@ -2668,6 +2711,9 @@ async function cancelSale(saleId, user = {}, options = {}) {
   sale.restored_cashback = restoreConsumedCashback(sale, user);
   sale.restored_gift_card = restoreGiftCardUsage(sale);
   sale.inventory_return_movements = restoreSaleInventory(sale, user).map((item) => item.movement_id);
+  sale.normalized_inventory_return_movements = (await syncNormalizedSaleInventory(sale, user, { cancellation: true }))
+    .map((item) => item.movement?.id)
+    .filter(Boolean);
   saveSales(sales);
   appendSalesLog({
     log_id: buildId("LOG"),

@@ -1283,6 +1283,7 @@ async function initializeDatabase() {
   await ensureColumn("ai_products", "promotional_price", "REAL");
   await ensureColumn("ai_products", "cost_price", "REAL");
   await ensureColumn("ai_products", "stock", "REAL DEFAULT 0");
+  await ensureColumn("ai_products", "size_stock_json", "TEXT DEFAULT '[]'");
   await ensureColumn("ai_products", "location", "TEXT DEFAULT ''");
   await ensureColumn("ai_products", "gtin_ean", "TEXT DEFAULT ''");
   await ensureColumn("ai_products", "ncm", "TEXT DEFAULT ''");
@@ -1293,6 +1294,116 @@ async function initializeDatabase() {
   await ensureColumn("ai_products", "fotos_extras", "TEXT DEFAULT ''");
   await ensureColumn("ai_products", "created_at", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn("ai_products", "updated_at", "TEXT NOT NULL DEFAULT ''");
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS ai_product_code_sequence (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS pdv_products_v2 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      legacy_ai_product_id INTEGER UNIQUE,
+      name TEXT NOT NULL,
+      product_type TEXT NOT NULL DEFAULT 'simple'
+        CHECK (product_type IN ('simple', 'variable')),
+      status TEXT NOT NULL DEFAULT 'ativo'
+        CHECK (status IN ('ativo', 'bloqueado_para_venda', 'inativo')),
+      base_sku TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      sale_price_cents INTEGER NOT NULL CHECK (sale_price_cents > 0),
+      cost_price_cents INTEGER,
+      source TEXT NOT NULL DEFAULT 'manual',
+      created_by_user_id INTEGER,
+      created_by_name TEXT NOT NULL DEFAULT '',
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS pdv_product_variants (
+      id TEXT PRIMARY KEY,
+      product_id INTEGER NOT NULL,
+      sku TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      barcode TEXT COLLATE NOCASE,
+      status TEXT NOT NULL DEFAULT 'ativo'
+        CHECK (status IN ('ativo', 'bloqueado_para_venda', 'inativo')),
+      attributes_json TEXT NOT NULL DEFAULT '{}',
+      attribute_key TEXT NOT NULL DEFAULT 'DEFAULT',
+      is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+      sale_price_cents INTEGER,
+      cost_price_cents INTEGER,
+      operational_inventory_id TEXT NOT NULL DEFAULT '',
+      first_sold_at TEXT,
+      sku_locked_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES pdv_products_v2(id)
+    )
+  `);
+  await run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pdv_product_variants_product_attribute
+    ON pdv_product_variants(product_id, attribute_key)
+  `);
+  await run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pdv_product_variants_barcode
+    ON pdv_product_variants(barcode COLLATE NOCASE)
+    WHERE barcode IS NOT NULL AND TRIM(barcode) <> ''
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS pdv_inventory_balances_v2 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      variant_id TEXT NOT NULL,
+      store_id TEXT NOT NULL COLLATE NOCASE,
+      available_qty REAL NOT NULL DEFAULT 0,
+      reserved_qty REAL NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL,
+      UNIQUE (variant_id, store_id),
+      FOREIGN KEY (variant_id) REFERENCES pdv_product_variants(id)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS pdv_inventory_movements_v2 (
+      id TEXT PRIMARY KEY,
+      variant_id TEXT NOT NULL,
+      store_id TEXT NOT NULL,
+      movement_type TEXT NOT NULL,
+      quantity_delta REAL NOT NULL,
+      quantity_before REAL NOT NULL,
+      quantity_after REAL NOT NULL,
+      origin TEXT NOT NULL,
+      reference_type TEXT NOT NULL DEFAULT '',
+      reference_id TEXT NOT NULL DEFAULT '',
+      idempotency_key TEXT NOT NULL UNIQUE,
+      actor_user_id INTEGER,
+      actor_name TEXT NOT NULL DEFAULT '',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (variant_id) REFERENCES pdv_product_variants(id)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS pdv_product_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      variant_id TEXT,
+      action_type TEXT NOT NULL,
+      actor_user_id INTEGER,
+      actor_name TEXT NOT NULL DEFAULT '',
+      before_json TEXT NOT NULL DEFAULT '{}',
+      after_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES pdv_products_v2(id),
+      FOREIGN KEY (variant_id) REFERENCES pdv_product_variants(id)
+    )
+  `);
 
   await run(`
     CREATE TABLE IF NOT EXISTS ai_product_media (

@@ -44,7 +44,17 @@ const { pdvCashRouter } = require("./modules/pdv/routes/pdvCashRoutes");
 const { pdvExperienceRouter } = require("./modules/pdv/routes/pdvExperienceRoutes");
 const { pdvInventoryRouter } = require("./modules/pdv/inventory/pdvInventoryRoutes");
 const { pdvLabelRouter } = require("./modules/pdv/routes/pdvLabelRoutes");
-const { previewTinyInventoryImport, commitTinyInventoryImport } = require("./modules/pdv/inventory/pdvInventoryService");
+const {
+  previewTinyInventoryImport,
+  commitTinyInventoryImport,
+  syncManualProductSizeStock,
+  syncNormalizedSimpleProductProjection
+} = require("./modules/pdv/inventory/pdvInventoryService");
+const {
+  createSimpleProduct,
+  updateSimpleProduct,
+  getSimpleProductByLegacyId
+} = require("./modules/pdv/products/pdvSimpleProductService");
 const { pdvReportsRouter } = require("./modules/pdv/reports/pdvReportsRoutes");
 const { pdvInsightsRouter } = require("./modules/pdv/insights/pdvInsightsRoutes");
 const { pdvSeedRouter } = require("./modules/pdv/seed/pdvSeedRoutes");
@@ -2533,6 +2543,73 @@ function stringifyDelimitedValues(value = "") {
   return parseDelimitedValues(value).join(", ");
 }
 
+function normalizeManualProductSizeStock(value = []) {
+  let source = value;
+  if (typeof source === "string") {
+    const trimmed = source.trim();
+    if (!trimmed) {
+      source = [];
+    } else {
+      try {
+        source = JSON.parse(trimmed);
+      } catch {
+        return {
+          items: [],
+          error: "Quantidade por tamanho invalida."
+        };
+      }
+    }
+  }
+  if (!Array.isArray(source)) {
+    return {
+      items: [],
+      error: "Quantidade por tamanho invalida."
+    };
+  }
+
+  const items = [];
+  const seenSizes = new Set();
+  for (const entry of source) {
+    const rawSize = normalizeText(entry?.size ?? entry?.tamanho ?? "").toUpperCase();
+    const rawQuantity = entry?.quantity ?? entry?.quantidade ?? "";
+    if (!rawSize && (rawQuantity === "" || rawQuantity === null || rawQuantity === undefined)) {
+      continue;
+    }
+    if (!rawSize) {
+      return {
+        items: [],
+        error: "Informe o tamanho ou numeracao de cada quantidade."
+      };
+    }
+    if (rawQuantity === "" || rawQuantity === null || rawQuantity === undefined) {
+      return {
+        items: [],
+        error: `Informe a quantidade do tamanho ${rawSize}.`
+      };
+    }
+    const quantity = Number(String(rawQuantity).replace(",", "."));
+    if (!Number.isFinite(quantity) || !Number.isInteger(quantity) || quantity < 0) {
+      return {
+        items: [],
+        error: `A quantidade do tamanho ${rawSize} deve ser um numero inteiro maior ou igual a zero.`
+      };
+    }
+    if (seenSizes.has(rawSize)) {
+      return {
+        items: [],
+        error: `O tamanho ${rawSize} foi informado mais de uma vez.`
+      };
+    }
+    seenSizes.add(rawSize);
+    items.push({ size: rawSize, quantity });
+  }
+  return { items, error: "" };
+}
+
+function parseStoredManualProductSizeStock(value = []) {
+  return normalizeManualProductSizeStock(value).items;
+}
+
 function createSlug(value = "") {
   return normalizeSearchText(value)
     .replace(/[^a-z0-9]+/g, "-")
@@ -2575,7 +2652,7 @@ function parsePriceInput(value) {
 
 function normalizeAiProductVisibilityStatus(status = "") {
   const value = String(status || "").trim().toLowerCase();
-  if (["inativo", "hidden", "deleted"].includes(value)) {
+  if (["inativo", "bloqueado_para_venda", "hidden", "deleted"].includes(value)) {
     return value;
   }
   return "ativo";
@@ -2920,6 +2997,7 @@ function serializeAiProduct(row = {}, catalogs = {}, mediaRows = []) {
     ? row.estoque_total
     : row.stock;
   const stockValue = rawStockValue === null || rawStockValue === undefined || rawStockValue === "" ? null : Number(rawStockValue);
+  const sizeStock = parseStoredManualProductSizeStock(row.size_stock_json || []);
   const availability = stockValue === null
     ? "check_stock"
     : stockValue > 0
@@ -2954,6 +3032,8 @@ function serializeAiProduct(row = {}, catalogs = {}, mediaRows = []) {
     estoque_total: stockValue,
     estoque: stockValue,
     stock: stockValue,
+    size_stock: sizeStock,
+    size_stock_json: JSON.stringify(sizeStock),
     availability,
     permitir_venda: row.permitir_venda || "",
     permitirVenda: row.permitir_venda || "",
@@ -14188,15 +14268,32 @@ function canManageProductsCrud(user = {}) {
 
 async function buildManualProductPayload(payload = {}, current = null) {
   const normalizedBase = await normalizeAiProductPayload(payload, current);
+  const normalizedSizeStock = normalizeManualProductSizeStock(
+    payload.size_stock === undefined
+      ? (current?.size_stock ?? current?.size_stock_json ?? [])
+      : payload.size_stock
+  );
+  const sizeStockTotal = normalizedSizeStock.items.reduce((total, item) => total + item.quantity, 0);
+  const sizes = Array.from(new Set([
+    ...parseDelimitedValues(normalizedBase.sizes || ""),
+    ...normalizedSizeStock.items.map((item) => item.size)
+  ]));
   return {
     ...normalizedBase,
+    sizes: stringifyDelimitedValues(sizes),
     tiny_id: normalizeText(payload.tiny_id || payload.tinyId || current?.tiny_id || ""),
     sku: normalizeText(payload.sku || current?.sku || ""),
     codigo: normalizeText(payload.codigo || payload.code || current?.codigo || ""),
     marca: normalizeAiBrandValue(payload.brand || payload.marca || current?.marca || current?.brand || ""),
     promotional_price: payload.promotional_price === undefined ? parsePriceInput(current?.promotional_price) : parsePriceInput(payload.promotional_price),
     cost_price: payload.cost_price === undefined ? parsePriceInput(current?.cost_price) : parsePriceInput(payload.cost_price),
-    stock: payload.stock === undefined ? toNumber(current?.stock ?? current?.estoque_total ?? 0) : toNumber(payload.stock),
+    stock: normalizedSizeStock.items.length
+      ? sizeStockTotal
+      : (payload.stock === undefined ? toNumber(current?.stock ?? current?.estoque_total ?? 0) : toNumber(payload.stock)),
+    size_stock: normalizedSizeStock.items,
+    size_stock_json: JSON.stringify(normalizedSizeStock.items),
+    size_stock_error: normalizedSizeStock.error,
+    auto_generate_code: normalizeBooleanFlag(payload.auto_generate_code ?? payload.autoGenerateCode, false),
     location: normalizeText(payload.location || current?.location || ""),
     gtin_ean: normalizeText(payload.gtin_ean || payload.gtin || current?.gtin_ean || ""),
     ncm: normalizeText(payload.ncm || current?.ncm || ""),
@@ -14208,6 +14305,9 @@ async function buildManualProductPayload(payload = {}, current = null) {
 }
 
 function validateManualProductPayload(product = {}) {
+  if (product.size_stock_error) {
+    return product.size_stock_error;
+  }
   if (!normalizeText(product.name || product.commercial_name || "")) {
     return "Nome interno ou nome comercial e obrigatorio.";
   }
@@ -14234,6 +14334,29 @@ function validateManualProductPayload(product = {}) {
     }
   }
   return null;
+}
+
+function getManualProductOperationalStoreId(req = {}) {
+  return normalizeStoreKey(
+    req.user?.active_store_id
+    || req.user?.activeStoreId
+    || req.user?.active_store
+    || req.user?.store_id
+    || req.user?.storeId
+    || req.user?.store
+    || ""
+  );
+}
+
+function shouldSyncManualProductSizeStock(payload = {}, current = null) {
+  const source = normalizeLookup(payload.source || current?.source || "manual");
+  if (source !== "manual") {
+    return false;
+  }
+  return Boolean(
+    normalizeManualProductSizeStock(payload.size_stock || []).items.length
+    || normalizeManualProductSizeStock(current?.size_stock || current?.size_stock_json || []).items.length
+  );
 }
 
 function buildManualProductSearchClauses(query = "") {
@@ -14489,6 +14612,43 @@ async function findDuplicateManualProductBySku(sku = "", exceptId = null) {
   return get(sql, params);
 }
 
+function formatManualProductInternalCode(sequenceId) {
+  return `AERO-${String(Math.max(1, Number(sequenceId || 1))).padStart(6, "0")}`;
+}
+
+async function reserveNextManualProductInternalCode() {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const sequence = await run(
+      "INSERT INTO ai_product_code_sequence (created_at) VALUES (datetime('now'))"
+    );
+    const code = formatManualProductInternalCode(sequence.lastID);
+    const duplicate = await findDuplicateManualProductBySku(code);
+    if (!duplicate) {
+      return code;
+    }
+  }
+  throw new Error("Nao foi possivel gerar um codigo interno unico.");
+}
+
+async function applyAutomaticManualProductCode(payload = {}) {
+  if (!payload.auto_generate_code) {
+    return payload;
+  }
+  const requestedCode = normalizeText(payload.codigo || payload.sku || "").toUpperCase();
+  const requestedIsAutomatic = /^AERO-\d{6,}$/.test(requestedCode);
+  const duplicate = requestedIsAutomatic
+    ? await findDuplicateManualProductBySku(requestedCode)
+    : null;
+  const code = requestedIsAutomatic && !duplicate
+    ? requestedCode
+    : await reserveNextManualProductInternalCode();
+  return {
+    ...payload,
+    sku: code,
+    codigo: code
+  };
+}
+
 async function listManualProducts(filters = {}) {
   const catalogs = await getAiCatalogBundle({ includeInactive: true });
   const page = Math.max(1, Number(filters.page || 1));
@@ -14590,7 +14750,8 @@ async function listManualProducts(filters = {}) {
         q: query,
         storeId: normalizeText(filters.store || "") && normalizeLookup(filters.store || "") !== "all" ? filters.store : "",
         page: Math.max(1, Math.floor(offset / limit) + 1),
-        limit
+        limit,
+        excludeManualSizeStockVariants: true
       });
       operationalPagination = operationalPayload.pagination || null;
       operationalMatches = (Array.isArray(operationalPayload.items) ? operationalPayload.items : []).map(mapInventoryProductToManualProduct);
@@ -23225,6 +23386,19 @@ app.get("/api/products", async (req, res) => {
   }
 });
 
+app.post("/api/products/internal-code/reserve", async (req, res) => {
+  try {
+    if (!canManageProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Seu perfil nao pode gerar codigo de produto." });
+    }
+    const code = await reserveNextManualProductInternalCode();
+    res.json({ success: true, code });
+  } catch (error) {
+    console.error("Erro ao gerar codigo interno de produto:", error);
+    res.status(500).json({ success: false, error: "Falha ao gerar codigo interno." });
+  }
+});
+
 app.get("/api/products/:id", async (req, res) => {
   try {
     if (!canViewProductsCrud(req.user)) {
@@ -23315,7 +23489,55 @@ app.post("/api/products", async (req, res) => {
     if (!canManageProductsCrud(req.user)) {
       return res.status(403).json({ success: false, error: "Seu perfil nao pode cadastrar produtos." });
     }
-    const payload = await buildManualProductPayload(req.body || {});
+    let payload = await buildManualProductPayload(req.body || {});
+    if (payload.size_stock_error) {
+      return res.status(400).json({ success: false, error: payload.size_stock_error });
+    }
+    const isNormalizedSimpleProduct = (
+      normalizeLookup(payload.source || "manual") === "manual"
+      && !payload.size_stock.length
+    );
+    if (isNormalizedSimpleProduct) {
+      const operationalStoreId = normalizeStoreKey(
+        payload.store
+        || getManualProductOperationalStoreId(req)
+      );
+      if (!operationalStoreId) {
+        return res.status(400).json({ success: false, error: "Selecione uma loja ativa antes de cadastrar o estoque inicial." });
+      }
+      const normalized = await createSimpleProduct({
+        ...payload,
+        store_id: operationalStoreId,
+        sku: payload.sku || payload.codigo,
+        barcode: payload.gtin_ean
+      }, req.user || {});
+      await upsertAiProductBrandMeta(normalized.product.legacy_ai_product_id, payload.marca);
+      await syncAiProductMedia(
+        normalized.product.legacy_ai_product_id,
+        payload.media_ids || (payload.main_media_id ? [payload.main_media_id] : [])
+      );
+      const projection = syncNormalizedSimpleProductProjection(normalized, req.user || {});
+      const product = await getAiProductById(normalized.product.legacy_ai_product_id);
+      return res.status(201).json({
+        success: true,
+        product,
+        normalized,
+        operational_projection: {
+          inventory_id: projection.record.inventory_id,
+          product_id: projection.record.product_id,
+          store_id: projection.record.store_id
+        }
+      });
+    }
+    payload = await applyAutomaticManualProductCode(payload);
+    const shouldSyncOperationalStock = shouldSyncManualProductSizeStock(payload);
+    const operationalStoreId = shouldSyncOperationalStock ? getManualProductOperationalStoreId(req) : "";
+    if (shouldSyncOperationalStock && !operationalStoreId) {
+      return res.status(400).json({ success: false, error: "Selecione uma loja ativa antes de cadastrar a grade de estoque." });
+    }
+    if (operationalStoreId) {
+      payload.store = operationalStoreId;
+    }
     const validationError = validateManualProductPayload(payload);
     if (validationError) {
       return res.status(400).json({ success: false, error: validationError });
@@ -23323,13 +23545,13 @@ app.post("/api/products", async (req, res) => {
     if (payload.sku) {
       const duplicate = await findDuplicateManualProductBySku(payload.sku);
       if (duplicate) {
-        return res.status(400).json({ success: false, error: "Ja existe um produto com este SKU." });
+        return res.status(400).json({ success: false, error: "Ja existe um produto com este codigo interno." });
       }
     }
     const result = await run(
       `INSERT INTO ai_products
-      (name, commercial_name, category_id, gender_id, color_id, size_ids, category, gender, color, sizes, price, promotional_price, cost_price, stock, estoque_total, location, gtin_ean, ncm, sku, codigo, tiny_id, marca, store, short_description, sales_argument, tags, priority, status, use_in_ai, use_in_pos, source, notes, main_media_id, ai_title, ai_short_description, ai_sales_argument, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      (name, commercial_name, category_id, gender_id, color_id, size_ids, category, gender, color, sizes, price, promotional_price, cost_price, stock, estoque_total, size_stock_json, location, gtin_ean, ncm, sku, codigo, tiny_id, marca, store, short_description, sales_argument, tags, priority, status, use_in_ai, use_in_pos, source, notes, main_media_id, ai_title, ai_short_description, ai_sales_argument, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
       [
         payload.name,
         payload.commercial_name,
@@ -23346,6 +23568,7 @@ app.post("/api/products", async (req, res) => {
         payload.cost_price,
         payload.stock,
         payload.stock,
+        payload.size_stock_json,
         payload.location,
         payload.gtin_ean,
         payload.ncm,
@@ -23372,10 +23595,17 @@ app.post("/api/products", async (req, res) => {
     await upsertAiProductBrandMeta(result.lastID, payload.marca);
     await syncAiProductMedia(result.lastID, payload.media_ids || (payload.main_media_id ? [payload.main_media_id] : []));
     const product = await getAiProductById(result.lastID);
+    if (shouldSyncOperationalStock) {
+      syncManualProductSizeStock({
+        product,
+        sizeStock: payload.size_stock,
+        storeId: operationalStoreId
+      }, req.user || {});
+    }
     res.status(201).json({ success: true, product });
   } catch (error) {
     console.error("Erro ao criar produto manual:", error);
-    res.status(500).json({ success: false, error: error.message || "Falha ao salvar o produto." });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message || "Falha ao salvar o produto." });
   }
 });
 
@@ -23389,6 +23619,77 @@ app.put("/api/products/:id", async (req, res) => {
       return res.status(404).json({ success: false, error: "Produto nao encontrado." });
     }
     const payload = await buildManualProductPayload(req.body || {}, current);
+    const currentNormalized = await getSimpleProductByLegacyId(req.params.id);
+    if (currentNormalized) {
+      const normalized = await updateSimpleProduct(req.params.id, {
+        ...payload,
+        stock: undefined
+      }, req.user || {});
+      await run(
+        `UPDATE ai_products
+         SET commercial_name = ?, category_id = ?, gender_id = ?, color_id = ?,
+             size_ids = ?, category = ?, gender = ?, color = ?, sizes = ?,
+             promotional_price = ?, location = ?, gtin_ean = ?, ncm = ?, tiny_id = ?,
+             marca = ?, store = ?, short_description = ?, sales_argument = ?, tags = ?,
+             priority = ?, use_in_ai = ?, use_in_pos = ?, source = ?, notes = ?,
+             main_media_id = ?, ai_title = ?, ai_short_description = ?,
+             ai_sales_argument = ?, updated_at = datetime('now')
+         WHERE id = ?`,
+        [
+          payload.commercial_name,
+          payload.category_id || null,
+          payload.gender_id || null,
+          payload.color_id || null,
+          payload.size_ids || "",
+          payload.category || "",
+          payload.gender || "",
+          payload.color || "",
+          stringifyDelimitedValues(payload.sizes || ""),
+          payload.promotional_price,
+          payload.location,
+          payload.gtin_ean,
+          payload.ncm,
+          payload.tiny_id,
+          payload.marca,
+          normalized.balance.store_id,
+          payload.short_description || "",
+          payload.sales_argument || "",
+          stringifyDelimitedValues(payload.tags || ""),
+          normalizeAiProductPriority(payload.priority),
+          payload.use_in_ai ? 1 : 0,
+          payload.use_in_pos ? 1 : 0,
+          payload.source || "manual",
+          payload.notes || "",
+          payload.main_media_id || null,
+          payload.ai_title || "",
+          payload.ai_short_description || "",
+          payload.ai_sales_argument || "",
+          req.params.id
+        ]
+      );
+      await upsertAiProductBrandMeta(req.params.id, payload.marca);
+      await syncAiProductMedia(req.params.id, payload.media_ids || (payload.main_media_id ? [payload.main_media_id] : []));
+      const projection = syncNormalizedSimpleProductProjection(normalized, req.user || {});
+      const product = await getAiProductById(req.params.id);
+      return res.json({
+        success: true,
+        product,
+        normalized,
+        operational_projection: {
+          inventory_id: projection.record.inventory_id,
+          product_id: projection.record.product_id,
+          store_id: projection.record.store_id
+        }
+      });
+    }
+    const shouldSyncOperationalStock = shouldSyncManualProductSizeStock(payload, current);
+    const operationalStoreId = shouldSyncOperationalStock ? getManualProductOperationalStoreId(req) : "";
+    if (shouldSyncOperationalStock && !operationalStoreId) {
+      return res.status(400).json({ success: false, error: "Selecione uma loja ativa antes de atualizar a grade de estoque." });
+    }
+    if (operationalStoreId) {
+      payload.store = operationalStoreId;
+    }
     const validationError = validateManualProductPayload(payload);
     if (validationError) {
       return res.status(400).json({ success: false, error: validationError });
@@ -23396,12 +23697,12 @@ app.put("/api/products/:id", async (req, res) => {
     if (payload.sku) {
       const duplicate = await findDuplicateManualProductBySku(payload.sku, req.params.id);
       if (duplicate) {
-        return res.status(400).json({ success: false, error: "Ja existe um produto com este SKU." });
+        return res.status(400).json({ success: false, error: "Ja existe um produto com este codigo interno." });
       }
     }
     await run(
       `UPDATE ai_products
-       SET name = ?, commercial_name = ?, category_id = ?, gender_id = ?, color_id = ?, size_ids = ?, category = ?, gender = ?, color = ?, sizes = ?, price = ?, promotional_price = ?, cost_price = ?, stock = ?, estoque_total = ?, location = ?, gtin_ean = ?, ncm = ?, sku = ?, codigo = ?, tiny_id = ?, marca = ?, store = ?, short_description = ?, sales_argument = ?, tags = ?, priority = ?, status = ?, use_in_ai = ?, use_in_pos = ?, source = ?, notes = ?, main_media_id = ?, ai_title = ?, ai_short_description = ?, ai_sales_argument = ?, deleted_at = CASE WHEN ? = 'deleted' THEN datetime('now') ELSE COALESCE(deleted_at, '') END, updated_at = datetime('now')
+       SET name = ?, commercial_name = ?, category_id = ?, gender_id = ?, color_id = ?, size_ids = ?, category = ?, gender = ?, color = ?, sizes = ?, price = ?, promotional_price = ?, cost_price = ?, stock = ?, estoque_total = ?, size_stock_json = ?, location = ?, gtin_ean = ?, ncm = ?, sku = ?, codigo = ?, tiny_id = ?, marca = ?, store = ?, short_description = ?, sales_argument = ?, tags = ?, priority = ?, status = ?, use_in_ai = ?, use_in_pos = ?, source = ?, notes = ?, main_media_id = ?, ai_title = ?, ai_short_description = ?, ai_sales_argument = ?, deleted_at = CASE WHEN ? = 'deleted' THEN datetime('now') ELSE COALESCE(deleted_at, '') END, updated_at = datetime('now')
        WHERE id = ?`,
       [
         payload.name,
@@ -23419,6 +23720,7 @@ app.put("/api/products/:id", async (req, res) => {
         payload.cost_price,
         payload.stock,
         payload.stock,
+        payload.size_stock_json,
         payload.location,
         payload.gtin_ean,
         payload.ncm,
@@ -23447,10 +23749,17 @@ app.put("/api/products/:id", async (req, res) => {
     await upsertAiProductBrandMeta(req.params.id, payload.marca);
     await syncAiProductMedia(req.params.id, payload.media_ids || (payload.main_media_id ? [payload.main_media_id] : []));
     const product = await getAiProductById(req.params.id);
+    if (shouldSyncOperationalStock) {
+      syncManualProductSizeStock({
+        product,
+        sizeStock: payload.size_stock,
+        storeId: operationalStoreId
+      }, req.user || {});
+    }
     res.json({ success: true, product });
   } catch (error) {
     console.error("Erro ao atualizar produto manual:", error);
-    res.status(500).json({ success: false, error: error.message || "Falha ao atualizar o produto." });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message || "Falha ao atualizar o produto." });
   }
 });
 
@@ -23459,7 +23768,13 @@ app.post("/api/products/:id/hide", async (req, res) => {
     if (!canManageProductsCrud(req.user)) {
       return res.status(403).json({ success: false, error: "Seu perfil nao pode ocultar produtos." });
     }
-    await run("UPDATE ai_products SET status = 'hidden', updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    const currentNormalized = await getSimpleProductByLegacyId(req.params.id);
+    if (currentNormalized) {
+      const normalized = await updateSimpleProduct(req.params.id, { status: "bloqueado_para_venda" }, req.user || {});
+      syncNormalizedSimpleProductProjection(normalized, req.user || {});
+    } else {
+      await run("UPDATE ai_products SET status = 'hidden', updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    }
     const product = await getAiProductById(req.params.id);
     res.json({ success: true, product });
   } catch (error) {
@@ -23472,7 +23787,14 @@ app.post("/api/products/:id/reactivate", async (req, res) => {
     if (!canManageProductsCrud(req.user)) {
       return res.status(403).json({ success: false, error: "Seu perfil nao pode reativar produtos." });
     }
-    await run("UPDATE ai_products SET status = 'ativo', deleted_at = '', updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    const currentNormalized = await getSimpleProductByLegacyId(req.params.id);
+    if (currentNormalized) {
+      const normalized = await updateSimpleProduct(req.params.id, { status: "ativo" }, req.user || {});
+      await run("UPDATE ai_products SET deleted_at = '' WHERE id = ?", [req.params.id]);
+      syncNormalizedSimpleProductProjection(normalized, req.user || {});
+    } else {
+      await run("UPDATE ai_products SET status = 'ativo', deleted_at = '', updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    }
     const product = await getAiProductById(req.params.id);
     res.json({ success: true, product });
   } catch (error) {
@@ -23485,7 +23807,14 @@ app.delete("/api/products/:id", async (req, res) => {
     if (!canManageProductsCrud(req.user)) {
       return res.status(403).json({ success: false, error: "Seu perfil nao pode excluir produtos." });
     }
-    await run("UPDATE ai_products SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    const currentNormalized = await getSimpleProductByLegacyId(req.params.id);
+    if (currentNormalized) {
+      const normalized = await updateSimpleProduct(req.params.id, { status: "inativo" }, req.user || {});
+      await run("UPDATE ai_products SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+      syncNormalizedSimpleProductProjection(normalized, req.user || {});
+    } else {
+      await run("UPDATE ai_products SET status = 'deleted', deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [req.params.id]);
+    }
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: "Falha ao excluir o produto." });

@@ -17,6 +17,10 @@ const {
   getStoreLogisticsGroup,
   getStoreLogisticsRelation
 } = require("../utils/pdvStoreUtils");
+const {
+  normalizeManualProductSizeStockEntries,
+  buildManualProductSizeVariantIdentity
+} = require("./pdvManualProductStockUtils");
 
 const inventoryRootDir = path.join(process.cwd(), "data", "pdv", "inventory");
 const inventoryFiles = {
@@ -672,6 +676,9 @@ function buildOperationalSourceOption(record = {}, saleStoreId = DEFAULT_STORE_I
   const inventoryStatus = normalizeLookup(record.inventory_status || "");
   const isProvisional = stockStatus.startsWith("provisional") || inventoryStatus === "pending_count";
   const isDivergent = stockStatus.includes("divergent") || availableQty < 0 || roundQty(record.tiny_stock_quantity || record.imported_quantity_original || 0) < 0;
+  const stockCountConfirmed = Boolean(record.stock_count_confirmed)
+    || stockStatus === "confirmed_manual_count"
+    || inventoryStatus === "confirmed";
   return {
     store_id: storeId,
     store_name: formatStoreLabel(storeId),
@@ -683,7 +690,8 @@ function buildOperationalSourceOption(record = {}, saleStoreId = DEFAULT_STORE_I
     tiny_stock_quantity: roundQty(record.tiny_stock_quantity || record.imported_quantity_original || availableQty || 0),
     estoque_status: normalizeText(record.estoque_status || record.stock_status || ""),
     inventory_status: normalizeText(record.inventory_status || ""),
-    needs_physical_confirmation: isProvisional || availableQty <= 0,
+    needs_physical_confirmation: isProvisional || (availableQty <= 0 && !stockCountConfirmed),
+    stock_count_confirmed: stockCountConfirmed,
     is_provisional: isProvisional,
     is_divergent: isDivergent,
     logistics_group: getStoreLogisticsGroup(storeId),
@@ -736,19 +744,26 @@ function getProductOperationalAvailability(item = {}, saleStoreId = DEFAULT_STOR
   const sameCityOptions = sourceOptions.filter((option) => option.logistics_relation === "same_city");
   const otherRegionOptions = sourceOptions.filter((option) => ["same_region", "other_region"].includes(option.logistics_relation));
   const preferredOption = localOption || adjacentOption || sameCityOptions[0] || otherRegionOptions[0] || localAnyOption || otherPendingOptions[0] || null;
+  const confirmedLocalOut = Boolean(
+    localAnyOption
+    && localAnyOption.stock_count_confirmed
+    && roundQty(localAnyOption.available_qty || 0) <= 0
+  );
   const status = localOption
     ? "AVAILABLE_LOCAL"
-    : localAnyOption
-      ? (localAnyOption.is_divergent ? "PROVISIONAL_DIVERGENT_LOCAL" : "PENDING_LOCAL_CONFIRMATION")
-      : adjacentOption
+    : adjacentOption
         ? "AVAILABLE_ADJACENT_STORE"
         : sameCityOptions.length
           ? "AVAILABLE_SAME_CITY"
           : otherRegionOptions.length
             ? "LOGISTICS_REVIEW_REQUIRED"
-            : otherPendingOptions.length
-              ? "PENDING_OTHER_STORE_CONFIRMATION"
-              : "NO_KNOWN_STOCK";
+            : confirmedLocalOut
+              ? "OUT_OF_STOCK_LOCAL"
+              : localAnyOption
+                ? (localAnyOption.is_divergent ? "PROVISIONAL_DIVERGENT_LOCAL" : "PENDING_LOCAL_CONFIRMATION")
+                : otherPendingOptions.length
+                  ? "PENDING_OTHER_STORE_CONFIRMATION"
+                  : "NO_KNOWN_STOCK";
   return {
     sale_store_id: normalizedSaleStore,
     sale_store_name: formatStoreLabel(normalizedSaleStore),
@@ -763,7 +778,7 @@ function getProductOperationalAvailability(item = {}, saleStoreId = DEFAULT_STOR
     can_add_directly: status === "AVAILABLE_LOCAL" || status === "AVAILABLE_ADJACENT_STORE",
     requires_resolution: ["AVAILABLE_SAME_CITY", "PENDING_LOCAL_CONFIRMATION", "PROVISIONAL_DIVERGENT_LOCAL", "PENDING_OTHER_STORE_CONFIRMATION"].includes(status),
     requires_logistics_review: status === "LOGISTICS_REVIEW_REQUIRED",
-    is_unavailable: false,
+    is_unavailable: status === "OUT_OF_STOCK_LOCAL",
     ideal_source_store_id: preferredOption?.store_id || "",
     ideal_source_store_name: preferredOption?.store_name || ""
   };
@@ -1443,7 +1458,15 @@ function scoreInventorySearchMatch(record = {}, query = "", tokens = null) {
   return Math.max(score, scoreInventoryTokenSearchMatch(record, query, tokens));
 }
 
-function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", page = 1, limit = 300 } = {}) {
+function listInventoryProducts({
+  q = "",
+  storeId = "",
+  status = "",
+  alert = "",
+  page = 1,
+  limit = 300,
+  excludeManualSizeStockVariants = false
+} = {}) {
   const records = ensureInventorySeeded();
   const normalizedQuery = normalizeLookup(q);
   const searchTokens = tokenizeInventorySearchQuery(q);
@@ -1456,6 +1479,7 @@ function listInventoryProducts({ q = "", storeId = "", status = "", alert = "", 
   const safeLimit = Math.max(1, Math.min(1000, Number(limit || 300)));
   const offset = Math.max(0, (safePage - 1) * safeLimit);
   const baseRows = records.filter((item) => {
+    if (excludeManualSizeStockVariants && normalizeLookup(item.source || "") === normalizeLookup("PDV_MANUAL_SIZE_STOCK")) return false;
     if (shouldScopeToStore && normalizeStoreLookup(item.store_id) !== normalizedStore) return false;
     if (normalizedStatus && normalizeText(item.status).toUpperCase() !== normalizedStatus) return false;
     if (normalizedQuery) {
@@ -2219,6 +2243,285 @@ function createManualAdjustment(payload = {}, user = {}) {
   return {
     record,
     movement
+  };
+}
+
+function syncManualProductSizeStock(payload = {}, user = {}, options = {}) {
+  const product = payload.product && typeof payload.product === "object" ? payload.product : {};
+  const rawStoreId = payload.storeId || payload.store_id || "";
+  const storeId = normalizeStoreId(rawStoreId);
+  const sizeStock = normalizeManualProductSizeStockEntries(payload.sizeStock ?? payload.size_stock ?? []);
+  const parentIdentity = buildManualProductSizeVariantIdentity(product, sizeStock[0]?.size || "UN");
+  if (!parentIdentity.manualProductId || !parentIdentity.parentProductId || !parentIdentity.baseCode) {
+    throw new Error("Produto manual invalido para sincronizar o estoque por tamanho.");
+  }
+  if (!normalizeStoreKey(rawStoreId)) {
+    throw new Error("Loja ativa nao encontrada para sincronizar o estoque do produto manual.");
+  }
+
+  const records = Array.isArray(options.records) ? options.records : ensureInventorySeeded();
+  const persist = options.persist !== false;
+  const source = "PDV_MANUAL_SIZE_STOCK";
+  const desiredSizes = new Map(sizeStock.map((entry) => [entry.size, entry.quantity]));
+  const grade = sizeStock.map((entry) => entry.size).join("/");
+  const existingVariants = records.filter((record) => (
+    normalizeStoreLookup(record.store_id) === normalizeStoreLookup(storeId)
+    && normalizeText(record.manual_parent_product_id || "") === parentIdentity.parentProductId
+    && normalizeText(record.source || "") === source
+  ));
+  const changes = [];
+
+  const applyAbsoluteQuantity = (record, targetQuantity, size, removed = false) => {
+    const before = cloneInventorySnapshot(record);
+    const delta = roundQty(targetQuantity - before.available_qty);
+    changeInventoryRecord(record, { available_delta: delta });
+    record.stock_count_confirmed = true;
+    record.estoque_status = "confirmed_manual_count";
+    record.inventory_status = "confirmed";
+    record.manual_size_removed = Boolean(removed);
+    updateRecordAvailabilityStatus(record);
+    changes.push({
+      record,
+      size,
+      delta,
+      removed,
+      before,
+      after: cloneInventorySnapshot(record)
+    });
+  };
+
+  sizeStock.forEach((entry) => {
+    const identity = buildManualProductSizeVariantIdentity(product, entry.size);
+    let record = existingVariants.find((item) => normalizeText(item.manual_size_key || "") === identity.sizeKey)
+      || records.find((item) => (
+        normalizeStoreLookup(item.store_id) === normalizeStoreLookup(storeId)
+        && normalizeText(item.product_id || "") === identity.productId
+      ))
+      || null;
+    if (!record) {
+      record = ensureInventoryRecord(records, {
+        productId: identity.productId,
+        sku: identity.sku,
+        codigo: identity.sku,
+        nome: product.name || product.commercial_name,
+        marca: product.marca || product.brand,
+        categoria: product.category || product.categoria,
+        cor: product.color || product.cor,
+        tamanho: identity.sizeKey,
+        preco_venda: product.promotional_price || product.price,
+        storeId,
+        available_qty: 0,
+        source
+      });
+    }
+    Object.assign(record, {
+      product_id: identity.productId,
+      sku: identity.sku,
+      codigo: identity.sku,
+      codigo_interno: identity.baseCode,
+      codigo_etiqueta: identity.baseCode,
+      parent_sku: identity.baseCode,
+      manual_product_id: identity.manualProductId,
+      manual_parent_product_id: identity.parentProductId,
+      manual_size_key: identity.sizeKey,
+      nome: normalizeText(product.name || product.commercial_name || record.nome || ""),
+      descricao: normalizeText(product.short_description || product.description || record.descricao || ""),
+      marca: normalizeText(product.marca || product.brand || record.marca || ""),
+      categoria: normalizeText(product.category || product.categoria || record.categoria || ""),
+      cor: normalizeText(product.color || product.cor || record.cor || ""),
+      tamanho: identity.sizeKey,
+      grade,
+      preco_venda: roundMoneyLike(product.promotional_price || product.price || record.preco_venda || 0),
+      preco_custo: roundMoneyLike(product.cost_price || record.preco_custo || 0),
+      store_id: storeId,
+      source,
+      status: normalizeText(product.status || "ACTIVE") || "ACTIVE",
+      sale_enabled: true
+    });
+    applyAbsoluteQuantity(record, entry.quantity, identity.sizeKey);
+  });
+
+  existingVariants
+    .filter((record) => !desiredSizes.has(normalizeText(record.manual_size_key || record.tamanho || "").toUpperCase()))
+    .forEach((record) => {
+      const size = normalizeText(record.manual_size_key || record.tamanho || "").toUpperCase();
+      applyAbsoluteQuantity(record, 0, size, true);
+    });
+
+  if (persist) {
+    saveInventoryRecords(records);
+    changes.filter((change) => change.delta !== 0).forEach((change) => {
+      appendInventoryMovement({
+        inventory_id: change.record.inventory_id,
+        type: "MANUAL_ADJUSTMENT",
+        product_id: change.record.product_id,
+        sku: change.record.sku,
+        codigo: change.record.codigo,
+        nome: change.record.nome,
+        store_id: change.record.store_id,
+        quantity: Math.abs(change.delta),
+        direction: change.delta > 0 ? "IN" : "OUT",
+        reference_type: "MANUAL_PRODUCT_SIZE_SYNC",
+        reference_id: parentIdentity.parentProductId,
+        reason: change.removed
+          ? "Tamanho removido da contagem manual confirmada."
+          : "Sincronizacao absoluta da contagem manual por tamanho.",
+        before_qty: change.before.available_qty,
+        after_qty: change.after.available_qty,
+        before_snapshot: change.before,
+        after_snapshot: change.after,
+        metadata: {
+          manual_product_id: parentIdentity.manualProductId,
+          manual_parent_product_id: parentIdentity.parentProductId,
+          size: change.size,
+          absolute_quantity: change.after.available_qty,
+          removed: change.removed
+        }
+      }, user);
+      emitStockAlertEvents(change.record, user);
+    });
+    saveInventoryAudit("PDV_MANUAL_PRODUCT_SIZE_STOCK_SYNC", {
+      store_id: storeId,
+      reason: "Contagem manual por tamanho sincronizada com o estoque operacional.",
+      before: changes.map((change) => ({
+        product_id: change.record.product_id,
+        size: change.size,
+        available_qty: change.before.available_qty
+      })),
+      after: changes.map((change) => ({
+        product_id: change.record.product_id,
+        size: change.size,
+        available_qty: change.after.available_qty,
+        removed: change.removed
+      }))
+    }, user);
+  }
+
+  return {
+    store_id: storeId,
+    parent_product_id: parentIdentity.parentProductId,
+    records: changes.map((change) => change.record),
+    changes: changes.map((change) => ({
+      product_id: change.record.product_id,
+      inventory_id: change.record.inventory_id,
+      size: change.size,
+      before_qty: change.before.available_qty,
+      after_qty: change.after.available_qty,
+      removed: change.removed
+    }))
+  };
+}
+
+function syncNormalizedSimpleProductProjection(aggregate = {}, user = {}, options = {}) {
+  const product = aggregate.product && typeof aggregate.product === "object" ? aggregate.product : {};
+  const variant = aggregate.variant && typeof aggregate.variant === "object" ? aggregate.variant : {};
+  const balance = aggregate.balance && typeof aggregate.balance === "object" ? aggregate.balance : {};
+  const productId = normalizeText(product.id || "");
+  const variantId = normalizeText(variant.id || "");
+  const sku = normalizeText(variant.sku || product.base_sku || "");
+  const storeId = normalizeStoreId(balance.store_id || "");
+  if (!productId || !variantId || !sku || !normalizeStoreKey(balance.store_id || "")) {
+    throw new Error("Produto simples normalizado invalido para projetar no estoque operacional.");
+  }
+
+  const records = Array.isArray(options.records) ? options.records : ensureInventorySeeded();
+  const persist = options.persist !== false;
+  let record = records.find((item) => (
+    normalizeText(item.normalized_variant_id || "") === variantId
+    && normalizeStoreLookup(item.store_id) === normalizeStoreLookup(storeId)
+  )) || records.find((item) => (
+    normalizeText(item.product_id || "") === variantId
+    && normalizeStoreLookup(item.store_id) === normalizeStoreLookup(storeId)
+  )) || null;
+  const created = !record;
+  if (!record) {
+    record = ensureInventoryRecord(records, {
+      product_id: variantId,
+      sku,
+      codigo: sku,
+      nome: product.name,
+      store_id: storeId,
+      available_qty: 0,
+      source: "PDV_PRODUCT_V2"
+    });
+  }
+
+  const before = cloneInventorySnapshot(record);
+  const targetQuantity = roundQty(balance.available_qty || 0);
+  changeInventoryRecord(record, {
+    available_delta: targetQuantity - before.available_qty
+  });
+  Object.assign(record, {
+    product_id: variantId,
+    sku,
+    codigo: sku,
+    codigo_interno: sku,
+    codigo_etiqueta: sku,
+    parent_sku: normalizeText(product.base_sku || sku),
+    nome: normalizeText(product.name || record.nome || ""),
+    tipo: "simple",
+    tamanho: "UN",
+    preco_venda: roundMoneyLike((variant.sale_price_cents ?? product.sale_price_cents ?? 0) / 100),
+    preco_custo: roundMoneyLike((variant.cost_price_cents ?? product.cost_price_cents ?? 0) / 100),
+    store_id: storeId,
+    source: "PDV_PRODUCT_V2",
+    origem: "normalized_product_projection",
+    normalized_product_id: Number(product.id),
+    normalized_variant_id: variantId,
+    legacy_ai_product_id: Number(product.legacy_ai_product_id || 0) || null,
+    stock_count_confirmed: true,
+    estoque_status: "confirmed_normalized_balance",
+    inventory_status: "confirmed",
+    product_status: normalizeText(product.status || "ativo"),
+    sale_enabled: normalizeLookup(product.status || "ativo") === "ativo",
+    last_movement_at: nowIso()
+  });
+  updateRecordAvailabilityStatus(record);
+  const after = cloneInventorySnapshot(record);
+
+  if (persist) {
+    saveInventoryRecords(records);
+    if (created || before.available_qty !== after.available_qty) {
+      appendInventoryMovement({
+        inventory_id: record.inventory_id,
+        type: created ? "INITIAL_STOCK" : "NORMALIZED_BALANCE_PROJECTION",
+        product_id: record.product_id,
+        sku: record.sku,
+        codigo: record.codigo,
+        nome: record.nome,
+        store_id: record.store_id,
+        quantity: Math.abs(after.available_qty - before.available_qty),
+        direction: after.available_qty >= before.available_qty ? "IN" : "OUT",
+        reference_type: "NORMALIZED_PRODUCT",
+        reference_id: productId,
+        reason: created
+          ? "Projecao operacional do estoque inicial do produto simples normalizado."
+          : "Reconciliacao da projecao operacional com o saldo normalizado.",
+        before_qty: before.available_qty,
+        after_qty: after.available_qty,
+        before_snapshot: before,
+        after_snapshot: after,
+        metadata: {
+          normalized_product_id: Number(product.id),
+          normalized_variant_id: variantId,
+          legacy_ai_product_id: Number(product.legacy_ai_product_id || 0) || null,
+          projection_only: true
+        }
+      }, user);
+    }
+    saveInventoryAudit("PDV_NORMALIZED_SIMPLE_PRODUCT_PROJECTED", {
+      store_id: storeId,
+      reason: "Produto simples normalizado projetado no inventario compativel.",
+      before,
+      after
+    }, user);
+  }
+
+  return {
+    record,
+    created,
+    before,
+    after
   };
 }
 
@@ -3989,6 +4292,8 @@ module.exports = {
   createInventoryProductFromLabel,
   updateInventoryProduct,
   createManualAdjustment,
+  syncManualProductSizeStock,
+  syncNormalizedSimpleProductProjection,
   createTransfer,
   getProductOperationalAvailability,
   resolveSaleItemFulfillment,
