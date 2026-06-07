@@ -61,6 +61,10 @@ const {
   updateSimpleProduct,
   getSimpleProductByLegacyId
 } = require("./modules/pdv/products/pdvSimpleProductService");
+const {
+  listProductManagementCatalog,
+  listProductManagementMovements
+} = require("./modules/pdv/products/pdvProductManagementService");
 const { pdvReportsRouter } = require("./modules/pdv/reports/pdvReportsRoutes");
 const { pdvInsightsRouter } = require("./modules/pdv/insights/pdvInsightsRoutes");
 const { pdvSeedRouter } = require("./modules/pdv/seed/pdvSeedRoutes");
@@ -23379,16 +23383,20 @@ app.get("/api/products", async (req, res) => {
     if (!canViewProductsCrud(req.user)) {
       return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de produtos." });
     }
-    const payload = await listManualProducts(req.query || {});
+    const payload = await listProductManagementCatalog(req.query || {});
     res.json({
       success: true,
       items: payload.items,
-      summary: payload.summary || buildProductsSummary(payload.items),
+      summary: payload.summary,
       pagination: payload.pagination
     });
   } catch (error) {
     console.error("Erro ao listar produtos manuais:", error);
-    res.status(500).json({ success: false, error: "Falha ao listar os produtos." });
+    const validationError = /25, 50 ou 100/.test(String(error?.message || ""));
+    res.status(validationError ? 400 : 500).json({
+      success: false,
+      error: validationError ? error.message : "Falha ao listar os produtos."
+    });
   }
 });
 
@@ -23402,6 +23410,21 @@ app.post("/api/products/internal-code/reserve", async (req, res) => {
   } catch (error) {
     console.error("Erro ao gerar codigo interno de produto:", error);
     res.status(500).json({ success: false, error: "Falha ao gerar codigo interno." });
+  }
+});
+
+app.get("/api/products/:id/movements", async (req, res) => {
+  try {
+    if (!canViewProductsCrud(req.user)) {
+      return res.status(403).json({ success: false, error: "Acesso restrito ao cadastro de produtos." });
+    }
+    const items = await listProductManagementMovements(req.params.id, {
+      storeId: req.query.store || "",
+      limit: req.query.limit || 100
+    });
+    res.json({ success: true, items });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Falha ao carregar movimentos do produto." });
   }
 });
 

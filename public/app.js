@@ -1419,7 +1419,7 @@ function canViewGlobalSettingsPanel() {
 }
 
 function canViewSettingsTeamPanel() {
-  return canManageSellers() || isCurrentUserManagerProfile();
+  return canManageSellers() || hasPermission("can_manage_users");
 }
 
 function canViewRealStoreSettings() {
@@ -12178,16 +12178,22 @@ async function printPdvProductLabel() {
   }
 }
 
-function applyPdvProductsFiltersFromForm(formElement) {
+function deprecatedApplyPdvProductsFiltersFromForm(formElement) {
   const formData = new FormData(formElement);
   state.pdvProducts.query = normalizeText(formData.get("productsQuery") || "");
   state.pdvProducts.filters.store = normalizeText(formData.get("storeFilter") || "").toLowerCase();
   state.pdvProducts.filters.status = normalizeText(formData.get("statusFilter") || "").toLowerCase();
+  state.pdvProducts.filters.productType = normalizeText(formData.get("productTypeFilter") || "").toLowerCase();
+  state.pdvProducts.filters.brand = normalizeText(formData.get("brandFilter") || "");
+  state.pdvProducts.filters.category = normalizeText(formData.get("categoryFilter") || "");
+  state.pdvProducts.filters.color = normalizeText(formData.get("colorFilter") || "");
+  state.pdvProducts.filters.size = normalizeText(formData.get("sizeFilter") || "");
+  state.pdvProducts.filters.stockMode = normalizeText(formData.get("stockModeFilter") || "").toLowerCase();
   state.pdvProducts.filters.pending = String(formData.get("pendingFilter") || "0");
   state.pdvProducts.selectedProductId = "";
 }
 
-function renderPdvProductsOfficialFront(container = document.getElementById("pdv-products-content")) {
+function deprecatedRenderPdvProductsOfficialFront(container = document.getElementById("pdv-products-content")) {
   if (!container) return;
   ensurePdvProductsFilters();
   const items = toArray(state.pdvProducts.items);
@@ -12390,7 +12396,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
   });
 }
 
-async function loadPdvProductsFront(options = {}) {
+async function deprecatedLoadPdvProductsFront(options = {}) {
   const { preserveSelection = true } = options;
   const container = document.getElementById("pdv-products-content");
   if (!container) return;
@@ -13170,8 +13176,8 @@ function ensurePdvProductsCrudState() {
   const currentPagination = state.pdvProducts.pagination && typeof state.pdvProducts.pagination === "object"
     ? state.pdvProducts.pagination
     : {};
-  const requestedPageSize = Number(currentPagination.limit || currentPagination.pageSize || 50);
-  const pageSize = [50, 100, 200].includes(requestedPageSize) ? requestedPageSize : 50;
+  const requestedPageSize = Number(currentPagination.limit || currentPagination.pageSize || 25);
+  const pageSize = [25, 50, 100].includes(requestedPageSize) ? requestedPageSize : 25;
   const total = Math.max(0, Number(currentPagination.total || 0));
   const totalPages = Math.max(1, Number(currentPagination.totalPages || currentPagination.total_pages || Math.ceil(total / pageSize) || 1));
   const requestedPage = Number(currentPagination.page || 1);
@@ -13186,6 +13192,12 @@ function ensurePdvProductsCrudState() {
   state.pdvProducts.filters = {
     store: normalizePdvStoreIdentifier(state.pdvProducts.filters?.store ?? getDefaultPdvProductsStoreFilter()),
     status: normalizeText(state.pdvProducts.filters?.status || "").toLowerCase(),
+    productType: normalizeText(state.pdvProducts.filters?.productType || "").toLowerCase(),
+    brand: normalizeText(state.pdvProducts.filters?.brand || ""),
+    category: normalizeText(state.pdvProducts.filters?.category || ""),
+    color: normalizeText(state.pdvProducts.filters?.color || ""),
+    size: normalizeText(state.pdvProducts.filters?.size || ""),
+    stockMode: normalizeText(state.pdvProducts.filters?.stockMode || "").toLowerCase(),
     useInAi: String(state.pdvProducts.filters?.useInAi || "0"),
     useInPos: String(state.pdvProducts.filters?.useInPos || "0"),
     withoutPrice: String(state.pdvProducts.filters?.withoutPrice || "0"),
@@ -13206,6 +13218,7 @@ function ensurePdvProductsCrudState() {
   state.pdvProducts.drawerPhotoPreviewUrl = state.pdvProducts.drawerPhotoPreviewUrl || "";
   state.pdvProducts.drawerPhotoFile = state.pdvProducts.drawerPhotoFile || null;
   state.pdvProducts.drawerCodeLoading = Boolean(state.pdvProducts.drawerCodeLoading);
+  state.pdvProducts.movementsByProduct = state.pdvProducts.movementsByProduct || {};
 }
 
 function getDefaultPdvCustomerCrudDraft() {
@@ -14334,6 +14347,12 @@ function applyPdvProductsFiltersFromForm(formElement) {
   state.pdvProducts.query = normalizeText(formData.get("productsQuery") || "");
   state.pdvProducts.filters.store = normalizeText(formData.get("storeFilter") || "").toLowerCase();
   state.pdvProducts.filters.status = normalizeText(formData.get("statusFilter") || "").toLowerCase();
+  state.pdvProducts.filters.productType = normalizeText(formData.get("productTypeFilter") || "").toLowerCase();
+  state.pdvProducts.filters.brand = normalizeText(formData.get("brandFilter") || "");
+  state.pdvProducts.filters.category = normalizeText(formData.get("categoryFilter") || "");
+  state.pdvProducts.filters.color = normalizeText(formData.get("colorFilter") || "");
+  state.pdvProducts.filters.size = normalizeText(formData.get("sizeFilter") || "");
+  state.pdvProducts.filters.stockMode = normalizeText(formData.get("stockModeFilter") || "").toLowerCase();
   state.pdvProducts.filters.useInAi = String(formData.get("useInAiFilter") || "0");
   state.pdvProducts.filters.useInPos = String(formData.get("useInPosFilter") || "0");
   state.pdvProducts.filters.withoutPrice = String(formData.get("withoutPriceFilter") || "0");
@@ -14455,6 +14474,11 @@ function buildManualProductDetailCard(product = {}) {
   const hasPromotion = normalPrice > 0 && promotionalPrice > 0 && promotionalPrice < normalPrice;
   const sizeStock = normalizePdvProductSizeStock(product.size_stock || product.size_stock_json);
   const sizeStockTotal = sizeStock.reduce((total, item) => total + item.quantity, 0);
+  const variants = toArray(product.variants);
+  const physicalQty = toNumber(product.physical_qty ?? product.stock ?? product.estoque_total ?? 0);
+  const reservedQty = toNumber(product.reserved_qty || 0);
+  const availableQty = toNumber(product.available_qty ?? (physicalQty - reservedQty));
+  const movements = toArray(state.pdvProducts.movementsByProduct?.[String(product.id)]);
   return `
     <div class="pdv-products-detail-card">
       <div class="pdv-products-detail-hero">
@@ -14469,17 +14493,51 @@ function buildManualProductDetailCard(product = {}) {
       <div class="pdv-products-detail-grid">
         <div><span class="table-meta">Categoria</span><strong>${escapeHtml(product.category || "-")}</strong></div>
         <div><span class="table-meta">Genero</span><strong>${escapeHtml(product.gender || "-")}</strong></div>
-        <div><span class="table-meta">Cor</span><strong>${escapeHtml(product.color || "-")}</strong></div>
+        <div><span class="table-meta">Cores</span><strong>${escapeHtml(toArray(product.colors).join(", ") || product.color || "-")}</strong></div>
         <div><span class="table-meta">Marca</span><strong>${escapeHtml(product.brand || "-")}</strong></div>
         <div><span class="table-meta">Preco normal</span><strong>${currency(product.price || 0)}</strong></div>
         <div><span class="table-meta">Promocional</span><strong>${hasPromotion ? currency(promotionalPrice) : "Sem promocao"}</strong></div>
-        <div><span class="table-meta">Estoque</span><strong>${escapeHtml(String(toNumber(product.stock || 0)))}</strong></div>
+        <div><span class="table-meta">Tipo</span><strong>${product.product_type === "variable" ? "Grade" : "Simples"}</strong></div>
+      </div>
+      <div class="pdv-products-qty-grid">
+        <div><span>physical_qty</span><strong>${escapeHtml(String(physicalQty))}</strong><small>Saldo fisico</small></div>
+        <div><span>reserved_qty</span><strong>${escapeHtml(String(reservedQty))}</strong><small>Reservado</small></div>
+        <div><span>available_qty</span><strong>${escapeHtml(String(availableQty))}</strong><small>Disponivel liquido</small></div>
       </div>
       <div class="pdv-customers-inline-badges">${buildManualProductBadges(product)}</div>
       <div class="pdv-customers-callout">
         <strong>Tamanhos</strong>
         <span>${escapeHtml(toArray(product.sizes).join(", ") || "Sem grade estruturada.")}</span>
       </div>
+      ${variants.length ? `
+        <div class="pdv-customers-callout">
+          <strong>Variacoes (${variants.length})</strong>
+          <div class="pdv-product-variant-summary">
+            ${variants.map((variant) => `
+              <span>
+                <b>${escapeHtml([variant.color, variant.size].filter(Boolean).join(" / ") || variant.attribute_key || "DEFAULT")}</b>
+                ${escapeHtml(variant.sku || "")}
+                &middot; ${escapeHtml(String(toNumber(variant.available_qty)))} disponivel
+              </span>
+            `).join("")}
+          </div>
+        </div>
+      ` : ""}
+      ${movements.length ? `
+        <div class="pdv-customers-callout">
+          <strong>Movimentos recentes</strong>
+          <div class="pdv-product-movement-list">
+            ${movements.map((movement) => `
+              <span>
+                <b>${escapeHtml(movement.movement_type || "MOVIMENTO")}</b>
+                ${escapeHtml([movement.color, movement.size].filter(Boolean).join(" / ") || movement.sku || "")}
+                &middot; ${escapeHtml(String(toNumber(movement.quantity_delta)))}
+                <small>${escapeHtml(formatDateTimeBR(movement.created_at) || movement.created_at || "")}</small>
+              </span>
+            `).join("")}
+          </div>
+        </div>
+      ` : ""}
       ${sizeStock.length ? `
         <div class="pdv-customers-callout">
           <strong>Estoque por tamanho</strong>
@@ -14494,9 +14552,15 @@ function buildManualProductDetailCard(product = {}) {
       ${normalizeText(product.short_description || "") ? `<div class="pdv-customers-callout"><strong>Descricao curta</strong><span>${escapeHtml(product.short_description)}</span></div>` : ""}
       ${normalizeText(product.sales_argument || "") ? `<div class="pdv-customers-callout"><strong>Argumento de venda</strong><span>${escapeHtml(product.sales_argument)}</span></div>` : ""}
       <div class="action-row">
-        <button class="primary-button" type="button" data-pdv-product-label-print="${escapeHtml(String(product.id))}">Imprimir etiqueta</button>
+        <button class="secondary-button" type="button" data-pdv-product-detail="${escapeHtml(String(product.id))}">Ver variacoes</button>
+        <button class="secondary-button" type="button" data-pdv-product-movements="${escapeHtml(String(product.id))}">Ver movimentos</button>
         <button class="secondary-button" type="button" data-pdv-product-edit="${escapeHtml(String(product.id))}">Editar</button>
-        ${normalizeText(product.status || "") === "ativo" ? `<button class="ghost-button" type="button" data-pdv-product-hide="${escapeHtml(String(product.id))}">Ocultar</button>` : `<button class="ghost-button" type="button" data-pdv-product-reactivate="${escapeHtml(String(product.id))}">Reativar</button>`}
+        <button class="ghost-button" type="button" data-pdv-product-duplicate="${escapeHtml(String(product.id))}">Cadastrar similar</button>
+        <button class="ghost-button" type="button" data-pdv-product-label-print="${escapeHtml(String(product.id))}">Etiqueta</button>
+        ${normalizeText(product.status || "") === "ativo"
+          ? `<button class="ghost-button" type="button" data-pdv-product-hide="${escapeHtml(String(product.id))}">Bloquear venda</button>`
+          : `<button class="ghost-button" type="button" data-pdv-product-reactivate="${escapeHtml(String(product.id))}">Reativar</button>`}
+        <button class="ghost-button danger" type="button" data-pdv-product-inactivate="${escapeHtml(String(product.id))}">Inativar</button>
       </div>
     </div>
   `;
@@ -14507,9 +14571,9 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
   ensurePdvProductsCrudState();
   const items = toArray(state.pdvProducts.items);
   const summary = state.pdvProducts.summary || {};
-  const pagination = state.pdvProducts.pagination || { page: 1, limit: 50, total: items.length, totalPages: 1, hasMore: false };
+  const pagination = state.pdvProducts.pagination || { page: 1, limit: 25, total: items.length, totalPages: 1, hasMore: false };
   const totalProducts = Math.max(items.length, Number(pagination.total || 0));
-  const visibleStart = totalProducts ? ((Number(pagination.page || 1) - 1) * Number(pagination.limit || 50)) + 1 : 0;
+  const visibleStart = totalProducts ? ((Number(pagination.page || 1) - 1) * Number(pagination.limit || 25)) + 1 : 0;
   const visibleEnd = totalProducts ? Math.min(totalProducts, visibleStart + items.length - 1) : 0;
   const selectedProduct = items.find((item) => normalizeText(item.id || "") === normalizeText(state.pdvProducts.selectedProductId || "")) || items[0] || null;
   if (selectedProduct && normalizeText(state.pdvProducts.selectedProductId || "") !== normalizeText(selectedProduct.id || "")) {
@@ -14533,9 +14597,14 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
     const isSelected = normalizeText(state.pdvProducts.selectedProductId || "") === normalizeText(productId);
     const statusKey = normalizeText(item.status || "ativo") || "ativo";
     const sizesText = toArray(item.sizes).join(", ") || "Sem tamanhos";
+    const colorsText = toArray(item.colors).join(", ") || item.color || "Sem cor";
+    const physicalQty = toNumber(item.physical_qty ?? item.stock ?? 0);
+    const reservedQty = toNumber(item.reserved_qty || 0);
+    const availableQty = toNumber(item.available_qty ?? (physicalQty - reservedQty));
+    const variationCount = toArray(item.variants).length;
     const price = toNumber(item.price || 0);
     const promoPrice = toNumber(item.promotional_price || item.promotionalPrice || 0);
-    const priceDetail = promoPrice > 0 && promoPrice < price ? `Por ${currency(promoPrice)}` : sizesText;
+    const priceDetail = promoPrice > 0 && promoPrice < price ? `Por ${currency(promoPrice)}` : (item.product_type === "variable" ? `${variationCount} variacoes` : "Produto simples");
     return `
       <article class="pdv-products-result-card${isSelected ? " is-selected" : ""}">
         <div class="pdv-products-result-photo">
@@ -14543,23 +14612,31 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
         </div>
         <div class="pdv-products-result-main">
           <strong>${escapeHtml(productName)}</strong>
-          <small>${escapeHtml(item.category || "Sem categoria")} &middot; ${escapeHtml(item.gender || "Sem genero")}</small>
+          <small>${escapeHtml(item.category || "Sem categoria")} &middot; ${escapeHtml(item.brand || "Sem marca")}</small>
           <div class="pdv-customers-inline-badges">${buildManualProductBadges(item)}</div>
+          <div class="pdv-products-variant-resume">
+            <span><b>Cores:</b> ${escapeHtml(colorsText)}</span>
+            <span><b>Tamanhos:</b> ${escapeHtml(sizesText)}</span>
+          </div>
         </div>
         <div class="pdv-products-result-meta">
           <div class="pdv-products-result-topline">
             <div class="pdv-products-price-cell"><strong>${currency(price)}</strong><small>${escapeHtml(priceDetail)}</small></div>
-            <div class="pdv-products-stock-cell"><strong>${escapeHtml(String(toNumber(item.stock || 0)))}</strong><small>${escapeHtml(normalizeText(item.store || "") || "Sem loja")}</small></div>
             <span class="pdv-products-status-badge is-${escapeHtml(statusKey)}">${escapeHtml(getManualProductStatusLabel(item.status))}</span>
+          </div>
+          <div class="pdv-products-qty-grid is-compact">
+            <div><span>Fisico</span><strong>${escapeHtml(String(physicalQty))}</strong></div>
+            <div><span>Reservado</span><strong>${escapeHtml(String(reservedQty))}</strong></div>
+            <div><span>Disponivel</span><strong>${escapeHtml(String(availableQty))}</strong></div>
           </div>
           <div class="pdv-products-identifiers">
             ${buildPdvProductIdentifierChips(item)}
             ${normalizeText(item.brand || "") ? `<small>${escapeHtml(item.brand)}</small>` : ""}
           </div>
           <div class="action-row pdv-products-action-row">
-            <button class="secondary-button" type="button" data-pdv-product-detail="${escapeHtml(productId)}">Ver</button>
-            <button class="ghost-button" type="button" data-pdv-product-label-print="${escapeHtml(productId)}">Etiqueta</button>
+            <button class="secondary-button" type="button" data-pdv-product-detail="${escapeHtml(productId)}">Ver variacoes</button>
             <button class="ghost-button" type="button" data-pdv-product-edit="${escapeHtml(productId)}">Editar</button>
+            <button class="ghost-button" type="button" data-pdv-product-duplicate="${escapeHtml(productId)}">Cadastrar similar</button>
           </div>
         </div>
       </article>
@@ -14576,20 +14653,20 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
         <div class="pdv-products-toolbar-filters">
           <label>Loja<select name="storeFilter">${storeOptions.map((option) => `<option value="${escapeHtml(option.value)}"${normalizeText(state.pdvProducts.filters.store || "") === normalizeText(option.value || "") ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label>
           <label>Status<select name="statusFilter"><option value="">Todos</option><option value="ativo"${state.pdvProducts.filters.status === "ativo" ? " selected" : ""}>Ativos</option><option value="bloqueado_para_venda"${["bloqueado_para_venda", "hidden"].includes(state.pdvProducts.filters.status) ? " selected" : ""}>Bloqueados</option><option value="inativo"${state.pdvProducts.filters.status === "inativo" ? " selected" : ""}>Inativos</option></select></label>
-          <label>Vitrine IA<select name="useInAiFilter"><option value="0">Todos</option><option value="1"${state.pdvProducts.filters.useInAi === "1" ? " selected" : ""}>So elegiveis</option></select></label>
-          <label>PDV<select name="useInPosFilter"><option value="0">Todos</option><option value="1"${state.pdvProducts.filters.useInPos === "1" ? " selected" : ""}>So PDV</option></select></label>
-          <label>Sem preco<select name="withoutPriceFilter"><option value="0">Todos</option><option value="1"${state.pdvProducts.filters.withoutPrice === "1" ? " selected" : ""}>Somente sem preco</option></select></label>
-          <label>Sem SKU<select name="withoutSkuFilter"><option value="0">Todos</option><option value="1"${state.pdvProducts.filters.withoutSku === "1" ? " selected" : ""}>Somente sem SKU</option></select></label>
-          <label>Sem foto<select name="withoutPhotoFilter"><option value="0">Todos</option><option value="1"${state.pdvProducts.filters.withoutPhoto === "1" ? " selected" : ""}>Somente sem foto</option></select></label>
-          <label>Estoque<select name="zeroStockFilter"><option value="0">Todos</option><option value="1"${state.pdvProducts.filters.zeroStock === "1" ? " selected" : ""}>Zerado</option></select></label>
+          <label>Tipo<select name="productTypeFilter"><option value="">Todos</option><option value="simple"${state.pdvProducts.filters.productType === "simple" ? " selected" : ""}>Simples</option><option value="variable"${state.pdvProducts.filters.productType === "variable" ? " selected" : ""}>Grade</option></select></label>
+          <label>Marca<input name="brandFilter" type="text" value="${escapeHtml(state.pdvProducts.filters.brand || "")}" placeholder="Marca" /></label>
+          <label>Categoria<input name="categoryFilter" type="text" value="${escapeHtml(state.pdvProducts.filters.category || "")}" placeholder="Categoria" /></label>
+          <label>Cor<input name="colorFilter" type="text" value="${escapeHtml(state.pdvProducts.filters.color || "")}" placeholder="Cor" /></label>
+          <label>Tamanho<input name="sizeFilter" type="text" value="${escapeHtml(state.pdvProducts.filters.size || "")}" placeholder="Tamanho" /></label>
+          <label>Estoque<select name="stockModeFilter"><option value="">Todos</option><option value="with_stock"${state.pdvProducts.filters.stockMode === "with_stock" ? " selected" : ""}>Com estoque</option><option value="without_stock"${state.pdvProducts.filters.stockMode === "without_stock" ? " selected" : ""}>Sem estoque</option><option value="with_reserved"${state.pdvProducts.filters.stockMode === "with_reserved" ? " selected" : ""}>Com reservado</option><option value="blocked"${state.pdvProducts.filters.stockMode === "blocked" ? " selected" : ""}>Bloqueado</option><option value="low_stock"${state.pdvProducts.filters.stockMode === "low_stock" ? " selected" : ""}>Estoque baixo</option></select></label>
           <div class="action-row pdv-products-action-row"><button class="secondary-button" type="button" data-pdv-products-run-search="true"${state.pdvProducts.loading ? " disabled" : ""}>${state.pdvProducts.loading ? "Buscando..." : "Atualizar"}</button><button class="ghost-button" type="button" data-pdv-products-clear-search="true">Limpar</button></div>
         </div>
       </form>
       <div class="stats-grid pdv-products-summary-grid">
         <article class="stat-card pdv-products-stat-card"><span>Total</span><strong>${escapeHtml(String(summary.total || totalProducts || 0))}</strong><small>Base manual e estrategica consolidada.</small></article>
-        <article class="stat-card pdv-products-stat-card"><span>Vitrine IA</span><strong>${escapeHtml(String(summary.use_in_ai || items.filter((item) => item.use_in_ai).length))}</strong><small>Elegiveis para recomendacao da IA.</small></article>
-        <article class="stat-card pdv-products-stat-card"><span>PDV</span><strong>${escapeHtml(String(summary.use_in_pos || items.filter((item) => item.use_in_pos).length))}</strong><small>Prontos para operacao futura da loja.</small></article>
-        <article class="stat-card pdv-products-stat-card"><span>Sem preco</span><strong>${escapeHtml(String(summary.without_price || items.filter((item) => Number(item.price || 0) <= 0).length))}</strong><small>${escapeHtml(state.pdvProducts.error || "Use filtros para localizar gaps de cadastro antes da importacao global.")}</small></article>
+        <article class="stat-card pdv-products-stat-card"><span>Simples</span><strong>${escapeHtml(String(summary.simple || 0))}</strong><small>Produto pai com variacao DEFAULT.</small></article>
+        <article class="stat-card pdv-products-stat-card"><span>Com grade</span><strong>${escapeHtml(String(summary.variable || 0))}</strong><small>Pais agrupados com cor e tamanho.</small></article>
+        <article class="stat-card pdv-products-stat-card"><span>Com reservado</span><strong>${escapeHtml(String(summary.with_reserved || 0))}</strong><small>${escapeHtml(state.pdvProducts.error || "Disponibilidade liquida considera o saldo reservado.")}</small></article>
       </div>
       <div class="pdv-stock-pagination-row pdv-products-pagination-row">
         <span>${escapeHtml(totalProducts ? `${totalProducts} produtos encontrados` : "Nenhum produto encontrado")}</span>
@@ -14597,7 +14674,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
         <label>
           <span>Visualizar</span>
           <select data-pdv-products-page-size="true">
-            ${[50, 100, 200].map((option) => `<option value="${option}"${Number(pagination.limit || 50) === option ? " selected" : ""}>${option} por pagina</option>`).join("")}
+            ${[25, 50, 100].map((option) => `<option value="${option}"${Number(pagination.limit || 25) === option ? " selected" : ""}>${option} por pagina</option>`).join("")}
           </select>
         </label>
         <span class="pdv-stock-page-indicator">Pagina ${escapeHtml(String(pagination.page || 1))} de ${escapeHtml(String(pagination.totalPages || 1))}</span>
@@ -14629,16 +14706,25 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
   });
   container.querySelector("[data-pdv-products-clear-search='true']")?.addEventListener("click", () => {
     state.pdvProducts.query = "";
-    state.pdvProducts.filters = { ...state.pdvProducts.filters, status: "", useInAi: "0", useInPos: "0", withoutPrice: "0", withoutSku: "0", withoutPhoto: "0", zeroStock: "0" };
+    state.pdvProducts.filters = {
+      ...state.pdvProducts.filters,
+      status: "",
+      productType: "",
+      brand: "",
+      category: "",
+      color: "",
+      size: "",
+      stockMode: ""
+    };
     state.pdvProducts.pagination = { ...(state.pdvProducts.pagination || {}), page: 1 };
     loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao limpar filtros de produtos", error));
   });
   container.querySelector("[data-pdv-products-page-size='true']")?.addEventListener("change", (event) => {
-    const nextLimit = Number(event.currentTarget.value || 50);
+    const nextLimit = Number(event.currentTarget.value || 25);
     state.pdvProducts.pagination = {
       ...(state.pdvProducts.pagination || {}),
       page: 1,
-      limit: [50, 100, 200].includes(nextLimit) ? nextLimit : 50
+      limit: [25, 50, 100].includes(nextLimit) ? nextLimit : 25
     };
     loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao ajustar a pagina de produtos", error));
   });
@@ -14660,6 +14746,39 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
   Array.from(container.querySelectorAll("[data-pdv-product-detail]")).forEach((button) => button.addEventListener("click", () => {
     state.pdvProducts.selectedProductId = normalizeText(button.dataset.pdvProductDetail || "");
     renderPdvProductsOfficialFront(container);
+  }));
+  Array.from(container.querySelectorAll("[data-pdv-product-movements]")).forEach((button) => button.addEventListener("click", async () => {
+    const productId = normalizeText(button.dataset.pdvProductMovements || "");
+    const params = new URLSearchParams({ limit: "40" });
+    if (normalizeText(state.pdvProducts.filters.store || "")) params.set("store", state.pdvProducts.filters.store);
+    const response = await api(`/api/products/${encodeURIComponent(productId)}/movements?${params.toString()}`);
+    state.pdvProducts.movementsByProduct[productId] = toArray(response.items);
+    state.pdvProducts.selectedProductId = productId;
+    renderPdvProductsOfficialFront(container);
+  }));
+  Array.from(container.querySelectorAll("[data-pdv-product-duplicate]")).forEach((button) => button.addEventListener("click", () => {
+    const product = items.find((item) => normalizeText(item.id || "") === normalizeText(button.dataset.pdvProductDuplicate || ""));
+    if (!product) return;
+    openPdvProductDrawer("create", {
+      ...product,
+      id: "",
+      legacy_ai_product_id: "",
+      normalized_parent_product_id: "",
+      sku: "",
+      codigo: "",
+      codigo_interno: "",
+      base_sku: "",
+      auto_generate_code: true,
+      name: `${product.name || product.display_name || "Produto"} - Similar`,
+      stock: 0,
+      variants: toArray(product.variants).map((variant) => ({
+        color: variant.color || "",
+        size: variant.size || "",
+        initial_stock: 0,
+        barcode: "",
+        status: "ativo"
+      }))
+    });
   }));
   Array.from(container.querySelectorAll("[data-pdv-product-edit]")).forEach((button) => button.addEventListener("click", async () => {
     const product = items.find((item) => normalizeText(item.id || "") === normalizeText(button.dataset.pdvProductEdit || ""));
@@ -14694,6 +14813,11 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
   Array.from(container.querySelectorAll("[data-pdv-product-reactivate]")).forEach((button) => button.addEventListener("click", async () => {
     await api(`/api/products/${button.dataset.pdvProductReactivate}/reactivate`, { method: "POST" });
     showFeedback("Produto reativado com sucesso.");
+    await loadPdvProductsFront({ preserveSelection: false });
+  }));
+  Array.from(container.querySelectorAll("[data-pdv-product-inactivate]")).forEach((button) => button.addEventListener("click", async () => {
+    await api(`/api/products/${button.dataset.pdvProductInactivate}`, { method: "DELETE" });
+    showFeedback("Produto inativado com sucesso.");
     await loadPdvProductsFront({ preserveSelection: false });
   }));
   container.querySelectorAll("[data-pdv-product-drawer-close]").forEach((button) => button.addEventListener("click", (event) => {
@@ -14814,8 +14938,8 @@ async function loadPdvProductsFront(options = {}) {
       if (normalizeText(value || "") && value !== "0") params.set(key, value);
     });
     const page = Math.max(1, Number(state.pdvProducts.pagination?.page || 1));
-    const requestedLimit = Number(state.pdvProducts.pagination?.limit || 50);
-    const limit = [50, 100, 200].includes(requestedLimit) ? requestedLimit : 50;
+    const requestedLimit = Number(state.pdvProducts.pagination?.limit || 25);
+    const limit = [25, 50, 100].includes(requestedLimit) ? requestedLimit : 25;
     params.set("page", String(page));
     params.set("limit", String(limit));
     const response = await api(`/api/products?${params.toString()}`);
@@ -14826,7 +14950,7 @@ async function loadPdvProductsFront(options = {}) {
     const currentPage = Math.min(totalPages, Math.max(1, Number(responsePagination.page || page)));
     state.pdvProducts.pagination = {
       page: currentPage,
-      limit: [50, 100, 200].includes(Number(responsePagination.limit || limit)) ? Number(responsePagination.limit || limit) : limit,
+      limit: [25, 50, 100].includes(Number(responsePagination.limit || limit)) ? Number(responsePagination.limit || limit) : limit,
       total: Math.max(0, Number(responsePagination.total || state.pdvProducts.items.length || 0)),
       totalPages,
       hasMore: responsePagination.has_more !== undefined ? Boolean(responsePagination.has_more) : currentPage < totalPages
@@ -28668,7 +28792,9 @@ async function loadAiTemplates() {
 
 function canManageAiStrategicImport() {
   const role = getCurrentRole();
-  return role === "admin" || role === "manager" || role === "gerente";
+  return ["admin", "manager", "gerente", "gestor"].includes(role)
+    && hasPermission("can_view_aerointel")
+    && hasPermission("can_manage_store_settings");
 }
 
 function ensureTop100CuratedImportState() {
@@ -32853,7 +32979,7 @@ function handleDocumentKeydown(event) {
   const pdvProductSearchInput = event.target.closest?.('input[name="pdv_query_search_product_v2"]');
   if (pdvProductSearchInput && event.key === "Enter" && !event.isComposing) {
     event.preventDefault();
-    if (event.repeat || state.pdvSale.productSearching) return;
+    if (event.repeat) return;
     state.pdvSale.productQuery = normalizeText(pdvProductSearchInput.value || "");
     searchPdvSaleProducts().catch((error) => handleUiError("Erro ao buscar produtos da venda", error));
     return;

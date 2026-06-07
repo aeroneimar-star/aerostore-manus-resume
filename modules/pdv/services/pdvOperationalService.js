@@ -2120,30 +2120,6 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
   let inventoryPagination = null;
 
   try {
-    const { listInventoryProducts } = require("../inventory/pdvInventoryService");
-    const inventoryPayload = listInventoryProducts({ q: query, storeId, page: safePage, limit: safeLimit });
-    inventoryPagination = inventoryPayload.pagination || null;
-    resultsBySource.inventory = (inventoryPayload.items || [])
-      .filter((item) => (
-        normalizeLookup(item.source || "") !== "pdv_product_v2"
-        &&
-        item.sale_enabled !== false
-        && !["bloqueado_para_venda", "inativo", "deleted", "hidden"].includes(normalizeLookup(item.product_status || ""))
-      ))
-      .map((item) => ({
-        ...item,
-        id: normalizeText(item.id || item.product_id || item.sku || item.codigo || ""),
-        estoque: toNumber(item.available_qty ?? item.estoque ?? 0),
-        origin: "PDV_ESTOQUE",
-        origin_label: "PDV + estoque operacional",
-        origins: ["PDV + estoque operacional"],
-        cashback_blocked_for_redemption: Boolean(item.cashback_blocked_for_redemption)
-      }));
-  } catch (error) {
-    resultsBySource.inventory = [];
-  }
-
-  try {
     resultsBySource.normalized = await searchNormalizedProductParents(query, storeId, safeLimit);
   } catch (error) {
     resultsBySource.normalized = [];
@@ -2171,6 +2147,30 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
         has_more: false
       }
     };
+  }
+
+  try {
+    const { listInventoryProducts } = require("../inventory/pdvInventoryService");
+    const inventoryPayload = listInventoryProducts({ q: query, storeId, page: safePage, limit: safeLimit });
+    inventoryPagination = inventoryPayload.pagination || null;
+    resultsBySource.inventory = (inventoryPayload.items || [])
+      .filter((item) => (
+        normalizeLookup(item.source || "") !== "pdv_product_v2"
+        &&
+        item.sale_enabled !== false
+        && !["bloqueado_para_venda", "inativo", "deleted", "hidden"].includes(normalizeLookup(item.product_status || ""))
+      ))
+      .map((item) => ({
+        ...item,
+        id: normalizeText(item.id || item.product_id || item.sku || item.codigo || ""),
+        estoque: toNumber(item.available_qty ?? item.estoque ?? 0),
+        origin: "PDV_ESTOQUE",
+        origin_label: "PDV + estoque operacional",
+        origins: ["PDV + estoque operacional"],
+        cashback_blocked_for_redemption: Boolean(item.cashback_blocked_for_redemption)
+      }));
+  } catch (error) {
+    resultsBySource.inventory = [];
   }
 
   const datasetProducts = loadProductsDataset();

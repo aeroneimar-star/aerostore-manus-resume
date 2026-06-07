@@ -22101,6 +22101,66 @@ body[data-route-section="pdv-products"] .pdv-product-size-stock-detail > span.is
   }
 }
 
+body[data-route-section="pdv-products"] .pdv-products-qty-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-qty-grid > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(139, 151, 255, 0.18);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(25, 29, 46, 0.92), rgba(13, 16, 28, 0.92));
+}
+
+body[data-route-section="pdv-products"] .pdv-products-qty-grid span,
+body[data-route-section="pdv-products"] .pdv-products-qty-grid small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-qty-grid strong {
+  display: block;
+  margin: 3px 0;
+  color: var(--text);
+  font-size: 1.05rem;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-qty-grid.is-compact {
+  margin: 4px 0;
+  gap: 6px;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-qty-grid.is-compact > div {
+  padding: 8px 10px;
+}
+
+body[data-route-section="pdv-products"] .pdv-products-variant-resume,
+body[data-route-section="pdv-products"] .pdv-product-variant-summary,
+body[data-route-section="pdv-products"] .pdv-product-movement-list {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+body[data-route-section="pdv-products"] .pdv-product-variant-summary span,
+body[data-route-section="pdv-products"] .pdv-product-movement-list span {
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+@media (max-width: 720px) {
+  body[data-route-section="pdv-products"] .pdv-products-qty-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ============================================================
    WHATSAPP CRM - DARK PREMIUM AEROSTORE
    Visual-only layer scoped to the official WhatsApp CRM route.
