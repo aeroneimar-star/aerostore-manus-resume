@@ -1402,6 +1402,10 @@ function canManageSellers() {
   return getCurrentUserRole() === "admin";
 }
 
+function canCallSellersEndpoint() {
+  return canManageSellers() || hasPermission("can_manage_users");
+}
+
 function canManageGlobalSettings() {
   return hasPermission("can_manage_global_settings");
 }
@@ -1419,7 +1423,7 @@ function canViewGlobalSettingsPanel() {
 }
 
 function canViewSettingsTeamPanel() {
-  return canManageSellers() || hasPermission("can_manage_users");
+  return canCallSellersEndpoint();
 }
 
 function canViewRealStoreSettings() {
@@ -28522,6 +28526,11 @@ async function loadSettings() {
 }
 
 async function loadSellers() {
+  if (!canCallSellersEndpoint()) {
+    state.sellers = [];
+    populateSellerSelects();
+    return;
+  }
   state.sellers = await api("/api/sellers");
   populateSellerSelects();
   renderSellers();
@@ -28820,8 +28829,8 @@ async function loadAiTemplates() {
 }
 
 function canManageAiStrategicImport() {
-  const role = getCurrentRole();
-  return ["admin", "manager", "gerente", "gestor"].includes(role)
+  const role = getCurrentUserRole();
+  return ["admin", "gestor"].includes(role)
     && hasPermission("can_view_aerointel")
     && hasPermission("can_manage_store_settings");
 }
@@ -29063,6 +29072,7 @@ function renderAiStrategicProductsPanel() {
 
 async function loadAiStrategicProducts() {
   if (!canManageAiStrategicImport()) {
+    state.aiStrategicProducts = [];
     return;
   }
   state.aiStrategicProducts = await api("/api/ia/products?includeInactive=1");
