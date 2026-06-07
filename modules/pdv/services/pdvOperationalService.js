@@ -4199,6 +4199,12 @@ async function createReservationFromSession(sessionId, payload = {}, user = {}) 
   if (!session) {
     throw new Error("SessÃ£o do atendimento nÃ£o encontrada.");
   }
+  if (!session.customer || !normalizeText(session.customer.name || session.customer.phone || session.customer.master_customer_id || session.customer.id || "")) {
+    throw new Error("Selecione um cliente para criar reserva.");
+  }
+  if (!Array.isArray(session.cart_items) || !session.cart_items.length) {
+    throw new Error("Adicione produtos ao carrinho.");
+  }
   const reservations = loadReservations();
   const reservation = {
     reservation_id: buildId("RSV"),

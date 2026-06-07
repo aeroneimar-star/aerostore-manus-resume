@@ -259,6 +259,8 @@ const state = {
     drawerOpen: false,
     drawerSubmitting: false,
     draftSaving: false,
+    reservationSaving: false,
+    reservationResult: null,
     cartBusyItemId: "",
     couponLoadingSaleId: "",
     whatsappSendingSaleId: "",
@@ -3769,6 +3771,8 @@ async function ensurePdvSaleSession({ forceNew = false } = {}) {
     state.pdvSale.discountDraft = buildPdvSaleDiscountDraftFromSession(null);
     resetPdvSaleCheckoutResidue();
     resetPdvSalePermutaAuthorization({ preserveAuthorizers: false });
+    state.pdvSale.reservationSaving = false;
+    state.pdvSale.reservationResult = null;
     persistPdvSaleSessionId("");
     persistPdvSaleCompletedSale(null);
   }
@@ -5858,6 +5862,90 @@ function buildPdvSaleCashRegisterNotice() {
   `;
 }
 
+function getDefaultPdvSaleReservationDate() {
+  const nextDate = new Date();
+  nextDate.setDate(nextDate.getDate() + 1);
+  const year = nextDate.getFullYear();
+  const month = String(nextDate.getMonth() + 1).padStart(2, "0");
+  const day = String(nextDate.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getPdvSaleReservationValidation(session = null) {
+  const safeSession = session || state.pdvSale.session || null;
+  const items = toArray(safeSession?.cart_items);
+  if (!safeSession?.customer) {
+    return { valid: false, message: "Selecione um cliente para criar reserva." };
+  }
+  if (!items.length) {
+    return { valid: false, message: "Adicione produtos ao carrinho." };
+  }
+  const missingVariation = items.find((item) => (
+    (item.normalized_product || item.normalized_parent_product_id || item.parent_product_id)
+    && !normalizeText(item.variation_id || item.normalized_variant_id || "")
+  ));
+  if (missingVariation) {
+    return { valid: false, message: "Não é possível reservar este produto sem selecionar cor e tamanho." };
+  }
+  const blockedItem = items.find((item) => {
+    const statusValues = [
+      item.status,
+      item.product_status,
+      item.variation_status
+    ].map((value) => normalizeText(value || "").toLowerCase());
+    return statusValues.some((status) => ["bloqueado_para_venda", "blocked", "inativo", "inactive"].includes(status));
+  });
+  if (blockedItem) {
+    return { valid: false, message: "Item bloqueado ou inativo não pode ser reservado." };
+  }
+  const unavailableItem = items.find((item) => {
+    const stockStatus = normalizeText(item.operational_stock_status || item.inventory_status || "").toUpperCase();
+    const hasExplicitAvailableQty = item.available_qty !== undefined || item.sellable_available_qty !== undefined || item.estoque !== undefined;
+    const availableQty = toNumber(item.available_qty ?? item.sellable_available_qty ?? item.estoque ?? 0);
+    if (["OUT_OF_STOCK", "OUT_OF_STOCK_LOCAL", "NO_KNOWN_STOCK"].includes(stockStatus)) return true;
+    return hasExplicitAvailableQty && availableQty <= 0;
+  });
+  if (unavailableItem) {
+    return { valid: false, message: "Item sem estoque disponível não pode ser reservado." };
+  }
+  return { valid: true, message: "", items };
+}
+
+function buildPdvSaleReservationPayload() {
+  return {
+    validade: getDefaultPdvSaleReservationDate(),
+    observacoes: "Reserva criada pelo PDV",
+    vendedor: getCurrentPdvSellerName(),
+    loja: getCurrentPdvStoreId()
+  };
+}
+
+function buildPdvSaleReservationBox(session = null) {
+  const validation = getPdvSaleReservationValidation(session);
+  const reserved = state.pdvSale.reservationResult || null;
+  const saving = Boolean(state.pdvSale.reservationSaving);
+  if (reserved) {
+    return `
+      <div class="pdv-payment-alert neutral pdv-sale-reservation-box">
+        <strong>Reserva criada: ${escapeHtml(reserved.reservation_id || "")}</strong>
+        <span>Status: ${escapeHtml(reserved.inventory_status || "HELD")} · itens reservados no carrinho atual.</span>
+        <div class="action-row">
+          <button class="secondary-button small" type="button" data-route="/pdv/reservas">Ver reservas</button>
+          <button class="ghost-button small" type="button" data-pdv-sale-new-session="true">Nova venda</button>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="pdv-sale-reservation-box">
+      <button class="secondary-button pdv-sale-reserve-items-btn" type="button" data-pdv-sale-reserve-items="true"${saving ? " disabled" : ""}>
+        ${saving ? "Reservando..." : "Reservar itens"}
+      </button>
+      <small>${validation.valid ? "Reserva todos os itens do carrinho atual por 24 horas." : escapeHtml(validation.message)}</small>
+    </div>
+  `;
+}
+
 function buildPdvSaleActiveContent() {
   const session = state.pdvSale.session;
   const storeId = getCurrentPdvStoreId();
@@ -6009,6 +6097,7 @@ function buildPdvSaleActiveContent() {
                 <div class="pdv-payment-footer-actions" style="display:flex; flex-direction:column; gap:12px;">
                   ${effectiveFinalizeState.key === "discount_authorization" && !isDiscountAuthorizationPanelOpen ? `<button class="secondary-button pdv-payment-authorize-discount-btn" type="button" data-pdv-sale-discount-authorize-open="true">Autorizar desconto</button>` : ""}
                   ${effectiveFinalizeState.key === "permuta_authorization" ? `<button class="secondary-button pdv-payment-authorize-discount-btn" type="button" data-pdv-sale-permuta-authorize-open="true">Autorizar permuta</button>` : ""}
+                  ${buildPdvSaleReservationBox(session)}
                   <button class="primary-button pdv-payment-finalize-btn${effectiveFinalizeState.key === "ready" ? " is-ready" : ""}" type="submit" data-pdv-sale-finalize-button="true"${effectiveFinalizeState.disabled ? " disabled" : ""} style="width:100%; min-height:54px; font-size:1.1rem;">
                     ${cashRegisterClosed ? "CAIXA FECHADO" : (effectiveFinalizeState.key === "ready" ? "FINALIZAR VENDA" : "🔒 FINALIZAR VENDA")}
                   </button>
@@ -6776,6 +6865,39 @@ async function removePdvSaleCartItem(itemId = "") {
     }
   } finally {
     state.pdvSale.cartBusyItemId = "";
+    renderPdvSaleSurface();
+  }
+}
+
+async function createPdvSaleReservationFromCurrentSession() {
+  if (state.pdvSale.reservationSaving) {
+    return;
+  }
+  const session = state.pdvSale.session || null;
+  const sessionId = normalizeText(state.pdvSale.sessionId || session?.session_id || "");
+  if (!sessionId) {
+    showFeedback("Sessão de venda não encontrada para criar reserva.", "error");
+    return;
+  }
+  const validation = getPdvSaleReservationValidation(session);
+  if (!validation.valid) {
+    showFeedback(validation.message, "error");
+    return;
+  }
+  state.pdvSale.reservationSaving = true;
+  state.pdvSale.reservationResult = null;
+  renderPdvSaleSurface();
+  try {
+    const reservation = await api(`/api/pdv/operational/reservations/from-session/${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildPdvSaleReservationPayload())
+    });
+    state.pdvSale.reservationResult = reservation || null;
+    persistPdvSaleSessionId("");
+    showFeedback(`Reserva ${reservation?.reservation_id || ""} criada. Itens reservados no PDV.`);
+  } finally {
+    state.pdvSale.reservationSaving = false;
     renderPdvSaleSurface();
   }
 }
@@ -8628,6 +8750,8 @@ async function startNewPdvSaleSession() {
   state.pdvSale.customerAttachingKey = "";
   state.pdvSale.productAddingKey = "";
   state.pdvSale.cartBusyItemId = "";
+  state.pdvSale.reservationSaving = false;
+  state.pdvSale.reservationResult = null;
   state.pdvSale.drawerOpen = false;
   document.body.classList.remove("pdv-drawer-open");
   if (shouldHardReload) {
@@ -28493,6 +28617,8 @@ async function logoutUser() {
     drawerOpen: false,
     drawerSubmitting: false,
     draftSaving: false,
+    reservationSaving: false,
+    reservationResult: null,
     cartBusyItemId: "",
     couponLoadingSaleId: "",
     whatsappSendingSaleId: "",
@@ -30000,6 +30126,13 @@ function handleDocumentClick(event) {
     console.info("[PDV][finalize] checkoutStatus", snapshot.checkoutStatus);
     console.info("[PDV][finalize] pendingReason", snapshot.pendingReason);
     console.info("[PDV][finalize] permuta", snapshot.permuta);
+  }
+
+  const pdvSaleReserveItemsButton = event.target.closest("[data-pdv-sale-reserve-items]");
+  if (pdvSaleReserveItemsButton) {
+    event.preventDefault();
+    createPdvSaleReservationFromCurrentSession().catch((error) => handleUiError("Erro ao criar reserva no PDV", error));
+    return;
   }
 
   if (event.target.closest("[data-feedback-dismiss]")) {

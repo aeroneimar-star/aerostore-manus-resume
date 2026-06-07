@@ -180,6 +180,21 @@ async function openSaleSession(cookie) {
   return opened.body;
 }
 
+async function attachCustomer(cookie, sessionId, suffix) {
+  const attached = await request(`/api/pdv/operational/session/${sessionId}/customer`, {
+    method: "POST",
+    cookie,
+    body: {
+      master_customer_id: `QA-C2-CUSTOMER-${suffix}`,
+      name: `QA Cliente Reserva ${suffix}`,
+      phone: `119${String(suffix).slice(-8).padStart(8, "0")}`,
+      origin: "qa"
+    }
+  });
+  assert.strictEqual(attached.status, 200, attached.body.error || "Cliente deveria ser vinculado a sessao.");
+  return attached.body;
+}
+
 async function addItemAndPay(cookie, sessionId, product, quantity) {
   const added = await request(`/api/pdv/operational/cart/${sessionId}/items`, {
     method: "POST",
@@ -363,7 +378,22 @@ async function main() {
     assert.strictEqual(excessiveSale.status, 400, "Venda acima do estoque deve ser bloqueada.");
     assert(/estoque|saldo|dispon.vel/i.test(excessiveSale.body.error || ""));
 
+    const reservationWithoutCustomerSession = await openSaleSession(cookie);
+    await addItemAndPay(cookie, reservationWithoutCustomerSession.session_id, afterSaleProduct, 1);
+    const reservedWithoutCustomer = await request(`/api/pdv/operational/reservations/from-session/${reservationWithoutCustomerSession.session_id}`, {
+      method: "POST",
+      cookie,
+      body: {
+        loja: "vila",
+        vendedor: "QA Ciclo 2",
+        validade: "2099-12-31"
+      }
+    });
+    assert.strictEqual(reservedWithoutCustomer.status, 400, "Reserva sem cliente deve ser bloqueada.");
+    assert(/Selecione um cliente/i.test(reservedWithoutCustomer.body.error || ""));
+
     const reservationSession = await openSaleSession(cookie);
+    await attachCustomer(cookie, reservationSession.session_id, suffix);
     await addItemAndPay(cookie, reservationSession.session_id, afterSaleProduct, 1);
     const reserved = await request(`/api/pdv/operational/reservations/from-session/${reservationSession.session_id}`, {
       method: "POST",
