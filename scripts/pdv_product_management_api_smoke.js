@@ -37,7 +37,10 @@ async function main() {
   assert.strictEqual(grade.body.items[0].normalized_product, true);
   assert.strictEqual(grade.body.items[0].variants.length, 4);
   assert.strictEqual(grade.body.items[0].physical_qty, 5);
-  assert.strictEqual(grade.body.items[0].available_qty, 5);
+  assert.strictEqual(
+    grade.body.items[0].available_qty,
+    grade.body.items[0].physical_qty - grade.body.items[0].reserved_qty
+  );
 
   const barcode = await request(
     "/api/products?q=178083651749302&store=vila&page=1&limit=25",

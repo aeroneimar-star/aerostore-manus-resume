@@ -463,6 +463,7 @@ const state = {
     items: [],
     summary: null,
     query: "",
+    searchDebounce: null,
     filters: {
       store: "",
       status: "",
@@ -14315,6 +14316,40 @@ function applyPdvProductsFiltersFromForm(formElement) {
   state.pdvProducts.selectedProductId = "";
 }
 
+function clearPdvProductsSearchDebounce() {
+  if (state.pdvProducts.searchDebounce) {
+    clearTimeout(state.pdvProducts.searchDebounce);
+    state.pdvProducts.searchDebounce = null;
+  }
+}
+
+function runPdvProductsSearchFromForm(formElement, options = {}) {
+  if (!formElement) {
+    return Promise.resolve();
+  }
+  clearPdvProductsSearchDebounce();
+  applyPdvProductsFiltersFromForm(formElement);
+  return loadPdvProductsFront({ preserveSelection: Boolean(options.preserveSelection) });
+}
+
+function schedulePdvProductsSearch(formElement) {
+  if (!formElement) {
+    return;
+  }
+  clearPdvProductsSearchDebounce();
+  const formData = new FormData(formElement);
+  state.pdvProducts.query = normalizeText(formData.get("productsQuery") || "");
+  state.pdvProducts.pagination = {
+    ...(state.pdvProducts.pagination || {}),
+    page: 1
+  };
+  state.pdvProducts.searchDebounce = setTimeout(() => {
+    state.pdvProducts.searchDebounce = null;
+    runPdvProductsSearchFromForm(formElement, { preserveSelection: false })
+      .catch((error) => handleUiError("Erro ao buscar produtos operacionais", error));
+  }, 400);
+}
+
 async function savePdvProduct(formElement) {
   if (!formElement || state.pdvProducts.drawerSaving) return;
   const formData = new FormData(formElement);
@@ -14522,6 +14557,8 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
   const summary = state.pdvProducts.summary || {};
   const pagination = state.pdvProducts.pagination || { page: 1, limit: 25, total: items.length, totalPages: 1, hasMore: false };
   const totalProducts = Math.max(items.length, Number(pagination.total || 0));
+  const hasActiveProductSearch = Boolean(normalizeText(state.pdvProducts.query || ""))
+    || Object.values(state.pdvProducts.filters || {}).some((value) => normalizeText(value || "") && String(value) !== "0");
   const visibleStart = totalProducts ? ((Number(pagination.page || 1) - 1) * Number(pagination.limit || 25)) + 1 : 0;
   const visibleEnd = totalProducts ? Math.min(totalProducts, visibleStart + items.length - 1) : 0;
   const selectedProduct = items.find((item) => normalizeText(item.id || "") === normalizeText(state.pdvProducts.selectedProductId || "")) || items[0] || null;
@@ -14539,7 +14576,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
       <td><span class="pdv-products-status-badge is-${escapeHtml(normalizeText(item.status || "ativo"))}">${escapeHtml(getManualProductStatusLabel(item.status))}</span></td>
       <td><div class="action-row pdv-products-action-row"><button class="secondary-button" type="button" data-pdv-product-detail="${escapeHtml(String(item.id))}">Ver</button><button class="ghost-button" type="button" data-pdv-product-label-print="${escapeHtml(String(item.id))}">Etiqueta</button><button class="ghost-button" type="button" data-pdv-product-edit="${escapeHtml(String(item.id))}">Editar</button></div></td>
     </tr>
-  `).join("") : `<tr><td colspan="7"><div class="empty-state compact"><strong>Nenhum produto cadastrado ainda.</strong><span>Cadastre o primeiro produto manual para preparar PDV e Vitrine IA.</span></div></td></tr>`;
+  `).join("") : `<tr><td colspan="7"><div class="empty-state compact"><strong>${escapeHtml(hasActiveProductSearch ? "Nenhum produto encontrado para esta busca." : "Nenhum produto cadastrado ainda.")}</strong><span>${escapeHtml(hasActiveProductSearch ? "Revise o termo digitado, SKU, barcode, marca ou filtros aplicados." : "Cadastre o primeiro produto manual para preparar PDV e Vitrine IA.")}</span></div></td></tr>`;
   const productCardsHtml = items.length ? items.map((item) => {
     const productId = String(item.id || "");
     const productName = item.display_name || item.commercial_name || item.name || "Produto";
@@ -14590,7 +14627,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
         </div>
       </article>
     `;
-  }).join("") : `<div class="empty-state compact pdv-products-empty-list"><strong>Nenhum produto cadastrado ainda.</strong><span>Cadastre o primeiro produto manual para preparar PDV e Vitrine IA.</span></div>`;
+  }).join("") : `<div class="empty-state compact pdv-products-empty-list"><strong>${escapeHtml(hasActiveProductSearch ? "Nenhum produto encontrado para esta busca." : "Nenhum produto cadastrado ainda.")}</strong><span>${escapeHtml(hasActiveProductSearch ? "Revise o termo digitado, SKU, barcode, marca ou filtros aplicados." : "Cadastre o primeiro produto manual para preparar PDV e Vitrine IA.")}</span></div>`;
   const contentHtml = `
     <div class="pdv-products-shell">
       <div class="panel-header pdv-products-header">
@@ -14598,7 +14635,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
         ${canManageManualProductsFront() ? `<div class="action-row"><button class="primary-button" type="button" data-pdv-product-create-open="true">Novo produto</button></div>` : ""}
       </div>
       <form class="pdv-products-toolbar" data-pdv-products-search-form="true">
-        <label class="pdv-products-search-label">Buscar por nome, SKU, etiqueta, barcode ou marca<input name="productsQuery" type="search" value="${escapeHtml(state.pdvProducts.query || "")}" placeholder="Ex.: 118511, 7890001185110, camiseta" /></label>
+        <label class="pdv-products-search-label">Buscar por nome, SKU, etiqueta, barcode ou marca<input name="productsQuery" data-pdv-products-query-input="true" type="search" value="${escapeHtml(state.pdvProducts.query || "")}" placeholder="Ex.: 118511, 7890001185110, camiseta" /></label>
         <div class="pdv-products-toolbar-filters">
           <label>Loja<select name="storeFilter">${storeOptions.map((option) => `<option value="${escapeHtml(option.value)}"${normalizeText(state.pdvProducts.filters.store || "") === normalizeText(option.value || "") ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label>
           <label>Status<select name="statusFilter"><option value="">Todos</option><option value="ativo"${state.pdvProducts.filters.status === "ativo" ? " selected" : ""}>Ativos</option><option value="bloqueado_para_venda"${["bloqueado_para_venda", "hidden"].includes(state.pdvProducts.filters.status) ? " selected" : ""}>Bloqueados</option><option value="inativo"${state.pdvProducts.filters.status === "inativo" ? " selected" : ""}>Inativos</option></select></label>
@@ -14618,7 +14655,7 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
         <article class="stat-card pdv-products-stat-card"><span>Com reservado</span><strong>${escapeHtml(String(summary.with_reserved || 0))}</strong><small>${escapeHtml(state.pdvProducts.error || "Disponibilidade liquida considera o saldo reservado.")}</small></article>
       </div>
       <div class="pdv-stock-pagination-row pdv-products-pagination-row">
-        <span>${escapeHtml(totalProducts ? `${totalProducts} produtos encontrados` : "Nenhum produto encontrado")}</span>
+        <span>${escapeHtml(totalProducts ? `${totalProducts} produtos encontrados` : (hasActiveProductSearch ? "0 produtos encontrados" : "Nenhum produto encontrado"))}</span>
         <span>${escapeHtml(totalProducts ? `Mostrando ${visibleStart}-${visibleEnd} de ${totalProducts}` : "Ajuste a busca ou os filtros para localizar produtos.")}</span>
         <label>
           <span>Visualizar</span>
@@ -14646,17 +14683,17 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
   const productsForm = container.querySelector('[data-pdv-products-search-form="true"]');
   productsForm?.addEventListener("submit", (event) => {
     event.preventDefault();
-    applyPdvProductsFiltersFromForm(productsForm);
-    loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar produtos", error));
+    runPdvProductsSearchFromForm(productsForm, { preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar produtos", error));
   });
   container.querySelector("[data-pdv-products-run-search='true']")?.addEventListener("click", () => {
-    applyPdvProductsFiltersFromForm(productsForm);
-    loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar produtos", error));
+    runPdvProductsSearchFromForm(productsForm, { preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar produtos", error));
   });
   container.querySelector("[data-pdv-products-clear-search='true']")?.addEventListener("click", () => {
+    clearPdvProductsSearchDebounce();
     state.pdvProducts.query = "";
     state.pdvProducts.filters = {
       ...state.pdvProducts.filters,
+      store: getDefaultPdvProductsStoreFilter(),
       status: "",
       productType: "",
       brand: "",
@@ -31014,9 +31051,21 @@ function handleDocumentClick(event) {
 
   const clearPdvProductsSearchButton = event.target.closest("[data-pdv-products-clear-search]");
   if (clearPdvProductsSearchButton) {
+    clearPdvProductsSearchDebounce();
     state.pdvProducts.query = "";
-    state.pdvProducts.filters.status = "";
-    state.pdvProducts.filters.pending = "0";
+    state.pdvProducts.filters = {
+      ...state.pdvProducts.filters,
+      store: getDefaultPdvProductsStoreFilter(),
+      status: "",
+      productType: "",
+      brand: "",
+      category: "",
+      color: "",
+      size: "",
+      stockMode: "",
+      pending: "0"
+    };
+    state.pdvProducts.pagination = { ...(state.pdvProducts.pagination || {}), page: 1 };
     state.pdvProducts.selectedProductId = "";
     loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao limpar a busca de produtos", error));
     return;
@@ -31028,8 +31077,7 @@ function handleDocumentClick(event) {
     if (!form) {
       return;
     }
-    applyPdvProductsFiltersFromForm(form);
-    loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar produtos operacionais", error));
+    runPdvProductsSearchFromForm(form, { preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar produtos operacionais", error));
     return;
   }
 
@@ -32101,8 +32149,7 @@ function handleDocumentSubmit(event) {
   const pdvProductsSearchForm = event.target.closest("[data-pdv-products-search-form]");
   if (pdvProductsSearchForm) {
     event.preventDefault();
-    applyPdvProductsFiltersFromForm(pdvProductsSearchForm);
-    loadPdvProductsFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar produtos operacionais", error));
+    runPdvProductsSearchFromForm(pdvProductsSearchForm, { preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar produtos operacionais", error));
     return;
   }
 
@@ -32721,6 +32768,15 @@ function handleDocumentInput(event) {
     return;
   }
 
+  const pdvProductsQueryInput = event.target.closest("[data-pdv-products-query-input]");
+  if (pdvProductsQueryInput) {
+    const form = pdvProductsQueryInput.closest("[data-pdv-products-search-form]");
+    if (form) {
+      schedulePdvProductsSearch(form);
+    }
+    return;
+  }
+
   const pdvSaleCustomerSearchInput = event.target.closest("#pdv-sale-customer-search");
   if (pdvSaleCustomerSearchInput) {
     const nextQuery = normalizeText(pdvSaleCustomerSearchInput.value || "");
@@ -32940,6 +32996,17 @@ function handleDocumentFocusout(event) {
 }
 
 function handleDocumentKeydown(event) {
+  const pdvProductsQueryInput = event.target.closest?.("[data-pdv-products-query-input]");
+  if (pdvProductsQueryInput && event.key === "Enter" && !event.isComposing) {
+    event.preventDefault();
+    if (event.repeat) return;
+    const form = pdvProductsQueryInput.closest("[data-pdv-products-search-form]");
+    if (form) {
+      runPdvProductsSearchFromForm(form, { preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar produtos operacionais", error));
+    }
+    return;
+  }
+
   const pdvProductSearchInput = event.target.closest?.('input[name="pdv_query_search_product_v2"]');
   if (pdvProductSearchInput && event.key === "Enter" && !event.isComposing) {
     event.preventDefault();
