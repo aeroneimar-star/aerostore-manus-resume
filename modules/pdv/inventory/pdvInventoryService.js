@@ -798,6 +798,33 @@ function resolveSaleItemFulfillment(item = {}, saleStoreId = DEFAULT_STORE_ID, o
   );
   const itemLabel = normalizeText(item.nome || item.selected_nome || item.sku || item.codigo || item.product_id || "Produto");
   const explicitFulfillment = normalizeText(item.fulfillment_mode || item.fulfillment_type || "");
+  if (normalizeText(item.variation_id || "")) {
+    return {
+      ok: true,
+      can_finalize: true,
+      blocked: false,
+      item_id: normalizeText(item.item_id || ""),
+      product_id: normalizeText(item.variation_id || item.product_id || item.selected_product_id || ""),
+      variation_id: normalizeText(item.variation_id || ""),
+      sku: normalizeText(item.sku || item.selected_sku || ""),
+      codigo: normalizeText(item.codigo || item.selected_codigo || ""),
+      nome: itemLabel,
+      quantidade: requestedQty,
+      inventory_id: normalizeText(item.variation_id || item.inventory_id || item.selected_inventory_id || ""),
+      available_qty: roundQty(item.available_qty ?? item.sellable_available_qty ?? 0),
+      loja_venda: normalizedSaleStore,
+      loja_origem_estoque: normalizedSaleStore,
+      loja_entrega_retirada: normalizedDeliveryStore || normalizedSaleStore,
+      stock_source_store_id: normalizedSaleStore,
+      stock_source_store_name: formatStoreLabel(normalizedSaleStore),
+      fulfillment_type: "LOCAL_STOCK",
+      fulfillment_mode: FULFILLMENT_MODES.NORMAL,
+      fulfillment_status: FULFILLMENT_STATUS.CONFIRMED,
+      requires_logistics_review: false,
+      is_adjacent_store: false,
+      message: "Item normalizado validado por variation_id."
+    };
+  }
   const availability = getProductOperationalAvailability(item, normalizedSaleStore, {
     records,
     preferredOriginStore

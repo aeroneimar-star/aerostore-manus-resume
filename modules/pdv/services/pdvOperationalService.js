@@ -11,6 +11,9 @@ const {
   buildManualProductSizeVariantIdentity
 } = require("../inventory/pdvManualProductStockUtils");
 const {
+  getLegacyAiProductIdFromOperationalRow
+} = require("../products/pdvLegacyManualMigrationService");
+const {
   getDiscountPolicyForSale,
   buildDiscountAuthorizationFingerprint,
   buildDiscountAuthorizationFingerprintPayload
@@ -2118,11 +2121,26 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
   };
   const discarded = [];
   let inventoryPagination = null;
+  let migratedLegacyAiProductIds = new Set();
 
   try {
     resultsBySource.normalized = await searchNormalizedProductParents(query, storeId, safeLimit);
   } catch (error) {
     resultsBySource.normalized = [];
+  }
+  try {
+    const migratedLegacyRows = await all(
+      `SELECT legacy_ai_product_id
+       FROM pdv_products_v2
+       WHERE legacy_ai_product_id IS NOT NULL`
+    );
+    migratedLegacyAiProductIds = new Set(
+      migratedLegacyRows
+        .map((row) => Number(row.legacy_ai_product_id || 0))
+        .filter((value) => value > 0)
+    );
+  } catch (error) {
+    migratedLegacyAiProductIds = new Set();
   }
   const exactNormalized = resultsBySource.normalized.filter((item) => (
     normalizeLookup(item.nome || item.name || "") === normalizedQuery
@@ -2156,6 +2174,7 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
     resultsBySource.inventory = (inventoryPayload.items || [])
       .filter((item) => (
         normalizeLookup(item.source || "") !== "pdv_product_v2"
+        && !migratedLegacyAiProductIds.has(Number(getLegacyAiProductIdFromOperationalRow(item) || 0))
         &&
         item.sale_enabled !== false
         && !["bloqueado_para_venda", "inativo", "deleted", "hidden"].includes(normalizeLookup(item.product_status || ""))
@@ -2249,6 +2268,7 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
       );
       resultsBySource.crm_catalog = crmCatalogRows
         .filter((product) => normalizeLookup(product.status || "ativo") === "ativo")
+        .filter((product) => !migratedLegacyAiProductIds.has(Number(product.id || 0)))
         .filter((product) => strictCodeSearch
           ? productMatchesExactIdentifier(product, query)
           : productMatchesTokenSearch(product, query, searchTokens))
