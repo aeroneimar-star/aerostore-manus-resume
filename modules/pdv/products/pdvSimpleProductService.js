@@ -398,15 +398,16 @@ async function insertLegacyProduct(connection, payload, {
   totalStock,
   timestamp
 }) {
+  const promotionalPriceCents = toMoneyCents(payload.promotional_price);
   return run(
     connection,
     `INSERT INTO ai_products
-     (name, commercial_name, category, gender, color, sizes, price, cost_price,
+     (name, commercial_name, category, gender, color, sizes, price, promotional_price, cost_price,
       stock, estoque_total, size_stock_json, location, gtin_ean, ncm, sku, codigo,
       marca, store, short_description, sales_argument, tags, priority, status,
-      use_in_ai, use_in_pos, source, notes, created_at, updated_at)
+     use_in_ai, use_in_pos, source, notes, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       name,
       normalizeText(payload.commercial_name || name),
@@ -415,6 +416,7 @@ async function insertLegacyProduct(connection, payload, {
       normalizeText(payload.color),
       normalizeText(payload.sizes),
       salePriceCents / 100,
+      promotionalPriceCents === null ? null : promotionalPriceCents / 100,
       costPriceCents === null ? null : costPriceCents / 100,
       totalStock,
       totalStock,

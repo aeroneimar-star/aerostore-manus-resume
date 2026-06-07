@@ -1379,23 +1379,25 @@ function scoreProductTokenSearchMatch(product = {}, query = "", tokens = null) {
 
 function buildProductSearchIdentifiers(product = {}) {
   const variants = Array.isArray(product.variants) ? product.variants : [];
+  const textCodes = [
+    product.sku,
+    product.codigo_tiny,
+    product.tiny_id,
+    product.codigo_etiqueta,
+    product.codigo_interno,
+    product.codigo,
+    product.product_id,
+    product.id,
+    ...variants.flatMap((variant) => [
+      variant.sku,
+      variant.codigo,
+      variant.product_id,
+      variant.variation_id
+    ])
+  ].map((value) => normalizeCodeLookup(value)).filter(Boolean);
   return {
-    textCodes: [
-      product.sku,
-      product.codigo_tiny,
-      product.tiny_id,
-      product.codigo_etiqueta,
-      product.codigo_interno,
-      product.codigo,
-      product.product_id,
-      product.id,
-      ...variants.flatMap((variant) => [
-        variant.sku,
-        variant.codigo,
-        variant.product_id,
-        variant.variation_id
-      ])
-    ].map((value) => normalizeCodeLookup(value)).filter(Boolean),
+    textCodes,
+    textCodeDigits: textCodes.map((value) => normalizeDigits(value)).filter(Boolean),
     digitCodes: [
       product.ean,
       product.codigo_barras,
@@ -1422,6 +1424,7 @@ function scoreProductSearchMatch(product = {}, query = "") {
   const identifiers = buildProductSearchIdentifiers(product);
   let score = 0;
   if (digitsQuery && identifiers.digitCodes.includes(digitsQuery)) score = Math.max(score, 1300);
+  if (digitsQuery && identifiers.textCodeDigits.includes(digitsQuery)) score = Math.max(score, 1250);
   if (textQuery && identifiers.textCodes.includes(textQuery)) score = Math.max(score, 1200);
   if (textQuery && identifiers.textCodes.some((value) => value.startsWith(textQuery))) score = Math.max(score, 980);
   if (textQuery && identifiers.textCodes.some((value) => value.includes(textQuery))) score = Math.max(score, 920);
@@ -1453,6 +1456,7 @@ function productMatchesExactIdentifier(product = {}, query = "") {
   const identifiers = buildProductSearchIdentifiers(product);
   return Boolean(
     (textQuery && identifiers.textCodes.includes(textQuery))
+    || (digitsQuery && identifiers.textCodeDigits.includes(digitsQuery))
     || (digitsQuery && identifiers.digitCodes.includes(digitsQuery))
   );
 }
@@ -1537,6 +1541,20 @@ function applyProductEffectivePricing(product = {}, override = null) {
       used_promotional_price: Boolean(product.used_promotional_price)
     };
   }
+  const pricedVariants = Array.isArray(product.variants)
+    ? product.variants.map((variant) => ({
+      ...variant,
+      price: promotionalPrice,
+      preco_venda: promotionalPrice,
+      sale_price: promotionalPrice,
+      original_price: normalPrice,
+      compare_at_price: normalPrice,
+      promotional_price: promotionalPrice,
+      promotionalPrice: promotionalPrice,
+      used_promotional_price: true,
+      price_source: "catalog_promotional_price"
+    }))
+    : product.variants;
   return {
     ...product,
     price: promotionalPrice,
@@ -1547,7 +1565,8 @@ function applyProductEffectivePricing(product = {}, override = null) {
     promotional_price: promotionalPrice,
     promotionalPrice: promotionalPrice,
     used_promotional_price: true,
-    price_source: "catalog_promotional_price"
+    price_source: "catalog_promotional_price",
+    variants: pricedVariants
   };
 }
 
@@ -1980,6 +1999,9 @@ async function searchNormalizedProductParents(query = "", storeId = "", limit = 
        p.base_sku,
        p.sale_price_cents AS product_sale_price_cents,
        p.cost_price_cents AS product_cost_price_cents,
+       a.main_media_id,
+       a.price AS catalog_price,
+       a.promotional_price AS catalog_promotional_price,
        v.id AS variation_id,
        v.sku,
        v.barcode,
@@ -1993,6 +2015,7 @@ async function searchNormalizedProductParents(query = "", storeId = "", limit = 
        b.reserved_qty
      FROM pdv_products_v2 p
      INNER JOIN pdv_product_variants v ON v.product_id = p.id
+     LEFT JOIN ai_products a ON a.id = p.legacy_ai_product_id
      LEFT JOIN pdv_inventory_balances_v2 b
        ON b.variant_id = v.id
       AND (? = '' OR b.store_id = ? COLLATE NOCASE)
@@ -2024,6 +2047,15 @@ async function searchNormalizedProductParents(query = "", storeId = "", limit = 
         codigo: row.base_sku,
         parent_sku: row.base_sku,
         preco_venda: toNumber(row.product_sale_price_cents) / 100,
+        original_price: toNumber(row.catalog_price || row.product_sale_price_cents / 100) || null,
+        compare_at_price: toNumber(row.catalog_price || row.product_sale_price_cents / 100) || null,
+        promotional_price: toNumber(row.catalog_promotional_price || 0) || null,
+        promotionalPrice: toNumber(row.catalog_promotional_price || 0) || null,
+        used_promotional_price: hasValidPromotionalPrice(row.catalog_price || row.product_sale_price_cents / 100, row.catalog_promotional_price),
+        image: row.main_media_id ? `/api/uploads/media/${Number(row.main_media_id)}/preview` : "",
+        photo_preview_url: row.main_media_id ? `/api/uploads/media/${Number(row.main_media_id)}/preview` : "",
+        preview_url: row.main_media_id ? `/api/uploads/media/${Number(row.main_media_id)}/preview` : "",
+        media_id: Number(row.main_media_id || 0) || null,
         store_id: normalizedStore,
         origin: "PDV_NORMALIZED",
         origin_label: "PDV normalizado",
@@ -2147,7 +2179,8 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
     || productMatchesExactIdentifier(item, query)
   ));
   if (exactNormalized.length) {
-    const unified = exactNormalized
+    const pricedExactNormalized = await applyCatalogPromotionalPriceOverrides(exactNormalized);
+    const unified = pricedExactNormalized
       .map((item) => enrichProductOperationalAvailability(item, storeId))
       .sort((left, right) => scoreProductSearchMatch(right, query) - scoreProductSearchMatch(left, query))
       .slice(0, safeLimit);
