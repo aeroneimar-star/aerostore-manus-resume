@@ -218,6 +218,7 @@ const state = {
     customerSearchHasRun: false,
     customerSearchRequestId: 0,
     customerSearchLastQuery: "",
+    customerSearchDebounce: null,
     customerAttachingKey: "",
     customerRemoving: false,
     customerCreateOpen: false,
@@ -3685,6 +3686,7 @@ async function attachCreatedCustomerToPdvSale(customer = null, options = {}) {
     state.pdvSale.customerSearching = false;
     state.pdvSale.customerSearchError = "";
     state.pdvSale.customerSearchHasRun = false;
+    clearPdvSaleCustomerSearchDebounce();
     state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
     state.pdvSale.customerSearchLastQuery = "";
     state.pdvSale.customerCreateError = "";
@@ -5988,7 +5990,7 @@ function buildPdvSaleActiveContent() {
               <label class="pdv-sale-search-label">
                 <input id="pdv-sale-customer-search" name="customerQuery" type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(state.pdvSale.customerQuery || "")}" placeholder="Busque por nome, telefone ou CPF" />
               </label>
-              <div class="action-row pdv-sale-customer-toolbar" style="display:none;">
+              <div class="action-row pdv-sale-customer-toolbar">
                 <button class="secondary-button" type="submit"${state.pdvSale.customerSearching ? " disabled" : ""}>${state.pdvSale.customerSearching ? "Buscando..." : "Buscar cliente"}</button>
                 ${canCreatePdvCustomers() ? `<button class="ghost-button" type="button" data-pdv-sale-customer-create-open="true">Novo cadastro</button>` : ""}
               </div>
@@ -6233,7 +6235,52 @@ function renderPdvSaleSurface() {
   }
 }
 
+function refocusPdvSaleCustomerSearchInput(shouldFocus) {
+  if (!shouldFocus) {
+    return;
+  }
+  setTimeout(() => {
+    const input = document.getElementById("pdv-sale-customer-search");
+    if (!input) {
+      return;
+    }
+    const cursorPosition = input.value.length;
+    input.focus();
+    if (typeof input.setSelectionRange === "function") {
+      input.setSelectionRange(cursorPosition, cursorPosition);
+    }
+  }, 0);
+}
+
+function clearPdvSaleCustomerSearchDebounce() {
+  if (state.pdvSale.customerSearchDebounce) {
+    clearTimeout(state.pdvSale.customerSearchDebounce);
+    state.pdvSale.customerSearchDebounce = null;
+  }
+}
+
+function schedulePdvSaleCustomerSearch() {
+  clearPdvSaleCustomerSearchDebounce();
+  const query = normalizeText(state.pdvSale.customerQuery || "");
+  if (query.length < 2) {
+    state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
+    state.pdvSale.customerResults = [];
+    state.pdvSale.customerSearching = false;
+    state.pdvSale.customerSearchError = "";
+    state.pdvSale.customerSearchHasRun = false;
+    state.pdvSale.customerSearchLastQuery = "";
+    renderPdvSaleSurface();
+    return;
+  }
+  state.pdvSale.customerSearchDebounce = setTimeout(() => {
+    state.pdvSale.customerSearchDebounce = null;
+    searchPdvSaleCustomers().catch((error) => handleUiError("Erro ao buscar clientes da venda", error));
+  }, 300);
+}
+
 async function searchPdvSaleCustomers() {
+  clearPdvSaleCustomerSearchDebounce();
+  const shouldRefocusSearch = document.activeElement?.id === "pdv-sale-customer-search";
   const perfToken = startAeroStorePerfMeasure("pdv.sale.customer_search", {
     query_length: normalizeText(state.pdvSale.customerQuery).length
   });
@@ -6248,6 +6295,7 @@ async function searchPdvSaleCustomers() {
     state.pdvSale.customerSearchHasRun = false;
     state.pdvSale.customerSearchLastQuery = "";
     renderPdvSaleSurface();
+    refocusPdvSaleCustomerSearchInput(shouldRefocusSearch);
     endAeroStorePerfMeasure(perfToken, { skipped: "query_too_short" });
     return;
   }
@@ -6259,16 +6307,17 @@ async function searchPdvSaleCustomers() {
   state.pdvSale.customerSearchLastQuery = query;
   state.pdvSale.customerResults = [];
   renderPdvSaleSurface();
+  refocusPdvSaleCustomerSearchInput(shouldRefocusSearch);
   try {
-    const response = await api(`/api/customers?search=${encodeURIComponent(query)}&limit=10`);
+    const response = await api(`/api/pdv/operational/search/customers?q=${encodeURIComponent(query)}&limit=10`);
     if (requestId !== state.pdvSale.customerSearchRequestId || query !== normalizeText(state.pdvSale.customerQuery || "")) {
       return;
     }
     const baseResults = toArray(response.items).map((item) => ({
-      customer_lookup: String(item.id || item.mobile_normalized || item.phone || item.name || ""),
-      master_customer_id: String(item.id || ""),
+      customer_lookup: String(item.id || item.master_customer_id || item.crm_contact_id || item.legacy_contact_id || item.phone || item.name || ""),
+      master_customer_id: String(item.master_customer_id || item.id || ""),
       id: Number(item.id || 0),
-      contact_id: String(item.id || ""),
+      contact_id: String(item.contact_id || item.legacy_contact_id || item.id || ""),
       name: item.name || "Cliente",
       first_name: item.first_name || "",
       phone: item.mobile || item.phone || item.mobile_normalized || "",
@@ -6281,8 +6330,8 @@ async function searchPdvSaleCustomers() {
       notes: item.notes || "",
       status: item.status || "",
       source: item.source || "crm",
-      origin: item.source || "crm",
-      origin_label: item.source || "CRM",
+      origin: item.origin || item.source || "crm",
+      origin_label: item.origin_label || item.source || "CRM",
       top_size: item.top_size || "",
       bottom_size: item.bottom_size || "",
       shoe_size: item.shoe_size || "",
@@ -6292,7 +6341,7 @@ async function searchPdvSaleCustomers() {
       saldo_cashback: toNumber(item.saldo_cashback || item.cashback_available || item.cashback || item.cashback_operacional || 0),
       cashback_legado: toNumber(item.cashback_legado || 0),
       crm_contact_id: normalizeText(item.crm_contact_id || ""),
-      legacy_contact_id: "",
+      legacy_contact_id: normalizeText(item.legacy_contact_id || ""),
       behavior: item.behavior || {}
     }));
     const enrichedResults = await Promise.all(baseResults.map(async (item) => {
@@ -6337,6 +6386,7 @@ async function searchPdvSaleCustomers() {
     if (requestId === state.pdvSale.customerSearchRequestId) {
       state.pdvSale.customerSearching = false;
       renderPdvSaleSurface();
+      refocusPdvSaleCustomerSearchInput(shouldRefocusSearch);
       endAeroStorePerfMeasure(perfToken, {
         results: toArray(state.pdvSale.customerResults).length,
         cashback_enriched: toArray(state.pdvSale.customerResults).filter((item) => toNumber(item.cashback_available || 0) > 0).length
@@ -8058,6 +8108,7 @@ async function detachPdvSaleCustomer() {
     state.pdvSale.customerSearching = false;
     state.pdvSale.customerSearchError = "";
     state.pdvSale.customerSearchHasRun = false;
+    clearPdvSaleCustomerSearchDebounce();
     state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
     state.pdvSale.customerSearchLastQuery = "";
     resetPdvSaleCashbackState();
@@ -28591,6 +28642,7 @@ async function logoutUser() {
     customerSearchHasRun: false,
     customerSearchRequestId: 0,
     customerSearchLastQuery: "",
+    customerSearchDebounce: null,
     customerAttachingKey: "",
     customerRemoving: false,
     customerCreateOpen: false,
@@ -32011,6 +32063,7 @@ function handleDocumentSubmit(event) {
     event.preventDefault();
     const customerFormData = new FormData(customerSearchForm);
     state.pdvSale.customerQuery = normalizeText(customerFormData.get("customerQuery") || "");
+    clearPdvSaleCustomerSearchDebounce();
     searchPdvSaleCustomers().catch((error) => handleUiError("Erro ao buscar clientes da venda", error));
     return;
   }
@@ -32680,10 +32733,8 @@ function handleDocumentInput(event) {
         state.pdvSale.customerResults = [];
         state.pdvSale.customerSearchHasRun = false;
         renderPdvSaleSurface();
-      } else if (nextQuery.length < 2) {
-        state.pdvSale.customerResults = [];
-        state.pdvSale.customerSearchHasRun = false;
       }
+      schedulePdvSaleCustomerSearch();
     }
     return;
   }
