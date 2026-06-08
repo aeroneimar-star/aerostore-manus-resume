@@ -38,26 +38,36 @@ function resolveStoreId(context = {}) {
 }
 
 function resolveWhatsAppConfig(context = {}) {
-  const provider = normalizeProvider(context.provider || process.env.WHATSAPP_PROVIDER || DEFAULT_PROVIDER);
+  const storeConfig = context.storeConfig && typeof context.storeConfig === "object" ? context.storeConfig : null;
+  const provider = normalizeProvider(storeConfig?.provider || context.provider || process.env.WHATSAPP_PROVIDER || DEFAULT_PROVIDER);
   const cloudEnabled = readBoolean(process.env.WHATSAPP_CLOUD_ENABLED, false);
   const webEnabled = readBoolean(process.env.WHATSAPP_WEB_ENABLED, true);
-  const enabled = provider === "meta_cloud" ? cloudEnabled : webEnabled;
-  const dryRun = provider === "meta_cloud" ? isDryRunEnabled() || !cloudEnabled : isDryRunEnabled();
+  const hasStoreConfig = Boolean(storeConfig);
+  const storeEnabled = readBoolean(storeConfig?.enabled, false);
+  const enabled = hasStoreConfig ? storeEnabled : (provider === "meta_cloud" ? cloudEnabled : webEnabled);
+  const storeDryRun = readBoolean(storeConfig?.dryRun ?? storeConfig?.dry_run, true);
+  const dryRun = hasStoreConfig
+    ? storeDryRun || (provider === "meta_cloud" && !enabled)
+    : (provider === "meta_cloud" ? isDryRunEnabled() || !cloudEnabled : isDryRunEnabled());
+  const storeTemplates = storeConfig?.templates && typeof storeConfig.templates === "object" ? storeConfig.templates : {};
 
   return {
     storeId: resolveStoreId(context),
     provider,
     enabled,
     dryRun,
-    phoneNumberId: normalizeText(context.phoneNumberId || process.env.WHATSAPP_CLOUD_PHONE_NUMBER_ID || ""),
-    businessAccountId: normalizeText(context.businessAccountId || process.env.WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID || ""),
-    displayName: normalizeText(context.displayName || context.storeName || context.user?.store || ""),
+    phoneNumberId: normalizeText(storeConfig?.phoneNumberId || context.phoneNumberId || process.env.WHATSAPP_CLOUD_PHONE_NUMBER_ID || ""),
+    businessAccountId: normalizeText(storeConfig?.businessAccountId || context.businessAccountId || process.env.WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID || ""),
+    displayName: normalizeText(storeConfig?.displayName || context.displayName || context.storeName || context.user?.store || ""),
     apiVersion: normalizeText(process.env.WHATSAPP_CLOUD_API_VERSION || "v20.0"),
+    token: normalizeText(storeConfig?.token || context.token || ""),
+    verifyToken: normalizeText(storeConfig?.verifyToken || context.verifyToken || ""),
+    appSecret: normalizeText(storeConfig?.appSecret || context.appSecret || ""),
     templates: {
-      language: normalizeText(process.env.WHATSAPP_TEMPLATE_LANG || "pt_BR"),
-      cashback: normalizeText(process.env.WHATSAPP_TEMPLATE_CASHBACK || "cashback_notificacao"),
-      aviso10: normalizeText(process.env.WHATSAPP_TEMPLATE_AVISO_10 || "cashback_aviso_10dias"),
-      aviso3: normalizeText(process.env.WHATSAPP_TEMPLATE_AVISO_3 || "cashback_aviso_3dias")
+      language: normalizeText(storeTemplates.language || process.env.WHATSAPP_TEMPLATE_LANG || "pt_BR"),
+      cashback: normalizeText(storeTemplates.cashback || process.env.WHATSAPP_TEMPLATE_CASHBACK || "cashback_notificacao"),
+      aviso10: normalizeText(storeTemplates.aviso10 || process.env.WHATSAPP_TEMPLATE_AVISO_10 || "cashback_aviso_10dias"),
+      aviso3: normalizeText(storeTemplates.aviso3 || process.env.WHATSAPP_TEMPLATE_AVISO_3 || "cashback_aviso_3dias")
     }
   };
 }

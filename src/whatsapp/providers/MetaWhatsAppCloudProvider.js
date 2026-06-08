@@ -62,11 +62,16 @@ class MetaWhatsAppCloudProvider {
 
   getConfig(context = {}) {
     const base = resolveWhatsAppConfig({ ...context, provider: "meta_cloud" });
-    const enabled = String(process.env.WHATSAPP_CLOUD_ENABLED || "false").trim().toLowerCase() === "true";
+    const contextEnabled = context.enabled;
+    const enabled = contextEnabled === undefined || contextEnabled === null
+      ? String(process.env.WHATSAPP_CLOUD_ENABLED || "false").trim().toLowerCase() === "true"
+      : Boolean(contextEnabled);
     return {
       ...base,
       enabled,
-      dryRun: isDryRunEnabled() || !enabled,
+      dryRun: context.dryRun === undefined && context.dry_run === undefined
+        ? isDryRunEnabled() || !enabled
+        : Boolean(context.dryRun ?? context.dry_run) || !enabled,
       token: String(context.token || process.env.WHATSAPP_CLOUD_TOKEN || "").trim(),
       phoneNumberId: String(context.phoneNumberId || base.phoneNumberId || "").trim()
     };
