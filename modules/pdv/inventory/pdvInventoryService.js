@@ -46,6 +46,7 @@ const INVENTORY_MOVEMENT_TYPES = [
   "EXCHANGE_IN",
   "EXCHANGE_OUT",
   "INTERNAL_CONSUMPTION_OUT",
+  "STOCK_COUNT_ADJUSTMENT",
   "MANUAL_ADJUSTMENT",
   "TRANSFER_OUT",
   "TRANSFER_IN",
@@ -2273,6 +2274,187 @@ function createManualAdjustment(payload = {}, user = {}) {
   };
 }
 
+function findInventoryRecordInStore(records = [], payload = {}, storeId = DEFAULT_STORE_ID) {
+  const normalizedStore = normalizeStoreLookup(storeId);
+  const normalizedInventoryId = normalizeText(payload.inventory_id || payload.inventoryId || "");
+  const normalizedProductId = normalizeText(payload.product_id || payload.productId || "");
+  const normalizedSku = normalizeText(payload.sku || "");
+  const normalizedCodigo = normalizeText(payload.codigo || payload.code || "");
+  if (normalizedInventoryId) {
+    const byInventory = records.find((item) => (
+      normalizeStoreLookup(item.store_id) === normalizedStore
+      && normalizeText(item.inventory_id || "") === normalizedInventoryId
+    ));
+    if (byInventory) {
+      return byInventory;
+    }
+  }
+  if (normalizedProductId) {
+    const byProduct = records.find((item) => (
+      normalizeStoreLookup(item.store_id) === normalizedStore
+      && normalizeText(item.product_id || "") === normalizedProductId
+    ));
+    if (byProduct) {
+      return byProduct;
+    }
+  }
+  return records.find((item) => (
+    normalizeStoreLookup(item.store_id) === normalizedStore
+    && (
+      (normalizedSku && normalizeText(item.sku || "") === normalizedSku)
+      || (normalizedCodigo && normalizeText(item.codigo || "") === normalizedCodigo)
+    )
+  )) || null;
+}
+
+function findInventoryIdentitySource(records = [], payload = {}) {
+  const normalizedInventoryId = normalizeText(payload.inventory_id || payload.inventoryId || "");
+  const normalizedProductId = normalizeText(payload.product_id || payload.productId || "");
+  const normalizedSku = normalizeText(payload.sku || "");
+  const normalizedCodigo = normalizeText(payload.codigo || payload.code || "");
+  return records.find((item) => (
+    (normalizedInventoryId && normalizeText(item.inventory_id || "") === normalizedInventoryId)
+    || (normalizedProductId && normalizeText(item.product_id || "") === normalizedProductId)
+    || (normalizedSku && normalizeText(item.sku || "") === normalizedSku)
+    || (normalizedCodigo && normalizeText(item.codigo || "") === normalizedCodigo)
+  )) || null;
+}
+
+function buildInventoryRecordForStockCount(records = [], payload = {}, storeId = DEFAULT_STORE_ID) {
+  const sourceRecord = findInventoryIdentitySource(records, payload) || {};
+  const productId = normalizeText(payload.product_id || payload.productId || sourceRecord.product_id || "");
+  const sku = normalizeText(payload.sku || sourceRecord.sku || payload.codigo || sourceRecord.codigo || "");
+  const codigo = normalizeText(payload.codigo || sourceRecord.codigo || sku || "");
+  if (!productId && !sku && !codigo) {
+    throw new Error("Selecione um produto com identificador para ajustar o estoque.");
+  }
+  const record = {
+    ...sourceRecord,
+    inventory_id: buildId("INV"),
+    product_id: productId || buildProductIdentity({ sku, codigo, nome: payload.nome || sourceRecord.nome }),
+    sku,
+    codigo,
+    codigo_tiny: normalizeText(payload.codigo_tiny || sourceRecord.codigo_tiny || ""),
+    codigo_etiqueta: normalizeText(payload.codigo_etiqueta || sourceRecord.codigo_etiqueta || ""),
+    ean: normalizeDigits(payload.ean || sourceRecord.ean || sourceRecord.codigo_barras || ""),
+    codigo_barras: normalizeDigits(payload.codigo_barras || payload.barcode || sourceRecord.codigo_barras || sourceRecord.ean || ""),
+    codigo_interno: normalizeText(payload.codigo_interno || sourceRecord.codigo_interno || ""),
+    nome: normalizeText(payload.nome || payload.name || sourceRecord.nome || ""),
+    descricao: normalizeText(payload.descricao || sourceRecord.descricao || ""),
+    marca: normalizeText(payload.marca || sourceRecord.marca || ""),
+    categoria: normalizeText(payload.categoria || sourceRecord.categoria || ""),
+    linha_genero: normalizeText(payload.linha_genero || sourceRecord.linha_genero || ""),
+    tipo: normalizeText(payload.tipo || sourceRecord.tipo || ""),
+    cor: normalizeText(payload.cor || sourceRecord.cor || ""),
+    tamanho: normalizeText(payload.tamanho || sourceRecord.tamanho || ""),
+    grade: normalizeText(payload.grade || sourceRecord.grade || ""),
+    preco_venda: roundMoneyLike(payload.preco_venda || sourceRecord.preco_venda || 0),
+    preco_custo: roundMoneyLike(payload.preco_custo || sourceRecord.preco_custo || 0),
+    store_id: normalizeStoreId(storeId),
+    available_qty: 0,
+    reserved_qty: 0,
+    unavailable_qty: 0,
+    exchange_qty: 0,
+    consumption_qty: 0,
+    last_movement_at: nowIso(),
+    status: normalizeText(payload.status || sourceRecord.status || "ACTIVE") || "ACTIVE",
+    observacao: normalizeText(sourceRecord.observacao || payload.observacao || ""),
+    media_id: Number(payload.media_id || sourceRecord.media_id || 0) || null,
+    photo_preview_url: normalizeText(payload.photo_preview_url || sourceRecord.photo_preview_url || ""),
+    media_url: normalizeText(payload.media_url || sourceRecord.media_url || ""),
+    foto: normalizeText(payload.foto || sourceRecord.foto || ""),
+    source: normalizeText(sourceRecord.source || payload.source || "PDV_OPERATIONAL"),
+    origem: normalizeText(sourceRecord.origem || payload.origem || "")
+  };
+  records.push(record);
+  return record;
+}
+
+function createStockCountAdjustment(payload = {}, user = {}) {
+  const hasTargetQuantity = [
+    payload.target_quantity,
+    payload.targetQuantity,
+    payload.counted_quantity,
+    payload.countedQuantity,
+    payload.quantity_counted,
+    payload.available_qty
+  ].some((value) => value !== undefined && value !== null && value !== "");
+  if (!hasTargetQuantity) {
+    throw new Error("Informe a quantidade contada para ajustar o estoque.");
+  }
+  const targetQuantity = roundQty(pickFirstDefined(
+    payload.target_quantity,
+    payload.targetQuantity,
+    payload.counted_quantity,
+    payload.countedQuantity,
+    payload.quantity_counted,
+    payload.available_qty,
+    0
+  ));
+  if (targetQuantity < 0) {
+    throw new Error("A quantidade contada nao pode ser negativa.");
+  }
+  const storeId = normalizeStoreId(payload.store_id || payload.storeId || payload.loja || "");
+  if (!isActiveOperationalStore(storeId)) {
+    throw new Error("Selecione uma loja operacional valida para ajustar o estoque.");
+  }
+  const records = ensureInventorySeeded();
+  const record = findInventoryRecordInStore(records, payload, storeId)
+    || buildInventoryRecordForStockCount(records, payload, storeId);
+  const before = cloneInventorySnapshot(record);
+  const delta = roundQty(targetQuantity - before.available_qty);
+  const snapshots = changeInventoryRecord(record, {
+    available_delta: delta
+  });
+  record.stock_count_confirmed = true;
+  record.estoque_status = "confirmed_manual_count";
+  record.inventory_status = "confirmed";
+  record.last_stock_count_at = nowIso();
+  record.last_stock_count_by = normalizeText(user.name || user.email || user.username || "sistema");
+  record.last_stock_count_origin = normalizeText(payload.origin || payload.origem || "pdv_stock_adjustment");
+  record.last_stock_count_note = normalizeText(payload.notes || payload.observacao || payload.reason || "");
+  updateRecordAvailabilityStatus(record);
+  saveInventoryRecords(records);
+  const movement = appendInventoryMovement({
+    inventory_id: record.inventory_id,
+    type: "STOCK_COUNT_ADJUSTMENT",
+    product_id: record.product_id,
+    sku: record.sku,
+    codigo: record.codigo,
+    nome: record.nome,
+    store_id: record.store_id,
+    quantity: Math.abs(delta),
+    direction: delta > 0 ? "IN" : delta < 0 ? "OUT" : "INFO",
+    reference_type: "STOCK_COUNT",
+    reference_id: buildId("CNT"),
+    reason: normalizeText(payload.reason || "Contagem operacional de estoque."),
+    notes: normalizeText(payload.notes || payload.observacao || ""),
+    before_qty: snapshots.before.available_qty,
+    after_qty: snapshots.after.available_qty,
+    before_snapshot: snapshots.before,
+    after_snapshot: cloneInventorySnapshot(record),
+    metadata: {
+      target_quantity: targetQuantity,
+      delta,
+      source_inventory_id: normalizeText(payload.inventory_id || ""),
+      origin: normalizeText(payload.origin || payload.origem || "pdv_stock_adjustment")
+    }
+  }, user);
+  saveInventoryAudit("PDV_INVENTORY_STOCK_COUNT_ADJUSTMENT", {
+    store_id: record.store_id,
+    reason: payload.reason || payload.notes || "Contagem operacional de estoque.",
+    before: { product_id: record.product_id, snapshot: before },
+    after: { product_id: record.product_id, snapshot: cloneInventorySnapshot(record), movement_id: movement.movement_id }
+  }, user);
+  emitStockAlertEvents(record, user);
+  return {
+    record,
+    movement,
+    target_quantity: targetQuantity,
+    delta
+  };
+}
+
 function syncManualProductSizeStock(payload = {}, user = {}, options = {}) {
   const product = payload.product && typeof payload.product === "object" ? payload.product : {};
   const rawStoreId = payload.storeId || payload.store_id || "";
@@ -4375,6 +4557,7 @@ module.exports = {
   createInventoryProductFromLabel,
   updateInventoryProduct,
   createManualAdjustment,
+  createStockCountAdjustment,
   syncManualProductSizeStock,
   syncNormalizedSimpleProductProjection,
   syncNormalizedProductProjection,

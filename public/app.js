@@ -550,6 +550,7 @@ const state = {
   },
   pdvStock: {
     loading: false,
+    adjusting: false,
     items: [],
     summary: null,
     query: "",
@@ -560,7 +561,9 @@ const state = {
     },
     selectedInventoryId: "",
     pagination: { page: 1, pageSize: 25 },
-    error: ""
+    error: "",
+    adjustmentResult: null,
+    adjustmentError: ""
   },
   aerointel: {
     loading: false,
@@ -15539,6 +15542,14 @@ function getPdvStockStoreOptions() {
   return options;
 }
 
+function getPdvStockAdjustmentStoreOptions(selectedStore = "") {
+  return [
+    { value: "vila", label: "Vila" },
+    { value: "botanico", label: "Botânico" },
+    { value: "sul", label: "Sul" }
+  ];
+}
+
 function getPdvStockActiveStoreLabel() {
   const selectedStore = normalizeText(state.pdvStock.filters.store || "");
   if (!selectedStore && canViewAllStores()) {
@@ -15592,6 +15603,68 @@ function buildPdvStockIdentifierChips(item = {}) {
     .join("");
 }
 
+function buildPdvStockAdjustmentForm(item = {}) {
+  const itemKey = normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "");
+  if (!itemKey) {
+    return "";
+  }
+  const selectedStore = normalizePdvStoreIdentifier(item.store_id || state.pdvStock.filters.store || getCurrentPdvStoreId() || "vila") || "vila";
+  const storeOptions = getPdvStockAdjustmentStoreOptions(selectedStore);
+  const availableQty = toNumber(item.available_qty ?? item.saldo ?? item.estoque ?? 0);
+  const lastResult = state.pdvStock.adjustmentResult || null;
+  const resultMatches = lastResult && normalizeText(lastResult.product_id || "") === normalizeText(item.product_id || "");
+  return `
+    <form class="pdv-products-form-grid" data-pdv-stock-adjustment-form="true">
+      <input type="hidden" name="inventory_id" value="${escapeHtml(item.inventory_id || "")}" />
+      <input type="hidden" name="product_id" value="${escapeHtml(item.product_id || "")}" />
+      <input type="hidden" name="sku" value="${escapeHtml(item.sku || "")}" />
+      <input type="hidden" name="codigo" value="${escapeHtml(item.codigo || "")}" />
+      <input type="hidden" name="codigo_tiny" value="${escapeHtml(item.codigo_tiny || "")}" />
+      <input type="hidden" name="codigo_etiqueta" value="${escapeHtml(item.codigo_etiqueta || "")}" />
+      <input type="hidden" name="codigo_interno" value="${escapeHtml(item.codigo_interno || "")}" />
+      <input type="hidden" name="codigo_barras" value="${escapeHtml(item.codigo_barras || item.ean || "")}" />
+      <input type="hidden" name="nome" value="${escapeHtml(item.nome || "")}" />
+      <input type="hidden" name="marca" value="${escapeHtml(item.marca || "")}" />
+      <input type="hidden" name="categoria" value="${escapeHtml(item.categoria || "")}" />
+      <input type="hidden" name="cor" value="${escapeHtml(item.cor || "")}" />
+      <input type="hidden" name="tamanho" value="${escapeHtml(item.tamanho || "")}" />
+      <input type="hidden" name="tipo" value="${escapeHtml(item.tipo || "")}" />
+      <input type="hidden" name="source" value="${escapeHtml(item.source || item.origin || "")}" />
+      <input type="hidden" name="preco_venda" value="${escapeHtml(String(item.preco_venda || item.price || ""))}" />
+      <label>
+        Loja / unidade
+        <select name="store_id" required>
+          ${storeOptions.map((option) => `<option value="${escapeHtml(option.value)}"${selectedStore === option.value ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+        </select>
+      </label>
+      <label>
+        Quantidade contada
+        <input name="target_quantity" type="number" min="0" step="1" value="${escapeHtml(String(availableQty))}" required />
+      </label>
+      <label class="pdv-products-form-wide">
+        Observação
+        <input name="notes" type="text" maxlength="180" placeholder="Ex.: contagem fisica da loja" />
+      </label>
+      <div class="action-row pdv-products-form-wide">
+        <button class="primary-button" type="submit"${state.pdvStock.adjusting ? " disabled" : ""}>${state.pdvStock.adjusting ? "Salvando..." : "Salvar ajuste operacional"}</button>
+        <span class="table-meta">Gera movimento STOCK_COUNT_ADJUSTMENT sem alterar o cadastro importado/Tiny.</span>
+      </div>
+      ${state.pdvStock.adjustmentError ? `
+        <div class="pdv-products-callout danger pdv-products-form-wide">
+          <strong>Falha no ajuste</strong>
+          <span>${escapeHtml(state.pdvStock.adjustmentError)}</span>
+        </div>
+      ` : ""}
+      ${resultMatches ? `
+        <div class="pdv-products-callout success pdv-products-form-wide">
+          <strong>Ajuste registrado</strong>
+          <span>${escapeHtml(formatStoreIdLabel(lastResult.store_id || ""))}: ${escapeHtml(String(lastResult.before_qty))} -> ${escapeHtml(String(lastResult.after_qty))}. Movimento ${escapeHtml(lastResult.movement_id || "")}.</span>
+        </div>
+      ` : ""}
+    </form>
+  `;
+}
+
 function buildPdvStockDetailCard(item = {}, summary = state.pdvStock.summary || {}) {
   if (!item || !normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "")) {
     const alerts = toArray(summary.alerts || summary.items).slice(0, 4);
@@ -15635,6 +15708,13 @@ function buildPdvStockDetailCard(item = {}, summary = state.pdvStock.summary || 
         <div><span class="table-meta">Ultima atualizacao</span><strong>${escapeHtml(updatedAt || "-")}</strong></div>
       </div>
       <div class="pdv-products-identifiers">${buildPdvStockIdentifierChips(item)}</div>
+      <div class="pdv-products-detail-section">
+        <div class="panel-header">
+          <h4>Ajuste operacional de estoque</h4>
+          <span class="table-meta">Contagem por loja para importados/Tiny e legados, sem editar o cadastro comercial.</span>
+        </div>
+        ${buildPdvStockAdjustmentForm(item)}
+      </div>
       ${normalizeText(item.observacao || "") ? `
         <div class="pdv-products-callout warning">
           <strong>Observacao operacional</strong>
@@ -15653,6 +15733,77 @@ function applyPdvStockFiltersFromForm(formElement) {
   state.pdvStock.filters.alert = normalizeText(formData.get("alertFilter") || "").toLowerCase();
   state.pdvStock.selectedInventoryId = "";
   state.pdvStock.pagination = { ...(state.pdvStock.pagination || {}), page: 1 };
+}
+
+async function submitPdvStockAdjustment(formElement) {
+  if (!formElement) return;
+  const formData = new FormData(formElement);
+  const targetQuantity = Number(formData.get("target_quantity"));
+  if (!Number.isFinite(targetQuantity) || targetQuantity < 0) {
+    state.pdvStock.adjustmentError = "Informe uma quantidade contada valida.";
+    renderPdvStockOfficialFront();
+    return;
+  }
+  const storeId = normalizePdvStoreIdentifier(formData.get("store_id") || "");
+  if (!["vila", "botanico", "sul"].includes(storeId)) {
+    state.pdvStock.adjustmentError = "Selecione uma loja operacional valida.";
+    renderPdvStockOfficialFront();
+    return;
+  }
+  const payload = {
+    mode: "stock_count",
+    inventory_id: normalizeText(formData.get("inventory_id") || ""),
+    product_id: normalizeText(formData.get("product_id") || ""),
+    sku: normalizeText(formData.get("sku") || ""),
+    codigo: normalizeText(formData.get("codigo") || ""),
+    codigo_tiny: normalizeText(formData.get("codigo_tiny") || ""),
+    codigo_etiqueta: normalizeText(formData.get("codigo_etiqueta") || ""),
+    codigo_interno: normalizeText(formData.get("codigo_interno") || ""),
+    codigo_barras: normalizeText(formData.get("codigo_barras") || ""),
+    nome: normalizeText(formData.get("nome") || ""),
+    marca: normalizeText(formData.get("marca") || ""),
+    categoria: normalizeText(formData.get("categoria") || ""),
+    cor: normalizeText(formData.get("cor") || ""),
+    tamanho: normalizeText(formData.get("tamanho") || ""),
+    tipo: normalizeText(formData.get("tipo") || ""),
+    source: normalizeText(formData.get("source") || ""),
+    preco_venda: normalizeText(formData.get("preco_venda") || ""),
+    store_id: storeId,
+    target_quantity: targetQuantity,
+    notes: normalizeText(formData.get("notes") || ""),
+    origin: "pdv_stock_screen"
+  };
+  state.pdvStock.adjusting = true;
+  state.pdvStock.adjustmentError = "";
+  renderPdvStockOfficialFront();
+  try {
+    const response = await api("/api/pdv/inventory/adjust", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const record = response?.record || {};
+    const movement = response?.movement || {};
+    state.pdvStock.adjustmentResult = {
+      product_id: record.product_id || payload.product_id,
+      inventory_id: record.inventory_id || payload.inventory_id,
+      store_id: record.store_id || payload.store_id,
+      before_qty: movement.before_qty ?? "",
+      after_qty: movement.after_qty ?? record.available_qty ?? payload.target_quantity,
+      movement_id: movement.movement_id || ""
+    };
+    state.pdvStock.selectedInventoryId = normalizeText(record.inventory_id || payload.inventory_id || payload.product_id || payload.sku || payload.codigo || "");
+    if (state.pdvStock.filters.store && state.pdvStock.filters.store !== storeId) {
+      state.pdvStock.filters.store = storeId;
+    }
+    await loadPdvStockFront({ preserveSelection: true });
+  } catch (error) {
+    state.pdvStock.adjustmentError = error.message || "Falha ao salvar ajuste operacional.";
+    renderPdvStockOfficialFront();
+  } finally {
+    state.pdvStock.adjusting = false;
+    renderPdvStockOfficialFront();
+  }
 }
 
 const PDV_STOCK_PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
@@ -32208,6 +32359,13 @@ function handleDocumentSubmit(event) {
     event.preventDefault();
     applyPdvStockFiltersFromForm(pdvStockSearchForm);
     loadPdvStockFront({ preserveSelection: false }).catch((error) => handleUiError("Erro ao buscar itens do estoque operacional", error));
+    return;
+  }
+
+  const pdvStockAdjustmentForm = event.target.closest("[data-pdv-stock-adjustment-form]");
+  if (pdvStockAdjustmentForm) {
+    event.preventDefault();
+    submitPdvStockAdjustment(pdvStockAdjustmentForm).catch((error) => handleUiError("Erro ao ajustar estoque operacional", error));
     return;
   }
 
