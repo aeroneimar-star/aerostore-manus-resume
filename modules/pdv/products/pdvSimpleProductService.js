@@ -632,6 +632,12 @@ async function updateProductAggregate(productId, payload = {}, user = {}, option
       ? current.product.status
       : normalizeStatus(payload.status);
     const requestedVariants = Array.isArray(payload.variants) ? payload.variants : null;
+    const requestedStoreId = normalizeStoreKey(
+      payload.store_id
+      || payload.store
+      || current.variants[0]?.balances?.[0]?.store_id
+      || ""
+    );
     const timestamp = nowIso();
 
     await run(
@@ -746,8 +752,7 @@ async function updateProductAggregate(productId, payload = {}, user = {}, option
           );
           const storeId = normalizeStoreKey(
             requested.item.store_id
-            || payload.store_id
-            || current.variants[0]?.balances?.[0]?.store_id
+            || requestedStoreId
             || ""
           );
           if (!storeId) throw buildValidationError("Selecione a loja da nova variacao.");
@@ -783,14 +788,36 @@ async function updateProductAggregate(productId, payload = {}, user = {}, option
           );
         }
 
-        const balance = await get(
+        const storeId = normalizeStoreKey(
+          requested.item.store_id
+          || requestedStoreId
+          || requested.existing?.balances?.[0]?.store_id
+          || ""
+        );
+        if (!storeId) throw buildValidationError("Selecione a loja para ajustar o estoque.");
+        let balance = await get(
           connection,
           `SELECT * FROM pdv_inventory_balances_v2
-           WHERE variant_id = ?
-           ORDER BY id
+           WHERE variant_id = ? AND store_id = ? COLLATE NOCASE
            LIMIT 1`,
-          [variantId]
+          [variantId, storeId]
         );
+        if (!balance) {
+          await run(
+            connection,
+            `INSERT INTO pdv_inventory_balances_v2
+             (variant_id, store_id, available_qty, reserved_qty, version, updated_at)
+             VALUES (?, ?, 0, 0, 1, ?)`,
+            [variantId, storeId, timestamp]
+          );
+          balance = await get(
+            connection,
+            `SELECT * FROM pdv_inventory_balances_v2
+             WHERE variant_id = ? AND store_id = ? COLLATE NOCASE
+             LIMIT 1`,
+            [variantId, storeId]
+          );
+        }
         const beforeQty = roundQty(balance?.available_qty);
         const delta = roundQty(requested.desiredStock - beforeQty);
         if (delta !== 0 || !requested.existing) {

@@ -6661,7 +6661,32 @@ async function addPdvSaleProductByLookup(lookupValue = "") {
     endAeroStorePerfMeasure(perfToken, { skipped: "already_adding" });
     return;
   }
-  let selected = toArray(state.pdvSale.productResults).find((item) => [item.variation_id, item.inventory_id, item.product_id, item.sku, item.codigo].map((value) => String(value || "")).includes(String(lookupValue || "")));
+  const lookupText = String(lookupValue || "");
+  const productRows = toArray(state.pdvSale.productResults);
+  let selected = productRows.find((item) => [item.variation_id, item.inventory_id, item.product_id, item.sku, item.codigo].map((value) => String(value || "")).includes(lookupText));
+  if (!selected) {
+    const normalizedLookup = normalizeText(lookupValue || "");
+    for (const productRow of productRows) {
+      if (!productRow?.normalized_product) continue;
+      const variant = toArray(productRow.variants).find((item) => (
+        [item.variation_id, item.sku, item.codigo, item.barcode, item.codigo_barras, item.ean]
+          .map((value) => normalizeText(value || ""))
+          .includes(normalizedLookup)
+      ));
+      if (variant) {
+        selected = {
+          ...productRow,
+          ...variant,
+          variation_id: variant.variation_id,
+          product_id: variant.variation_id,
+          normalized_parent_product_id: productRow.normalized_parent_product_id || productRow.product_id || productRow.parent_product_id,
+          normalized_product: true,
+          skip_variation_modal: true
+        };
+        break;
+      }
+    }
+  }
   if (!selected || !state.pdvSale.sessionId) {
     endAeroStorePerfMeasure(perfToken, { skipped: "missing_selection_or_session" });
     return;
@@ -6773,17 +6798,13 @@ async function addPdvSaleVariationById(variationId = "") {
     ...variant,
     variation_id: variant.variation_id,
     product_id: variant.variation_id,
-    normalized_parent_product_id: product.normalized_parent_product_id || product.parent_product_id,
+    normalized_parent_product_id: product.normalized_parent_product_id || product.product_id || product.parent_product_id,
     normalized_product: true,
     skip_variation_modal: true
   };
-  state.pdvSale.productResults = [
-    selected,
-    ...toArray(state.pdvSale.productResults).filter((item) => normalizeText(item.variation_id || "") !== normalizeText(variant.variation_id || ""))
-  ];
   closePdvVariationModal();
   renderPdvSaleSurface();
-  await addPdvSaleProductByLookup(variant.variation_id);
+  await addPdvSaleProductByLookup(selected.variation_id);
 }
 
 function closePdvSaleResolutionModal() {
@@ -13101,7 +13122,7 @@ function getDefaultPdvProductDraft() {
     promotional_price: "",
     cost_price: "",
     stock: "",
-    store: normalizeText(getCurrentPdvStoreId() || "").toLowerCase(),
+    store: normalizePdvStoreIdentifier(getCurrentPdvStoreId() || "vila") || "vila",
     location: "",
     gtin_ean: "",
     ncm: "",
@@ -13115,6 +13136,10 @@ function getDefaultPdvProductDraft() {
     source: "manual",
     notes: ""
   };
+}
+
+function getPdvProductOperationalStoreOptions() {
+  return PDV_CASH_OPERATIONAL_STORE_OPTIONS;
 }
 
 function isVirtualPdvProductId(productId = "") {
@@ -13728,9 +13753,11 @@ function buildPdvProductVariantRow(item = {}) {
   `;
 }
 
-function readPdvProductVariantRows(formElement) {
+function readPdvProductVariantRows(formElement, storeId = "") {
+  const normalizedStoreId = normalizePdvStoreIdentifier(storeId || formElement?.querySelector?.('[name="store"]')?.value || "");
   return Array.from(formElement?.querySelectorAll?.("[data-pdv-product-variant-row]") || []).map((row) => ({
     variation_id: normalizeText(row.querySelector("[data-pdv-product-variant-id]")?.value || ""),
+    store_id: normalizedStoreId,
     color: normalizeText(row.querySelector("[data-pdv-grade-color]")?.value || ""),
     size: normalizeText(row.querySelector("[data-pdv-grade-size]")?.value || ""),
     desired_stock: normalizeText(row.querySelector("[data-pdv-grade-quantity]")?.value || "0"),
@@ -14012,6 +14039,8 @@ function buildPdvProductDrawer() {
   const draft = state.pdvProducts.drawerDraft || getDefaultPdvProductDraft();
   const productType = normalizeText(draft.product_type || "simple") === "variable" ? "variable" : "simple";
   const productVariants = toArray(draft.variants);
+  const storeOptions = getPdvProductOperationalStoreOptions();
+  const selectedStoreId = normalizePdvStoreIdentifier(draft.store_id || draft.store || getCurrentPdvStoreId() || "vila") || "vila";
   const sizeStock = normalizePdvProductSizeStock(draft.size_stock || draft.size_stock_json);
   const sizeStockTotal = sizeStock.reduce((total, item) => total + item.quantity, 0);
   const internalCode = normalizeText(draft.codigo || draft.codigo_interno || draft.sku || "");
@@ -14087,7 +14116,11 @@ function buildPdvProductDrawer() {
                 <small>Usado na etiqueta DE/POR. Nao altera a venda automaticamente nesta etapa.</small>
               </label>
               <label>Preco de custo<input name="cost_price" type="text" value="${escapeHtml(draft.cost_price ?? "")}" /></label>
-              <label>Loja / unidade<input name="store" type="text" value="${escapeHtml(draft.store || "")}" /></label>
+              <label>Loja / unidade
+                <select name="store" required>
+                  ${storeOptions.map((store) => `<option value="${escapeHtml(store.value)}"${selectedStoreId === store.value ? " selected" : ""}>${escapeHtml(store.label)}</option>`).join("")}
+                </select>
+              </label>
               <label>Localizacao<input name="location" type="text" value="${escapeHtml(draft.location || "")}" /></label>
               <label>GTIN / EAN<input name="gtin_ean" type="text" value="${escapeHtml(draft.gtin_ean || "")}" /></label>
               <label>NCM<input name="ncm" type="text" value="${escapeHtml(draft.ncm || "")}" /></label>
@@ -14355,8 +14388,9 @@ async function savePdvProduct(formElement) {
   const formData = new FormData(formElement);
   const internalCode = normalizeText(formData.get("internal_code") || "");
   const productType = normalizeText(formData.get("product_type") || "simple") === "variable" ? "variable" : "simple";
+  const storeId = normalizePdvStoreIdentifier(formData.get("store") || "");
   const sizeStock = productType === "simple" ? readPdvProductSizeStockRows(formElement) : [];
-  const variants = productType === "variable" ? readPdvProductVariantRows(formElement) : [];
+  const variants = productType === "variable" ? readPdvProductVariantRows(formElement, storeId) : [];
   const payload = {
     product_type: productType,
     base_sku: internalCode,
@@ -14377,7 +14411,8 @@ async function savePdvProduct(formElement) {
     promotional_price: normalizeText(formData.get("promotional_price") || ""),
     cost_price: normalizeText(formData.get("cost_price") || ""),
     stock: normalizeText(formData.get("stock") || ""),
-    store: normalizeText(formData.get("store") || "").toLowerCase(),
+    store: storeId,
+    store_id: storeId,
     location: normalizeText(formData.get("location") || ""),
     gtin_ean: normalizeText(formData.get("gtin_ean") || ""),
     ncm: normalizeText(formData.get("ncm") || ""),

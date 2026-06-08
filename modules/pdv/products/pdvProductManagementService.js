@@ -205,36 +205,56 @@ async function listNormalizedProducts({ storeId = "" } = {}) {
         preview_url: row.main_media_id ? `/api/uploads/media/${Number(row.main_media_id)}/preview` : "",
         updated_at: row.updated_at,
         store: normalizeText(storeId),
-        variants: []
+        variants: [],
+        _variantsById: new Map()
       });
     }
     const attributes = parseAttributes(row.attributes_json);
     const physicalQty = toNumber(row.physical_qty);
     const reservedQty = toNumber(row.reserved_qty);
-    parents.get(row.parent_product_id).variants.push({
-      variation_id: row.variation_id,
-      sku: row.sku,
-      barcode: row.barcode || "",
-      status: normalizeStatus(row.variation_status),
-      attribute_key: row.attribute_key,
-      is_default: Boolean(row.is_default),
-      color: normalizeText(attributes.color),
-      size: normalizeText(attributes.size),
-      store_id: row.store_id || normalizeText(storeId),
-      price: toNumber(row.variation_sale_price_cents ?? row.sale_price_cents) / 100,
-      cost_price: row.variation_cost_price_cents === null
-        ? (row.cost_price_cents === null ? null : toNumber(row.cost_price_cents) / 100)
-        : toNumber(row.variation_cost_price_cents) / 100,
-      physical_qty: physicalQty,
-      reserved_qty: reservedQty,
-      available_qty: physicalQty - reservedQty
-    });
+    const parent = parents.get(row.parent_product_id);
+    if (!parent._variantsById.has(row.variation_id)) {
+      const variant = {
+        variation_id: row.variation_id,
+        sku: row.sku,
+        barcode: row.barcode || "",
+        status: normalizeStatus(row.variation_status),
+        attribute_key: row.attribute_key,
+        is_default: Boolean(row.is_default),
+        color: normalizeText(attributes.color),
+        size: normalizeText(attributes.size),
+        store_id: row.store_id || normalizeText(storeId),
+        price: toNumber(row.variation_sale_price_cents ?? row.sale_price_cents) / 100,
+        cost_price: row.variation_cost_price_cents === null
+          ? (row.cost_price_cents === null ? null : toNumber(row.cost_price_cents) / 100)
+          : toNumber(row.variation_cost_price_cents) / 100,
+        physical_qty: 0,
+        reserved_qty: 0,
+        available_qty: 0,
+        balances: []
+      };
+      parent._variantsById.set(row.variation_id, variant);
+      parent.variants.push(variant);
+    }
+    const variant = parent._variantsById.get(row.variation_id);
+    if (row.store_id || storeId) {
+      variant.balances.push({
+        store_id: row.store_id || normalizeText(storeId),
+        physical_qty: physicalQty,
+        reserved_qty: reservedQty,
+        available_qty: physicalQty - reservedQty
+      });
+    }
+    variant.physical_qty = toNumber(variant.physical_qty) + physicalQty;
+    variant.reserved_qty = toNumber(variant.reserved_qty) + reservedQty;
+    variant.available_qty = variant.physical_qty - variant.reserved_qty;
   });
   return Array.from(parents.values()).map((parent) => {
     const physicalQty = parent.variants.reduce((sum, variant) => sum + variant.physical_qty, 0);
     const reservedQty = parent.variants.reduce((sum, variant) => sum + variant.reserved_qty, 0);
+    const { _variantsById, ...publicParent } = parent;
     return {
-      ...parent,
+      ...publicParent,
       colors: uniqueText(parent.variants.map((variant) => variant.color)),
       sizes: uniqueText(parent.variants.map((variant) => variant.size)),
       physical_qty: physicalQty,
