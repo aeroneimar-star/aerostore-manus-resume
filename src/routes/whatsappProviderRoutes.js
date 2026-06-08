@@ -8,7 +8,10 @@ const {
   buildTextMetadata,
   sanitizeForWhatsAppLog
 } = require("../whatsapp/whatsappLogSanitizer");
-const { normalizeMetaWebhookPayload } = require("../whatsapp/metaWebhookUtils");
+const {
+  buildMetaCredentialsStatus,
+  normalizeMetaWebhookPayload
+} = require("../whatsapp/metaWebhookUtils");
 const {
   listWhatsAppStoreConfigs,
   getWhatsAppStoreConfig,
@@ -63,6 +66,14 @@ function registerProtectedWhatsappProviderRoutes(app, { requireAnyPermission }) 
   ], "Acesso restrito a configuracao do provider WhatsApp.");
 
   router.use(requireProviderAccess);
+
+  router.get("/meta-credentials/status", requireConfigAdmin, (req, res) => {
+    try {
+      res.json(buildMetaCredentialsStatus());
+    } catch (error) {
+      res.status(500).json({ error: "Falha ao consultar status das credenciais Meta WhatsApp." });
+    }
+  });
 
   router.get("/store-configs", requireConfigAdmin, async (req, res) => {
     try {

@@ -6,6 +6,7 @@ const {
   hashPhone,
   buildTextMetadata
 } = require("./whatsappLogSanitizer");
+const { readBoolean } = require("./whatsappConfigService");
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -90,6 +91,57 @@ function normalizeMetaWebhookPayload(payload = {}) {
   };
 }
 
+function normalizeQueryValue(value = "") {
+  return Array.isArray(value) ? String(value[0] || "") : String(value || "");
+}
+
+function verifyMetaWebhookChallenge({ query = {}, expectedVerifyToken = "" } = {}) {
+  const mode = normalizeQueryValue(query["hub.mode"]).trim();
+  const receivedVerifyToken = normalizeQueryValue(query["hub.verify_token"]).trim();
+  const challenge = normalizeQueryValue(query["hub.challenge"]);
+  const configuredVerifyToken = String(expectedVerifyToken || "").trim();
+  const hasChallenge = challenge.length > 0;
+  const verifyTokenMatch = Boolean(configuredVerifyToken && receivedVerifyToken && receivedVerifyToken === configuredVerifyToken);
+  const ok = mode === "subscribe" && verifyTokenMatch && hasChallenge;
+  return {
+    ok,
+    status: ok ? 200 : 403,
+    body: ok ? challenge : "Forbidden",
+    safeLog: {
+      mode,
+      hasChallenge,
+      hasConfiguredVerifyToken: Boolean(configuredVerifyToken),
+      verifyTokenMatch
+    }
+  };
+}
+
+function buildMetaCredentialsStatus(options = {}) {
+  const token = String(options.token ?? process.env.WHATSAPP_CLOUD_TOKEN ?? "").trim();
+  const phoneNumberId = String(options.phoneNumberId ?? process.env.WHATSAPP_CLOUD_PHONE_NUMBER_ID ?? "").trim();
+  const businessAccountId = String(options.businessAccountId ?? process.env.WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID ?? "").trim();
+  const verifyToken = String(options.verifyToken ?? process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ?? "").trim();
+  const appSecret = String(options.appSecret ?? process.env.WHATSAPP_CLOUD_APP_SECRET ?? "").trim();
+  const cloudEnabled = readBoolean(options.cloudEnabled ?? process.env.WHATSAPP_CLOUD_ENABLED, false);
+  const dryRun = String(options.notificationDryRun ?? process.env.NOTIFICATION_DRY_RUN ?? "true").trim().toLowerCase() !== "false";
+  return {
+    provider: "meta_cloud",
+    hasToken: Boolean(token),
+    hasPhoneNumberId: Boolean(phoneNumberId),
+    hasBusinessAccountId: Boolean(businessAccountId),
+    hasVerifyToken: Boolean(verifyToken),
+    hasAppSecret: Boolean(appSecret),
+    phoneNumberIdMasked: maskIdentifier(phoneNumberId),
+    businessAccountIdMasked: maskIdentifier(businessAccountId),
+    dryRun,
+    cloudEnabled,
+    canSendRealMessage: Boolean(cloudEnabled && !dryRun && token && phoneNumberId),
+    timestamp: new Date().toISOString()
+  };
+}
+
 module.exports = {
-  normalizeMetaWebhookPayload
+  normalizeMetaWebhookPayload,
+  verifyMetaWebhookChallenge,
+  buildMetaCredentialsStatus
 };

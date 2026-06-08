@@ -1,4 +1,6 @@
 const { getNotificationService } = require("../notification/NotificationService");
+const { verifyMetaWebhookChallenge } = require("../whatsapp/metaWebhookUtils");
+const { sanitizeForWhatsAppLog } = require("../whatsapp/whatsappLogSanitizer");
 
 function sanitizeWebhookStatus(status = {}) {
   return {
@@ -31,11 +33,13 @@ function extractWebhookStatuses(payload = {}) {
 
 function registerPublicNotificationRoutes(app) {
   app.get("/api/whatsapp/webhook", (req, res) => {
-    const mode = req.query["hub.mode"];
-    const token = req.query["hub.verify_token"];
-    const challenge = req.query["hub.challenge"];
-    if (mode === "subscribe" && token && token === process.env.WHATSAPP_CLOUD_VERIFY_TOKEN) {
-      return res.status(200).send(String(challenge || ""));
+    const verification = verifyMetaWebhookChallenge({
+      query: req.query || {},
+      expectedVerifyToken: process.env.WHATSAPP_CLOUD_VERIFY_TOKEN || ""
+    });
+    console.info("[WHATSAPP CLOUD WEBHOOK VERIFY]", sanitizeForWhatsAppLog(verification.safeLog));
+    if (verification.ok) {
+      return res.status(200).send(verification.body);
     }
     return res.status(403).send("Forbidden");
   });
