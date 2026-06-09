@@ -550,6 +550,7 @@ const state = {
   },
   pdvStock: {
     loading: false,
+    loadingRequestId: 0,
     adjusting: false,
     items: [],
     summary: null,
@@ -15732,7 +15733,15 @@ function applyPdvStockFiltersFromForm(formElement) {
   state.pdvStock.filters.status = normalizeText(formData.get("statusFilter") || "").toLowerCase();
   state.pdvStock.filters.alert = normalizeText(formData.get("alertFilter") || "").toLowerCase();
   state.pdvStock.selectedInventoryId = "";
-  state.pdvStock.pagination = { ...(state.pdvStock.pagination || {}), page: 1 };
+  state.pdvStock.items = [];
+  state.pdvStock.summary = null;
+  state.pdvStock.pagination = {
+    ...(state.pdvStock.pagination || {}),
+    page: 1,
+    total: 0,
+    totalPages: 1,
+    hasMore: false
+  };
 }
 
 async function submitPdvStockAdjustment(formElement) {
@@ -16070,6 +16079,8 @@ async function loadPdvStockFront(options = {}) {
   const container = document.getElementById("pdv-stock-content");
   if (!container) return;
   ensurePdvStockFilters();
+  const requestId = Number(state.pdvStock.loadingRequestId || 0) + 1;
+  state.pdvStock.loadingRequestId = requestId;
   state.pdvStock.loading = true;
   state.pdvStock.error = "";
   renderPdvStockOfficialFront(container);
@@ -16096,6 +16107,7 @@ async function loadPdvStockFront(options = {}) {
       api(`/api/pdv/inventory/summary?${params.toString()}`),
       api(`/api/pdv/inventory/products?${params.toString()}`)
     ]);
+    if (state.pdvStock.loadingRequestId !== requestId) return;
     state.pdvStock.summary = summaryResponse || null;
     state.pdvStock.items = toArray(productsResponse.items);
     const responsePagination = productsResponse.pagination || {};
@@ -16119,11 +16131,13 @@ async function loadPdvStockFront(options = {}) {
       || ""
     );
   } catch (error) {
+    if (state.pdvStock.loadingRequestId !== requestId) return;
     state.pdvStock.error = error.message || "Falha ao carregar a base operacional de estoque.";
     state.pdvStock.items = [];
     state.pdvStock.summary = null;
     state.pdvStock.selectedInventoryId = "";
   } finally {
+    if (state.pdvStock.loadingRequestId !== requestId) return;
     state.pdvStock.loading = false;
     renderPdvStockOfficialFront(container);
   }
