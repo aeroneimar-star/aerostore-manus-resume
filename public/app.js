@@ -564,7 +564,10 @@ const state = {
     pagination: { page: 1, pageSize: 25 },
     error: "",
     adjustmentResult: null,
-    adjustmentError: ""
+    adjustmentError: "",
+    priceAdjusting: false,
+    priceAdjustmentResult: null,
+    priceAdjustmentError: ""
   },
   aerointel: {
     loading: false,
@@ -1365,6 +1368,10 @@ function canViewPdvStockFrontend() {
 
 function canAdjustPdvInventoryFrontend() {
   return hasPermission("can_adjust_inventory");
+}
+
+function canAdjustPdvProductPriceFrontend() {
+  return hasPermission("can_adjust_product_price");
 }
 
 function canCreatePdvLabelProductFrontend() {
@@ -6268,10 +6275,19 @@ function clearPdvSaleCustomerSearchDebounce() {
   }
 }
 
+function shouldAutoSearchPdvSaleCustomer(query = "") {
+  const normalized = normalizeText(query || "");
+  if (!normalized || !/^[\d\s()+-]+$/.test(normalized)) {
+    return false;
+  }
+  const digits = normalized.replace(/\D/g, "");
+  return digits.length === 10 || digits.length === 11;
+}
+
 function schedulePdvSaleCustomerSearch() {
   clearPdvSaleCustomerSearchDebounce();
   const query = normalizeText(state.pdvSale.customerQuery || "");
-  if (query.length < 2) {
+  if (!shouldAutoSearchPdvSaleCustomer(query)) {
     state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
     state.pdvSale.customerResults = [];
     state.pdvSale.customerSearching = false;
@@ -6279,6 +6295,7 @@ function schedulePdvSaleCustomerSearch() {
     state.pdvSale.customerSearchHasRun = false;
     state.pdvSale.customerSearchLastQuery = "";
     renderPdvSaleSurface();
+    refocusPdvSaleCustomerSearchInput(true);
     return;
   }
   state.pdvSale.customerSearchDebounce = setTimeout(() => {
@@ -6296,7 +6313,7 @@ async function searchPdvSaleCustomers() {
   const query = normalizeText(state.pdvSale.customerQuery);
   state.pdvSale.customerCreateError = "";
   state.pdvSale.customerCreateExistingCustomer = null;
-  if (query.length < 2) {
+  if (!query) {
     state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
     state.pdvSale.customerResults = [];
     state.pdvSale.customerSearching = false;
@@ -6305,7 +6322,7 @@ async function searchPdvSaleCustomers() {
     state.pdvSale.customerSearchLastQuery = "";
     renderPdvSaleSurface();
     refocusPdvSaleCustomerSearchInput(shouldRefocusSearch);
-    endAeroStorePerfMeasure(perfToken, { skipped: "query_too_short" });
+    endAeroStorePerfMeasure(perfToken, { skipped: "query_empty" });
     return;
   }
   const requestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
@@ -15684,6 +15701,55 @@ function buildPdvStockAdjustmentForm(item = {}) {
   `;
 }
 
+function isPdvLegacyImportedStockItem(item = {}) {
+  const source = normalizeText(item.source || item.origin || "").toLowerCase();
+  return source.includes("tiny") || source.includes("import");
+}
+
+function buildPdvStockPriceAdjustmentForm(item = {}) {
+  const itemKey = normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "");
+  if (!itemKey || !isPdvLegacyImportedStockItem(item)) {
+    return "";
+  }
+  const currentPrice = toNumber(item.preco_venda ?? item.price ?? 0);
+  const lastResult = state.pdvStock.priceAdjustmentResult || null;
+  const resultMatches = lastResult && normalizeText(lastResult.product_id || "") === normalizeText(item.product_id || "");
+  return `
+    <form class="pdv-products-form-grid" data-pdv-stock-price-adjustment-form="true">
+      <input type="hidden" name="inventory_id" value="${escapeHtml(item.inventory_id || "")}" />
+      <input type="hidden" name="product_id" value="${escapeHtml(item.product_id || "")}" />
+      <div>
+        <span class="table-meta">Preco atual</span>
+        <strong>${escapeHtml(currency(currentPrice))}</strong>
+      </div>
+      <label>
+        Novo preco de venda
+        <input name="new_price" type="text" inputmode="decimal" value="${escapeHtml(currentPrice.toFixed(2).replace(".", ","))}" required />
+      </label>
+      <label class="pdv-products-form-wide">
+        Motivo
+        <input name="reason" type="text" maxlength="180" placeholder="Ex.: correcao da tabela Tiny" required />
+      </label>
+      <div class="action-row pdv-products-form-wide">
+        <button class="primary-button" type="submit"${state.pdvStock.priceAdjusting ? " disabled" : ""}>${state.pdvStock.priceAdjusting ? "Salvando..." : "Ajustar preco"}</button>
+        <span class="table-meta">Preserva nome, SKU, imagem, origem Tiny e saldos por loja.</span>
+      </div>
+      ${state.pdvStock.priceAdjustmentError ? `
+        <div class="pdv-products-callout danger pdv-products-form-wide">
+          <strong>Falha no ajuste de preco</strong>
+          <span>${escapeHtml(state.pdvStock.priceAdjustmentError)}</span>
+        </div>
+      ` : ""}
+      ${resultMatches ? `
+        <div class="pdv-products-callout success pdv-products-form-wide">
+          <strong>Preco atualizado</strong>
+          <span>${escapeHtml(currency(lastResult.previous_price))} -> ${escapeHtml(currency(lastResult.new_price))}. O novo valor ja esta disponivel na busca da venda.</span>
+        </div>
+      ` : ""}
+    </form>
+  `;
+}
+
 function buildPdvStockDetailCard(item = {}, summary = state.pdvStock.summary || {}) {
   if (!item || !normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo || "")) {
     const alerts = toArray(summary.alerts || summary.items).slice(0, 4);
@@ -15733,6 +15799,13 @@ function buildPdvStockDetailCard(item = {}, summary = state.pdvStock.summary || 
           <span class="table-meta">Contagem por loja para importados/Tiny e legados, sem editar o cadastro comercial.</span>
         </div>
         ${buildPdvStockAdjustmentForm(item)}
+      </div>` : ""}
+      ${canAdjustPdvProductPriceFrontend() && isPdvLegacyImportedStockItem(item) ? `<div class="pdv-products-detail-section">
+        <div class="panel-header">
+          <h4>Ajustar preco</h4>
+          <span class="table-meta">Correcao comercial do item importado sem transformar o produto em cadastro manual.</span>
+        </div>
+        ${buildPdvStockPriceAdjustmentForm(item)}
       </div>` : ""}
       ${normalizeText(item.observacao || "") ? `
         <div class="pdv-products-callout warning">
@@ -15834,6 +15907,51 @@ async function submitPdvStockAdjustment(formElement) {
     renderPdvStockOfficialFront();
   } finally {
     state.pdvStock.adjusting = false;
+    renderPdvStockOfficialFront();
+  }
+}
+
+async function submitPdvStockPriceAdjustment(formElement) {
+  if (!formElement) return;
+  if (!canAdjustPdvProductPriceFrontend()) {
+    state.pdvStock.priceAdjustmentError = "Seu perfil nao pode ajustar o preco de produtos importados.";
+    renderPdvStockOfficialFront();
+    return;
+  }
+  const formData = new FormData(formElement);
+  const newPrice = parseMoneyAmount(formData.get("new_price"));
+  const reason = normalizeText(formData.get("reason") || "");
+  if (!(newPrice > 0)) {
+    state.pdvStock.priceAdjustmentError = "Informe um novo preco maior que zero.";
+    renderPdvStockOfficialFront();
+    return;
+  }
+  if (!reason) {
+    state.pdvStock.priceAdjustmentError = "Informe o motivo do ajuste de preco.";
+    renderPdvStockOfficialFront();
+    return;
+  }
+  state.pdvStock.priceAdjusting = true;
+  state.pdvStock.priceAdjustmentError = "";
+  renderPdvStockOfficialFront();
+  try {
+    const response = await api("/api/pdv/inventory/price-adjust", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        inventory_id: normalizeText(formData.get("inventory_id") || ""),
+        product_id: normalizeText(formData.get("product_id") || ""),
+        new_price: newPrice,
+        reason
+      })
+    });
+    state.pdvStock.priceAdjustmentResult = response;
+    state.pdvStock.selectedInventoryId = normalizeText(response.inventory_id || formData.get("inventory_id") || response.product_id || "");
+    await loadPdvStockFront({ preserveSelection: true });
+  } catch (error) {
+    state.pdvStock.priceAdjustmentError = error.message || "Falha ao ajustar o preco do produto importado.";
+  } finally {
+    state.pdvStock.priceAdjusting = false;
     renderPdvStockOfficialFront();
   }
 }
@@ -32403,6 +32521,13 @@ function handleDocumentSubmit(event) {
   if (pdvStockAdjustmentForm) {
     event.preventDefault();
     submitPdvStockAdjustment(pdvStockAdjustmentForm).catch((error) => handleUiError("Erro ao ajustar estoque operacional", error));
+    return;
+  }
+
+  const pdvStockPriceAdjustmentForm = event.target.closest("[data-pdv-stock-price-adjustment-form]");
+  if (pdvStockPriceAdjustmentForm) {
+    event.preventDefault();
+    submitPdvStockPriceAdjustment(pdvStockPriceAdjustmentForm).catch((error) => handleUiError("Erro ao ajustar preco do produto importado", error));
     return;
   }
 

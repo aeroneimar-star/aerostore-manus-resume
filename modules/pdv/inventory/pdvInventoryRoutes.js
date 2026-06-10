@@ -13,6 +13,7 @@ const {
   createInventoryProduct,
   createInventoryProductFromLabel,
   updateInventoryProduct,
+  adjustLegacyProductPrice,
   createManualAdjustment,
   createStockCountAdjustment,
   createTransfer,
@@ -65,6 +66,7 @@ function requireInventoryPermission(permissions = [], message = "Seu perfil nao 
 const canViewInventory = requireInventoryPermission(["can_view_stock", "can_view_products", "can_sell"], "Seu perfil nao pode consultar estoque.");
 const canManageInventory = requireInventoryPermission(["can_manage_products", "can_move_stock"], "Seu perfil nao pode alterar estoque.");
 const canAdjustInventory = requireInventoryPermission(["can_adjust_inventory"], "Seu perfil nao pode ajustar a contagem de estoque.");
+const canAdjustProductPrice = requireInventoryPermission(["can_adjust_product_price"], "Seu perfil nao pode ajustar o preco de produtos importados.");
 const canMoveInventory = requireInventoryPermission(["can_move_stock"], "Seu perfil nao pode movimentar estoque.");
 
 function ensureStoreAccess(req, res, storeValue = "") {
@@ -230,6 +232,15 @@ router.post("/adjust", canAdjustInventory, async (req, res) => {
       : createManualAdjustment({ ...payload, store_id: targetStore }, req.user || {}));
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao ajustar o estoque operacional do PDV." });
+  }
+});
+
+router.post("/price-adjust", canAdjustProductPrice, async (req, res) => {
+  try {
+    const result = await adjustLegacyProductPrice(req.body || {}, req.user || {});
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao ajustar o preco do produto importado." });
   }
 });
 

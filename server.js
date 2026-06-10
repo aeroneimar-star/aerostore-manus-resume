@@ -12030,6 +12030,7 @@ function buildDefaultPermissions(role = "seller") {
     can_cancel_manual_exchange_credit: false,
     can_view_stock: false,
     can_adjust_inventory: false,
+    can_adjust_product_price: false,
     can_move_stock: false,
     can_export_data: false
   };
@@ -12080,6 +12081,7 @@ function buildDefaultPermissions(role = "seller") {
       can_generate_exchange_credit: true,
       can_view_stock: true,
       can_adjust_inventory: true,
+      can_adjust_product_price: true,
       can_move_stock: true,
       can_export_data: true
     };
@@ -12174,6 +12176,7 @@ const USER_PERMISSION_CATALOG = [
       ["can_close_register", "Fechar caixa"],
       ["can_view_stock", "Acessar estoque"],
       ["can_adjust_inventory", "Ajustar contagem de estoque"],
+      ["can_adjust_product_price", "Ajustar preco de produto importado"],
       ["can_move_stock", "Movimentar estoque"],
       ["can_view_exchanges", "Acessar trocas"],
       ["can_generate_exchange_credit", "Gerar credito de troca"],
@@ -12688,6 +12691,12 @@ function resolveAuditMutationMeta(req = {}) {
       entity_type: "product",
       product_id: body.product_id || body.productId || "",
       store_id: body.store_id || body.storeId || body.loja || ""
+    }],
+    [/\/api\/pdv\/inventory\/price-adjust/, {
+      module: "inventory",
+      action: "product_price_adjusted",
+      entity_type: "product",
+      product_id: body.product_id || body.productId || ""
     }],
     [/\/api\/pdv\/inventory\/transfer/, { module: "inventory", action: "inventory_transferred", entity_type: "product", product_id: body.product_id || body.productId || "" }],
     [/\/api\/pdv\/operational\/customers\/quick-register/, { module: "customers", action: "customer_created", entity_type: "customer" }],

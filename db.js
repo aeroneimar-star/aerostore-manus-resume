@@ -122,6 +122,7 @@ function buildRolePermissions(role = "seller") {
     can_cancel_manual_exchange_credit: false,
     can_view_stock: false,
     can_adjust_inventory: false,
+    can_adjust_product_price: false,
     can_move_stock: false,
     can_export_data: false
   };
@@ -172,6 +173,7 @@ function buildRolePermissions(role = "seller") {
       can_generate_exchange_credit: true,
       can_view_stock: true,
       can_adjust_inventory: true,
+      can_adjust_product_price: true,
       can_move_stock: true,
       can_export_data: true
     };

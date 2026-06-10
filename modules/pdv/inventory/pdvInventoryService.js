@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { all, run } = require("../../../db");
 const { appendEvent } = require("../services/pdvOperationalService");
 const { appendAuditLog, getPdvUserRole } = require("../services/pdvControlService");
 const {
@@ -4544,6 +4545,156 @@ function updateInventoryProduct(productId = "", payload = {}, user = {}) {
   });
 }
 
+function getLegacyProductPriceIdentifiers(record = {}) {
+  return [
+    record.product_id,
+    record.sku,
+    record.codigo,
+    record.codigo_tiny,
+    record.codigo_etiqueta,
+    record.codigo_interno,
+    record.ean,
+    record.codigo_barras
+  ].map((value) => normalizeText(value || "").toLowerCase()).filter(Boolean);
+}
+
+function isLegacyImportedProduct(record = {}) {
+  const source = normalizeLookup(record.source || record.origem || "");
+  return source.includes("tiny") || source.includes("import");
+}
+
+async function adjustLegacyProductPrice(payload = {}, user = {}) {
+  const requestedInventoryId = normalizeText(payload.inventory_id || payload.inventoryId || "");
+  const requestedProductId = normalizeText(payload.product_id || payload.productId || "");
+  const nextPrice = roundMoneyLike(payload.new_price ?? payload.newPrice ?? payload.preco_venda ?? payload.price);
+  const reason = normalizeText(payload.reason || payload.notes || "");
+  if (!requestedInventoryId && !requestedProductId) {
+    throw new Error("Informe o produto importado que tera o preco ajustado.");
+  }
+  if (!(nextPrice > 0)) {
+    throw new Error("Informe um novo preco de venda maior que zero.");
+  }
+  if (!reason) {
+    throw new Error("Informe o motivo do ajuste de preco.");
+  }
+
+  const inventoryRows = loadInventoryRecords();
+  const selectedRecord = inventoryRows.find((row) =>
+    (requestedInventoryId && normalizeText(row.inventory_id || "") === requestedInventoryId)
+    || (requestedProductId && normalizeText(row.product_id || "") === requestedProductId)
+  ) || null;
+  if (!selectedRecord) {
+    throw new Error("Produto nao encontrado no estoque operacional.");
+  }
+  if (!isLegacyImportedProduct(selectedRecord)) {
+    throw new Error("Este ajuste e exclusivo para produtos importados/Tiny.");
+  }
+
+  const productId = normalizeText(selectedRecord.product_id || requestedProductId);
+  const relatedInventoryRows = inventoryRows.filter((row) =>
+    normalizeText(row.product_id || "") === productId
+  );
+  const datasetRows = loadProductsDataset();
+  const relatedDatasetRows = datasetRows.filter((row) =>
+    normalizeText(row.product_id || "") === productId
+  );
+  const referenceRows = [...relatedInventoryRows, ...relatedDatasetRows];
+  const identifiers = Array.from(new Set(referenceRows.flatMap(getLegacyProductPriceIdentifiers)));
+  const previousPrice = roundMoneyLike(
+    selectedRecord.preco_venda
+    || relatedDatasetRows[0]?.preco_venda
+    || 0
+  );
+  if (Math.abs(previousPrice - nextPrice) < 0.001) {
+    throw new Error("O novo preco deve ser diferente do preco atual.");
+  }
+
+  const inventorySnapshot = JSON.parse(JSON.stringify(inventoryRows));
+  const datasetSnapshot = JSON.parse(JSON.stringify(datasetRows));
+  let catalogRows = [];
+  if (identifiers.length) {
+    const placeholders = identifiers.map(() => "?").join(", ");
+    catalogRows = await all(
+      `SELECT id, price, promotional_price
+         FROM ai_products
+        WHERE lower(COALESCE(sku, '')) IN (${placeholders})
+           OR lower(COALESCE(codigo, '')) IN (${placeholders})
+           OR lower(COALESCE(tiny_id, '')) IN (${placeholders})`,
+      [...identifiers, ...identifiers, ...identifiers]
+    );
+  }
+
+  try {
+    const updatedAt = nowIso();
+    relatedInventoryRows.forEach((row) => {
+      row.preco_venda = nextPrice;
+      row.sale_price = nextPrice;
+      row.updated_at = updatedAt;
+    });
+    relatedDatasetRows.forEach((row) => {
+      row.preco_venda = nextPrice;
+      row.sale_price = nextPrice;
+      row.updated_at = updatedAt;
+    });
+    saveInventoryRecords(inventoryRows);
+    saveProductsDataset(datasetRows);
+    for (const row of catalogRows) {
+      await run(
+        `UPDATE ai_products
+            SET price = ?, promotional_price = NULL, updated_at = datetime('now')
+          WHERE id = ?`,
+        [nextPrice, row.id]
+      );
+    }
+  } catch (error) {
+    saveInventoryRecords(inventorySnapshot);
+    saveProductsDataset(datasetSnapshot);
+    for (const row of catalogRows) {
+      await run(
+        "UPDATE ai_products SET price = ?, promotional_price = ? WHERE id = ?",
+        [row.price, row.promotional_price, row.id]
+      ).catch(() => {});
+    }
+    throw error;
+  }
+
+  const result = {
+    product_id: productId,
+    inventory_id: requestedInventoryId || selectedRecord.inventory_id || "",
+    sku: selectedRecord.sku || "",
+    codigo: selectedRecord.codigo || "",
+    codigo_tiny: selectedRecord.codigo_tiny || "",
+    nome: selectedRecord.nome || "",
+    source: selectedRecord.source || selectedRecord.origem || "",
+    previous_price: previousPrice,
+    new_price: nextPrice,
+    difference: roundMoneyLike(nextPrice - previousPrice),
+    reason,
+    updated_records: relatedInventoryRows.length,
+    updated_catalog_records: catalogRows.length,
+    adjusted_at: nowIso(),
+    adjusted_by: normalizeText(user.name || user.email || user.username || "sistema"),
+    adjusted_by_email: normalizeText(user.email || ""),
+    adjusted_by_role: getPdvUserRole(user)
+  };
+  saveInventoryAudit("legacy_product_price_adjusted", {
+    reason,
+    before: {
+      product_id: productId,
+      price: previousPrice,
+      source: result.source,
+      sku: result.sku,
+      codigo_tiny: result.codigo_tiny
+    },
+    after: result
+  }, user);
+  appendEvent("LEGACY_PRODUCT_PRICE_ADJUSTED", {
+    reference_type: "PRODUCT",
+    reference_id: productId
+  }, result, user);
+  return result;
+}
+
 module.exports = {
   DEFAULT_STORE_ID,
   INVENTORY_MOVEMENT_TYPES,
@@ -4559,6 +4710,7 @@ module.exports = {
   createInventoryProduct,
   createInventoryProductFromLabel,
   updateInventoryProduct,
+  adjustLegacyProductPrice,
   createManualAdjustment,
   createStockCountAdjustment,
   syncManualProductSizeStock,
