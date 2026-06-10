@@ -2437,7 +2437,10 @@ function createStockCountAdjustment(payload = {}, user = {}) {
       target_quantity: targetQuantity,
       delta,
       source_inventory_id: normalizeText(payload.inventory_id || ""),
-      origin: normalizeText(payload.origin || payload.origem || "pdv_stock_adjustment")
+      origin: normalizeText(payload.origin || payload.origem || "pdv_stock_adjustment"),
+      product_source: normalizeText(record.source || record.origem || payload.source || ""),
+      codigo_tiny: normalizeText(record.codigo_tiny || payload.codigo_tiny || ""),
+      codigo_barras: normalizeText(record.codigo_barras || record.ean || payload.codigo_barras || "")
     }
   }, user);
   saveInventoryAudit("PDV_INVENTORY_STOCK_COUNT_ADJUSTMENT", {

@@ -1363,6 +1363,10 @@ function canViewPdvStockFrontend() {
   return isCurrentUserManagerProfile() || hasPermission("can_view_stock") || hasPermission("can_view_products");
 }
 
+function canAdjustPdvInventoryFrontend() {
+  return hasPermission("can_adjust_inventory");
+}
+
 function canCreatePdvLabelProductFrontend() {
   return isCurrentUserManagerProfile() || hasAnyPermission("can_manage_products", "can_move_stock");
 }
@@ -15544,11 +15548,25 @@ function getPdvStockStoreOptions() {
 }
 
 function getPdvStockAdjustmentStoreOptions(selectedStore = "") {
-  return [
+  const officialStores = [
     { value: "vila", label: "Vila" },
     { value: "botanico", label: "Botânico" },
     { value: "sul", label: "Sul" }
   ];
+  if (canViewAllStores()) {
+    return officialStores;
+  }
+  const allowedStores = toArray(state.currentUser?.allowed_stores || state.currentUser?.allowedStores || [])
+    .map((item) => normalizePdvStoreIdentifier(item))
+    .filter(Boolean);
+  const currentStore = normalizePdvStoreIdentifier(
+    selectedStore
+    || state.currentUser?.active_store_id
+    || state.currentUser?.store_id
+    || ""
+  );
+  const allowedSet = new Set([...allowedStores, currentStore].filter(Boolean));
+  return officialStores.filter((item) => allowedSet.has(item.value));
 }
 
 function getPdvStockActiveStoreLabel() {
@@ -15709,13 +15727,13 @@ function buildPdvStockDetailCard(item = {}, summary = state.pdvStock.summary || 
         <div><span class="table-meta">Ultima atualizacao</span><strong>${escapeHtml(updatedAt || "-")}</strong></div>
       </div>
       <div class="pdv-products-identifiers">${buildPdvStockIdentifierChips(item)}</div>
-      <div class="pdv-products-detail-section">
+      ${canAdjustPdvInventoryFrontend() ? `<div class="pdv-products-detail-section">
         <div class="panel-header">
           <h4>Ajuste operacional de estoque</h4>
           <span class="table-meta">Contagem por loja para importados/Tiny e legados, sem editar o cadastro comercial.</span>
         </div>
         ${buildPdvStockAdjustmentForm(item)}
-      </div>
+      </div>` : ""}
       ${normalizeText(item.observacao || "") ? `
         <div class="pdv-products-callout warning">
           <strong>Observacao operacional</strong>
@@ -15746,6 +15764,11 @@ function applyPdvStockFiltersFromForm(formElement) {
 
 async function submitPdvStockAdjustment(formElement) {
   if (!formElement) return;
+  if (!canAdjustPdvInventoryFrontend()) {
+    state.pdvStock.adjustmentError = "Seu perfil nao pode ajustar a contagem de estoque.";
+    renderPdvStockOfficialFront();
+    return;
+  }
   const formData = new FormData(formElement);
   const targetQuantity = Number(formData.get("target_quantity"));
   if (!Number.isFinite(targetQuantity) || targetQuantity < 0) {

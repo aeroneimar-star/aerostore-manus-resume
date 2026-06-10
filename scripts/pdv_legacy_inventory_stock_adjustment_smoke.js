@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("assert");
+const { get, run } = require("../db");
 const {
   listInventoryProducts,
   getInventoryMovements
@@ -114,7 +115,7 @@ async function assertOperationalSearchGrouped(cookie, query) {
   return matches.length;
 }
 
-async function main() {
+async function runSmoke() {
   const cookie = await login();
   const initial = await request("/api/pdv/inventory/products?q=41286&limit=40", { cookie });
   assert.strictEqual(initial.status, 200, initial.body.error || "Busca inicial deveria responder.");
@@ -164,6 +165,36 @@ async function main() {
     movement_types: [vila.movement.type, botanico.movement.type, sul.movement.type],
     sale_search_matches: saleMatches
   }, null, 2));
+}
+
+async function main() {
+  const user = await get(
+    "SELECT id, allowed_stores_json, permissions_json FROM users WHERE lower(email) = lower(?) LIMIT 1",
+    [TEST_EMAIL]
+  );
+  assert(user, `Usuario de QA ${TEST_EMAIL} deve existir.`);
+  let permissions = {};
+  try {
+    permissions = JSON.parse(user.permissions_json || "{}");
+  } catch (error) {
+    permissions = {};
+  }
+  await run(
+    "UPDATE users SET allowed_stores_json = ?, permissions_json = ? WHERE id = ?",
+    [
+      JSON.stringify(["vila", "botanico", "sul"]),
+      JSON.stringify({ ...permissions, can_adjust_inventory: true }),
+      user.id
+    ]
+  );
+  try {
+    await runSmoke();
+  } finally {
+    await run(
+      "UPDATE users SET allowed_stores_json = ?, permissions_json = ? WHERE id = ?",
+      [user.allowed_stores_json, user.permissions_json, user.id]
+    );
+  }
 }
 
 main().catch((error) => {

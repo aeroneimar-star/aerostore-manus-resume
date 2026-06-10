@@ -12029,6 +12029,7 @@ function buildDefaultPermissions(role = "seller") {
     can_create_manual_exchange_credit: false,
     can_cancel_manual_exchange_credit: false,
     can_view_stock: false,
+    can_adjust_inventory: false,
     can_move_stock: false,
     can_export_data: false
   };
@@ -12078,6 +12079,7 @@ function buildDefaultPermissions(role = "seller") {
       can_view_exchanges: true,
       can_generate_exchange_credit: true,
       can_view_stock: true,
+      can_adjust_inventory: true,
       can_move_stock: true,
       can_export_data: true
     };
@@ -12171,6 +12173,7 @@ const USER_PERMISSION_CATALOG = [
       ["can_register_cash_movement", "Sangria/suprimento"],
       ["can_close_register", "Fechar caixa"],
       ["can_view_stock", "Acessar estoque"],
+      ["can_adjust_inventory", "Ajustar contagem de estoque"],
       ["can_move_stock", "Movimentar estoque"],
       ["can_view_exchanges", "Acessar trocas"],
       ["can_generate_exchange_credit", "Gerar credito de troca"],
@@ -12679,7 +12682,13 @@ function resolveAuditMutationMeta(req = {}) {
     [/\/api\/pdv\/sales\/session\/.*\/apply-cashback/, { module: "cashback", action: "cashback_applied", entity_type: "sale_session", entity_id: params.sessionId || "" }],
     [/\/api\/pdv\/sales\/session\/.*\/apply-exchange-credit/, { module: "exchange_credit", action: "exchange_credit_applied", entity_type: "sale_session", entity_id: params.sessionId || "" }],
     [/\/api\/pdv\/sales\/exchanges/, { module: "exchange_credit", action: "exchange_credit_generated", entity_type: "exchange" }],
-    [/\/api\/pdv\/inventory\/adjust/, { module: "inventory", action: "inventory_adjusted", entity_type: "product", product_id: body.product_id || body.productId || "" }],
+    [/\/api\/pdv\/inventory\/adjust/, {
+      module: "inventory",
+      action: "inventory_adjusted",
+      entity_type: "product",
+      product_id: body.product_id || body.productId || "",
+      store_id: body.store_id || body.storeId || body.loja || ""
+    }],
     [/\/api\/pdv\/inventory\/transfer/, { module: "inventory", action: "inventory_transferred", entity_type: "product", product_id: body.product_id || body.productId || "" }],
     [/\/api\/pdv\/operational\/customers\/quick-register/, { module: "customers", action: "customer_created", entity_type: "customer" }],
     [/\/api\/products/, { module: "products", action: "product_mutation", entity_type: "product", product_id: params.id || params.productId || body.id || "" }],

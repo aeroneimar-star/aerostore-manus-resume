@@ -64,6 +64,7 @@ function requireInventoryPermission(permissions = [], message = "Seu perfil nao 
 
 const canViewInventory = requireInventoryPermission(["can_view_stock", "can_view_products", "can_sell"], "Seu perfil nao pode consultar estoque.");
 const canManageInventory = requireInventoryPermission(["can_manage_products", "can_move_stock"], "Seu perfil nao pode alterar estoque.");
+const canAdjustInventory = requireInventoryPermission(["can_adjust_inventory"], "Seu perfil nao pode ajustar a contagem de estoque.");
 const canMoveInventory = requireInventoryPermission(["can_move_stock"], "Seu perfil nao pode movimentar estoque.");
 
 function ensureStoreAccess(req, res, storeValue = "") {
@@ -72,7 +73,7 @@ function ensureStoreAccess(req, res, storeValue = "") {
     return true;
   }
   const allowedStores = getAllowedStores(req.user || {});
-  if (!allowedStores.length || allowedStores.includes(targetStore)) {
+  if (allowedStores.includes(targetStore)) {
     return true;
   }
   res.status(403).json({ error: "Acesso restrito à sua loja.", store_id: targetStore });
@@ -209,9 +210,13 @@ router.put("/products/:productId", canManageInventory, async (req, res) => {
   }
 });
 
-router.post("/adjust", canMoveInventory, async (req, res) => {
+router.post("/adjust", canAdjustInventory, async (req, res) => {
   try {
     const payload = req.body || {};
+    const targetStore = payload.store_id || payload.storeId || payload.loja || getDefaultStoreScope(req.user || {});
+    if (!ensureStoreAccess(req, res, targetStore)) {
+      return;
+    }
     const adjustmentMode = String(payload.mode || payload.adjustment_mode || "").trim().toLowerCase();
     const isStockCount = adjustmentMode === "stock_count"
       || adjustmentMode === "contagem"
@@ -221,8 +226,8 @@ router.post("/adjust", canMoveInventory, async (req, res) => {
       || payload.countedQuantity !== undefined
       || payload.quantity_counted !== undefined;
     res.json(isStockCount
-      ? createStockCountAdjustment(payload, req.user || {})
-      : createManualAdjustment(payload, req.user || {}));
+      ? createStockCountAdjustment({ ...payload, store_id: targetStore }, req.user || {})
+      : createManualAdjustment({ ...payload, store_id: targetStore }, req.user || {}));
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao ajustar o estoque operacional do PDV." });
   }
