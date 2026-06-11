@@ -160,7 +160,7 @@ function normalizeBarcodeValue(product = {}) {
 }
 
 function buildSizeColorLabel(product = {}) {
-  return [product.size, product.color].map((item) => sanitizeLine(item, 18)).filter(Boolean).join(" / ");
+  return [product.color, product.size].map((item) => sanitizeLine(item, 18)).filter(Boolean).join(" / ");
 }
 
 function buildPreviewHtml(lines = []) {
@@ -187,6 +187,7 @@ function userCanViewStore(user = {}, storeId = "") {
 async function findProductForLabel(payload = {}, user = {}) {
   const productId = normalizeText(payload.product_id || payload.productId || payload.id || "");
   const sku = normalizeText(payload.sku || payload.codigo || payload.code || "");
+  const variationId = normalizeText(payload.variation_id || payload.variationId || "");
   let row = null;
   if (productId) {
     row = await get("SELECT * FROM ai_products WHERE id = ? AND COALESCE(deleted_at, '') = ''", [productId]);
@@ -211,7 +212,71 @@ async function findProductForLabel(payload = {}, user = {}) {
     error.statusCode = 403;
     throw error;
   }
-  return row;
+  const normalizedProduct = await get(
+    `SELECT id, product_type
+     FROM pdv_products_v2
+     WHERE legacy_ai_product_id = ?
+     LIMIT 1`,
+    [row.id]
+  );
+  if (!normalizedProduct) return row;
+
+  let variant = null;
+  if (variationId) {
+    variant = await get(
+      `SELECT id AS variation_id, sku AS variant_sku, barcode AS variant_barcode,
+              status AS variant_status, attributes_json, sale_price_cents
+       FROM pdv_product_variants
+       WHERE id = ? AND product_id = ? AND status <> 'inativo'
+       LIMIT 1`,
+      [variationId, normalizedProduct.id]
+    );
+    if (!variant) {
+      const error = new Error("A variacao selecionada nao pertence a este produto.");
+      error.statusCode = 400;
+      throw error;
+    }
+  } else {
+    const variantCount = await get(
+      `SELECT COUNT(*) AS total
+       FROM pdv_product_variants
+       WHERE product_id = ? AND status <> 'inativo'`,
+      [normalizedProduct.id]
+    );
+    if (Number(variantCount?.total || 0) > 1) {
+      const error = new Error("Selecione uma variacao especifica para gerar a etiqueta.");
+      error.statusCode = 400;
+      throw error;
+    }
+    variant = await get(
+      `SELECT id AS variation_id, sku AS variant_sku, barcode AS variant_barcode,
+              status AS variant_status, attributes_json, sale_price_cents
+       FROM pdv_product_variants
+       WHERE product_id = ? AND status <> 'inativo'
+       ORDER BY is_default DESC, created_at, id
+       LIMIT 1`,
+      [normalizedProduct.id]
+    );
+  }
+  if (!variant) return row;
+
+  let attributes = {};
+  try {
+    attributes = JSON.parse(variant.attributes_json || "{}") || {};
+  } catch {
+    attributes = {};
+  }
+  return {
+    ...row,
+    variation_id: variant.variation_id,
+    sku: normalizeText(variant.variant_sku || row.sku || row.codigo || ""),
+    gtin_ean: normalizeText(variant.variant_barcode || ""),
+    color: normalizeText(attributes.color || row.color || row.cor || ""),
+    sizes: normalizeText(attributes.size || row.sizes || row.tamanho || ""),
+    price: variant.sale_price_cents === null || variant.sale_price_cents === undefined
+      ? row.price
+      : Number(variant.sale_price_cents) / 100
+  };
 }
 
 function normalizeProductForLabel(row = {}) {
@@ -224,6 +289,7 @@ function normalizeProductForLabel(row = {}) {
   const sku = normalizeText(row.sku || row.codigo || "");
   return {
     product_id: normalizeText(row.id || row.product_id || ""),
+    variation_id: normalizeText(row.variation_id || ""),
     sku,
     codigo: normalizeText(row.codigo || ""),
     barcode,
@@ -348,7 +414,7 @@ function buildPplaCommand(product = {}, request = {}, config = {}) {
   ];
 
   const text = (x, y, value, width = 32, wx = 1, wy = 1) => `A${x},${y},0,2,${wx},${wy},N,"${sanitizeLine(value, width)}"`;
-  const barcode = (x, y, value) => `B${x},${y},0,1,2,5,70,N,"${sanitizeLine(value, 32)}"`;
+  const barcode = (x, y, value) => `B${x},${y},0,1,2,5,90,N,"${sanitizeLine(value, 32)}"`;
   const body = [];
   for (let col = 0; col < columnsToRender; col += 1) {
     const x = 14 + col * (labelWidthDots + gapDots);
@@ -360,8 +426,8 @@ function buildPplaCommand(product = {}, request = {}, config = {}) {
       if (request.show_sku) body.push(text(x, 140, `SKU ${product.sku || product.codigo || "-"}`, 26, 1, 1));
       if (request.show_store && product.store_label) body.push(text(x, 174, product.store_label, 24, 1, 1));
       if (request.show_barcode && barcodeValue) {
-        body.push(barcode(x, 220, barcodeValue));
-        body.push(text(x, 304, product.barcode ? barcodeValue : `COD ${product.sku || "-"}`, 28, 1, 1));
+        body.push(barcode(x + 10, 210, barcodeValue));
+        body.push(text(x, 310, product.barcode ? barcodeValue : `COD ${product.sku || "-"}`, 28, 1, 1));
       }
       // The lower serrated stub is the official price area on the 40x60 clothing tag.
       if (request.show_compare_price) {

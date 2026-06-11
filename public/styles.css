@@ -12516,16 +12516,23 @@ body.theme-dark .pdv-sale-zone .secondary-button:hover {
 
 .technical-tag-barcode {
   display: flex;
+  width: min(100%, 248px);
+  min-height: 52px;
   justify-content: center;
   gap: 1px;
-  height: 34px;
-  margin: 3px auto 0;
+  height: 52px;
+  margin: 8px auto 2px;
+  padding: 8px 12px;
+  overflow: hidden;
+  box-sizing: border-box;
+  background: #fff;
 }
 
 .technical-tag-barcode i {
   display: block;
   height: 100%;
-  background: #111827;
+  flex: 0 0 auto;
+  background: #000;
 }
 
 .technical-tag-serrilhado {
@@ -12727,8 +12734,13 @@ body.theme-dark .pdv-sale-zone .secondary-button:hover {
   align-items: stretch;
   justify-content: center;
   gap: 1px;
-  height: 12px;
-  margin: 2px auto 0;
+  width: 92%;
+  height: 18px;
+  margin: 3px auto 1px;
+  padding: 3px 4px;
+  overflow: hidden;
+  box-sizing: border-box;
+  background: #fff;
 }
 
 .mockup-barcode i {

@@ -12014,6 +12014,7 @@ function getPdvProductLabelPrintState() {
   const defaults = {
     open: false,
     productId: "",
+    variationId: "",
     templates: [],
     config: null,
     templateId: "aerostore_tag_40x60_2c",
@@ -12048,8 +12049,8 @@ function getPdvProductById(productId = "") {
 
 function buildPdvLabelVisualBarcode(value = "") {
   const seed = normalizeText(value || "AEROSTORE").split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  return Array.from({ length: 24 }).map((_, index) => {
-    const width = ((seed + index * 7) % 4) + 1;
+  return Array.from({ length: 38 }).map((_, index) => {
+    const width = ((seed + index * 7) % 3) + 1;
     return `<i style="width:${width}px"></i>`;
   }).join("");
 }
@@ -12059,7 +12060,7 @@ function buildPdvLabelMockupSlot(preview = {}, index = 0) {
   const request = preview?.request || {};
   const brand = normalizeText(product.brand || "AEROSTORE");
   const name = normalizeText(product.name || "Produto sem nome");
-  const sizeColor = [product.size, product.color].map((item) => normalizeText(item || "")).filter(Boolean).join(" / ");
+  const sizeColor = [product.color, product.size].map((item) => normalizeText(item || "")).filter(Boolean).join(" / ");
   const sku = normalizeText(product.sku || product.codigo || "");
   const barcode = normalizeText(product.barcode || sku || "");
   const price = normalizeText(request.price_label || "");
@@ -12109,7 +12110,7 @@ function buildPdvLabelTechnicalPreview(preview = null, previewLines = []) {
   }
   const product = preview.product || {};
   const request = preview.request || {};
-  const sizeColor = [product.size, product.color].map((item) => normalizeText(item || "")).filter(Boolean).join(" / ");
+  const sizeColor = [product.color, product.size].map((item) => normalizeText(item || "")).filter(Boolean).join(" / ");
   const barcode = normalizeText(product.barcode || product.sku || product.codigo || "");
   const fallbackLines = toArray(previewLines);
   return `
@@ -12151,12 +12152,23 @@ function buildPdvLabelPrintDrawer() {
   const labelState = getPdvProductLabelPrintState();
   if (!labelState.open) return "";
   const product = getPdvProductById(labelState.productId) || {};
+  const variants = toArray(product.variants).filter((item) => {
+    return normalizeText(item.variation_id || "") && normalizeText(item.status || "").toLowerCase() !== "inativo";
+  });
+  if (variants.length && !variants.some((item) => normalizeText(item.variation_id) === normalizeText(labelState.variationId))) {
+    labelState.variationId = normalizeText(variants[0].variation_id || "");
+  }
+  const selectedVariant = variants.find((item) => normalizeText(item.variation_id) === normalizeText(labelState.variationId)) || null;
   const productName = normalizeText(product.nome || product.name || product.display_name || "Produto selecionado");
-  const sku = normalizeText(product.sku || product.codigo || product.codigo_interno || "");
-  const barcode = normalizeText(product.ean || product.gtin_ean || product.codigo_barras || product.codigo_etiqueta || "");
-  const sizeColor = [product.tamanho || product.sizes || product.grade, product.cor || product.color].map((item) => normalizeText(item || "")).filter(Boolean).join(" / ");
+  const sku = normalizeText(selectedVariant?.sku || product.sku || product.codigo || product.codigo_interno || "");
+  const barcode = selectedVariant
+    ? normalizeText(selectedVariant.barcode || "")
+    : normalizeText(product.ean || product.gtin_ean || product.codigo_barras || product.codigo_etiqueta || "");
+  const sizeColor = selectedVariant
+    ? [selectedVariant.color, selectedVariant.size].map((item) => normalizeText(item || "")).filter(Boolean).join(" / ")
+    : [product.tamanho || product.sizes || product.grade, product.cor || product.color].map((item) => normalizeText(item || "")).filter(Boolean).join(" / ");
   const storeLabel = normalizeText(product.store_label || product.loja || product.store || "");
-  const priceValue = toNumber(product.preco_venda ?? product.price ?? 0);
+  const priceValue = toNumber(selectedVariant?.price ?? product.preco_venda ?? product.price ?? 0);
   const promotionalPriceValue = toNumber(product.promotional_price ?? product.promotionalPrice ?? 0);
   const hasPromotionalPrice = priceValue > 0 && promotionalPriceValue > 0 && promotionalPriceValue < priceValue;
   if (!hasPromotionalPrice && labelState.priceMode === "promo_compare") {
@@ -12170,6 +12182,14 @@ function buildPdvLabelPrintDrawer() {
   const templateOptions = templates.length
     ? templates.map((template) => `<option value="${escapeHtml(template.id)}"${labelState.templateId === template.id ? " selected" : ""}>${escapeHtml(template.name || template.id)}</option>`).join("")
     : `<option value="aerostore_tag_40x60_2c">AEROSTORE Tag Roupa 40x60 2 colunas</option>`;
+  const variationOptions = variants.map((variant) => {
+    const variationId = normalizeText(variant.variation_id || "");
+    const label = [
+      [variant.color, variant.size].map((item) => normalizeText(item || "")).filter(Boolean).join(" / "),
+      normalizeText(variant.sku || "")
+    ].filter(Boolean).join(" - ");
+    return `<option value="${escapeHtml(variationId)}"${variationId === labelState.variationId ? " selected" : ""}>${escapeHtml(label || variationId)}</option>`;
+  }).join("");
   const previewLines = toArray(preview?.preview_lines);
   return `
     <div class="pdv-label-print-overlay" data-pdv-label-print-close="overlay">
@@ -12211,6 +12231,12 @@ function buildPdvLabelPrintDrawer() {
           </section>
           <form class="pdv-label-print-form" data-pdv-label-print-form="true">
             <input type="hidden" name="productId" value="${escapeHtml(labelState.productId || "")}" />
+            ${variants.length ? `
+              <label>Variacao da etiqueta
+                <select name="variationId" data-pdv-label-variation-select="true">${variationOptions}</select>
+                <small>Cada impressao usa SKU, barcode, cor e tamanho da variacao selecionada.</small>
+              </label>
+            ` : ""}
             <label>Modelo da etiqueta
               <select name="templateId">${templateOptions}</select>
             </label>
@@ -12316,6 +12342,7 @@ function collectPdvLabelPrintForm() {
   if (!form) return null;
   const formData = new FormData(form);
   labelState.productId = normalizeText(formData.get("productId") || labelState.productId || "");
+  labelState.variationId = normalizeText(formData.get("variationId") || labelState.variationId || "");
   labelState.templateId = normalizeText(formData.get("templateId") || labelState.templateId || "aerostore_tag_40x60_2c");
   labelState.quantity = Math.max(1, Math.min(500, Math.floor(toNumber(formData.get("quantity") || 1))));
   labelState.showPrice = String(formData.get("showPrice") || "1") === "1";
@@ -12329,6 +12356,7 @@ function collectPdvLabelPrintForm() {
   labelState.showStore = String(formData.get("showStore") || "0") === "1";
   return {
     product_id: labelState.productId,
+    variation_id: labelState.variationId,
     template_id: labelState.templateId,
     quantity: labelState.quantity,
     show_price: labelState.showPrice,
@@ -12347,6 +12375,11 @@ async function openPdvProductLabelPrint(productId = "") {
   const labelState = getPdvProductLabelPrintState();
   labelState.open = true;
   labelState.productId = normalizeText(productId || labelState.productId || state.pdvProducts.selectedProductId || "");
+  const product = getPdvProductById(labelState.productId) || {};
+  const firstVariant = toArray(product.variants).find((item) => {
+    return normalizeText(item.variation_id || "") && normalizeText(item.status || "").toLowerCase() !== "inativo";
+  });
+  labelState.variationId = normalizeText(firstVariant?.variation_id || "");
   labelState.preview = null;
   labelState.printResult = null;
   labelState.error = "";
