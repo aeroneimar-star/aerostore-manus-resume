@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { all } = require("../../../db");
+const { searchInventoryProducts } = require("../inventory/pdvInventoryService");
 
 const PAGE_LIMITS = new Set([25, 50, 100]);
 const legacyProductsPath = path.join(__dirname, "..", "..", "..", "data", "imports", "pdv", "datasets", "produtos.json");
@@ -56,6 +57,7 @@ function matchesQuery(item = {}, query = "") {
   const lookup = normalizeLookup(query);
   if (!lookup) return true;
   const digits = String(query || "").replace(/\D/g, "");
+  const isCodeLikeQuery = Boolean(digits && /^[\d\s.\-_/]+$/.test(String(query || "")));
   const text = normalizeLookup([
     item.name,
     item.display_name,
@@ -85,7 +87,9 @@ function matchesQuery(item = {}, query = "") {
     ])
   ].join(" "));
   if (text.includes(lookup)) return true;
-  if (!digits) return false;
+  const tokens = lookup.split(/\s+/).filter(Boolean);
+  if (tokens.length > 1 && tokens.every((token) => text.includes(token))) return true;
+  if (!isCodeLikeQuery) return false;
   return [
     item.codigo_barras,
     item.barcode,
@@ -93,6 +97,65 @@ function matchesQuery(item = {}, query = "") {
     item.ean,
     ...(item.variants || []).map((variant) => variant.barcode)
   ].some((value) => String(value || "").replace(/\D/g, "").includes(digits));
+}
+
+function mapInventoryProduct(item = {}) {
+  const availableQty = toNumber(item.available_qty ?? item.estoque);
+  const reservedQty = toNumber(item.reserved_qty);
+  const physicalQty = availableQty + reservedQty;
+  return {
+    id: `inventory:${normalizeText(item.inventory_id || item.product_id || item.sku || item.codigo)}`,
+    product_id: item.product_id || "",
+    inventory_id: item.inventory_id || "",
+    normalized_product: false,
+    legacy_adapter: true,
+    parent_sellable: false,
+    name: item.nome || "Produto",
+    display_name: item.nome || "Produto",
+    commercial_name: item.nome || "Produto",
+    product_type: "simple",
+    status: normalizeStatus(item.status),
+    base_sku: item.parent_sku || item.sku || item.codigo || "",
+    sku: item.sku || item.codigo || item.codigo_interno || item.codigo_etiqueta || "",
+    codigo: item.codigo || item.codigo_interno || item.codigo_etiqueta || item.sku || "",
+    tiny_id: item.codigo_tiny || "",
+    codigo_tiny: item.codigo_tiny || "",
+    codigo_barras: item.codigo_barras || item.ean || "",
+    barcode: item.codigo_barras || item.ean || "",
+    gtin_ean: item.codigo_barras || item.ean || "",
+    ean: item.ean || item.codigo_barras || "",
+    price: toNumber(item.preco_venda),
+    cost_price: toNumber(item.preco_custo),
+    brand: item.marca || "",
+    marca: item.marca || "",
+    category: item.categoria || "",
+    color: item.cor || "",
+    colors: uniqueText([item.cor]),
+    sizes: uniqueText([item.tamanho]),
+    store: item.store_id || "",
+    preview_url: item.photo_preview_url || item.media_url || item.foto || "",
+    updated_at: item.updated_at || "",
+    physical_qty: physicalQty,
+    reserved_qty: reservedQty,
+    available_qty: availableQty,
+    stock: physicalQty,
+    estoque_total: physicalQty,
+    source: item.source || "pdv_inventory",
+    variants: [{
+      variation_id: "",
+      sku: item.sku || item.codigo || "",
+      barcode: item.codigo_barras || item.ean || "",
+      status: normalizeStatus(item.status),
+      attribute_key: "INVENTORY",
+      is_default: true,
+      color: item.cor || "",
+      size: item.tamanho || "",
+      store_id: item.store_id || "",
+      physical_qty: physicalQty,
+      reserved_qty: reservedQty,
+      available_qty: availableQty
+    }]
+  };
 }
 
 function matchesFilters(item = {}, filters = {}) {
@@ -451,7 +514,12 @@ async function listProductManagementCatalog(filters = {}) {
     .filter((item) => matchesFilters(item, filters));
 
   if (query && !combined.length) {
-    combined = dedupeProducts(searchLegacyJsonProducts(query, storeId))
+    const operational = searchInventoryProducts(query, { storeId, limit: 1000 }).map(mapInventoryProduct);
+    combined = dedupeProducts([
+      ...operational,
+      ...searchLegacyJsonProducts(query, storeId)
+    ])
+      .filter((item) => matchesQuery(item, query))
       .filter((item) => matchesFilters(item, filters));
   }
 

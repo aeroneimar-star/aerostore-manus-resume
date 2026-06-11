@@ -43,17 +43,39 @@ async function login() {
 
 function assertFrontendSearchContract() {
   const source = fs.readFileSync(path.join(process.cwd(), "public", "app.js"), "utf8");
+  const inputHandlerStart = source.indexOf("function handleDocumentInput(event)");
+  const inputHandlerEnd = source.indexOf("function handleDocumentFocusout", inputHandlerStart);
+  const inputHandler = inputHandlerStart >= 0 && inputHandlerEnd > inputHandlerStart
+    ? source.slice(inputHandlerStart, inputHandlerEnd)
+    : "";
+  const rendererStart = source.indexOf("function renderPdvProductsOfficialFront");
+  const rendererEnd = source.indexOf("async function loadPdvProductsFront", rendererStart);
+  const renderer = rendererStart >= 0 && rendererEnd > rendererStart
+    ? source.slice(rendererStart, rendererEnd)
+    : "";
   assert(
-    source.includes("pdvProducts.searchDebounce"),
-    "Busca principal de /pdv/produtos deve ter debounce ao digitar."
+    !source.includes("function schedulePdvProductsSearch"),
+    "Busca principal de /pdv/produtos nao deve agendar busca automatica ao digitar."
   );
   assert(
-    source.includes("schedulePdvProductsSearch"),
-    "Digitar no campo de /pdv/produtos deve agendar busca automaticamente."
+    !source.includes("clearPdvProductsSearchDebounce"),
+    "Busca controlada nao deve manter referencias ao debounce removido."
+  );
+  assert(
+    !inputHandler.includes("runPdvProductsSearchFromForm")
+      && !inputHandler.includes("loadPdvProductsFront")
+      && !inputHandler.includes("schedulePdvProductsSearch"),
+    "Evento input de /pdv/produtos deve apenas permitir digitacao, sem executar busca."
   );
   assert(
     source.includes("data-pdv-products-query-input"),
     "Campo principal de busca de produtos deve ter seletor estavel para input/Enter."
+  );
+  assert(
+    !renderer.includes('productsForm?.addEventListener("submit"')
+      && !renderer.includes('querySelector("[data-pdv-products-run-search')
+      && !renderer.includes('querySelector("[data-pdv-products-clear-search'),
+    "Enter, Atualizar e Limpar devem usar somente os handlers delegados, sem requisicoes duplicadas."
   );
   assert(
     source.includes("Nenhum produto encontrado para esta busca."),
@@ -79,6 +101,11 @@ async function main() {
   assert.strictEqual(missing.body.pagination?.total, 0, "Busca inexistente deveria retornar total zero.");
   assert.strictEqual((missing.body.items || []).length, 0, "Busca inexistente nao deve retornar cards.");
 
+  const requestedMissing = await request("/api/products?q=ZZZ-PRODUTO-INEXISTENTE-999&page=1&limit=25", { cookie });
+  assert.strictEqual(requestedMissing.status, 200, requestedMissing.body.error || "Busca inexistente solicitada deveria responder.");
+  assert.strictEqual(requestedMissing.body.pagination?.total, 0, "Termo textual com digitos nao deve casar apenas por fragmento de barcode.");
+  assert.strictEqual((requestedMissing.body.items || []).length, 0, "Termo inexistente solicitado nao deve retornar cards.");
+
   const tiny = await request("/api/products?q=41286&page=1&limit=25", { cookie });
   assert.strictEqual(tiny.status, 200, tiny.body.error || "Busca Tiny 41286 deveria responder.");
   assert((tiny.body.items || []).some((item) => item.legacy_adapter), "Tiny legado 41286 deve continuar localizavel.");
@@ -99,6 +126,25 @@ async function main() {
   assert.strictEqual(brand.status, 200, brand.body.error || "Busca por marca deveria responder.");
   assert(brand.body.pagination?.total >= 1, "Busca por marca deveria retornar resultado.");
 
+  const osklen = await request("/api/products?q=OSKLEN&page=1&limit=25", { cookie });
+  assert.strictEqual(osklen.status, 200, osklen.body.error || "Busca por OSKLEN deveria responder.");
+  assert(osklen.body.pagination?.total >= 1, "Busca por OSKLEN deveria retornar produtos compativeis.");
+
+  const camiseta = await request("/api/products?q=CAMISETA&page=1&limit=25", { cookie });
+  assert.strictEqual(camiseta.status, 200, camiseta.body.error || "Busca por CAMISETA deveria responder.");
+  assert(camiseta.body.pagination?.total >= 1, "Busca por CAMISETA deveria retornar produtos compativeis.");
+
+  const camisetaOsklen = await request("/api/products?q=CAMISETA%20OSKLEN&page=1&limit=25", { cookie });
+  assert.strictEqual(camisetaOsklen.status, 200, camisetaOsklen.body.error || "Busca composta deveria responder.");
+  assert(camisetaOsklen.body.pagination?.total >= 1, "Busca CAMISETA OSKLEN deveria retornar produtos compativeis.");
+  assert(
+    (camisetaOsklen.body.items || []).every((item) => (
+      /camiseta/i.test([item.name, item.display_name, item.category].filter(Boolean).join(" "))
+      && /osklen/i.test([item.name, item.display_name, item.brand, item.marca].filter(Boolean).join(" "))
+    )),
+    "Busca composta deve exigir todos os termos no produto retornado."
+  );
+
   console.log(JSON.stringify({
     ok: true,
     existing_total: existing.body.pagination.total,
@@ -106,7 +152,11 @@ async function main() {
     tiny_41286: true,
     sku_parent: true,
     variation_barcode: true,
-    brand: true
+    brand: true,
+    osklen_total: osklen.body.pagination.total,
+    camiseta_total: camiseta.body.pagination.total,
+    camiseta_osklen_total: camisetaOsklen.body.pagination.total,
+    controlled_trigger: true
   }, null, 2));
 }
 

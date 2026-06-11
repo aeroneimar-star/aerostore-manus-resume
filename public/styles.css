@@ -20646,6 +20646,129 @@ body[data-route-section="pdv-stock"] .pdv-stock-results-scroll {
   scrollbar-color: rgba(170,180,192,0.24) transparent;
   scrollbar-width: thin;
 }
+
+body[data-route-section="pdv-products"] .pdv-search-result-state,
+body[data-route-section="pdv-stock"] .pdv-search-result-state {
+  display: grid;
+  gap: 18px;
+  min-height: 250px;
+  align-content: center;
+  padding: 24px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 15% 10%, rgba(45,212,191,0.08), transparent 38%),
+    rgba(19,26,35,0.88);
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-state-copy,
+body[data-route-section="pdv-stock"] .pdv-search-result-state-copy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: left;
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-state-copy > div,
+body[data-route-section="pdv-stock"] .pdv-search-result-state-copy > div {
+  display: grid;
+  gap: 4px;
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-state strong,
+body[data-route-section="pdv-stock"] .pdv-search-result-state strong {
+  color: #F4F7FA;
+  font-size: 0.96rem;
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-state span,
+body[data-route-section="pdv-stock"] .pdv-search-result-state span {
+  color: #AAB4C0;
+  font-size: 0.8rem;
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-state.is-error,
+body[data-route-section="pdv-stock"] .pdv-search-result-state.is-error {
+  min-height: 190px;
+  border-color: rgba(239,68,68,0.24);
+  background:
+    radial-gradient(circle at 15% 10%, rgba(239,68,68,0.08), transparent 38%),
+    rgba(19,26,35,0.88);
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-spinner,
+body[data-route-section="pdv-stock"] .pdv-search-result-spinner {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  border: 2px solid rgba(45,212,191,0.22);
+  border-top-color: #2DD4BF;
+  border-radius: 50%;
+  animation: pdv-search-result-spin 0.72s linear infinite;
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-skeleton,
+body[data-route-section="pdv-stock"] .pdv-search-result-skeleton {
+  display: grid;
+  gap: 9px;
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-skeleton-row,
+body[data-route-section="pdv-stock"] .pdv-search-result-skeleton-row {
+  display: grid;
+  grid-template-columns: 56px minmax(140px, 1fr) minmax(80px, 0.28fr);
+  gap: 12px;
+  align-items: center;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 14px;
+  background: rgba(23,31,42,0.72);
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-skeleton-row > *,
+body[data-route-section="pdv-stock"] .pdv-search-result-skeleton-row > * {
+  display: block;
+  height: 11px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.05), rgba(45,212,191,0.14), rgba(255,255,255,0.05));
+  background-size: 220% 100%;
+  animation: pdv-search-result-shimmer 1.25s ease-in-out infinite;
+  animation-delay: var(--pdv-skeleton-delay, 0ms);
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-skeleton-row > i,
+body[data-route-section="pdv-stock"] .pdv-search-result-skeleton-row > i {
+  width: 42px;
+  height: 38px;
+  border-radius: 10px;
+}
+
+body[data-route-section="pdv-products"] .pdv-search-result-skeleton-row > em,
+body[data-route-section="pdv-stock"] .pdv-search-result-skeleton-row > em {
+  width: 72%;
+  justify-self: end;
+}
+
+@keyframes pdv-search-result-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pdv-search-result-shimmer {
+  0% { background-position: 100% 0; opacity: 0.68; }
+  50% { opacity: 1; }
+  100% { background-position: -120% 0; opacity: 0.68; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-route-section="pdv-products"] .pdv-search-result-spinner,
+  body[data-route-section="pdv-stock"] .pdv-search-result-spinner,
+  body[data-route-section="pdv-products"] .pdv-search-result-skeleton-row > *,
+  body[data-route-section="pdv-stock"] .pdv-search-result-skeleton-row > * {
+    animation: none;
+  }
+}
 body[data-route-section="pdv-stock"] .pdv-products-table thead th {
   background: #0F141B !important;
   color: #AAB4C0 !important;
