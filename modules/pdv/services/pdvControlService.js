@@ -15,6 +15,7 @@ const controlFiles = {
   authorizers: path.join(controlRootDir, "authorizers.json"),
   authorizationAudit: path.join(controlRootDir, "authorization-audit.json")
 };
+const salesFile = path.join(process.cwd(), "data", "pdv", "sales", "sales.json");
 
 const USER_ROLES = {
   vendedor: "VENDEDOR",
@@ -58,6 +59,7 @@ const CASH_REGISTER_STATUS = {
   REOPENED: "REOPENED",
   CANCELLED: "CANCELLED"
 };
+const CASH_COUNTABLE_SALE_STATUSES = new Set(["COMPLETED", "EXCHANGE"]);
 
 const DISCOUNT_REASONS = [
   "QUEIMA",
@@ -798,6 +800,119 @@ function loadCashRegisters() {
 
 function saveCashRegisters(rows) {
   writeJson(controlFiles.cashRegisters, rows);
+}
+
+function loadCashRegisterSales() {
+  return readJson(salesFile, []);
+}
+
+function isCashCountableSaleStatus(status = "") {
+  return CASH_COUNTABLE_SALE_STATUSES.has(normalizeText(status).toUpperCase());
+}
+
+// Read-model projection only; recovered movements are never persisted to cash-registers.json.
+function buildCashRegisterSaleMovement(sale = {}) {
+  const paymentTotals = (Array.isArray(sale.pagamentos) ? sale.pagamentos : []).reduce((totals, payment) => {
+    const method = normalizeText(payment?.method || "").toLowerCase();
+    const amount = roundMoney(payment?.amount || 0);
+    if (method === "dinheiro") totals.money += amount;
+    if (method === "pix") totals.pix += amount;
+    if (["debito", "debit", "cartao_debito"].includes(method)) totals.debit += amount;
+    if (["credito", "credit", "credito_ate_10x", "cartao_credito"].includes(method)) totals.credit += amount;
+    if (method === "link_pagamento") totals.paymentLink += amount;
+    return totals;
+  }, {
+    money: 0,
+    pix: 0,
+    debit: 0,
+    credit: 0,
+    paymentLink: 0
+  });
+  const saleId = normalizeText(sale.sale_id || "");
+  return {
+    movement_id: `SALE_LINK_${saleId}`,
+    type: "SALE",
+    value: roundMoney(sale.total_final ?? sale.net_amount ?? sale.paid_amount ?? 0),
+    reason: "Venda vinculada ao caixa",
+    observation: normalizeText(sale.observacoes || ""),
+    responsible: normalizeText(sale.created_by || sale.vendedor || "sistema"),
+    responsible_role: "",
+    loja: normalizeStoreKey(sale.cash_register_store || sale.loja || sale.loja_venda || ""),
+    created_at: normalizeText(sale.data_hora || sale.created_at || ""),
+    payload: {
+      sale_id: saleId,
+      subtotal: roundMoney(sale.subtotal || 0),
+      desconto_extra: roundMoney(sale.desconto_extra ?? sale.general_discount_amount ?? 0),
+      money_amount: roundMoney(paymentTotals.money),
+      pix_amount: roundMoney(paymentTotals.pix),
+      debito_amount: roundMoney(paymentTotals.debit),
+      credito_amount: roundMoney(paymentTotals.credit),
+      link_pagamento_amount: roundMoney(paymentTotals.paymentLink),
+      cashback_amount: roundMoney(sale.cashback_usado ?? sale.cashback_used_amount ?? 0),
+      vale_presente_amount: roundMoney(sale.vale_presente_usado ?? 0),
+      credito_troca_amount: roundMoney(sale.credito_troca_usado ?? 0),
+      permuta_amount: roundMoney(sale.permuta_usada ?? 0),
+      recovered_from_sale_link: true
+    }
+  };
+}
+
+function reconcileCashRegisterSales(register = {}, sales = loadCashRegisterSales()) {
+  const cashRegisterId = normalizeText(register.cash_register_id || "");
+  if (!cashRegisterId) {
+    return register;
+  }
+  const normalizedSales = Array.isArray(sales) ? sales : [];
+  const salesById = new Map(
+    normalizedSales
+      .map((sale) => [normalizeText(sale?.sale_id || ""), sale])
+      .filter(([saleId]) => Boolean(saleId))
+  );
+  const movements = Array.isArray(register.movements) ? register.movements : [];
+  const nonSaleMovements = movements.filter((movement) => normalizeText(movement?.type || "").toUpperCase() !== "SALE");
+  const saleMovements = [];
+  const linkedSaleIds = new Set();
+
+  movements
+    .filter((movement) => normalizeText(movement?.type || "").toUpperCase() === "SALE")
+    .forEach((movement) => {
+      const saleId = normalizeText(movement?.payload?.sale_id || "");
+      const linkedSale = saleId ? salesById.get(saleId) : null;
+      if (linkedSale && !isCashCountableSaleStatus(linkedSale.status)) {
+        return;
+      }
+      if (saleId && linkedSaleIds.has(saleId)) {
+        return;
+      }
+      if (saleId) {
+        linkedSaleIds.add(saleId);
+      }
+      // Preserve legacy SALE movements when no sale record exists to invalidate them.
+      saleMovements.push(movement);
+    });
+
+  normalizedSales
+    .filter((sale) =>
+      normalizeText(sale?.cash_register_id || "") === cashRegisterId
+      && isCashCountableSaleStatus(sale?.status)
+    )
+    .forEach((sale) => {
+      const saleId = normalizeText(sale?.sale_id || "");
+      if (!saleId || linkedSaleIds.has(saleId)) {
+        return;
+      }
+      linkedSaleIds.add(saleId);
+      saleMovements.push(buildCashRegisterSaleMovement(sale));
+    });
+
+  saleMovements.sort((left, right) =>
+    String(right?.created_at || "").localeCompare(String(left?.created_at || ""))
+  );
+  return {
+    ...register,
+    linked_sales: saleMovements.length,
+    movements: [...saleMovements, ...nonSaleMovements]
+  };
 }
 
 function loadAuthorizations() {
@@ -1680,14 +1795,16 @@ function assertValidatedAuthorization(payload = {}, user = {}) {
 
 function getOpenCashRegisterByStore(store = "") {
   const normalizedStore = normalizeStoreKey(store);
-  return loadCashRegisters().find((item) =>
+  const register = loadCashRegisters().find((item) =>
     storesMatch(item.loja, normalizedStore)
     && [CASH_REGISTER_STATUS.OPEN, CASH_REGISTER_STATUS.REOPENED].includes(item.status)
   ) || null;
+  return register ? reconcileCashRegisterSales(register) : null;
 }
 
 function getCashRegisterById(cashRegisterId = "") {
-  return loadCashRegisters().find((item) => item.cash_register_id === String(cashRegisterId || "").trim()) || null;
+  const register = loadCashRegisters().find((item) => item.cash_register_id === String(cashRegisterId || "").trim()) || null;
+  return register ? reconcileCashRegisterSales(register) : null;
 }
 
 function issueAuthorizationPin(payload = {}, user = {}) {
@@ -1785,7 +1902,11 @@ function openCashRegister(payload = {}, user = {}) {
     if (isLegacyOperationalStore(existingOpenRegister.loja)) {
       throw new Error("Este caixa pertence a uma loja legada/inativa. Use apenas para conferencia historica.");
     }
-    throw new Error("Já existe um caixa aberto para esta loja.");
+    return {
+      ...existingOpenRegister,
+      already_open: true,
+      reused_existing: true
+    };
   }
   const hasInitialAmount = payload.valor_inicial !== null
     && payload.valor_inicial !== undefined
@@ -1846,7 +1967,11 @@ function openCashRegister(payload = {}, user = {}) {
     before: null,
     after: entry
   });
-  return entry;
+  return {
+    ...entry,
+    already_open: false,
+    reused_existing: false
+  };
 }
 
 function registerCashMovement({ cashRegisterId = "", type = "", value = 0, reason = "", observation = "", payload = {}, requireManager = false } = {}, user = {}) {
@@ -2068,7 +2193,8 @@ async function registerManualCashMovement({ type = "", amount = 0, reason = "", 
 }
 
 function computeCashRegisterExpected(register) {
-  const movements = register.movements || [];
+  const reconciledRegister = reconcileCashRegisterSales(register || {});
+  const movements = reconciledRegister.movements || [];
   const saleMovements = movements.filter((item) => item.type === "SALE");
   const sumByType = (type) => roundMoney(movements.filter((item) => item.type === type).reduce((sum, item) => sum + toNumber(item.value), 0));
   const saleMoney = roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.money_amount || 0), 0));
@@ -2488,7 +2614,8 @@ function consumeSaleControlAuthorizations(controlValidation = {}, user = {}) {
 }
 
 function listCashRegisters() {
-  return loadCashRegisters();
+  const sales = loadCashRegisterSales();
+  return loadCashRegisters().map((register) => reconcileCashRegisterSales(register, sales));
 }
 
 function getCashDashboard() {

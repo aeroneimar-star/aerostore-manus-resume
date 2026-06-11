@@ -10650,14 +10650,19 @@ async function submitPdvCashOpenModal() {
         open_observation: normalizeText(modal.observation || "")
       })
     });
+    const reusedExistingRegister = Boolean(openedRegister?.already_open);
     state.pdvCash.openModal = getDefaultPdvCashOpenModalState();
     state.pdvCash.openLoading = false;
     renderPdvCashRegisterOfficialFront();
     await loadPdvCashRegisterFront().catch((refreshError) => {
       console.warn("Caixa aberto, mas a tela do caixa nao atualizou automaticamente.", refreshError);
     });
-    showFeedback("Caixa aberto com sucesso. Imprima, assine e guarde o cupom para anexar ao fechamento.");
-    printPdvCashOpeningCoupon(openedRegister || {});
+    if (reusedExistingRegister) {
+      showFeedback("Caixa ja estava aberto. A sessao existente foi reconhecida e nenhuma nova abertura foi criada.");
+    } else {
+      showFeedback("Caixa aberto com sucesso. Imprima, assine e guarde o cupom para anexar ao fechamento.");
+      printPdvCashOpeningCoupon(openedRegister || {});
+    }
     if (normalizePdvStoreIdentifier(getPdvSaleCashRegisterStoreId()) === storeId) {
       await loadPdvSaleCashRegisterStatus({ silent: true }).catch((statusError) => {
         console.warn("Caixa aberto, mas o status da venda nao atualizou automaticamente.", statusError);
