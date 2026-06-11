@@ -3419,6 +3419,48 @@ function buildCartItemFulfillmentSnapshot(payload = {}, session = {}) {
   throw buildOperationalError("Produto indisponível em todas as lojas.", 400);
 }
 
+function normalizeCartItemKeyPart(value = "") {
+  return normalizeText(value).toLowerCase();
+}
+
+function buildCartItemKey(item = {}) {
+  const variationId = normalizeCartItemKeyPart(item.variation_id || item.normalized_variant_id || "");
+  const parentProductId = normalizeCartItemKeyPart(item.normalized_parent_product_id || item.parent_product_id || "");
+  const productId = normalizeCartItemKeyPart(item.product_id || item.selected_product_id || "");
+  const barcode = normalizeDigits(item.codigo_barras || item.ean || item.barcode || item.selected_ean || "");
+  const tinyCode = normalizeCartItemKeyPart(item.codigo_tiny || item.tiny_id || item.selected_codigo_tiny || "");
+  const sku = normalizeCartItemKeyPart(item.sku || item.selected_sku || "");
+  const code = normalizeCartItemKeyPart(item.codigo || item.codigo_interno || item.codigo_etiqueta || item.selected_codigo || "");
+  const inventoryId = normalizeCartItemKeyPart(item.inventory_id || item.selected_inventory_id || "");
+  const identity = variationId
+    ? `variation:${variationId}`
+    : parentProductId
+      ? `parent:${parentProductId}`
+      : productId
+        ? `product:${productId}`
+        : barcode
+          ? `barcode:${barcode}`
+          : tinyCode
+            ? `tiny:${tinyCode}`
+            : sku
+              ? `sku:${sku}`
+              : code
+                ? `code:${code}`
+                : `inventory:${inventoryId}`;
+  const color = normalizeCartItemKeyPart(item.cor || item.color || "");
+  const size = normalizeCartItemKeyPart(item.tamanho || item.size || "");
+  const sourceStore = normalizeStoreKey(
+    item.stock_source_store_id
+    || item.loja_origem_estoque
+    || item.selected_loja
+    || item.store_id
+    || item.loja
+    || ""
+  );
+  const fulfillment = normalizeCartItemKeyPart(item.fulfillment_type || item.fulfillment_mode || "");
+  return [identity, `color:${color}`, `size:${size}`, `source:${sourceStore}`, `fulfillment:${fulfillment}`].join("|");
+}
+
 function addProductToCart(sessionId, payload = {}, user = {}) {
   const session = getSessionById(sessionId);
   if (!session) {
@@ -3523,21 +3565,39 @@ function addProductToCart(sessionId, payload = {}, user = {}) {
     physical_confirmation_note: normalizeText(payload.physical_confirmation_note || "")
   };
   item.item_discount = null;
-  session.cart_items.push(item);
+  const cartItemKey = buildCartItemKey(item);
+  const existingItem = session.cart_items.find((row) => buildCartItemKey(row) === cartItemKey);
+  if (existingItem) {
+    existingItem.quantidade = Math.max(
+      1,
+      Math.round(toNumber(existingItem.quantidade || 1)) + Math.round(toNumber(item.quantidade || 1))
+    );
+    if (existingItem.item_discount) {
+      existingItem.item_discount = normalizeCartItemDiscount(existingItem);
+    }
+  } else {
+    session.cart_items.push(item);
+  }
   session.updated_at = nowIso();
   saveSession(session);
-  if (item.physical_confirmation_done) {
+  const savedItem = existingItem || item;
+  if (savedItem.physical_confirmation_done) {
     appendEvent("SALE_ITEM_PHYSICAL_CONFIRMATION", { session_id: sessionId, loja: session.loja }, {
-      item_id: item.item_id,
-      product_id: item.product_id,
-      sku: item.sku,
-      codigo: item.codigo,
-      store_id: item.physical_confirmation_store_id,
-      confirmed_at: item.physical_confirmation_at,
-      reason: item.physical_confirmation_reason
+      item_id: savedItem.item_id,
+      product_id: savedItem.product_id,
+      sku: savedItem.sku,
+      codigo: savedItem.codigo,
+      store_id: savedItem.physical_confirmation_store_id,
+      confirmed_at: savedItem.physical_confirmation_at,
+      reason: savedItem.physical_confirmation_reason
     }, user);
   }
-  appendEvent("PRODUCT_ADDED", { session_id: sessionId, loja: session.loja }, { item, customer: session.customer }, user);
+  appendEvent("PRODUCT_ADDED", { session_id: sessionId, loja: session.loja }, {
+    item: savedItem,
+    customer: session.customer,
+    consolidated: Boolean(existingItem),
+    added_quantity: item.quantidade
+  }, user);
   return session;
 }
 
