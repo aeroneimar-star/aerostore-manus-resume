@@ -651,7 +651,9 @@ async function updateProductAggregate(productId, payload = {}, user = {}, option
 
     if (requestedVariants) {
       const existingByKey = new Map(current.variants.map((item) => [item.attribute_key, item]));
+      const existingById = new Map(current.variants.map((item) => [item.variation_id, item]));
       const requestedByKey = new Map();
+      const requestedVariantIds = new Set();
       for (const [index, item] of requestedVariants.entries()) {
         const color = normalizeVariantColor(item.color || item.cor);
         const size = normalizeVariantSize(item.size || item.tamanho);
@@ -665,27 +667,57 @@ async function updateProductAggregate(productId, payload = {}, user = {}, option
             attribute_key: attributeKey
           });
         }
-        const existing = existingByKey.get(attributeKey) || null;
-        if (item.variation_id && existing && item.variation_id !== existing.variation_id) {
+        const requestedVariationId = normalizeText(item.variation_id);
+        const existingForId = requestedVariationId
+          ? existingById.get(requestedVariationId) || null
+          : null;
+        const existingForKey = existingByKey.get(attributeKey) || null;
+        if (requestedVariationId && !existingForId) {
+          throw buildConflictError("A variacao informada nao pertence a este produto.", {
+            code: "VARIANT_ID_NOT_FOUND",
+            variation_id: requestedVariationId
+          });
+        }
+        if (existingForKey && existingForId && existingForKey.variation_id !== existingForId.variation_id) {
           throw buildConflictError("A variacao informada nao corresponde a combinacao de cor e tamanho.", {
             code: "VARIANT_ID_ATTRIBUTE_CONFLICT",
-            variation_id: item.variation_id,
+            variation_id: requestedVariationId,
             attribute_key: attributeKey
           });
         }
-        const sku = existing?.sku
-          || normalizeSku(item.sku)
-          || buildVariantSku(current.product.base_sku, color, size);
+        const existing = existingForId || existingForKey;
+        const attributesChanged = Boolean(existing && existing.attribute_key !== attributeKey);
+        const previousAutomaticSku = existing
+          ? buildVariantSku(current.product.base_sku, existing.color, existing.size)
+          : "";
+        const canRefreshAutomaticSku = Boolean(
+          attributesChanged
+          && !existing.first_sold_at
+          && !existing.sku_locked_at
+          && normalizeSku(existing.sku) === previousAutomaticSku
+        );
+        const sku = canRefreshAutomaticSku
+          ? buildVariantSku(current.product.base_sku, color, size)
+          : existing?.sku
+            || normalizeSku(item.sku)
+            || buildVariantSku(current.product.base_sku, color, size);
         const barcode = normalizeText(item.barcode || item.gtin_ean || existing?.barcode);
         if (!existing) {
           await assertSkuAvailable(connection, sku);
           await assertBarcodeAvailable(connection, barcode);
-        } else if (barcode !== normalizeText(existing.barcode)) {
-          await assertBarcodeAvailable(connection, barcode, existing.variation_id);
+        } else {
+          if (sku !== normalizeSku(existing.sku)) {
+            await assertSkuAvailable(connection, sku, existing.variation_id);
+          }
+          if (barcode !== normalizeText(existing.barcode)) {
+            await assertBarcodeAvailable(connection, barcode, existing.variation_id);
+          }
         }
+        if (existing) requestedVariantIds.add(existing.variation_id);
         requestedByKey.set(attributeKey, {
           item,
           existing,
+          attributesChanged,
           color,
           size,
           attributeKey,
@@ -700,6 +732,7 @@ async function updateProductAggregate(productId, payload = {}, user = {}, option
       }
 
       for (const existing of current.variants) {
+        if (requestedVariantIds.has(existing.variation_id)) continue;
         if (requestedByKey.has(existing.attribute_key)) continue;
         if (existing.physical_qty > 0) {
           throw buildConflictError(
@@ -774,18 +807,41 @@ async function updateProductAggregate(productId, payload = {}, user = {}, option
           await run(
             connection,
             `UPDATE pdv_product_variants
-             SET barcode = ?, status = ?, sale_price_cents = ?, cost_price_cents = ?,
-                 updated_at = ?
+             SET sku = ?, barcode = ?, status = ?, attributes_json = ?, attribute_key = ?,
+                 sale_price_cents = ?, cost_price_cents = ?, updated_at = ?
              WHERE id = ?`,
             [
+              requested.sku,
               requested.barcode || null,
               requested.variantStatus,
+              JSON.stringify({ color: requested.color, size: requested.size }),
+              requested.attributeKey,
               salePriceCents,
               costPriceCents,
               timestamp,
               variantId
             ]
           );
+          if (requested.attributesChanged) {
+            await appendAudit(connection, {
+              productId: current.product.id,
+              variantId,
+              actionType: "VARIANT_ATTRIBUTES_CHANGED",
+              actor,
+              before: {
+                color: requested.existing.color,
+                size: requested.existing.size,
+                attribute_key: requested.existing.attribute_key,
+                sku: requested.existing.sku
+              },
+              after: {
+                color: requested.color,
+                size: requested.size,
+                attribute_key: requested.attributeKey,
+                sku: requested.sku
+              }
+            });
+          }
         }
 
         const storeId = normalizeStoreKey(
@@ -857,15 +913,19 @@ async function updateProductAggregate(productId, payload = {}, user = {}, option
     }
 
     const refreshed = await loadProductAggregate(connection, current.product.id);
+    const legacyColor = payload.color === undefined && payload.cor === undefined
+      ? null
+      : normalizeText(payload.color ?? payload.cor);
     await run(
       connection,
       `UPDATE ai_products
-       SET name = ?, commercial_name = ?, price = ?, cost_price = ?, status = ?,
-           stock = ?, estoque_total = ?, updated_at = ?
+       SET name = ?, commercial_name = ?, color = COALESCE(?, color),
+           price = ?, cost_price = ?, status = ?, stock = ?, estoque_total = ?, updated_at = ?
        WHERE id = ?`,
       [
         name,
         normalizeText(payload.commercial_name || name),
+        legacyColor,
         salePriceCents / 100,
         costPriceCents === null ? null : costPriceCents / 100,
         status,

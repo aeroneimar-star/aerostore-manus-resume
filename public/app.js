@@ -13781,6 +13781,32 @@ function buildPdvProductSizeStockRow(item = {}) {
   `;
 }
 
+function getPdvProductVariantStockForStore(item = {}, storeId = "") {
+  const normalizedStoreId = normalizePdvStoreIdentifier(storeId);
+  if (!normalizedStoreId) return 0;
+  const balance = toArray(item.balances).find(
+    (entry) => normalizePdvStoreIdentifier(entry?.store_id || entry?.store) === normalizedStoreId
+  );
+  return balance ? Math.max(0, toNumber(balance.physical_qty ?? 0)) : 0;
+}
+
+function updatePdvProductVariantStocksForStore(formElement, variants = [], storeId = "") {
+  if (!formElement) return;
+  const variantsById = new Map(
+    toArray(variants)
+      .filter((item) => normalizeText(item?.variation_id || ""))
+      .map((item) => [normalizeText(item.variation_id), item])
+  );
+  Array.from(formElement.querySelectorAll("[data-pdv-product-variant-row]")).forEach((row) => {
+    const variationId = normalizeText(row.querySelector("[data-pdv-product-variant-id]")?.value || "");
+    if (!variationId || !variantsById.has(variationId)) return;
+    const quantityInput = row.querySelector("[data-pdv-grade-quantity]");
+    if (quantityInput) {
+      quantityInput.value = String(getPdvProductVariantStockForStore(variantsById.get(variationId), storeId));
+    }
+  });
+}
+
 function buildPdvProductVariantRow(item = {}) {
   return `
     <div class="pdv-product-variant-row" data-pdv-product-variant-row="true">
@@ -14088,9 +14114,14 @@ function buildPdvProductDrawer() {
   ensurePdvProductsCrudState();
   const draft = state.pdvProducts.drawerDraft || getDefaultPdvProductDraft();
   const productType = normalizeText(draft.product_type || "simple") === "variable" ? "variable" : "simple";
-  const productVariants = toArray(draft.variants);
   const storeOptions = getPdvProductOperationalStoreOptions();
   const selectedStoreId = normalizePdvStoreIdentifier(draft.store_id || draft.store || getCurrentPdvStoreId() || "vila") || "vila";
+  const productVariants = toArray(draft.variants).map((item) => ({
+    ...item,
+    desired_stock: normalizeText(item.variation_id || "")
+      ? getPdvProductVariantStockForStore(item, selectedStoreId)
+      : (item.desired_stock ?? item.initial_stock ?? 0)
+  }));
   const sizeStock = normalizePdvProductSizeStock(draft.size_stock || draft.size_stock_json);
   const sizeStockTotal = sizeStock.reduce((total, item) => total + item.quantity, 0);
   const internalCode = normalizeText(draft.codigo || draft.codigo_interno || draft.sku || "");
@@ -14167,7 +14198,7 @@ function buildPdvProductDrawer() {
               </label>
               <label>Preco de custo<input name="cost_price" type="text" value="${escapeHtml(draft.cost_price ?? "")}" /></label>
               <label>Loja / unidade
-                <select name="store" required>
+                <select name="store" data-pdv-product-store="true" required>
                   ${storeOptions.map((store) => `<option value="${escapeHtml(store.value)}"${selectedStoreId === store.value ? " selected" : ""}>${escapeHtml(store.label)}</option>`).join("")}
                 </select>
               </label>
@@ -14818,17 +14849,27 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
     try {
       const detail = await api(`/api/products/${encodeURIComponent(product.id)}`);
       const normalized = detail.normalized || null;
+      const selectedStoreId = normalizePdvStoreIdentifier(
+        detail.product?.store_id
+        || detail.product?.store
+        || product.store_id
+        || product.store
+        || getCurrentPdvStoreId()
+        || "vila"
+      ) || "vila";
       openPdvProductDrawer("edit", {
         ...product,
         ...(detail.product || {}),
+        store: selectedStoreId,
+        store_id: selectedStoreId,
         product_type: normalized?.product?.product_type || product.product_type || "simple",
         variants: toArray(normalized?.variants).map((item) => ({
           variation_id: item.variation_id,
           attribute_key: item.attribute_key,
           color: item.color,
           size: item.size,
-          desired_stock: item.physical_qty,
-          physical_qty: item.physical_qty,
+          balances: toArray(item.balances).map((balance) => ({ ...balance })),
+          desired_stock: getPdvProductVariantStockForStore(item, selectedStoreId),
           barcode: item.barcode || "",
           status: item.status
         }))
@@ -14914,6 +14955,19 @@ function renderPdvProductsOfficialFront(container = document.getElementById("pdv
       size_stock: readPdvProductSizeStockRows(productForm)
     };
     renderPdvProductsOfficialFront(container);
+  });
+  productForm?.querySelector("[data-pdv-product-store]")?.addEventListener("change", (event) => {
+    const selectedStoreId = normalizePdvStoreIdentifier(event.currentTarget.value || "");
+    state.pdvProducts.drawerDraft = {
+      ...(state.pdvProducts.drawerDraft || getDefaultPdvProductDraft()),
+      store: selectedStoreId,
+      store_id: selectedStoreId
+    };
+    updatePdvProductVariantStocksForStore(
+      productForm,
+      state.pdvProducts.drawerDraft?.variants || [],
+      selectedStoreId
+    );
   });
   productForm?.querySelector("[data-pdv-product-variant-add]")?.addEventListener("click", () => {
     const list = productForm.querySelector("[data-pdv-product-variant-list]");
