@@ -12,11 +12,28 @@ assert(
 );
 assert(
   /return digits\.length === 10 \|\| digits\.length === 11;/.test(appSource),
-  "Auto-busca deve aceitar somente telefone completo com 10 ou 11 digitos."
+  "Auto-busca deve aceitar telefone completo com 10 ou 11 digitos."
 );
 assert(
-  /function schedulePdvSaleCustomerSearch\(\)[\s\S]*?shouldAutoSearchPdvSaleCustomer\(query\)/.test(appSource),
-  "Debounce deve consultar a regra de telefone completo antes de buscar."
+  /return normalized\.length >= PDV_SALE_CUSTOMER_SEARCH_MIN_CHARS;/.test(appSource),
+  "Auto-busca deve aceitar nome com minimo de caracteres apos debounce."
+);
+assert(
+  /function schedulePdvSaleCustomerSearch\(\)[\s\S]*?PDV_SALE_CUSTOMER_SEARCH_DEBOUNCE_MS/.test(appSource),
+  "Debounce deve aguardar pausa na digitacao antes de buscar."
+);
+assert(
+  /function renderPdvSaleCustomerSearchPanel\(\)/.test(appSource),
+  "Busca de cliente deve atualizar somente o painel de resultados durante a digitacao."
+);
+const scheduleSearchBody = (appSource.match(/function schedulePdvSaleCustomerSearch\(\) \{([\s\S]*?)\n\}/) || [])[1] || "";
+assert(
+  scheduleSearchBody.includes("renderPdvSaleCustomerSearchPanel("),
+  "Digitacao deve atualizar somente o painel de busca apos debounce."
+);
+assert(
+  !scheduleSearchBody.includes("renderPdvSaleSurface("),
+  "Digitacao nao deve re-renderizar a tela inteira da venda."
 );
 assert(
   /data-pdv-sale-customer-search-form="true"/.test(appSource)
@@ -31,7 +48,11 @@ assert(
 
 console.log(JSON.stringify({
   ok: true,
-  automatic_search: "telefone completo com 10 ou 11 digitos",
+  automatic_search: {
+    phone: "telefone completo com 10 ou 11 digitos apos debounce",
+    name: "nome com minimo de 2 caracteres apos debounce"
+  },
   manual_search: ["Enter", "Buscar cliente"],
-  stale_response_guard: "customerSearchRequestId"
+  stale_response_guard: "customerSearchRequestId",
+  typing_render: "renderPdvSaleCustomerSearchPanel"
 }, null, 2));

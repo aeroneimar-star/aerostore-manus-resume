@@ -19100,6 +19100,88 @@ body[data-route-section="pdv-sale"] *::-webkit-scrollbar-thumb:hover {
   padding: 8px 12px;
 }
 
+.pdv-exchange-history-list {
+  display: grid;
+  gap: 10px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.pdv-exchange-history-item {
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 12px 14px;
+}
+
+.pdv-exchange-history-item strong {
+  color: #fff;
+  display: block;
+}
+
+.pdv-exchange-history-item span,
+.pdv-exchange-history-item small {
+  color: rgba(232, 238, 247, 0.68);
+  display: block;
+}
+
+.pdv-exchange-history-status {
+  font-size: 0.78rem;
+  color: var(--exchange-muted);
+}
+
+.pdv-exchange-operational-history {
+  margin-top: 1.25rem;
+}
+
+.pdv-exchange-operational-history .pdv-orders-filters {
+  margin-bottom: 1rem;
+}
+
+.pdv-exchange-operational-history .pdv-orders-table-wrap {
+  margin-top: 0.5rem;
+}
+
+body[data-route-section="pdv-exchanges"] .pdv-exchange-operational-history .pdv-orders-filters,
+body[data-route-section="pdv-exchanges"] .pdv-exchange-operational-history .pdv-orders-table-wrap,
+body[data-route-section="pdv-exchanges"] .pdv-exchange-operational-history .pdv-orders-drawer-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--exchange-divider);
+  border-radius: 14px;
+}
+
+body[data-route-section="pdv-exchanges"] .pdv-exchange-operational-history .pdv-orders-filters input,
+body[data-route-section="pdv-exchanges"] .pdv-exchange-operational-history .pdv-orders-filters select {
+  background: rgba(8, 10, 16, 0.72);
+  border-color: var(--exchange-divider);
+  color: var(--exchange-text);
+}
+
+body[data-route-section="pdv-exchanges"] .pdv-exchange-operational-history .pdv-orders-table th,
+body[data-route-section="pdv-exchanges"] .pdv-exchange-operational-history .pdv-orders-table td {
+  border-color: var(--exchange-divider);
+}
+
+body[data-route-section="pdv-exchanges"] .pdv-cashback-checkout-field-wide {
+  grid-column: 1 / -1;
+}
+
+.pdv-exchange-history-side {
+  text-align: right;
+}
+
+.pdv-exchange-history-status {
+  color: #9fb7cf;
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .pdv-exchange-layout {
   display: grid;
   grid-template-columns: minmax(240px, 0.9fr) minmax(360px, 1.55fr) minmax(260px, 0.95fr);

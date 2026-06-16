@@ -46,7 +46,10 @@ const {
   listActiveExchangeCreditsForCustomer,
   getExchangeCreditById,
   checkExchangeCreditCustomerOwnership,
-  consumeExchangeCreditForSale
+  consumeExchangeCreditForSale,
+  consumeConsolidatedExchangeCreditForSale,
+  buildConsolidatedExchangeCreditBreakdownPreview,
+  resolveStructuredCustomerId
 } = require("../exchanges/pdvExchangeCreditService");
 
 const salesRootDir = path.join(process.cwd(), "data", "pdv", "sales");
@@ -2151,10 +2154,7 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
   const saleId = buildId("SAL");
   const totals = computeSaleTotals(session, payload);
   const exchangeCreditApplication = totals.exchangeCredit > 0
-    ? validateExchangeCreditForSession(session, {
-      credit_id: getSessionExchangeCreditApplication(session)?.credit_id,
-      amount: totals.exchangeCredit
-    })
+    ? validateConsolidatedExchangeCreditForSession(session, { amount: totals.exchangeCredit })
     : null;
   if (totals.cashbackUsed > 0) {
     validateCashbackRedemption(session, payload);
@@ -2440,20 +2440,18 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
   }
 
   if (exchangeCreditApplication) {
-    const consumption = consumeExchangeCreditForSale({
-      creditId: exchangeCreditApplication.creditId,
+    const consumption = consumeConsolidatedExchangeCreditForSale({
       amount: exchangeCreditApplication.amount,
       saleId: sale.sale_id,
       customer: session.customer,
       user
     });
     sale.exchange_credit_usage = {
-      credit_id: consumption.credit.credit_id,
-      customer_id: consumption.credit.customer_id,
-      amount: exchangeCreditApplication.amount,
-      balance_before: consumption.movement.before,
-      balance_after: consumption.movement.after,
-      movement_id: consumption.movement.movement_id
+      consolidated: true,
+      amount: consumption.total_applied,
+      customer_id: exchangeCreditApplication.customerId,
+      remaining_customer_credit_balance: consumption.remaining_customer_credit_balance,
+      breakdown: consumption.breakdown
     };
     sale.exchange_credit_application = {
       ...(sale.exchange_credit_application || {}),
@@ -3614,8 +3612,20 @@ function applyCashbackToSession(sessionId, payload = {}, user = {}) {
 }
 
 function getCustomerExchangeCreditSnapshot(payload = {}) {
+  const customerId = resolveStructuredCustomerId({
+    master_customer_id: payload.master_customer_id || payload.customerId || payload.customer_id,
+    customer_id: payload.customer_id || payload.customerId,
+    contact_id: payload.contact_id,
+    crm_contact_id: payload.crm_contact_id,
+    legacy_contact_id: payload.legacy_contact_id,
+    id: payload.id
+  }) || normalizeText(payload.customer_id || payload.customerId || "");
   return listActiveExchangeCreditsForCustomer({
-    customer_id: payload.customer_id || payload.customerId || payload.master_customer_id || payload.id || "",
+    customer_id: customerId,
+    master_customer_id: payload.master_customer_id || customerId,
+    contact_id: payload.contact_id || "",
+    crm_contact_id: payload.crm_contact_id || "",
+    legacy_contact_id: payload.legacy_contact_id || "",
     phone: payload.phone || payload.telefone || "",
     name: payload.name || payload.nome || ""
   });
@@ -3650,6 +3660,68 @@ function buildExchangeCreditOwnershipLogPayload(session = {}, credit = {}, owner
     phoneMatch: Boolean(ownership.phoneMatch),
     nameConflict: Boolean(ownership.nameConflict)
   };
+}
+
+function validateConsolidatedExchangeCreditForSession(session = {}, payload = {}) {
+  if (!session.customer) {
+    throw new Error("Selecione um cliente antes de usar Credito de Troca.");
+  }
+  const amount = roundMoney(payload.amount || payload.amount_to_apply || payload.credit_amount || 0);
+  if (amount <= 0) {
+    throw new Error("Informe um valor valido de Credito de Troca.");
+  }
+  const customerId = resolveStructuredCustomerId({
+    master_customer_id: session.customer.master_customer_id || session.customer.id,
+    customer_id: session.customer.customer_id,
+    contact_id: session.customer.contact_id,
+    crm_contact_id: session.customer.crm_contact_id,
+    legacy_contact_id: session.customer.legacy_contact_id,
+    id: session.customer.id
+  }) || normalizeText(session.customer.customer_id || session.customer.master_customer_id || "");
+  const snapshot = listActiveExchangeCreditsForCustomer({
+    customer_id: customerId,
+    master_customer_id: session.customer.master_customer_id || customerId,
+    contact_id: session.customer.contact_id || "",
+    crm_contact_id: session.customer.crm_contact_id || "",
+    legacy_contact_id: session.customer.legacy_contact_id || "",
+    phone: session.customer.phone || session.customer.telefone || "",
+    name: session.customer.name || session.customer.nome || ""
+  });
+  const availableTotal = roundMoney(snapshot.total || 0);
+  if (amount > availableTotal + 0.009) {
+    throw new Error("O valor usado e maior que o saldo consolidado de Credito de Troca.");
+  }
+  const preview = buildConsolidatedExchangeCreditBreakdownPreview({
+    customer_id: customerId,
+    master_customer_id: session.customer.master_customer_id || customerId,
+    contact_id: session.customer.contact_id || "",
+    crm_contact_id: session.customer.crm_contact_id || "",
+    legacy_contact_id: session.customer.legacy_contact_id || "",
+    phone: session.customer.phone || session.customer.telefone || "",
+    name: session.customer.name || session.customer.nome || ""
+  }, amount);
+  if (preview.unallocated > 0.009) {
+    throw new Error("Nao foi possivel alocar o valor solicitado nos creditos ativos.");
+  }
+  const previewMethods = buildNormalizedPaymentMethods(session.payment_plan?.methods || [])
+    .filter((item) => item.method !== "credito_troca");
+  const previewSession = {
+    ...session,
+    payment_plan: {
+      methods: [...previewMethods, {
+        method: "credito_troca",
+        amount,
+        consolidated: true,
+        customer_id: customerId
+      }]
+    }
+  };
+  const totals = computeSaleTotals(previewSession, {});
+  const maxUsable = roundMoney(totals.subtotalAfterItemDiscount - totals.extraDiscount - totals.giftCardUsed - totals.permutaAmount);
+  if (amount > maxUsable + 0.009) {
+    throw new Error("O Credito de Troca nao pode ser maior que o total da venda.");
+  }
+  return { amount, customerId, preview, totals, snapshot };
 }
 
 function validateExchangeCreditForSession(session = {}, payload = {}) {
@@ -3719,7 +3791,7 @@ function applyExchangeCreditToSession(sessionId, payload = {}, user = {}) {
   if (!(session.cart_items || []).length) {
     throw new Error("Adicione itens ao carrinho antes de aplicar Credito de Troca.");
   }
-  const validation = validateExchangeCreditForSession(session, payload);
+  const validation = validateConsolidatedExchangeCreditForSession(session, payload);
   const currentMethods = buildNormalizedPaymentMethods(session.payment_plan?.methods || [])
     .filter((item) => item.method !== "credito_troca");
   session.payment_plan = {
@@ -3728,16 +3800,17 @@ function applyExchangeCreditToSession(sessionId, payload = {}, user = {}) {
       amount: validation.amount,
       installments: 1,
       installment_amount: validation.amount,
-      credit_id: validation.creditId,
-      customer_id: validation.credit.customer_id
+      consolidated: true,
+      customer_id: validation.customerId
     }]
   };
   session.exchange_credit_application = {
-    credit_id: validation.creditId,
-    customer_id: validation.credit.customer_id,
+    consolidated: true,
+    customer_id: validation.customerId,
     amount: validation.amount,
-    balance_before: roundMoney(validation.credit.remaining_amount || 0),
-    balance_after_preview: roundMoney((validation.credit.remaining_amount || 0) - validation.amount),
+    balance_before: roundMoney(validation.preview.total_available || 0),
+    balance_after_preview: roundMoney(Math.max(0, (validation.preview.total_available || 0) - validation.amount)),
+    breakdown_preview: validation.preview.breakdown,
     applied_at: nowIso(),
     applied_by: user?.name || user?.email || "sistema"
   };
@@ -3746,9 +3819,11 @@ function applyExchangeCreditToSession(sessionId, payload = {}, user = {}) {
   saveSession(session);
   return {
     session,
-    credit: validation.credit,
     applied: session.exchange_credit_application,
-    credits: getCustomerExchangeCreditSnapshot(session.customer || {})
+    credits: getCustomerExchangeCreditSnapshot(session.customer || {}),
+    total_applied: validation.amount,
+    remaining_customer_credit_balance: session.exchange_credit_application.balance_after_preview,
+    breakdown_preview: validation.preview.breakdown
   };
 }
 

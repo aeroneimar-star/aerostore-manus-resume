@@ -389,7 +389,24 @@ const state = {
     selectedNewProductIndex: -1,
     finalizing: false,
     error: "",
-    receipt: null
+    receipt: null,
+    historyItems: [],
+    historyTotal: 0,
+    historyLoading: false,
+    historyError: "",
+    historyFilters: {
+      search: "",
+      status: "all",
+      period: "",
+      date_from: "",
+      date_to: "",
+      store_id: ""
+    },
+    historyDetailId: "",
+    historyDetail: null,
+    historyDetailLoading: false,
+    historyDetailError: "",
+    historyHydrated: false
   },
   campaignMedia: null, // mídia atual da campanha sendo editada
   pdvCash: {
@@ -622,6 +639,8 @@ const state = {
     logsError: "",
     qrLoading: false,
     qrData: null,
+    qrWindowOpen: false,
+    qrClosedNotice: "",
     error: "",
     testPhone: "",
     testMessage: "Teste operacional do WhatsApp CRM AEROSTORE.",
@@ -820,6 +839,7 @@ let campaignSearchDebounce;
 let cashbackSearchDebounce;
 let cashbackConsultDebounce;
 let whatsappStatusInterval = null;
+let whatsappCrmQrPollingInterval = null;
 let mojibakeObserver = null;
 let mojibakeNormalizationScheduled = false;
 const mojibakePendingRoots = new Set();
@@ -3750,7 +3770,15 @@ async function syncPdvSaleCashbackInfo(session = null, { force = false } = {}) {
 async function syncPdvSaleExchangeCreditInfo(session = null, { force = false } = {}) {
   const currentSession = session || state.pdvSale.session || null;
   const customer = currentSession?.customer || null;
-  const customerKey = normalizeText(customer?.master_customer_id || customer?.customer_id || customer?.id || customer?.phone || "");
+  const customerId = normalizeText(
+    customer?.master_customer_id
+    || customer?.customer_id
+    || customer?.id
+    || ""
+  );
+  const customerKey = isStructuredPdvCustomerId(customerId)
+    ? customerId
+    : normalizeText(customer?.phone || "");
   const customerPhone = normalizeText(customer?.phone || "");
   if (!customerKey || !customerPhone) {
     resetPdvSaleExchangeCreditState();
@@ -3761,14 +3789,11 @@ async function syncPdvSaleExchangeCreditInfo(session = null, { force = false } =
   }
   state.pdvSale.exchangeCreditLoading = true;
   try {
-    const response = await api(`/api/pdv/sales/customer/${encodeURIComponent(customer?.master_customer_id || customer?.customer_id || customerKey)}/exchange-credits?phone=${encodeURIComponent(customerPhone)}&name=${encodeURIComponent(customer?.name || "")}`);
+    const lookupId = isStructuredPdvCustomerId(customerId) ? customerId : customerKey;
+    const response = await api(`/api/pdv/sales/customer/${encodeURIComponent(lookupId)}/exchange-credits?phone=${encodeURIComponent(customerPhone)}&name=${encodeURIComponent(customer?.name || "")}`);
     state.pdvSale.exchangeCreditInfo = response || { items: [], total: 0 };
     state.pdvSale.exchangeCreditCustomerKey = customerKey;
     const applied = getPdvSaleExchangeCreditApplication(currentSession);
-    const rows = toArray(response?.items);
-    const preferredCreditId = normalizeText(applied.credit_id || state.pdvSale.exchangeCreditSelectedId || "");
-    const selectedCredit = rows.find((item) => normalizeText(item.credit_id || "") === preferredCreditId) || rows[0] || null;
-    state.pdvSale.exchangeCreditSelectedId = normalizeText(selectedCredit?.credit_id || "");
     state.pdvSale.exchangeCreditInput = applied.amount > 0 ? formatMoneyAmountInput(applied.amount) : state.pdvSale.exchangeCreditInput;
     return state.pdvSale.exchangeCreditInfo;
   } finally {
@@ -5261,9 +5286,6 @@ function buildPdvSaleExchangeCreditPanel(session = null, totals = null) {
     availableTotal,
     toNumber(saleTotals.subtotal || 0) - toNumber(saleTotals.discountAmount || 0)
   )).toFixed(2));
-  const preferredCreditId = normalizeText(state.pdvSale.exchangeCreditSelectedId || applied.credit_id || "");
-  const selectedCredit = rows.find((item) => normalizeText(item.credit_id || "") === preferredCreditId) || rows[0] || null;
-  const selectedCreditId = normalizeText(selectedCredit?.credit_id || "");
   const currentInput = normalizeText(state.pdvSale.exchangeCreditInput || "")
     || (applied.amount > 0 ? formatMoneyAmountInput(applied.amount) : "");
   const cashRegisterClosed = isPdvSaleCashRegisterClosedForSale();
@@ -5289,18 +5311,12 @@ function buildPdvSaleExchangeCreditPanel(session = null, totals = null) {
       </div>
       ${rows.length ? `
         <form class="pdv-cashback-checkout-actions" data-pdv-sale-exchange-credit-form="true">
-          <label class="pdv-cashback-checkout-field">
-            <span>Crédito</span>
-            <select data-pdv-sale-exchange-credit-select="true" ${(state.pdvSale.lastCompletedSale || cashRegisterClosed) ? "disabled" : ""}>
-              ${rows.map((credit) => `<option value="${escapeHtml(credit.credit_id || "")}"${normalizeText(credit.credit_id || "") === selectedCreditId ? " selected" : ""}>${escapeHtml(credit.credit_id || "")} - ${currency(credit.remaining_amount || 0)}</option>`).join("")}
-            </select>
-          </label>
-          <label class="pdv-cashback-checkout-field">
+          <label class="pdv-cashback-checkout-field pdv-cashback-checkout-field-wide">
             <span>Valor a usar nesta venda</span>
             <input type="text" inputmode="decimal" data-pdv-sale-exchange-credit-input="true" value="${escapeHtml(currentInput)}" placeholder="0,00" ${(state.pdvSale.lastCompletedSale || cashRegisterClosed) ? "disabled" : ""} />
           </label>
           <div class="pdv-cashback-checkout-buttons">
-            <button class="secondary-button small" type="button" data-pdv-sale-exchange-credit-fill="true" ${canApply ? "" : "disabled"}>Usar saldo</button>
+            <button class="secondary-button small" type="button" data-pdv-sale-exchange-credit-fill="true" ${canApply ? "" : "disabled"}>Usar saldo total</button>
             <button class="primary-button small" type="button" data-pdv-sale-exchange-credit-apply="true" ${canApply ? "" : "disabled"}>${state.pdvSale.exchangeCreditApplying ? "Aplicando..." : "Aplicar crédito"}</button>
             <button class="ghost-button small" type="button" data-pdv-sale-exchange-credit-remove="true" ${(applied.amount > 0 && !state.pdvSale.lastCompletedSale && !state.pdvSale.exchangeCreditApplying) ? "" : "disabled"}>Remover crédito</button>
           </div>
@@ -5308,8 +5324,8 @@ function buildPdvSaleExchangeCreditPanel(session = null, totals = null) {
         <div class="pdv-cashback-checkout-helper">
           <span class="pdv-cashback-helper-pill">Crédito de Troca não expira e pode abater até 100% da venda.</span>
           <span class="pdv-cashback-helper-stack">
-            <strong>${selectedCredit ? `Crédito selecionado: ${currency(selectedCredit.remaining_amount || 0)}` : "Selecione um crédito para usar."}</strong>
-            <small>Saldo restante continua vinculado ao cliente.</small>
+            <strong>Saldo consolidado do cliente${rows.length > 1 ? ` (${rows.length} créditos ativos)` : ""}.</strong>
+            <small>O sistema consome automaticamente os créditos mais antigos primeiro. Saldo restante continua vinculado ao cliente.</small>
           </span>
         </div>
       ` : `
@@ -6275,38 +6291,67 @@ function clearPdvSaleCustomerSearchDebounce() {
   }
 }
 
+const PDV_SALE_CUSTOMER_SEARCH_DEBOUNCE_MS = 400;
+const PDV_SALE_CUSTOMER_SEARCH_MIN_CHARS = 2;
+
 function shouldAutoSearchPdvSaleCustomer(query = "") {
   const normalized = normalizeText(query || "");
-  if (!normalized || !/^[\d\s()+-]+$/.test(normalized)) {
+  if (!normalized) {
     return false;
   }
-  const digits = normalized.replace(/\D/g, "");
-  return digits.length === 10 || digits.length === 11;
+  if (/^[\d\s()+-]+$/.test(normalized)) {
+    const digits = normalized.replace(/\D/g, "");
+    return digits.length === 10 || digits.length === 11;
+  }
+  return normalized.length >= PDV_SALE_CUSTOMER_SEARCH_MIN_CHARS;
+}
+
+function clearPdvSaleCustomerSearchResultsState() {
+  state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
+  state.pdvSale.customerResults = [];
+  state.pdvSale.customerSearching = false;
+  state.pdvSale.customerSearchError = "";
+  state.pdvSale.customerSearchHasRun = false;
+  state.pdvSale.customerSearchLastQuery = "";
+}
+
+function renderPdvSaleCustomerSearchPanel() {
+  const resultsEl = document.querySelector(".pdv-sale-customer-results");
+  if (resultsEl) {
+    resultsEl.innerHTML = buildPdvSaleCustomerResults();
+  }
+  const selectionEl = document.querySelector(".pdv-customer-selection-state");
+  if (selectionEl) {
+    selectionEl.innerHTML = buildPdvSaleCustomerCard(state.pdvSale.session?.customer || null);
+  }
+  const submitBtn = document.querySelector("[data-pdv-sale-customer-search-form] button[type='submit']");
+  if (submitBtn) {
+    submitBtn.disabled = Boolean(state.pdvSale.customerSearching);
+    submitBtn.textContent = state.pdvSale.customerSearching ? "Buscando..." : "Buscar cliente";
+  }
 }
 
 function schedulePdvSaleCustomerSearch() {
   clearPdvSaleCustomerSearchDebounce();
-  const query = normalizeText(state.pdvSale.customerQuery || "");
-  if (!shouldAutoSearchPdvSaleCustomer(query)) {
-    state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
-    state.pdvSale.customerResults = [];
-    state.pdvSale.customerSearching = false;
-    state.pdvSale.customerSearchError = "";
-    state.pdvSale.customerSearchHasRun = false;
-    state.pdvSale.customerSearchLastQuery = "";
-    renderPdvSaleSurface();
-    refocusPdvSaleCustomerSearchInput(true);
-    return;
-  }
   state.pdvSale.customerSearchDebounce = setTimeout(() => {
     state.pdvSale.customerSearchDebounce = null;
+    const query = normalizeText(state.pdvSale.customerQuery || "");
+    if (!query) {
+      clearPdvSaleCustomerSearchResultsState();
+      renderPdvSaleCustomerSearchPanel();
+      return;
+    }
+    if (!shouldAutoSearchPdvSaleCustomer(query)) {
+      clearPdvSaleCustomerSearchResultsState();
+      renderPdvSaleCustomerSearchPanel();
+      return;
+    }
     searchPdvSaleCustomers().catch((error) => handleUiError("Erro ao buscar clientes da venda", error));
-  }, 300);
+  }, PDV_SALE_CUSTOMER_SEARCH_DEBOUNCE_MS);
 }
 
 async function searchPdvSaleCustomers() {
   clearPdvSaleCustomerSearchDebounce();
-  const shouldRefocusSearch = document.activeElement?.id === "pdv-sale-customer-search";
   const perfToken = startAeroStorePerfMeasure("pdv.sale.customer_search", {
     query_length: normalizeText(state.pdvSale.customerQuery).length
   });
@@ -6314,14 +6359,8 @@ async function searchPdvSaleCustomers() {
   state.pdvSale.customerCreateError = "";
   state.pdvSale.customerCreateExistingCustomer = null;
   if (!query) {
-    state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
-    state.pdvSale.customerResults = [];
-    state.pdvSale.customerSearching = false;
-    state.pdvSale.customerSearchError = "";
-    state.pdvSale.customerSearchHasRun = false;
-    state.pdvSale.customerSearchLastQuery = "";
-    renderPdvSaleSurface();
-    refocusPdvSaleCustomerSearchInput(shouldRefocusSearch);
+    clearPdvSaleCustomerSearchResultsState();
+    renderPdvSaleCustomerSearchPanel();
     endAeroStorePerfMeasure(perfToken, { skipped: "query_empty" });
     return;
   }
@@ -6332,8 +6371,7 @@ async function searchPdvSaleCustomers() {
   state.pdvSale.customerSearchHasRun = true;
   state.pdvSale.customerSearchLastQuery = query;
   state.pdvSale.customerResults = [];
-  renderPdvSaleSurface();
-  refocusPdvSaleCustomerSearchInput(shouldRefocusSearch);
+  renderPdvSaleCustomerSearchPanel();
   try {
     const response = await api(`/api/pdv/operational/search/customers?q=${encodeURIComponent(query)}&limit=10`);
     if (requestId !== state.pdvSale.customerSearchRequestId || query !== normalizeText(state.pdvSale.customerQuery || "")) {
@@ -6411,8 +6449,7 @@ async function searchPdvSaleCustomers() {
   } finally {
     if (requestId === state.pdvSale.customerSearchRequestId) {
       state.pdvSale.customerSearching = false;
-      renderPdvSaleSurface();
-      refocusPdvSaleCustomerSearchInput(shouldRefocusSearch);
+      renderPdvSaleCustomerSearchPanel();
       endAeroStorePerfMeasure(perfToken, {
         results: toArray(state.pdvSale.customerResults).length,
         cashback_enriched: toArray(state.pdvSale.customerResults).filter((item) => toNumber(item.cashback_available || 0) > 0).length
@@ -8031,35 +8068,29 @@ async function applyPdvSaleExchangeCredit(source = null) {
   }
   const form = source?.closest?.("[data-pdv-sale-exchange-credit-form]") || document.querySelector("[data-pdv-sale-exchange-credit-form]");
   console.info("[PDV][exchange-credit] form found", Boolean(form));
-  const liveCreditId = form?.querySelector?.("[data-pdv-sale-exchange-credit-select]")?.value;
   const liveAmount = form?.querySelector?.("[data-pdv-sale-exchange-credit-input]")?.value;
-  if (liveCreditId !== undefined) {
-    state.pdvSale.exchangeCreditSelectedId = normalizeText(liveCreditId || "");
-  }
   if (liveAmount !== undefined) {
     state.pdvSale.exchangeCreditInput = liveAmount;
   }
-  const availableCredits = toArray(state.pdvSale.exchangeCreditInfo?.items);
-  let creditId = normalizeText(state.pdvSale.exchangeCreditSelectedId || availableCredits[0]?.credit_id || "");
-  if (availableCredits.length && !availableCredits.some((credit) => normalizeText(credit.credit_id || "") === creditId)) {
-    creditId = normalizeText(availableCredits[0]?.credit_id || "");
-    state.pdvSale.exchangeCreditSelectedId = creditId;
-  }
+  const availableTotal = toNumber(state.pdvSale.exchangeCreditInfo?.total || 0);
   const amount = Number(Math.max(0, parseMoneyAmount(state.pdvSale.exchangeCreditInput || 0)).toFixed(2));
   console.info("[PDV][exchange-credit] payload candidate", {
     sessionId,
-    creditId,
     rawAmount: state.pdvSale.exchangeCreditInput,
-    amount
+    amount,
+    availableTotal
   });
-  if (!creditId) {
-    console.info("[PDV][exchange-credit] stopped before endpoint", { reason: "missing_credit_id", sessionId });
-    showFeedback("Selecione o Crédito de Troca que será usado.", "error");
+  if (availableTotal <= 0) {
+    showFeedback("Este cliente não possui Crédito de Troca disponível.", "error");
     return;
   }
   if (amount <= 0) {
     console.info("[PDV][exchange-credit] stopped before endpoint", { reason: "invalid_amount", sessionId, amount });
     showFeedback("Informe o valor de Crédito de Troca para aplicar.", "error");
+    return;
+  }
+  if (amount > availableTotal + 0.009) {
+    showFeedback("O valor informado é maior que o saldo consolidado disponível.", "error");
     return;
   }
   state.pdvSale.exchangeCreditApplying = true;
@@ -8070,17 +8101,15 @@ async function applyPdvSaleExchangeCredit(source = null) {
     const response = await api(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ credit_id: creditId, exchange_credit_id: creditId, amount })
+      body: JSON.stringify({ amount, amount_to_apply: amount })
     });
     console.info("[PDV][exchange-credit] response received", {
       hasSession: Boolean(response?.session),
-      appliedAmount: response?.applied?.amount || 0,
-      creditId: response?.applied?.credit_id || creditId
+      appliedAmount: response?.applied?.amount || response?.total_applied || 0
     });
     state.pdvSale.session = response.session || state.pdvSale.session;
     state.pdvSale.exchangeCreditInfo = response.credits || state.pdvSale.exchangeCreditInfo;
-    state.pdvSale.exchangeCreditInput = formatMoneyAmountInput(response.applied?.amount || amount);
-    state.pdvSale.exchangeCreditSelectedId = response.applied?.credit_id || creditId;
+    state.pdvSale.exchangeCreditInput = formatMoneyAmountInput(response.applied?.amount || response.total_applied || amount);
     await reconcilePdvSaleCheckoutAfterMutation("exchange_credit_changed");
     showFeedback("Crédito de Troca aplicado à venda.");
   } catch (error) {
@@ -19657,6 +19686,13 @@ function renderPdvFront(sectionId = "") {
     return;
   }
 
+  if (sectionId === "pdv-exchanges") {
+    loadPdvExchangesFront().catch((error) => {
+      handleUiError("Erro ao carregar a frente de trocas do PDV", error);
+    });
+    return;
+  }
+
   const container = document.getElementById(`${sectionId}-content`);
   if (!container) {
     return;
@@ -19767,7 +19803,7 @@ function getWhatsappCrmStatusMeta(statusData = state.whatsappCrm.statusData || {
     return {
       tone: "warning",
       label: "QR protegido",
-      detail: statusData.sessionStateLabel || "Clique em Atualizar QR para liberar um QR Code valido por tempo limitado."
+      detail: statusData.sessionStateLabel || "Clique em Abrir QR para liberar um QR Code valido por tempo limitado."
     };
   }
   if (normalizedStatus === "autenticando") {
@@ -21002,8 +21038,11 @@ function renderWhatsAppRouteFront() {
   const statusMeta = getWhatsappCrmStatusMeta(statusData);
   const connectedNumber = normalizeText(statusData.connectedNumber || state.whatsappConnectedNumber || "");
   const whatsappStoreLabel = getPdvStoreDisplayName(statusData.store?.store_id || statusData.store?.id || statusData.store?.label || getCurrentPdvStoreId(), statusData.store?.label || getCurrentUserStoreLabel());
-  const hasQr = Boolean(state.whatsappCrm.qrData?.qrBase64 || statusData.qrBase64 || statusData.hasQr || state.whatsappHasQr);
+  const qrWindowActive = Boolean(state.whatsappCrm.qrWindowOpen || statusData.qrRequestActive);
+  const hasQr = qrWindowActive && Boolean(state.whatsappCrm.qrData?.qrBase64);
   const showQrActions = canReconnectWhatsappCrm();
+  const showOpenQrButton = showQrActions && !qrWindowActive;
+  const showCloseQrButton = showQrActions && qrWindowActive;
   const logsVisible = canViewWhatsappLogs();
   const showCampaignTabs = canViewWhatsappCampaigns();
   const showAssistantTab = canViewWhatsappAssistant();
@@ -21014,7 +21053,7 @@ function renderWhatsAppRouteFront() {
         <div>
           <p class="eyebrow">WhatsApp CRM</p>
           <h3>Motor oficial da loja ativa para conexao, monitoramento e envio operacional.</h3>
-          <p class="helper-text">${escapeHtml(state.whatsappCrm.error || statusMeta.detail)}</p>
+          <p class="helper-text">${escapeHtml(state.whatsappCrm.error || state.whatsappCrm.qrClosedNotice || statusMeta.detail)}</p>
         </div>
         <div class="stats-grid pdv-route-summary">
           <div class="stat-card">
@@ -21067,19 +21106,20 @@ function renderWhatsAppRouteFront() {
             </div>
             <div class="action-row whatsapp-crm-action-row">
               <button class="secondary-button" type="button" data-whatsapp-crm-refresh-status="true"${state.whatsappCrm.loading ? " disabled" : ""}>${state.whatsappCrm.loading ? "Atualizando..." : "Atualizar status"}</button>
-              ${showQrActions ? `<button class="ghost-button" type="button" data-whatsapp-crm-refresh-qr="true"${state.whatsappCrm.qrLoading ? " disabled" : ""}>${state.whatsappCrm.qrLoading ? "Atualizando QR..." : "Atualizar QR"}</button>` : ""}
+              ${showOpenQrButton ? `<button class="ghost-button" type="button" data-whatsapp-crm-open-qr="true"${state.whatsappCrm.qrLoading ? " disabled" : ""}>${state.whatsappCrm.qrLoading ? "Abrindo QR..." : "Abrir QR"}</button>` : ""}
+              ${showCloseQrButton ? `<button class="secondary-button" type="button" data-whatsapp-crm-close-qr="true"${state.whatsappCrm.qrLoading ? " disabled" : ""}>${state.whatsappCrm.qrLoading ? "Fechando QR..." : "Fechar QR"}</button>` : ""}
               ${canReconnectWhatsappCrm() ? `<button class="secondary-button" type="button" data-whatsapp-crm-reinitialize="true"${state.whatsappCrm.loading ? " disabled" : ""}>${state.whatsappCrm.loading ? "Reconectando..." : "Reconectar"}</button>` : ""}
               ${canDisconnectWhatsappCrm() ? `<button class="ghost-button" type="button" data-whatsapp-crm-disconnect="true"${state.whatsappCrm.loading ? " disabled" : ""}>${state.whatsappCrm.loading ? "Desconectando..." : "Desconectar"}</button>` : ""}
               ${canResetWhatsappCrm() ? `<button class="danger-button" type="button" data-whatsapp-crm-reset-session="true"${state.whatsappCrm.loading ? " disabled" : ""}>${state.whatsappCrm.loading ? "Limpando..." : "Limpar sessao"}</button>` : ""}
             </div>
             <div class="whatsapp-crm-qr-wrap${hasQr ? " is-visible" : ""}">
               ${hasQr ? `
-                <p>Escaneie o QR Code abaixo com o WhatsApp do celular da loja. Ele so e renovado quando voce clicar em Atualizar QR.</p>
-                <img class="whatsapp-crm-qr-image" src="${escapeHtml(state.whatsappCrm.qrData?.qrBase64 || statusData.qrBase64 || "")}" alt="QR Code WhatsApp CRM" />
+                <p>Escaneie o QR Code abaixo com o WhatsApp do celular da loja. A janela de conexao so permanece aberta enquanto voce nao clicar em Fechar QR.</p>
+                <img class="whatsapp-crm-qr-image" src="${escapeHtml(state.whatsappCrm.qrData?.qrBase64 || "")}" alt="QR Code WhatsApp CRM" />
               ` : `
                 <div class="empty-state compact">
-                  <strong>${escapeHtml(connectedNumber ? "Motor conectado" : (statusData.qrManualMode ? "QR Code protegido" : "QR nao disponivel no momento"))}</strong>
-                  <span>${escapeHtml(connectedNumber ? `Motor conectado ao numero ${connectedNumber}.` : (statusData.qrManualMode ? "Para conectar, clique em Atualizar QR. O sistema nao fica renovando QR sozinho." : "Quando a sessao exigir autenticacao, o QR aparecera nesta frente."))}</span>
+                  <strong>${escapeHtml(connectedNumber ? "Motor conectado" : (state.whatsappCrm.qrClosedNotice ? "QR fechado" : (statusData.qrManualMode ? "QR Code protegido" : "QR nao disponivel no momento")))}</strong>
+                  <span>${escapeHtml(connectedNumber ? `Motor conectado ao numero ${connectedNumber}.` : (state.whatsappCrm.qrClosedNotice || (statusData.qrManualMode ? "Para conectar, clique em Abrir QR. O sistema nao fica renovando QR sozinho." : "Quando precisar conectar, clique em Abrir QR nesta frente.")))}</span>
                 </div>
               `}
             </div>
@@ -21693,29 +21733,143 @@ async function saveWhatsAppCrmCampaignDraft(formElement) {
   }
 }
 
+function isWhatsappCrmQrWindowActive() {
+  const statusData = state.whatsappCrm.statusData || {};
+  return Boolean(state.whatsappCrm.qrWindowOpen || statusData.qrRequestActive);
+}
+
+function stopWhatsAppCrmQrPolling() {
+  if (whatsappCrmQrPollingInterval) {
+    clearInterval(whatsappCrmQrPollingInterval);
+    whatsappCrmQrPollingInterval = null;
+  }
+}
+
+async function pollWhatsAppCrmQrWindow() {
+  if (!isWhatsappCrmQrWindowActive()) {
+    stopWhatsAppCrmQrPolling();
+    return;
+  }
+  try {
+    const statusResponse = await api("/api/whatsapp/status");
+    state.whatsappCrm.statusData = statusResponse;
+    state.whatsappStatus = statusResponse.status;
+    state.whatsappConnectedNumber = statusResponse.connectedNumber;
+    state.whatsappLastConnectedAt = statusResponse.lastConnectedAt;
+    state.whatsappLastError = statusResponse.lastError;
+    state.whatsappHasQr = statusResponse.hasQr;
+
+    if (statusResponse.status === "conectado") {
+      state.whatsappCrm.qrWindowOpen = false;
+      state.whatsappCrm.qrData = null;
+      state.whatsappCrm.qrClosedNotice = "";
+      stopWhatsAppCrmQrPolling();
+      renderWhatsAppRouteFront();
+      return;
+    }
+
+    if (!statusResponse.qrRequestActive) {
+      state.whatsappCrm.qrWindowOpen = false;
+      state.whatsappCrm.qrData = null;
+      stopWhatsAppCrmQrPolling();
+      renderWhatsAppRouteFront();
+      return;
+    }
+
+    const qrResponse = await api("/api/whatsapp/qr");
+    state.whatsappCrm.qrData = qrResponse;
+    renderWhatsAppRouteFront();
+  } catch (error) {
+    if (String(error.message || "").trim()) {
+      state.whatsappCrm.error = error.message;
+    }
+  }
+}
+
+function startWhatsAppCrmQrPolling() {
+  stopWhatsAppCrmQrPolling();
+  pollWhatsAppCrmQrWindow().catch(() => {});
+  whatsappCrmQrPollingInterval = setInterval(() => {
+    pollWhatsAppCrmQrWindow().catch(() => {});
+  }, 2500);
+}
+
+async function openWhatsAppCrmQr() {
+  if (!canReconnectWhatsappCrm() || state.whatsappCrm.qrLoading) {
+    return;
+  }
+  state.whatsappCrm.qrWindowOpen = true;
+  state.whatsappCrm.qrClosedNotice = "";
+  state.whatsappCrm.error = "";
+  state.whatsappCrm.qrLoading = true;
+  renderWhatsAppRouteFront();
+  try {
+    await api("/api/whatsapp/qr/refresh", { method: "POST" });
+    startWhatsAppCrmQrPolling();
+  } catch (error) {
+    state.whatsappCrm.qrWindowOpen = false;
+    state.whatsappCrm.qrData = null;
+    stopWhatsAppCrmQrPolling();
+    if (String(error.message || "").trim()) {
+      state.whatsappCrm.error = error.message;
+    }
+    throw error;
+  } finally {
+    state.whatsappCrm.qrLoading = false;
+    renderWhatsAppRouteFront();
+  }
+}
+
+async function closeWhatsAppCrmQr() {
+  if (state.whatsappCrm.qrLoading) {
+    return;
+  }
+  stopWhatsAppCrmQrPolling();
+  state.whatsappCrm.qrLoading = true;
+  renderWhatsAppRouteFront();
+  try {
+    await api("/api/whatsapp/qr/close", { method: "POST" });
+    state.whatsappCrm.qrWindowOpen = false;
+    state.whatsappCrm.qrData = null;
+    state.whatsappCrm.qrClosedNotice = "QR fechado. Clique em Abrir QR quando quiser conectar.";
+    const response = await api("/api/whatsapp/status");
+    state.whatsappStatus = response.status;
+    state.whatsappConnectedNumber = response.connectedNumber;
+    state.whatsappLastConnectedAt = response.lastConnectedAt;
+    state.whatsappLastError = response.lastError;
+    state.whatsappHasQr = response.hasQr;
+    state.whatsappCrm.statusData = response;
+  } catch (error) {
+    if (String(error.message || "").trim()) {
+      state.whatsappCrm.error = error.message;
+    }
+    throw error;
+  } finally {
+    state.whatsappCrm.qrLoading = false;
+    renderWhatsAppRouteFront();
+  }
+}
+
 async function loadWhatsAppQrData(options = {}) {
   const { requestFresh = false } = options || {};
   if (!canReconnectWhatsappCrm()) {
     state.whatsappCrm.qrData = null;
     return null;
   }
+  if (!requestFresh && !isWhatsappCrmQrWindowActive()) {
+    state.whatsappCrm.qrData = null;
+    return null;
+  }
   state.whatsappCrm.qrLoading = true;
   try {
     if (requestFresh) {
+      state.whatsappCrm.qrWindowOpen = true;
+      state.whatsappCrm.qrClosedNotice = "";
       await api("/api/whatsapp/qr/refresh", { method: "POST" });
+      startWhatsAppCrmQrPolling();
     }
-    let response = null;
-    const maxAttempts = requestFresh ? 6 : 1;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      if (attempt > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      }
-      response = await api("/api/whatsapp/qr");
-      state.whatsappCrm.qrData = response;
-      if (!requestFresh || response?.qrBase64 || response?.status === "conectado") {
-        return response;
-      }
-    }
+    const response = await api("/api/whatsapp/qr");
+    state.whatsappCrm.qrData = response;
     return response;
   } catch (error) {
     state.whatsappCrm.qrData = null;
@@ -21729,7 +21883,7 @@ async function loadWhatsAppQrData(options = {}) {
 }
 
 async function loadWhatsAppCrmFront(options = {}) {
-  const { refreshQr = true, refreshLogs = true, refreshCampaigns = true } = options;
+  const { refreshQr = false, refreshLogs = true, refreshCampaigns = true } = options;
   state.whatsappCrm.loading = true;
   state.whatsappCrm.error = "";
   renderWhatsAppRouteFront();
@@ -21742,9 +21896,14 @@ async function loadWhatsAppCrmFront(options = {}) {
     state.whatsappHasQr = response.hasQr;
     state.whatsappCrm.statusData = response;
     updateWhatsAppUI(response);
-    if (refreshQr && (response.hasQr || response.status === "aguardando_qr" || response.status === "aguardando qr")) {
+    if (response.status === "conectado") {
+      state.whatsappCrm.qrWindowOpen = false;
+      state.whatsappCrm.qrData = null;
+      state.whatsappCrm.qrClosedNotice = "";
+      stopWhatsAppCrmQrPolling();
+    } else if (refreshQr && isWhatsappCrmQrWindowActive() && (response.hasQr || response.status === "aguardando_qr" || response.status === "aguardando qr")) {
       await loadWhatsAppQrData();
-    } else if (!response.hasQr) {
+    } else if (!isWhatsappCrmQrWindowActive()) {
       state.whatsappCrm.qrData = null;
     }
     if (refreshLogs) {
@@ -21777,7 +21936,7 @@ async function reinitializeWhatsApp() {
   try {
     const response = await api("/api/whatsapp/reinitialize", { method: "POST" });
     showFeedback(response.message || "Reconexao do WhatsApp CRM iniciada.");
-    await loadWhatsAppCrmFront({ refreshQr: true, refreshLogs: true });
+    await loadWhatsAppCrmFront({ refreshQr: false, refreshLogs: true });
   } finally {
     state.whatsappCrm.loading = false;
     renderWhatsAppRouteFront();
@@ -21788,12 +21947,16 @@ async function disconnectWhatsApp() {
   if (state.whatsappCrm.loading) {
     return;
   }
+  stopWhatsAppCrmQrPolling();
+  state.whatsappCrm.qrWindowOpen = false;
+  state.whatsappCrm.qrData = null;
+  state.whatsappCrm.qrClosedNotice = "";
   state.whatsappCrm.loading = true;
   renderWhatsAppRouteFront();
   try {
     const response = await api("/api/whatsapp/disconnect", { method: "POST" });
     showFeedback(response.message || "WhatsApp CRM desconectado.");
-    await loadWhatsAppCrmFront({ refreshQr: true, refreshLogs: true });
+    await loadWhatsAppCrmFront({ refreshQr: false, refreshLogs: true });
   } finally {
     state.whatsappCrm.loading = false;
     renderWhatsAppRouteFront();
@@ -24256,9 +24419,28 @@ function getPdvExchangeNewItems(exchange = null) {
   return draft.new_item ? [draft.new_item] : [];
 }
 
-function renderPdvExchangesFront() {
-  if (getSectionFromPathname(window.location.pathname || "") === "pdv-exchanges") {
-    renderOfficialRouteSection("pdv-exchanges");
+function getPdvExchangesContainer() {
+  return document.getElementById("pdv-exchanges-content");
+}
+
+function renderPdvExchangesFront(container = getPdvExchangesContainer()) {
+  if (!container) return;
+  if (getSectionFromPathname(window.location.pathname || "") !== "pdv-exchanges") return;
+  container.innerHTML = buildPdvFrontShell({
+    sectionId: "pdv-exchanges",
+    title: "Central de Trocas",
+    subtitle: "Trocas vinculadas a vendas originais.",
+    contentHtml: buildPdvExchangesContent(),
+    compactTabs: true
+  });
+}
+
+async function loadPdvExchangesFront({ forceHistory = true } = {}) {
+  const container = getPdvExchangesContainer();
+  if (!container) return;
+  renderPdvExchangesFront(container);
+  if (forceHistory) {
+    await loadPdvExchangeHistory({ force: true });
   }
 }
 
@@ -24338,6 +24520,53 @@ function buildPdvExchangeReturnedItems() {
   }).join("");
 }
 
+function isStructuredPdvCustomerId(value = "") {
+  const id = normalizeText(value || "");
+  if (!id) return false;
+  const digits = String(id).replace(/\D/g, "");
+  const compact = id.replace(/\D/g, "");
+  if (digits && compact === digits && digits.length >= 10 && digits.length <= 13) {
+    return false;
+  }
+  if (/^(MC|QCK|CRM|CRM_LEGACY)_/i.test(id)) {
+    return true;
+  }
+  if (/^\d+$/.test(id)) {
+    return false;
+  }
+  return id.length >= 8;
+}
+
+function isValidPdvExchangeReturnedCondition(value = "") {
+  const condition = normalizeText(value || "").toLowerCase();
+  return ["disponivel", "aguardando_conferencia", "com_avaria", "defeito", "sem_etiqueta", "perda_nao_retornar", "avaria", "perda"].includes(condition);
+}
+
+function getPdvExchangeFavoredCustomerId(draft = {}) {
+  const customer = draft.exchange_customer || {};
+  const candidates = [
+    draft.exchange_customer_id,
+    draft.receiver_customer_id,
+    draft.credit_owner_customer_id,
+    customer.exchange_customer_id,
+    customer.customer_id,
+    customer.master_customer_id,
+    customer.contact_id,
+    customer.crm_contact_id,
+    customer.legacy_contact_id,
+    customer.id
+  ];
+  return candidates.map((item) => normalizeText(item || "")).find((item) => isStructuredPdvCustomerId(item)) || "";
+}
+
+function hasValidPdvExchangeFavoredCustomer(draft = {}) {
+  const customer = draft.exchange_customer || {};
+  const customerId = getPdvExchangeFavoredCustomerId(draft);
+  const name = normalizeText(customer.name || "");
+  const phone = normalizeText(customer.phone || customer.telefone || "");
+  return Boolean(isStructuredPdvCustomerId(customerId) && name && phone);
+}
+
 function getPdvExchangeCustomer(draft = null) {
   const exchange = draft || state.pdvExchanges.draft || {};
   return exchange.exchange_customer || null;
@@ -24347,13 +24576,20 @@ function buildPdvExchangeCustomerPanel() {
   const draft = state.pdvExchanges.draft;
   if (!draft) return "";
   const customer = getPdvExchangeCustomer(draft);
+  const originalCustomer = draft.customer || {};
+  const saleSummary = draft.original_sale_summary || {};
+  const previewName = normalizeText(customer?.name || originalCustomer.name || saleSummary.customer_name || "");
+  const previewPhone = normalizeText(customer?.phone || originalCustomer.phone || saleSummary.customer_phone || "");
+  const hasValidCustomer = hasValidPdvExchangeFavoredCustomer(draft);
   const results = toArray(state.pdvExchanges.customerResults);
   return `
     <div class="pdv-exchange-customer-panel">
       <div class="pdv-exchange-panel-head compact">
         <span>Cliente favorecido</span>
-        <strong>${customer?.name ? escapeHtml(customer.name) : "Selecione para vincular credito"}</strong>
-        ${customer?.phone ? `<small>${escapeHtml(customer.phone)}${customer.document ? ` • ${escapeHtml(customer.document)}` : ""}</small>` : `<small>Este cliente recebera o Credito de Troca.</small>`}
+        <strong>${previewName ? escapeHtml(previewName) : "Selecione para vincular credito"}</strong>
+        ${previewPhone ? `<small>${escapeHtml(previewPhone)}${customer?.document ? ` • ${escapeHtml(customer.document)}` : ""}</small>` : `<small>Este cliente recebera o Credito de Troca.</small>`}
+        ${previewName && !hasValidCustomer ? `<small class="pdv-payment-alert warning">Cliente da venda identificado, mas falta vinculo operacional valido. Busque ou cadastre o cliente favorecido abaixo.</small>` : ""}
+        ${hasValidCustomer ? `<small>ID vinculado: ${escapeHtml(getPdvExchangeFavoredCustomerId(draft))}</small>` : ""}
       </div>
       <form class="pdv-exchange-search" data-pdv-exchange-customer-search-form>
         <input name="q" type="search" value="${escapeHtml(state.pdvExchanges.customerQuery || "")}" placeholder="Buscar cliente por nome, telefone ou CPF" />
@@ -24397,7 +24633,8 @@ function buildPdvExchangeReasonForm() {
       </label>
       <label>Condicao do devolvido
         <select data-pdv-exchange-condition>
-          ${conditions.map(([value, label]) => `<option value="${escapeHtml(value)}"${(draft.returned_condition || "aguardando_conferencia") === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+          <option value=""${!draft.returned_condition ? " selected" : ""}>Selecione a condicao</option>
+          ${conditions.map(([value, label]) => `<option value="${escapeHtml(value)}"${draft.returned_condition === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
         </select>
       </label>
       <label class="pdv-exchange-wide">Observacao
@@ -24431,10 +24668,10 @@ function getPdvExchangeComputedStatus(draft = null) {
   if (!getPdvExchangeReturnedItems(exchange).length || toNumber(exchange.original_value || 0) <= 0) {
     return "aguardando_item_devolvido";
   }
-  if (!exchange.exchange_customer?.name || !exchange.exchange_customer?.phone) {
+  if (!hasValidPdvExchangeFavoredCustomer(exchange)) {
     return "aguardando_cliente_favorecido";
   }
-  if (!exchange.reason || !exchange.returned_condition) {
+  if (!exchange.reason || !isValidPdvExchangeReturnedCondition(exchange.returned_condition)) {
     return "aguardando_motivo_condicao";
   }
   if (exchange.status === "finalizada") return "finalizada";
@@ -24526,6 +24763,10 @@ async function setPdvExchangeCustomer(customer = {}) {
   if (!draft?.exchange_id) return;
   const payload = {
     exchange_customer_id: customer.master_customer_id || customer.customer_id || customer.id || customer.exchange_customer_id || "",
+    master_customer_id: customer.master_customer_id || customer.customer_id || customer.id || "",
+    contact_id: customer.contact_id || customer.operational_contact_id || "",
+    crm_contact_id: customer.crm_contact_id || "",
+    legacy_contact_id: customer.legacy_contact_id || "",
     name: customer.name || customer.nome || "",
     phone: customer.phone || customer.telefone || "",
     document: customer.document || customer.cpf || ""
@@ -24817,7 +25058,8 @@ function buildPdvExchangeSummary() {
   }
   const totals = getPdvExchangeTotals(draft);
   const returnedItems = getPdvExchangeReturnedItems(draft);
-  const creditNeedsCustomer = !draft.exchange_customer?.name || !draft.exchange_customer?.phone;
+  const creditNeedsCustomer = !hasValidPdvExchangeFavoredCustomer(draft);
+  const conditionMissing = !isValidPdvExchangeReturnedCondition(draft.returned_condition);
   const computedStatus = getPdvExchangeComputedStatus(draft);
   const canFinalize = Boolean(
     draft.original_sale_id
@@ -24825,7 +25067,7 @@ function buildPdvExchangeSummary() {
     && totals.creditGenerated > 0
     && !creditNeedsCustomer
     && draft.reason
-    && draft.returned_condition
+    && !conditionMissing
     && !state.pdvExchanges.finalizing
   );
   return `
@@ -24835,9 +25077,11 @@ function buildPdvExchangeSummary() {
       <div><span>Valor devolvido</span><strong>${currency(totals.originalValue)}</strong></div>
       <div><span>Itens devolvidos</span><strong>${returnedItems.length || 0}</strong></div>
       <div class="${totals.creditGenerated > 0 ? "is-balanced" : ""}"><span>Credito gerado</span><strong>${currency(totals.creditGenerated)}</strong></div>
-      <div><span>Credito para</span><strong>${escapeHtml(draft.exchange_customer?.name || "Selecione o cliente")}</strong></div>
+      <div><span>Credito para</span><strong>${escapeHtml(draft.exchange_customer?.name || draft.customer?.name || "Selecione o cliente")}</strong></div>
+      <div><span>Cliente vinculado</span><strong>${escapeHtml(getPdvExchangeFavoredCustomerId(draft) || "Sem ID valido")}</strong></div>
       <div><span>Condicao do devolvido</span><strong>${escapeHtml(normalizeVisibleText(draft.returned_condition || "-"))}</strong></div>
-      ${creditNeedsCustomer ? `<div class="pdv-payment-alert warning">Selecione ou cadastre o cliente que recebera o Credito de Troca antes de finalizar.</div>` : ""}
+      ${creditNeedsCustomer ? `<div class="pdv-payment-alert warning">Selecione ou cadastre o cliente favorecido com identificador valido antes de finalizar.</div>` : ""}
+      ${conditionMissing ? `<div class="pdv-payment-alert warning">Selecione a condicao do devolvido antes de finalizar a troca.</div>` : ""}
       <p class="panel-helper">A Central gera credito e devolve o item ao estoque. A escolha dos novos produtos acontece depois em uma venda normal.</p>
       ${state.pdvExchanges.error ? `<div class="pdv-payment-alert warning">${escapeHtml(state.pdvExchanges.error)}</div>` : ""}
       <button class="primary-button" type="button" data-pdv-exchange-finalize${canFinalize ? "" : " disabled"}>${state.pdvExchanges.finalizing ? "Finalizando..." : "Finalizar troca"}</button>
@@ -24956,11 +25200,293 @@ function buildPdvManualExchangeCreditPanel() {
   `;
 }
 
+function shouldShowPdvManualExchangeCreditPanel() {
+  return false;
+}
+
+function buildPdvExchangeHistoryFilters() {
+  const filters = state.pdvExchanges.historyFilters || {};
+  const canChooseStore = canViewAllStores();
+  const storeOptions = uniqueStrings([
+    getCurrentPdvStoreId(),
+    ...toArray(state.pdvExchanges.historyItems).map((row) => row.store_id || row.store_label)
+  ].filter(Boolean));
+  return `
+    <form class="pdv-orders-filters pdv-exchange-history-filters" data-pdv-exchange-history-filters="true">
+      <label class="pdv-orders-search">
+        <span>Busca livre</span>
+        <input name="search" type="search" value="${escapeHtml(filters.search || "")}" placeholder="Cliente, troca, venda ou crédito" />
+      </label>
+      <label>
+        <span>Status</span>
+        <select name="status">
+          <option value="all"${filters.status === "all" || !filters.status ? " selected" : ""}>Todos</option>
+          <option value="finalizada"${filters.status === "finalizada" ? " selected" : ""}>Finalizada</option>
+          <option value="pronta_para_gerar_credito"${filters.status === "pronta_para_gerar_credito" ? " selected" : ""}>Pronta para gerar crédito</option>
+          <option value="aguardando_motivo_condicao"${filters.status === "aguardando_motivo_condicao" ? " selected" : ""}>Aguardando motivo/condição</option>
+          <option value="aguardando_cliente_favorecido"${filters.status === "aguardando_cliente_favorecido" ? " selected" : ""}>Aguardando cliente</option>
+          <option value="cancelada"${filters.status === "cancelada" ? " selected" : ""}>Cancelada</option>
+        </select>
+      </label>
+      <label>
+        <span>Período</span>
+        <select name="period">
+          <option value=""${!filters.period ? " selected" : ""}>Todos</option>
+          <option value="today"${filters.period === "today" ? " selected" : ""}>Hoje</option>
+          <option value="7d"${filters.period === "7d" ? " selected" : ""}>7 dias</option>
+          <option value="30d"${filters.period === "30d" ? " selected" : ""}>30 dias</option>
+          <option value="custom"${filters.period === "custom" ? " selected" : ""}>Personalizado</option>
+        </select>
+      </label>
+      <label>
+        <span>De</span>
+        <input name="date_from" type="date" value="${escapeHtml(filters.date_from || "")}" />
+      </label>
+      <label>
+        <span>Até</span>
+        <input name="date_to" type="date" value="${escapeHtml(filters.date_to || "")}" />
+      </label>
+      <label>
+        <span>Loja</span>
+        <select name="store_id"${canChooseStore ? "" : " disabled"}>
+          <option value="">${canChooseStore ? "Todas" : escapeHtml(getCurrentUserStoreLabel())}</option>
+          ${storeOptions.map((value) => `<option value="${escapeHtml(value)}"${normalizePdvStoreIdentifier(filters.store_id || "") === normalizePdvStoreIdentifier(value) ? " selected" : ""}>${escapeHtml(formatStoreIdLabel(value))}</option>`).join("")}
+        </select>
+      </label>
+      <div class="pdv-orders-filter-actions">
+        <button class="secondary-button" type="submit">Aplicar filtros</button>
+        <button class="ghost-button" type="button" data-pdv-exchange-history-refresh>Atualizar</button>
+        <button class="ghost-button" type="button" data-pdv-exchange-history-reset>Limpar</button>
+      </div>
+    </form>
+  `;
+}
+
+function buildPdvExchangeHistoryTable() {
+  const items = toArray(state.pdvExchanges.historyItems);
+  if (!items.length) {
+    return `<div class="empty-state compact"><strong>Nenhuma troca encontrada</strong><span>Ajuste os filtros ou finalize uma nova troca para aparecer aqui.</span></div>`;
+  }
+  return `
+    <div class="pdv-orders-table-wrap">
+      <table class="pdv-orders-table pdv-exchange-history-table">
+        <thead>
+          <tr>
+            <th>Troca</th>
+            <th>Data/Hora</th>
+            <th>Loja</th>
+            <th>Cliente</th>
+            <th>Operador</th>
+            <th>Crédito</th>
+            <th>Status</th>
+            <th>Ação</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map((item) => {
+            const status = normalizeText(item.status || "").toLowerCase();
+            const statusLabel = status === "finalizada" ? "Finalizada" : getPdvExchangeDisplayStatus(status || "aguardando_origem");
+            const customerName = normalizeText(item.customer_name || item.exchange_customer?.name || item.original_sale_summary?.customer_name || "Cliente");
+            const creditAmount = item.credit_generated || item.returned_total || item.original_value || 0;
+            return `
+              <tr>
+                <td><div class="pdv-orders-main-cell"><strong>${escapeHtml(item.exchange_id || "-")}</strong><span>${escapeHtml(item.original_sale_id || item.origin_sale_id || "-")}</span></div></td>
+                <td>${escapeHtml(formatDateTimeBR(item.finalized_at || item.updated_at || item.created_at || ""))}</td>
+                <td>${escapeHtml(item.store_label || formatStoreIdLabel(item.store_id || ""))}</td>
+                <td><div class="pdv-orders-main-cell"><strong>${escapeHtml(customerName)}</strong></div></td>
+                <td>${escapeHtml(item.operator_name || item.finalized_by || item.created_by || "-")}</td>
+                <td><div class="pdv-orders-main-cell"><strong>${currency(creditAmount)}</strong>${item.credit_id ? `<span>${escapeHtml(item.credit_id)}</span>` : ""}</div></td>
+                <td><div class="pdv-orders-status"><strong>${escapeHtml(statusLabel)}</strong></div></td>
+                <td><button class="link-button" type="button" data-pdv-exchange-history-detail="${escapeHtml(item.exchange_id || "")}">Ver detalhes</button></td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function buildPdvExchangeHistoryDetailDrawer() {
+  const detailId = normalizeText(state.pdvExchanges.historyDetailId || "");
+  if (!detailId) return "";
+  if (state.pdvExchanges.historyDetailLoading) {
+    return `<div class="pdv-orders-drawer active"><div class="pdv-orders-drawer-card"><button class="ghost-button small" type="button" data-pdv-exchange-detail-close>Fechar</button><div class="empty-state compact"><strong>Carregando detalhe da troca...</strong></div></div></div>`;
+  }
+  if (state.pdvExchanges.historyDetailError) {
+    return `<div class="pdv-orders-drawer active"><div class="pdv-orders-drawer-card"><button class="ghost-button small" type="button" data-pdv-exchange-detail-close>Fechar</button><div class="empty-state compact error"><strong>Erro no detalhe</strong><span>${escapeHtml(state.pdvExchanges.historyDetailError)}</span></div></div></div>`;
+  }
+  const exchange = state.pdvExchanges.historyDetail?.exchange || state.pdvExchanges.historyDetail || null;
+  if (!exchange) return "";
+  const customerName = normalizeText(exchange.exchange_customer?.name || exchange.customer_name || exchange.original_sale_summary?.customer_name || "Cliente");
+  const returnedItems = toArray(exchange.returned_items || exchange.items_returned || []);
+  const statusLabel = getPdvExchangeDisplayStatus(exchange.status || "");
+  return `
+    <div class="pdv-orders-drawer active">
+      <div class="pdv-orders-drawer-card">
+        <div class="pdv-orders-drawer-head">
+          <div>
+            <span>Detalhe da troca</span>
+            <h3>${escapeHtml(exchange.exchange_id || detailId)}</h3>
+          </div>
+          <button class="ghost-button small" type="button" data-pdv-exchange-detail-close>Fechar</button>
+        </div>
+        <section class="pdv-orders-operational-summary">
+          <div class="pdv-orders-operational-head">
+            <div>
+              <h4>${escapeHtml(customerName)}</h4>
+              <small>${escapeHtml(formatDateTimeBR(exchange.finalized_at || exchange.updated_at || exchange.created_at || ""))} • ${escapeHtml(exchange.store_label || formatStoreIdLabel(exchange.store_id || ""))}</small>
+            </div>
+            <div class="pdv-orders-status"><strong>${escapeHtml(statusLabel)}</strong></div>
+          </div>
+          <div class="pdv-orders-detail-grid">
+            <article><span>Venda original</span><strong>${escapeHtml(exchange.original_sale_id || exchange.origin_sale_id || "-")}</strong></article>
+            <article><span>Crédito gerado</span><strong>${currency(exchange.credit_generated || exchange.returned_total || 0)}</strong></article>
+            <article><span>ID do crédito</span><strong>${escapeHtml(exchange.credit_id || "-")}</strong></article>
+            <article><span>Operador</span><strong>${escapeHtml(exchange.operator_name || exchange.finalized_by || exchange.created_by || "-")}</strong></article>
+          </div>
+        </section>
+        <div class="pdv-orders-detail-section">
+          <h4>Itens devolvidos</h4>
+          ${returnedItems.length ? returnedItems.map((item) => `
+            <div class="pdv-orders-detail-row">
+              <span>${escapeHtml(item.nome || item.name || item.sku || "Item")}</span>
+              <em>${currency(item.total || item.subtotal || item.unit_price || 0)}</em>
+            </div>
+          `).join("") : `<div class="pdv-orders-detail-row"><span>Sem detalhamento de itens no registro legado.</span></div>`}
+        </div>
+        ${exchange.reason ? `<div class="pdv-orders-detail-section"><h4>Motivo</h4><div class="pdv-orders-detail-row"><span>${escapeHtml(exchange.reason || "")}${exchange.reason_notes ? ` — ${escapeHtml(exchange.reason_notes)}` : ""}</span></div></div>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function buildPdvExchangeHistoryPanel() {
+  const total = toNumber(state.pdvExchanges.historyTotal || state.pdvExchanges.historyItems.length || 0);
+  if (state.pdvExchanges.historyLoading && !toArray(state.pdvExchanges.historyItems).length) {
+    return `
+      <section class="pdv-exchange-panel pdv-exchange-history-panel pdv-exchange-operational-history">
+        <div class="pdv-exchange-panel-head">
+          <span>Consulta Operacional</span>
+          <strong>Histórico de Trocas</strong>
+        </div>
+        <div class="empty-state compact"><strong>Carregando histórico...</strong><span>Buscando trocas da operação.</span></div>
+      </section>
+    `;
+  }
+  if (state.pdvExchanges.historyError && !toArray(state.pdvExchanges.historyItems).length) {
+    return `
+      <section class="pdv-exchange-panel pdv-exchange-history-panel pdv-exchange-operational-history">
+        <div class="pdv-exchange-panel-head">
+          <span>Consulta Operacional</span>
+          <strong>Histórico de Trocas</strong>
+        </div>
+        <div class="empty-state compact error"><strong>Falha ao carregar histórico</strong><span>${escapeHtml(state.pdvExchanges.historyError)}</span></div>
+      </section>
+    `;
+  }
+  return `
+    <section class="pdv-exchange-panel pdv-exchange-history-panel pdv-exchange-operational-history">
+      <div class="pdv-exchange-panel-head">
+        <span>Consulta Operacional</span>
+        <strong>Histórico de Trocas</strong>
+        <small>${total} registro(s) encontrado(s)</small>
+      </div>
+      ${buildPdvExchangeHistoryFilters()}
+      ${buildPdvExchangeHistoryTable()}
+      ${buildPdvExchangeHistoryDetailDrawer()}
+    </section>
+  `;
+}
+
+async function loadPdvExchangeHistory({ force = false } = {}) {
+  if (state.pdvExchanges.historyLoading) return;
+  if (!force && state.pdvExchanges.historyHydrated) return;
+  state.pdvExchanges.historyLoading = true;
+  state.pdvExchanges.historyError = "";
+  try {
+    const filters = state.pdvExchanges.historyFilters || {};
+    const params = new URLSearchParams({ limit: "50" });
+    if (filters.search) params.set("search", filters.search);
+    if (filters.status && filters.status !== "all") params.set("status", filters.status);
+    if (filters.period) params.set("period", filters.period);
+    if (filters.date_from) params.set("date_from", filters.date_from);
+    if (filters.date_to) params.set("date_to", filters.date_to);
+    if (filters.store_id) params.set("store_id", filters.store_id);
+    const response = await api(`/api/pdv/exchanges?${params.toString()}`);
+    state.pdvExchanges.historyItems = toArray(response?.items || response);
+    state.pdvExchanges.historyTotal = toNumber(response?.total ?? state.pdvExchanges.historyItems.length);
+    state.pdvExchanges.historyHydrated = true;
+  } catch (error) {
+    state.pdvExchanges.historyError = error.message || "Falha ao carregar historico de trocas.";
+    state.pdvExchanges.historyItems = [];
+    state.pdvExchanges.historyTotal = 0;
+  } finally {
+    state.pdvExchanges.historyLoading = false;
+    renderPdvExchangesFront();
+  }
+}
+
+function applyPdvExchangeHistoryFilters(form) {
+  if (!form) return;
+  const formData = new FormData(form);
+  state.pdvExchanges.historyFilters = {
+    search: normalizeText(formData.get("search") || ""),
+    status: normalizeText(formData.get("status") || "all") || "all",
+    period: normalizeText(formData.get("period") || ""),
+    date_from: normalizeText(formData.get("date_from") || ""),
+    date_to: normalizeText(formData.get("date_to") || ""),
+    store_id: canViewAllStores() ? normalizeText(formData.get("store_id") || "") : normalizePdvStoreIdentifier(getCurrentPdvStoreId() || "")
+  };
+  state.pdvExchanges.historyHydrated = false;
+  loadPdvExchangeHistory({ force: true }).catch((error) => handleUiError("Erro ao filtrar histórico de trocas", error));
+}
+
+async function openPdvExchangeHistoryDetail(exchangeId = "") {
+  const normalizedId = normalizeText(exchangeId || "");
+  if (!normalizedId) return;
+  state.pdvExchanges.historyDetailId = normalizedId;
+  state.pdvExchanges.historyDetailLoading = true;
+  state.pdvExchanges.historyDetailError = "";
+  state.pdvExchanges.historyDetail = null;
+  renderPdvExchangesFront();
+  try {
+    const response = await api(`/api/pdv/exchanges/${encodeURIComponent(normalizedId)}`);
+    state.pdvExchanges.historyDetail = response?.exchange || response;
+  } catch (error) {
+    state.pdvExchanges.historyDetailError = error.message || "Falha ao carregar detalhe da troca.";
+  } finally {
+    state.pdvExchanges.historyDetailLoading = false;
+    renderPdvExchangesFront();
+  }
+}
+
+function closePdvExchangeHistoryDetail() {
+  state.pdvExchanges.historyDetailId = "";
+  state.pdvExchanges.historyDetail = null;
+  state.pdvExchanges.historyDetailLoading = false;
+  state.pdvExchanges.historyDetailError = "";
+  renderPdvExchangesFront();
+}
+
+function resetPdvExchangeHistoryFilters() {
+  state.pdvExchanges.historyFilters = {
+    search: "",
+    status: "all",
+    period: "",
+    date_from: "",
+    date_to: "",
+    store_id: canViewAllStores() ? "" : normalizePdvStoreIdentifier(getCurrentPdvStoreId() || "")
+  };
+  state.pdvExchanges.historyHydrated = false;
+  loadPdvExchangeHistory({ force: true }).catch(() => {});
+}
+
 function buildPdvExchangesContent() {
   const draft = state.pdvExchanges.draft;
   const saleSummary = draft?.original_sale_summary;
   return `
-    <section class="pdv-exchanges-shell" id="pdv-exchanges-content">
+    <section class="pdv-exchanges-shell">
       <div class="pdv-exchanges-hero">
         <div>
           <span>Central de Trocas</span>
@@ -24969,7 +25495,7 @@ function buildPdvExchangesContent() {
         </div>
         <strong>MVP seguro</strong>
       </div>
-      ${buildPdvManualExchangeCreditPanel()}
+      ${shouldShowPdvManualExchangeCreditPanel() ? buildPdvManualExchangeCreditPanel() : ""}
       <div class="pdv-exchange-layout">
         <aside class="pdv-exchange-panel">
           <div class="pdv-exchange-panel-head">
@@ -25012,6 +25538,7 @@ function buildPdvExchangesContent() {
           ${buildPdvExchangeSummary()}
         </aside>
       </div>
+      ${buildPdvExchangeHistoryPanel()}
     </section>
   `;
 }
@@ -25151,9 +25678,21 @@ async function removePdvExchangeNewItem(lineId = "") {
 async function finalizePdvExchange() {
   const draft = state.pdvExchanges.draft;
   if (!draft?.exchange_id) return;
-  const reason = document.querySelector("[data-pdv-exchange-reason]")?.value || "";
+  if (!hasValidPdvExchangeFavoredCustomer(draft)) {
+    state.pdvExchanges.error = "Selecione ou cadastre o cliente favorecido com identificador valido antes de finalizar.";
+    renderPdvExchangesFront();
+    return;
+  }
   const returnedCondition = document.querySelector("[data-pdv-exchange-condition]")?.value || "";
+  if (!isValidPdvExchangeReturnedCondition(returnedCondition)) {
+    state.pdvExchanges.error = "Selecione a condicao do devolvido antes de finalizar a troca.";
+    renderPdvExchangesFront();
+    return;
+  }
+  const reason = document.querySelector("[data-pdv-exchange-reason]")?.value || "";
   const notes = document.querySelector("[data-pdv-exchange-notes]")?.value || "";
+  const favoredCustomerId = getPdvExchangeFavoredCustomerId(draft);
+  const favoredCustomer = getPdvExchangeCustomer(draft) || {};
   state.pdvExchanges.finalizing = true;
   state.pdvExchanges.error = "";
   renderPdvExchangesFront();
@@ -25167,10 +25706,27 @@ async function finalizePdvExchange() {
     response = await api(`/api/pdv/exchanges/${encodeURIComponent(draft.exchange_id)}/finalize`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({})
+      body: JSON.stringify({
+        favored_customer_id: favoredCustomerId,
+        customer_id: favoredCustomerId,
+        exchange_customer_id: favoredCustomerId,
+        customer: {
+          exchange_customer_id: favoredCustomerId,
+          master_customer_id: favoredCustomer.master_customer_id || favoredCustomerId,
+          customer_id: favoredCustomerId,
+          contact_id: favoredCustomer.contact_id || "",
+          crm_contact_id: favoredCustomer.crm_contact_id || "",
+          legacy_contact_id: favoredCustomer.legacy_contact_id || "",
+          name: favoredCustomer.name || "",
+          phone: favoredCustomer.phone || favoredCustomer.telefone || "",
+          document: favoredCustomer.document || favoredCustomer.cpf || ""
+        }
+      })
     });
     state.pdvExchanges.draft = response.exchange || response;
     state.pdvExchanges.receipt = response.receipt || null;
+    state.pdvExchanges.historyHydrated = false;
+    await loadPdvExchangeHistory({ force: true });
     showFeedback("Troca finalizada com sucesso.", "success");
   } catch (error) {
     state.pdvExchanges.error = error.message || "Falha ao finalizar troca.";
@@ -25193,6 +25749,7 @@ function resetPdvExchangeFlow() {
   state.pdvExchanges.customerError = "";
   state.pdvExchanges.error = "";
   state.pdvExchanges.receipt = null;
+  state.pdvExchanges.historyItems = [];
   renderPdvExchangesFront();
 }
 
@@ -30815,6 +31372,31 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const pdvExchangeHistoryRefresh = event.target.closest("[data-pdv-exchange-history-refresh]");
+  if (pdvExchangeHistoryRefresh) {
+    state.pdvExchanges.historyHydrated = false;
+    loadPdvExchangeHistory({ force: true }).catch((error) => handleUiError("Erro ao atualizar histórico de trocas", error));
+    return;
+  }
+
+  const pdvExchangeHistoryReset = event.target.closest("[data-pdv-exchange-history-reset]");
+  if (pdvExchangeHistoryReset) {
+    resetPdvExchangeHistoryFilters();
+    return;
+  }
+
+  const pdvExchangeHistoryDetail = event.target.closest("[data-pdv-exchange-history-detail]");
+  if (pdvExchangeHistoryDetail) {
+    openPdvExchangeHistoryDetail(pdvExchangeHistoryDetail.dataset.pdvExchangeHistoryDetail || "").catch((error) => handleUiError("Erro ao abrir detalhe da troca", error));
+    return;
+  }
+
+  const pdvExchangeDetailClose = event.target.closest("[data-pdv-exchange-detail-close]");
+  if (pdvExchangeDetailClose) {
+    closePdvExchangeHistoryDetail();
+    return;
+  }
+
   const pdvExchangePrintReceipt = event.target.closest("[data-pdv-exchange-print-receipt]");
   if (pdvExchangePrintReceipt) {
     printPdvExchangeReceipt();
@@ -31779,13 +32361,15 @@ function handleDocumentClick(event) {
     return;
   }
 
-  if (event.target.closest("[data-whatsapp-crm-refresh-qr]")) {
-    loadWhatsAppQrData({ requestFresh: true })
-      .then(async () => {
-        await loadWhatsAppCrmFront({ refreshQr: true, refreshLogs: false, refreshCampaigns: false });
-        renderWhatsAppRouteFront();
-      })
-      .catch((error) => handleUiError("Erro ao atualizar o QR do WhatsApp CRM", error));
+  if (event.target.closest("[data-whatsapp-crm-open-qr]")) {
+    openWhatsAppCrmQr()
+      .catch((error) => handleUiError("Erro ao abrir o QR do WhatsApp CRM", error));
+    return;
+  }
+
+  if (event.target.closest("[data-whatsapp-crm-close-qr]")) {
+    closeWhatsAppCrmQr()
+      .catch((error) => handleUiError("Erro ao fechar o QR do WhatsApp CRM", error));
     return;
   }
 
@@ -32642,6 +33226,13 @@ function handleDocumentSubmit(event) {
     return;
   }
 
+  const pdvExchangeHistoryFiltersForm = event.target.closest("[data-pdv-exchange-history-filters]");
+  if (pdvExchangeHistoryFiltersForm) {
+    event.preventDefault();
+    applyPdvExchangeHistoryFilters(pdvExchangeHistoryFiltersForm);
+    return;
+  }
+
   const pdvExchangeNewProductForm = event.target.closest("[data-pdv-exchange-new-product-form]");
   if (pdvExchangeNewProductForm) {
     event.preventDefault();
@@ -32850,7 +33441,7 @@ function handleDocumentChange(event) {
   const pdvExchangeCondition = event.target.closest("[data-pdv-exchange-condition]");
   if (pdvExchangeCondition) {
     if (state.pdvExchanges.draft) {
-      state.pdvExchanges.draft.returned_condition = normalizeText(pdvExchangeCondition.value || "aguardando_conferencia");
+      state.pdvExchanges.draft.returned_condition = normalizeText(pdvExchangeCondition.value || "");
     }
     renderPdvExchangesFront();
     return;
@@ -32966,12 +33557,6 @@ function handleDocumentChange(event) {
   const exchangeCreditInput = event.target.closest("[data-pdv-sale-exchange-credit-input]");
   if (exchangeCreditInput) {
     state.pdvSale.exchangeCreditInput = exchangeCreditInput.value;
-    return;
-  }
-
-  const exchangeCreditSelect = event.target.closest("[data-pdv-sale-exchange-credit-select]");
-  if (exchangeCreditSelect) {
-    state.pdvSale.exchangeCreditSelectedId = normalizeText(exchangeCreditSelect.value || "");
     return;
   }
 
@@ -33229,16 +33814,13 @@ function handleDocumentInput(event) {
 
   const pdvSaleCustomerSearchInput = event.target.closest("#pdv-sale-customer-search");
   if (pdvSaleCustomerSearchInput) {
-    const nextQuery = normalizeText(pdvSaleCustomerSearchInput.value || "");
-    if (nextQuery !== normalizeText(state.pdvSale.customerQuery || "")) {
+    const nextQuery = String(pdvSaleCustomerSearchInput.value || "");
+    if (nextQuery !== String(state.pdvSale.customerQuery || "")) {
       state.pdvSale.customerQuery = nextQuery;
       state.pdvSale.customerSearchError = "";
       if (state.pdvSale.customerSearching) {
         state.pdvSale.customerSearchRequestId = Number(state.pdvSale.customerSearchRequestId || 0) + 1;
         state.pdvSale.customerSearching = false;
-        state.pdvSale.customerResults = [];
-        state.pdvSale.customerSearchHasRun = false;
-        renderPdvSaleSurface();
       }
       schedulePdvSaleCustomerSearch();
     }
@@ -34273,6 +34855,7 @@ function updateWhatsAppUI(data) {
   const qrImage = document.getElementById('whatsapp-qr-code');
   const waitingQr = data.status === 'aguardando qr' || data.status === 'aguardando_qr';
   const qrPending = data.status === 'qr_pendente';
+  const onWhatsappCrmRoute = document.body.dataset.routeSection === "whatsapp-crm" || document.body.dataset.section === "whatsapp-crm";
 
   if (statusIcon && statusText) {
     if (data.status === 'conectado') {
@@ -34282,11 +34865,15 @@ function updateWhatsAppUI(data) {
     } else if (waitingQr) {
       statusIcon.textContent = '🟡';
       statusText.textContent = 'Aguardando leitura do QR Code';
-      startWhatsAppPolling();
-      loadWhatsAppQr();
+      if (!onWhatsappCrmRoute) {
+        startWhatsAppPolling();
+        loadWhatsAppQr();
+      } else {
+        stopWhatsAppPolling();
+      }
     } else if (qrPending) {
       statusIcon.textContent = '🟡';
-      statusText.textContent = 'QR protegido. Clique em Atualizar QR Code para conectar.';
+      statusText.textContent = 'QR protegido. Clique em Abrir QR para conectar.';
       stopWhatsAppPolling();
     } else if (data.status === 'erro') {
       statusIcon.textContent = '🔴';
@@ -34300,7 +34887,7 @@ function updateWhatsAppUI(data) {
   }
 
   if (qrSection && qrImage) {
-    if (waitingQr && state.whatsappHasQr) {
+    if (waitingQr && state.whatsappHasQr && !onWhatsappCrmRoute) {
       loadWhatsAppQr();
     } else {
       qrSection.style.display = 'none';
@@ -34363,7 +34950,7 @@ async function resetWhatsAppSession() {
     const response = await api('/api/whatsapp/reset-session', { method: 'POST' });
     showFeedback(response.message || 'Sessão WhatsApp resetada.');
     if (getCurrentSection() === "whatsapp-crm" || window.location.pathname === "/whatsapp-crm") {
-      await loadWhatsAppCrmFront({ refreshQr: true, refreshLogs: true });
+      await loadWhatsAppCrmFront({ refreshQr: false, refreshLogs: true });
     } else {
       await loadWhatsAppStatus();
     }

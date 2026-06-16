@@ -28,13 +28,39 @@ const {
   createManualExchangeCredit: createManualExchangeCreditRecord,
   listActiveExchangeCreditsForCustomer,
   cancelManualExchangeCredit: cancelManualExchangeCreditRecord,
-  buildExchangeSourceKey
+  buildExchangeSourceKey,
+  isPhoneOnlyCustomerId,
+  isStructuredCustomerId,
+  isFinancialMasterCustomerId,
+  needsCreditCustomerRepair,
+  resolveStructuredCustomerId,
+  hasValidExchangeCreditOwner,
+  readExchangeCredits,
+  saveExchangeCredits: persistExchangeCredits
 } = require("./pdvExchangeCreditService");
 const { normalizeStoreKey, formatStoreLabel } = require("../utils/pdvStoreUtils");
 
 const exchangesRootDir = path.join(process.cwd(), "data", "pdv", "sales");
 const exchangesFilePath = path.join(exchangesRootDir, "exchanges.json");
 const exchangeCreditsFilePath = path.join(exchangesRootDir, "exchange-credits.json");
+const operationalQuickCustomersPath = path.join(process.cwd(), "data", "pdv", "operational", "quick-customers.json");
+const masterCustomersPath = path.join(process.cwd(), "data", "imports", "pdv", "consolidation", "master-customers.json");
+
+const VALID_EXCHANGE_RETURNED_CONDITIONS = new Set([
+  "disponivel",
+  "aguardando_conferencia",
+  "com_avaria",
+  "defeito",
+  "sem_etiqueta",
+  "perda_nao_retornar",
+  "avaria",
+  "perda"
+]);
+
+function isValidExchangeReturnedCondition(value = "") {
+  const condition = normalizeText(value || "").toLowerCase();
+  return Boolean(condition && VALID_EXCHANGE_RETURNED_CONDITIONS.has(condition));
+}
 
 function ensureExchangeDirs() {
   fs.mkdirSync(exchangesRootDir, { recursive: true });
@@ -173,31 +199,192 @@ function ensureManualExchangeCreditPermission(user = {}, storeId = "", options =
   throw createHttpError("Apenas gestor, admin ou usuario explicitamente autorizado pode criar Credito de Troca manual.", 403);
 }
 
+function normalizeComparableName(value = "") {
+  return normalizeText(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizePhoneDigits(value = "") {
+  let digits = String(value || "").replace(/\D/g, "");
+  if (digits.startsWith("55") && digits.length > 11) {
+    digits = digits.slice(2);
+  }
+  return digits;
+}
+
 function getSaleCustomer(sale = {}) {
   const customer = sale.customer || {};
+  const lookup = (customer.phone || sale.customer_phone || customer.document)
+    ? lookupStructuredCustomerIdentity({
+      phone: customer.phone || sale.customer_phone || sale.telefone || "",
+      name: customer.name || sale.customer_name || sale.cliente || "",
+      document: customer.document || customer.cpf || sale.customer_document || ""
+    })
+    : null;
+  const structuredCustomerId = lookup?.customer_id
+    || resolveStructuredCustomerId({
+      master_customer_id: customer.master_customer_id,
+      customer_id: customer.customer_id,
+      id: customer.id
+    });
   return {
-    customer_id: normalizeText(customer.master_customer_id || customer.customer_id || customer.id || sale.customer_id || ""),
-    name: normalizeText(customer.name || sale.customer_name || sale.cliente || ""),
-    phone: normalizeText(customer.phone || sale.customer_phone || sale.telefone || ""),
-    document: normalizeText(customer.document || customer.cpf || customer.cnpj || sale.customer_document || "")
+    customer_id: structuredCustomerId,
+    master_customer_id: normalizeText(lookup?.master_customer_id || structuredCustomerId || ""),
+    contact_id: normalizeText(lookup?.contact_id || customer.contact_id || customer.operational_contact_id || ""),
+    crm_contact_id: normalizeText(lookup?.crm_contact_id || customer.crm_contact_id || ""),
+    legacy_contact_id: normalizeText(lookup?.legacy_contact_id || customer.legacy_contact_id || ""),
+    name: normalizeText(customer.name || sale.customer_name || sale.cliente || lookup?.name || ""),
+    phone: normalizeText(customer.phone || sale.customer_phone || sale.telefone || lookup?.phone || ""),
+    document: normalizeText(customer.document || customer.cpf || customer.cnpj || sale.customer_document || lookup?.document || "")
   };
 }
 
-function normalizeExchangeCustomer(payload = {}) {
-  const customerId = normalizeText(
-    payload.exchange_customer_id
-    || payload.receiver_customer_id
-    || payload.customer_id
-    || payload.master_customer_id
-    || payload.id
-    || ""
+function lookupStructuredCustomerIdentity({ phone = "", name = "", document = "" } = {}) {
+  const phoneDigits = normalizePhoneDigits(phone);
+  const docDigits = String(document || "").replace(/\D/g, "");
+  const normalizedName = normalizeComparableName(name);
+  const candidates = [];
+
+  const pushCandidate = (row = {}, source = "") => {
+    const structuredId = resolveStructuredCustomerId(row);
+    if (!structuredId) {
+      return;
+    }
+    candidates.push({
+      customer_id: structuredId,
+      master_customer_id: normalizeText(row.master_customer_id || structuredId),
+      contact_id: normalizeText(row.contact_id || row.operational_contact_id || ""),
+      crm_contact_id: normalizeText(row.crm_contact_id || ""),
+      legacy_contact_id: normalizeText(row.legacy_contact_id || ""),
+      name: normalizeText(row.name || row.nome || ""),
+      phone: normalizeText(row.phone || row.telefone || ""),
+      document: normalizeText(row.document || row.cpf || ""),
+      source
+    });
+  };
+
+  readJson(operationalQuickCustomersPath, []).forEach((item) => {
+    if (phoneDigits && normalizePhoneDigits(item.phone || item.telefone || "") === phoneDigits) {
+      pushCandidate({ ...item, master_customer_id: item.id, id: item.id }, "quick_customer");
+    }
+  });
+
+  readJson(masterCustomersPath, []).forEach((item) => {
+    const phones = Array.isArray(item.phones) ? item.phones : [item.phone].filter(Boolean);
+    const documents = Array.isArray(item.documents) ? item.documents : [item.document].filter(Boolean);
+    const phoneMatch = Boolean(phoneDigits && phones.some((entry) => normalizePhoneDigits(entry) === phoneDigits));
+    const docMatch = Boolean(docDigits && documents.some((entry) => String(entry || "").replace(/\D/g, "") === docDigits));
+    if (phoneMatch || docMatch) {
+      pushCandidate(item, "master_customer");
+    }
+  });
+
+  if (!candidates.length) {
+    return null;
+  }
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+  if (!normalizedName) {
+    return null;
+  }
+  const nameMatches = candidates.filter((candidate) => {
+    const candidateName = normalizeComparableName(candidate.name);
+    if (!candidateName || !normalizedName) {
+      return false;
+    }
+    return candidateName === normalizedName
+      || candidateName.includes(normalizedName)
+      || normalizedName.includes(candidateName);
+  });
+  if (nameMatches.length === 1) {
+    return nameMatches[0];
+  }
+  return null;
+}
+
+function resolveExchangeCustomerFromSale(sale = {}) {
+  const base = getSaleCustomer(sale);
+  const customer = sale.customer || {};
+  const lookup = (base.phone || base.document)
+    ? lookupStructuredCustomerIdentity({
+      phone: base.phone,
+      name: base.name,
+      document: base.document
+    })
+    : null;
+
+  if (lookup?.customer_id) {
+    return normalizeExchangeCustomer({
+      ...lookup,
+      exchange_customer_id: lookup.customer_id,
+      crm_contact_id: normalizeText(customer.crm_contact_id || lookup.crm_contact_id || ""),
+      contact_id: normalizeText(customer.contact_id || lookup.contact_id || ""),
+      origin: lookup.source || "original_sale_lookup"
+    });
+  }
+
+  return normalizeExchangeCustomer({
+    exchange_customer_id: base.customer_id || base.master_customer_id,
+    customer_id: base.customer_id || base.master_customer_id,
+    master_customer_id: base.master_customer_id,
+    contact_id: base.contact_id,
+    crm_contact_id: base.crm_contact_id,
+    legacy_contact_id: base.legacy_contact_id,
+    name: base.name,
+    phone: base.phone,
+    document: base.document,
+    origin: base.customer_id ? "original_sale" : "pending"
+  });
+}
+
+function getExchangeFavoredCustomerId(exchange = {}) {
+  const exchangeCustomer = exchange.exchange_customer || {};
+  return resolveStructuredCustomerId({
+    exchange_customer_id: exchange.exchange_customer_id,
+    receiver_customer_id: exchange.receiver_customer_id,
+    credit_owner_customer_id: exchange.credit_owner_customer_id,
+    favored_customer_id: exchange.favored_customer_id,
+    customer_id: exchangeCustomer.customer_id,
+    master_customer_id: exchangeCustomer.master_customer_id,
+    contact_id: exchangeCustomer.contact_id,
+    crm_contact_id: exchangeCustomer.crm_contact_id,
+    legacy_contact_id: exchangeCustomer.legacy_contact_id,
+    id: exchangeCustomer.id
+  });
+}
+
+function hasValidExchangeFavoredCustomer(exchange = {}) {
+  const exchangeCustomer = normalizeExchangeCustomer(exchange.exchange_customer || {});
+  const customerId = getExchangeFavoredCustomerId({
+    ...exchange,
+    exchange_customer: exchangeCustomer
+  });
+  return Boolean(
+    isFinancialMasterCustomerId(customerId)
+    && exchangeCustomer.name
+    && exchangeCustomer.phone
   );
+}
+
+function normalizeExchangeCustomer(payload = {}) {
+  const customerId = resolveStructuredCustomerId(payload)
+    || normalizeText(payload.exchange_customer_id || payload.receiver_customer_id || "");
   const name = normalizeText(payload.name || payload.nome || payload.customer_name || "");
   const phone = normalizeText(payload.phone || payload.telefone || payload.customer_phone || "");
   const document = normalizeText(payload.document || payload.cpf || payload.cnpj || "");
   return {
     exchange_customer_id: customerId,
     customer_id: customerId,
+    master_customer_id: normalizeText(payload.master_customer_id || customerId || ""),
+    contact_id: normalizeText(payload.contact_id || payload.operational_contact_id || ""),
+    crm_contact_id: normalizeText(payload.crm_contact_id || ""),
+    legacy_contact_id: normalizeText(payload.legacy_contact_id || ""),
     name,
     phone,
     document,
@@ -614,9 +801,9 @@ function applyExchangeTotals(exchange = {}) {
   exchange.credit_generated = totals.credit_generated;
   if (!getExchangeReturnedItems(exchange).length) {
     exchange.status = "aguardando_item_devolvido";
-  } else if (!exchange.exchange_customer?.name || !exchange.exchange_customer?.phone) {
+  } else if (!hasValidExchangeFavoredCustomer(exchange)) {
     exchange.status = "aguardando_cliente_favorecido";
-  } else if (!exchange.reason || !exchange.returned_condition) {
+  } else if (!exchange.reason || !isValidExchangeReturnedCondition(exchange.returned_condition)) {
     exchange.status = "aguardando_motivo_condicao";
   } else if (totals.difference_due > 0) {
     exchange.status = "aguardando_pagamento_diferenca";
@@ -738,16 +925,20 @@ function createExchangeDraft(payload = {}, user = {}) {
   const sale = detail.sale;
   const storeId = normalizeStoreKey(payload.store_id || getSaleStoreId(sale));
   const originalCustomer = getSaleCustomer(sale);
-  const exchangeCustomer = normalizeExchangeCustomer(originalCustomer);
+  const exchangeCustomer = resolveExchangeCustomerFromSale(sale);
+  const favoredCustomerId = getExchangeFavoredCustomerId({
+    exchange_customer_id: exchangeCustomer.exchange_customer_id,
+    exchange_customer: exchangeCustomer
+  });
   const exchange = applyExchangeTotals({
     exchange_id: buildId("EXC"),
     exchange_type: "venda_original",
     original_sale_id: originalSaleId,
-    original_customer_id: originalCustomer.customer_id,
+    original_customer_id: originalCustomer.customer_id || originalCustomer.master_customer_id,
     customer: originalCustomer,
-    exchange_customer_id: exchangeCustomer.exchange_customer_id,
+    exchange_customer_id: favoredCustomerId,
     exchange_customer: exchangeCustomer,
-    credit_owner_customer_id: "",
+    credit_owner_customer_id: favoredCustomerId,
     original_sale_summary: summarizeSaleForExchange(sale, detail.row),
     available_items: buildExchangeSaleItems(sale),
     returned_item: null,
@@ -756,7 +947,7 @@ function createExchangeDraft(payload = {}, user = {}) {
     new_items: [],
     reason: "",
     reason_notes: "",
-    returned_condition: "aguardando_conferencia",
+    returned_condition: "",
     original_value: 0,
     new_value: 0,
     difference_due: 0,
@@ -913,14 +1104,40 @@ function setExchangeCustomer(exchangeId = "", payload = {}, user = {}) {
   if (!exchangeCustomer.name || !exchangeCustomer.phone) {
     throw createHttpError("Informe o cliente que esta efetuando a troca com nome e telefone.");
   }
-  const updated = saveExchangeUpdate(exchange.exchange_id, (draft) => ({
+  if (!isFinancialMasterCustomerId(exchangeCustomer.exchange_customer_id)) {
+    const lookup = lookupStructuredCustomerIdentity({
+      phone: exchangeCustomer.phone,
+      name: exchangeCustomer.name,
+      document: exchangeCustomer.document
+    });
+    if (lookup?.customer_id) {
+      Object.assign(exchangeCustomer, normalizeExchangeCustomer({
+        ...lookup,
+        exchange_customer_id: lookup.customer_id,
+        name: exchangeCustomer.name || lookup.name,
+        phone: exchangeCustomer.phone || lookup.phone,
+        document: exchangeCustomer.document || lookup.document,
+        origin: payload.origin || lookup.source || "customer_lookup"
+      }));
+    }
+  }
+  if (!isFinancialMasterCustomerId(exchangeCustomer.exchange_customer_id)) {
+    throw createHttpError("Selecione ou cadastre um cliente favorecido valido antes de finalizar a troca.");
+  }
+  const favoredCustomerId = getExchangeFavoredCustomerId({
+    exchange_customer_id: exchangeCustomer.exchange_customer_id,
+    exchange_customer: exchangeCustomer
+  });
+  const updated = saveExchangeUpdate(exchange.exchange_id, (draft) => applyExchangeTotals({
     ...draft,
-    exchange_customer_id: exchangeCustomer.exchange_customer_id || normalizeText(exchangeCustomer.phone),
-    receiver_customer_id: exchangeCustomer.exchange_customer_id || normalizeText(exchangeCustomer.phone),
+    exchange_customer_id: favoredCustomerId,
+    receiver_customer_id: favoredCustomerId,
+    credit_owner_customer_id: favoredCustomerId,
     exchange_customer: {
       ...exchangeCustomer,
-      exchange_customer_id: exchangeCustomer.exchange_customer_id || normalizeText(exchangeCustomer.phone),
-      customer_id: exchangeCustomer.exchange_customer_id || normalizeText(exchangeCustomer.phone)
+      exchange_customer_id: favoredCustomerId,
+      customer_id: favoredCustomerId,
+      master_customer_id: exchangeCustomer.master_customer_id || favoredCustomerId
     }
   }));
   return { exchange: updated };
@@ -967,10 +1184,13 @@ function removeExchangeNewItem(exchangeId = "", lineId = "", user = {}) {
 function updateExchangeReason(exchangeId = "", payload = {}, user = {}) {
   const { exchange } = getExchangeScoped(exchangeId, user);
   const reason = normalizeText(payload.reason || "");
-  const condition = normalizeText(payload.returned_condition || payload.condition || "aguardando_conferencia");
+  const condition = normalizeText(payload.returned_condition || payload.condition || "");
   const notes = normalizeText(payload.reason_notes || payload.notes || "");
   if (!reason) {
     throw createHttpError("Informe o motivo da troca.");
+  }
+  if (!isValidExchangeReturnedCondition(condition)) {
+    throw createHttpError("Selecione a condicao do devolvido antes de finalizar a troca.");
   }
   if (["Defeito", "Outro"].includes(reason) && !notes) {
     throw createHttpError("Este motivo exige observacao.");
@@ -1021,44 +1241,156 @@ function buildExchangeReceipt(exchange = {}) {
   };
 }
 
-function addDaysIso(dateValue = new Date(), days = 30) {
-  const date = dateValue instanceof Date ? new Date(dateValue.getTime()) : new Date(dateValue || Date.now());
-  date.setDate(date.getDate() + days);
-  return date.toISOString();
+function resolveOrphanExchangeCreditCustomer(credit = {}, exchanges = [], getSaleByIdFn = () => null) {
+  const exchange = exchanges.find((item) => normalizeText(item.exchange_id || "") === normalizeText(credit.exchange_id || "")) || null;
+  const sale = exchange ? getSaleByIdFn(exchange.original_sale_id || exchange.origin_sale_id || "") : null;
+  const candidates = [];
+
+  const pushCandidate = (row = {}, source = "") => {
+    const structuredId = resolveStructuredCustomerId(row);
+    if (!structuredId) {
+      return;
+    }
+    candidates.push({
+      customer_id: structuredId,
+      master_customer_id: normalizeText(row.master_customer_id || structuredId),
+      contact_id: normalizeText(row.contact_id || row.operational_contact_id || ""),
+      crm_contact_id: normalizeText(row.crm_contact_id || ""),
+      legacy_contact_id: normalizeText(row.legacy_contact_id || ""),
+      customer_name: normalizeText(row.name || row.customer_name || row.nome || ""),
+      customer_phone: normalizeText(row.phone || row.customer_phone || row.telefone || ""),
+      source
+    });
+  };
+
+  if (exchange) {
+    pushCandidate({
+      customer_id: exchange.credit_owner_customer_id,
+      exchange_customer_id: exchange.exchange_customer_id,
+      receiver_customer_id: exchange.receiver_customer_id,
+      ...(exchange.exchange_customer || {})
+    }, "exchange_customer");
+    pushCandidate(exchange.customer || {}, "exchange_original_customer");
+  }
+  if (sale) {
+    pushCandidate(getSaleCustomer(sale), "original_sale");
+    pushCandidate(sale.customer || {}, "sale_customer");
+    const lookup = lookupStructuredCustomerIdentity({
+      phone: normalizeText(credit.customer_phone || credit.phone || sale.customer?.phone || getSaleCustomer(sale).phone || ""),
+      name: normalizeText(credit.customer_name || credit.name || sale.customer?.name || getSaleCustomer(sale).name || ""),
+      document: normalizeText(credit.customer_document || sale.customer?.document || getSaleCustomer(sale).document || "")
+    });
+    if (lookup) {
+      pushCandidate(lookup, "phone_lookup");
+    }
+  } else {
+    const lookup = lookupStructuredCustomerIdentity({
+      phone: normalizeText(credit.customer_phone || credit.phone || ""),
+      name: normalizeText(credit.customer_name || credit.name || ""),
+      document: normalizeText(credit.customer_document || "")
+    });
+    if (lookup) {
+      pushCandidate(lookup, "phone_lookup");
+    }
+  }
+
+  const financialCandidates = candidates.filter((item) => isFinancialMasterCustomerId(item.customer_id));
+  const uniqueFinancialIds = [...new Set(financialCandidates.map((item) => item.customer_id).filter(Boolean))];
+  if (uniqueFinancialIds.length === 1) {
+    const resolved = financialCandidates.find((item) => item.customer_id === uniqueFinancialIds[0]) || null;
+    return {
+      resolved,
+      reason: resolved ? resolved.source : "missing_customer_id",
+      candidates
+    };
+  }
+
+  const uniqueIds = [...new Set(candidates.map((item) => item.customer_id).filter(Boolean))];
+  if (uniqueIds.length !== 1) {
+    return {
+      resolved: null,
+      reason: uniqueIds.length > 1 ? "ambiguous_customer_ids" : "missing_customer_id",
+      candidates
+    };
+  }
+  const resolved = candidates.find((item) => item.customer_id === uniqueIds[0]) || null;
+  return {
+    resolved,
+    reason: resolved ? resolved.source : "missing_customer_id",
+    candidates
+  };
 }
 
-function createExchangeCredit(exchange = {}, user = {}) {
-  const amount = roundMoney(exchange.credit_generated || 0);
-  if (amount <= 0) {
-    return null;
+function repairOrphanExchangeCredits(options = {}) {
+  const dryRun = Boolean(options.dryRun);
+  const { getSaleById: getSaleByIdFn } = require("../sales/pdvSalesService");
+  const exchanges = loadExchanges();
+  const credits = readExchangeCredits();
+  let fixed = 0;
+  let pending = 0;
+  let skipped = 0;
+  const pendingItems = [];
+  const fixedItems = [];
+  const updatedCredits = credits.map((credit) => {
+    const normalizedCredit = { ...credit };
+    const currentId = normalizeText(normalizedCredit.customer_id || "");
+    if (!needsCreditCustomerRepair(normalizedCredit)) {
+      skipped += 1;
+      return normalizedCredit;
+    }
+    const resolution = resolveOrphanExchangeCreditCustomer(normalizedCredit, exchanges, getSaleByIdFn);
+    if (!resolution.resolved || !isFinancialMasterCustomerId(resolution.resolved.customer_id)) {
+      pending += 1;
+      pendingItems.push({
+        credit_id: normalizedCredit.credit_id || "",
+        exchange_id: normalizedCredit.exchange_id || "",
+        reason: resolution.reason
+      });
+      return normalizedCredit;
+    }
+    fixed += 1;
+    fixedItems.push({
+      credit_id: normalizedCredit.credit_id || "",
+      exchange_id: normalizedCredit.exchange_id || "",
+      from_customer_id: currentId || "",
+      to_customer_id: resolution.resolved.customer_id,
+      source: resolution.resolved.source
+    });
+    return {
+      ...normalizedCredit,
+      customer_id: resolution.resolved.customer_id,
+      master_customer_id: resolution.resolved.master_customer_id || resolution.resolved.customer_id,
+      contact_id: normalizeText(normalizedCredit.contact_id || resolution.resolved.contact_id || ""),
+      crm_contact_id: normalizeText(normalizedCredit.crm_contact_id || resolution.resolved.crm_contact_id || ""),
+      legacy_contact_id: normalizeText(normalizedCredit.legacy_contact_id || resolution.resolved.legacy_contact_id || ""),
+      customer_name: normalizeText(normalizedCredit.customer_name || resolution.resolved.customer_name || ""),
+      customer_phone: normalizeText(normalizedCredit.customer_phone || resolution.resolved.customer_phone || ""),
+      repaired_at: nowIso(),
+      repaired_from_customer_id: currentId || "",
+      repair_source: resolution.resolved.source
+    };
+  });
+  if (!dryRun && fixed > 0) {
+    persistExchangeCredits(updatedCredits);
   }
-  const owner = normalizeExchangeCustomer(exchange.exchange_customer || {});
-  const ownerId = normalizeText(exchange.exchange_customer_id || owner.exchange_customer_id || owner.customer_id || owner.phone || "");
-  if (!ownerId || !owner.name || !owner.phone) {
-    throw createHttpError("Selecione o cliente que esta efetuando a troca para vincular o credito.");
-  }
-  const credits = loadExchangeCredits();
-  const existing = credits.find((item) => item.exchange_id === exchange.exchange_id && item.status !== "cancelado");
-  if (existing) {
-    return existing;
-  }
-  const credit = {
-    credit_id: buildId("EXCR"),
-    exchange_id: exchange.exchange_id,
-    customer_id: ownerId,
-    customer_name: owner.name,
-    customer_phone: owner.phone,
-    amount,
-    remaining_amount: amount,
-    status: "ativo",
-    created_at: nowIso(),
-    expires_at: addDaysIso(new Date(), 30),
-    created_by: getActorName(user),
-    origin: "troca"
+  const summary = {
+    fixed,
+    pending,
+    skipped,
+    dryRun,
+    fixedItems,
+    pendingItems
   };
-  credits.unshift(credit);
-  saveExchangeCredits(credits);
-  return credit;
+  console.info("[PDV][exchange-credit] orphan repair summary", {
+    fixed,
+    pending,
+    skipped,
+    dryRun
+  });
+  if (pending > 0) {
+    console.warn("[PDV][exchange-credit] orphan credits pending manual review", pendingItems.slice(0, 20));
+  }
+  return summary;
 }
 
 function finalizeExchange(exchangeId = "", payload = {}, user = {}) {
@@ -1069,7 +1401,35 @@ function finalizeExchange(exchangeId = "", payload = {}, user = {}) {
   if (!sale) {
     throw createHttpError("Venda original da troca nao encontrada.", 404);
   }
-  const returnedItems = getExchangeReturnedItems(exchange);
+  const payloadCustomer = payload.customer || payload.exchange_customer || payload;
+  const payloadCustomerId = resolveStructuredCustomerId({
+    favored_customer_id: payload.favored_customer_id,
+    exchange_customer_id: payload.exchange_customer_id || payloadCustomer.exchange_customer_id,
+    customer_id: payload.customer_id || payloadCustomer.customer_id,
+    master_customer_id: payloadCustomer.master_customer_id,
+    contact_id: payloadCustomer.contact_id,
+    crm_contact_id: payloadCustomer.crm_contact_id,
+    legacy_contact_id: payloadCustomer.legacy_contact_id,
+    id: payloadCustomer.id
+  });
+  let workingExchange = { ...exchange };
+  if (payloadCustomerId || payloadCustomer.name || payloadCustomer.phone) {
+    const mergedCustomer = normalizeExchangeCustomer({
+      ...(exchange.exchange_customer || {}),
+      ...payloadCustomer,
+      exchange_customer_id: payloadCustomerId || exchange.exchange_customer_id,
+      customer_id: payloadCustomerId || payloadCustomer.customer_id,
+      master_customer_id: payloadCustomer.master_customer_id || payloadCustomerId
+    });
+    workingExchange = {
+      ...workingExchange,
+      exchange_customer_id: payloadCustomerId || workingExchange.exchange_customer_id,
+      receiver_customer_id: payloadCustomerId || workingExchange.receiver_customer_id,
+      credit_owner_customer_id: payloadCustomerId || workingExchange.credit_owner_customer_id,
+      exchange_customer: mergedCustomer
+    };
+  }
+  const returnedItems = getExchangeReturnedItems(workingExchange);
   if (!returnedItems.length) {
     throw createHttpError("Selecione ao menos um item devolvido.");
   }
@@ -1077,7 +1437,7 @@ function finalizeExchange(exchangeId = "", payload = {}, user = {}) {
   returnedItems.forEach((returnedItem) => {
     const freshReturnedItem = freshItems.find((item) => exchangeItemsMatch(item, returnedItem));
     const requestedQuantity = normalizeQuantity(returnedItem.quantity || returnedItem.quantidade || 1);
-    const finalizedInfo = getFinalizedReturnedInfo(exchange.original_sale_id || "", returnedItem, { excludeExchangeId: exchange.exchange_id });
+    const finalizedInfo = getFinalizedReturnedInfo(workingExchange.original_sale_id || "", returnedItem, { excludeExchangeId: workingExchange.exchange_id });
     const purchasedQuantity = toNumber(freshReturnedItem?.quantity_purchased || returnedItem.quantity_purchased || returnedItem.quantity || 1);
     const alreadyExchangedQuantity = toNumber(finalizedInfo.quantity || 0);
     if (alreadyExchangedQuantity + requestedQuantity > purchasedQuantity + 0.009) {
@@ -1089,29 +1449,36 @@ function finalizeExchange(exchangeId = "", payload = {}, user = {}) {
       throw createHttpError(`Este item ja gerou Credito de Troca e nao esta disponivel para nova troca.${reference}`);
     }
   });
-  if (!exchange.reason) {
+  if (!workingExchange.reason) {
     throw createHttpError("Informe o motivo da troca.");
   }
-  if (!exchange.returned_condition) {
-    throw createHttpError("Informe a condicao do produto devolvido.");
+  if (!workingExchange.returned_condition || !isValidExchangeReturnedCondition(workingExchange.returned_condition)) {
+    throw createHttpError("Selecione a condicao do devolvido antes de finalizar a troca.");
   }
-  const totals = calculateExchangeTotals(exchange);
-  const exchangeCustomer = normalizeExchangeCustomer(exchange.exchange_customer || {});
-  const exchangeCustomerId = normalizeText(exchange.exchange_customer_id || exchangeCustomer.exchange_customer_id || exchangeCustomer.customer_id || exchangeCustomer.phone || "");
-  if (!exchangeCustomerId || !exchangeCustomer.name || !exchangeCustomer.phone) {
-    throw createHttpError("Selecione ou cadastre o cliente que recebera o Credito de Troca antes de finalizar.");
+  const totals = calculateExchangeTotals(workingExchange);
+  const exchangeCustomer = normalizeExchangeCustomer(workingExchange.exchange_customer || {});
+  const exchangeCustomerId = getExchangeFavoredCustomerId({
+    ...workingExchange,
+    exchange_customer: exchangeCustomer
+  });
+  if (!hasValidExchangeFavoredCustomer({
+    ...workingExchange,
+    exchange_customer_id: exchangeCustomerId,
+    exchange_customer: exchangeCustomer
+  })) {
+    throw createHttpError("Selecione ou cadastre o cliente favorecido com identificador valido antes de finalizar.");
   }
   const returnedItemsWithSource = returnedItems.map((returnedItem) => ({
     ...returnedItem,
     source_item_key: normalizeText(returnedItem?.source_item_key || "") || buildExchangeSourceKey({
-      original_sale_id: exchange.original_sale_id,
+      original_sale_id: workingExchange.original_sale_id,
       returned_item: returnedItem
     })
   }));
   const sourceItemKeys = returnedItemsWithSource.map((item) => item.source_item_key).filter(Boolean);
   const sourceItemKey = sourceItemKeys.join("||");
   const exchangeWithCreditBase = {
-    ...exchange,
+    ...workingExchange,
     ...totals,
     source_item_key: sourceItemKey,
     source_item_keys: sourceItemKeys,
@@ -1127,7 +1494,7 @@ function finalizeExchange(exchangeId = "", payload = {}, user = {}) {
     user
   });
   const inboundMovements = returnedItemsWithSource.flatMap((returnedItem) => applyExchangeInboundItem(returnedItem, exchangeWithCreditBase, user));
-  const finalized = saveExchangeUpdate(exchange.exchange_id, (draft) => ({
+  const finalized = saveExchangeUpdate(workingExchange.exchange_id, (draft) => ({
     ...draft,
     ...totals,
     source_item_key: sourceItemKey,
@@ -1270,13 +1637,102 @@ function getExchange(exchangeId = "", user = {}) {
 
 function listExchanges(query = {}, user = {}) {
   const limit = Math.min(100, Math.max(1, Number(query.limit || 30)));
-  const rows = loadExchanges()
+  const offset = Math.max(0, Number(query.offset || 0));
+  const search = normalizeText(query.search || query.q || "").toLowerCase();
+  const statusFilter = normalizeText(query.status || "").toLowerCase();
+  const storeFilter = normalizeStoreKey(query.store_id || "");
+  const period = normalizeText(query.period || "").toLowerCase();
+  const now = new Date();
+  let dateFrom = query.date_from ? new Date(`${normalizeText(query.date_from)}T00:00:00`) : null;
+  let dateTo = query.date_to ? new Date(`${normalizeText(query.date_to)}T23:59:59.999`) : null;
+  if (period === "today") {
+    dateFrom = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    dateTo = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  } else if (period === "7d") {
+    dateFrom = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    dateTo = now;
+  } else if (period === "30d") {
+    dateFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    dateTo = now;
+  }
+  const dateFromTime = dateFrom && !Number.isNaN(dateFrom.getTime()) ? dateFrom.getTime() : 0;
+  const dateToTime = dateTo && !Number.isNaN(dateTo.getTime()) ? dateTo.getTime() : 0;
+
+  let rows = loadExchanges()
+    .map((exchange) => applyExchangeTotals({ ...exchange }))
     .filter((exchange) => {
       const sale = getSaleById(exchange.original_sale_id || exchange.origin_sale_id || "");
       return sale ? canAccessSale(sale, user) : canAccessExchangeByStore(exchange, user);
-    })
-    .slice(0, limit);
-  return { items: rows };
+    });
+
+  if (search) {
+    rows = rows.filter((exchange) => {
+      const customerName = normalizeText(
+        exchange.exchange_customer?.name
+        || exchange.customer?.name
+        || exchange.original_sale_summary?.customer_name
+        || ""
+      ).toLowerCase();
+      const exchangeId = normalizeText(exchange.exchange_id || "").toLowerCase();
+      const saleId = normalizeText(exchange.original_sale_id || exchange.origin_sale_id || "").toLowerCase();
+      const creditId = normalizeText(exchange.credit_id || "").toLowerCase();
+      const operator = normalizeText(exchange.finalized_by || exchange.created_by || exchange.operator_name || "").toLowerCase();
+      return exchangeId.includes(search)
+        || saleId.includes(search)
+        || customerName.includes(search)
+        || creditId.includes(search)
+        || operator.includes(search);
+    });
+  }
+
+  if (statusFilter && statusFilter !== "all") {
+    rows = rows.filter((exchange) => normalizeText(exchange.status || "").toLowerCase() === statusFilter);
+  }
+
+  if (storeFilter) {
+    rows = rows.filter((exchange) => {
+      const storeId = normalizeStoreKey(exchange.store_id || exchange.origin_store || exchange.original_sale_summary?.store_id || "");
+      return storeId === storeFilter;
+    });
+  }
+
+  if (dateFromTime) {
+    rows = rows.filter((exchange) => {
+      const ts = new Date(exchange.finalized_at || exchange.updated_at || exchange.created_at || 0).getTime();
+      return ts >= dateFromTime;
+    });
+  }
+
+  if (dateToTime) {
+    rows = rows.filter((exchange) => {
+      const ts = new Date(exchange.finalized_at || exchange.updated_at || exchange.created_at || 0).getTime();
+      return ts <= dateToTime;
+    });
+  }
+
+  rows.sort((left, right) => {
+    const leftTime = new Date(left.finalized_at || left.updated_at || left.created_at || 0).getTime();
+    const rightTime = new Date(right.finalized_at || right.updated_at || right.created_at || 0).getTime();
+    return rightTime - leftTime;
+  });
+
+  const total = rows.length;
+  const items = rows.slice(offset, offset + limit).map((exchange) => ({
+    ...exchange,
+    customer_name: normalizeText(
+      exchange.exchange_customer?.name
+      || exchange.customer?.name
+      || exchange.original_sale_summary?.customer_name
+      || ""
+    ),
+    store_label: normalizeText(
+      exchange.store_label
+      || formatStoreLabel(exchange.store_id || exchange.origin_store || exchange.original_sale_summary?.store_id || "")
+    ),
+    operator_name: normalizeText(exchange.finalized_by || exchange.created_by || exchange.operator_name || "sistema")
+  }));
+
+  return { items, total, limit, offset };
 }
 
 module.exports = {
@@ -1295,5 +1751,8 @@ module.exports = {
   listExchanges,
   listExchangeCredits,
   createManualExchangeCredit,
-  cancelManualExchangeCredit
+  cancelManualExchangeCredit,
+  repairOrphanExchangeCredits,
+  hasValidExchangeFavoredCustomer,
+  getExchangeFavoredCustomerId
 };
