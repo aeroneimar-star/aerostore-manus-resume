@@ -25756,12 +25756,17 @@ body[data-route-section="pdv-stock"] .split-grid {
 }
 
 body[data-route-section="pdv-stock"] .pdv-stock-results-panel {
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  max-height: none !important;
+  min-height: 0 !important;
   min-width: 0 !important;
   padding: 14px !important;
 }
 
 body[data-route-section="pdv-stock"] .pdv-stock-results-scroll {
-  max-height: min(700px, calc(100vh - 330px)) !important;
+  max-height: none !important;
+  min-height: 0 !important;
   overflow-x: hidden !important;
   overflow-y: auto !important;
   padding: 2px 8px 2px 0 !important;

@@ -16330,7 +16330,7 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
             <div class="pdv-stock-card-list">${stockCardsHtml}</div>
           </div>
         </article>
-        <article class="panel">
+        <article class="panel pdv-stock-detail-panel">
           <div class="panel-header">
             <h3>Detalhe operacional</h3>
           </div>
@@ -16347,6 +16347,25 @@ function renderPdvStockOfficialFront(container = document.getElementById("pdv-st
     contentHtml,
     compactTabs: true
   });
+  syncPdvStockColumnHeights(container);
+}
+
+function syncPdvStockColumnHeights(container = document.getElementById("pdv-stock-content")) {
+  const resultsPanel = container?.querySelector(".pdv-stock-results-panel");
+  const detailPanel = container?.querySelector(".pdv-stock-detail-panel");
+  if (!resultsPanel || !detailPanel) return;
+  const applyHeight = () => {
+    const detailHeight = Math.ceil(detailPanel.getBoundingClientRect().height);
+    if (detailHeight > 0) resultsPanel.style.height = `${detailHeight}px`;
+  };
+  requestAnimationFrame(applyHeight);
+  if (state.pdvStock.columnHeightObserver) {
+    state.pdvStock.columnHeightObserver.disconnect();
+  }
+  if (typeof ResizeObserver === "function") {
+    state.pdvStock.columnHeightObserver = new ResizeObserver(applyHeight);
+    state.pdvStock.columnHeightObserver.observe(detailPanel);
+  }
 }
 
 async function loadPdvStockFront(options = {}) {

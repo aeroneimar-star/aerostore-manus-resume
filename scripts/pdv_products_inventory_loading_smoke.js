@@ -77,6 +77,32 @@ assert(
     && styles.includes(".pdv-search-result-skeleton"),
   "Loading local deve possuir estilos de estado e skeleton."
 );
+assert(
+  /body\[data-route-section="pdv-stock"\] \.split-grid\s*\{[^}]*align-items:\s*start\s*!important;/s.test(styles),
+  "A lista nao pode esticar a coluna de detalhe."
+);
+assert(
+  /body\[data-route-section="pdv-stock"\] \.pdv-stock-results-panel\s*\{[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\)\s*!important;/s.test(styles),
+  "O painel de resultados deve reservar todo o espaco restante para a lista."
+);
+assert(
+  /body\[data-route-section="pdv-stock"\] \.pdv-stock-results-scroll\s*\{[^}]*max-height:\s*none\s*!important;[^}]*min-height:\s*0\s*!important;/s.test(styles),
+  "A lista do estoque deve preencher exatamente o painel, sem teto baseado no viewport."
+);
+const stockResultsScrollRule = styles.match(
+  /body\[data-route-section="pdv-stock"\] \.pdv-stock-results-scroll\s*\{[^}]*max-height:\s*none\s*!important;[^}]*\}/s
+)?.[0] || "";
+assert(
+  stockResultsScrollRule && !/height:\s*100%\s*!important;/.test(stockResultsScrollRule),
+  "A lista nao pode usar height 100%, pois isso duplica a altura da grade."
+);
+assert(
+  stockRenderer.includes("pdv-stock-results-panel")
+    && stockRenderer.includes("pdv-stock-detail-panel")
+    && stockRenderer.includes("syncPdvStockColumnHeights(container)")
+    && source.includes("resultsPanel.style.height = `${detailHeight}px`"),
+  "A coluna esquerda deve copiar a altura medida da coluna de detalhe."
+);
 
 console.log(JSON.stringify({
   ok: true,
