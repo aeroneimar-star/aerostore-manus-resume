@@ -45,6 +45,8 @@ const SMOKE_CATALOG = {
 
   // ---- ESTOQUE ----
   inventory: [
+    "pdv_inventory_positive_adjust_smoke",                        // Bloco B
+    "pdv_inventory_stock_count_negative_target_smoke",             // Bloco B
     "pdv_inventory_underflow_smoke",       // ainda não criado
     "pdv_inventory_reserve_sell_conflict_smoke", // ainda não criado
   ],
