@@ -491,6 +491,67 @@ async function ensureCashbackSettingsSeed() {
   );
 }
 
+// ─── FASE 1: Seed para desconto em folha e funcionários ───
+async function ensureDescontoFolhaSeed() {
+  // 1. Seed de configuração — só insere se não existir
+  const configCount = await get("SELECT COUNT(*) AS total FROM desconto_folha_config");
+  if (!configCount || configCount.total === 0) {
+    const configs = [
+      ["carencia_dias", "90", "sistema", "2026-06-21T00:00:00.000Z"],
+      ["limite_parcela", "500.00", "sistema", "2026-06-21T00:00:00.000Z"],
+      ["max_parcelas", "3", "sistema", "2026-06-21T00:00:00.000Z"],
+      ["email_contabilidade", "", "sistema", "2026-06-21T00:00:00.000Z"],
+      ["promissoria_obrigatoria", "true", "sistema", "2026-06-21T00:00:00.000Z"],
+      ["baixa_automatica", "false", "sistema", "2026-06-21T00:00:00.000Z"]
+    ];
+    for (const cfg of configs) {
+      await run(
+        `INSERT INTO desconto_folha_config (parametro, valor, atualizado_por, updated_at) VALUES (?, ?, ?, ?)`,
+        cfg
+      );
+    }
+  }
+
+  // 2. Seed de funcionários — só insere se a tabela estiver vazia
+  const funcCount = await get("SELECT COUNT(*) AS total FROM funcionarios");
+  if (!funcCount || funcCount.total === 0) {
+    const now = new Date().toISOString();
+    const funcs = [
+      ["Fabi", "", "", "ativo", "", "", null, null, "", "", "Exceção autorizada — início do sistema", now, now],
+      ["Milene", "", "", "ativo", "", "", null, null, "", "", "Exceção autorizada — início do sistema", now, now]
+    ];
+    for (const f of funcs) {
+      await run(
+        `INSERT INTO funcionarios (nome, documento, data_admissao, status, funcao, loja, user_id, seller_id, telefone, email, observacoes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        f
+      );
+    }
+  }
+
+  // 3. Seed de exceções — só insere se não existir para Fabi ou Milene
+  const excecoesCount = await get("SELECT COUNT(*) AS total FROM funcionarios_excecoes");
+  if (!excecoesCount || excecoesCount.total === 0) {
+    const now = new Date().toISOString();
+    const fabi = await get("SELECT id FROM funcionarios WHERE nome = 'Fabi' ORDER BY id ASC LIMIT 1");
+    const milene = await get("SELECT id FROM funcionarios WHERE nome = 'Milene' ORDER BY id ASC LIMIT 1");
+    if (fabi?.id) {
+      await run(
+        `INSERT INTO funcionarios_excecoes (funcionario_id, tipo, motivo, autorizado_por, autorizado_em, ativo, created_at)
+         VALUES (?, 'carencia_ignorada', 'Exceção autorizada — início do sistema', 'admin', ?, 1, ?)`,
+        [fabi.id, now, now]
+      );
+    }
+    if (milene?.id) {
+      await run(
+        `INSERT INTO funcionarios_excecoes (funcionario_id, tipo, motivo, autorizado_por, autorizado_em, ativo, created_at)
+         VALUES (?, 'carencia_ignorada', 'Exceção autorizada — início do sistema', 'admin', ?, 1, ?)`,
+        [milene.id, now, now]
+      );
+    }
+  }
+}
+
 async function ensureSeedData() {
   const sellerCount = await get("SELECT COUNT(*) AS total FROM sellers");
   if (!sellerCount || sellerCount.total === 0) {
@@ -2164,10 +2225,100 @@ async function initializeDatabase() {
     )
   `);
 
+  // ─── FASE 1: Novas formas de pagamento ───
+  await run(`
+    CREATE TABLE IF NOT EXISTS funcionarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nome TEXT NOT NULL,
+      documento TEXT DEFAULT '',
+      data_admissao TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'ativo',
+      funcao TEXT DEFAULT '',
+      loja TEXT DEFAULT '',
+      user_id INTEGER,
+      seller_id INTEGER,
+      telefone TEXT DEFAULT '',
+      email TEXT DEFAULT '',
+      observacoes TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_funcionarios_documento ON funcionarios(documento)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_funcionarios_status ON funcionarios(status)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_funcionarios_user_id ON funcionarios(user_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_funcionarios_seller_id ON funcionarios(seller_id)`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS funcionarios_excecoes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      funcionario_id INTEGER NOT NULL,
+      tipo TEXT NOT NULL DEFAULT 'carencia_ignorada',
+      motivo TEXT NOT NULL,
+      autorizado_por TEXT NOT NULL,
+      autorizado_em TEXT NOT NULL,
+      expires_at TEXT DEFAULT '',
+      ativo INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (funcionario_id) REFERENCES funcionarios(id)
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_funcionarios_excecoes_func_id ON funcionarios_excecoes(funcionario_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_funcionarios_excecoes_ativo ON funcionarios_excecoes(ativo)`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS desconto_folha_config (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      parametro TEXT NOT NULL UNIQUE,
+      valor TEXT NOT NULL,
+      atualizado_por TEXT DEFAULT '',
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS desconto_folha_parcelas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      venda_id TEXT NOT NULL,
+      funcionario_id INTEGER NOT NULL,
+      parcela_n INTEGER NOT NULL,
+      valor REAL NOT NULL,
+      mes_referencia INTEGER NOT NULL,
+      ano INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pendente',
+      email_status TEXT DEFAULT 'nao_enviado',
+      email_enviado_em TEXT DEFAULT '',
+      email_error TEXT DEFAULT '',
+      email_retry_count INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (funcionario_id) REFERENCES funcionarios(id)
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_df_parcelas_venda ON desconto_folha_parcelas(venda_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_df_parcelas_func ON desconto_folha_parcelas(funcionario_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_df_parcelas_mes ON desconto_folha_parcelas(mes_referencia, ano)`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS cheque_pagamentos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      venda_id TEXT NOT NULL,
+      cliente_id TEXT DEFAULT '',
+      banco TEXT NOT NULL,
+      numero_cheque TEXT NOT NULL,
+      data_cheque TEXT DEFAULT '',
+      valor REAL NOT NULL,
+      observacao TEXT DEFAULT '',
+      created_at TEXT NOT NULL
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_cheque_pagamentos_venda ON cheque_pagamentos(venda_id)`);
+
   await ensureSeedData();
   await ensureAiCatalogSeed();
   await migrateLegacyCashbacks();
   await repairLegacyStoredTexts();
+  await ensureDescontoFolhaSeed();
 }
 
 module.exports = {

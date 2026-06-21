@@ -27,6 +27,16 @@ const {
 } = require("../sales/pdvSalesService");
 const { validateAuthorizationPin, getPdvUserRole } = require("../services/pdvControlService");
 const { getSessionById } = require("../services/pdvOperationalService");
+const {
+  listFuncionarios,
+  getFuncionarioById,
+  createFuncionario,
+  updateFuncionario,
+  listFuncionarioExcecoes,
+  createFuncionarioExcecao,
+  getDescontoFolhaConfig,
+  updateDescontoFolhaConfig
+} = require("../services/pdvFuncionarioService");
 const { normalizeStoreKey } = require("../utils/pdvStoreUtils");
 const { ensureOpenCashRegisterForStore } = require("../utils/pdvCashRegisterGuard");
 
@@ -403,6 +413,83 @@ router.post("/exchanges", canCreateExchange, async (req, res) => {
     res.json(createExchange(req.body || {}, req.user || {}));
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao registrar a troca do PDV." });
+  }
+});
+
+// ─── Fase 1: Funcionários e Config — desconto em folha ───────────────
+
+router.get("/funcionarios", async (req, res) => {
+  try {
+    const { status, search } = req.query;
+    const result = await listFuncionarios({ status, search });
+    res.json({ success: true, data: result, total: result.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao listar funcionários." });
+  }
+});
+
+router.get("/funcionarios/excecoes", async (req, res) => {
+  try {
+    const { ativo } = req.query;
+    const ativoNum = ativo !== undefined ? (ativo === "true" || ativo === "1" ? 1 : 0) : undefined;
+    const result = await listFuncionarioExcecoes({ ativo: ativoNum });
+    res.json({ success: true, data: result, total: result.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao listar exceções." });
+  }
+});
+
+router.post("/funcionarios/excecoes", async (req, res) => {
+  try {
+    const result = await createFuncionarioExcecao(req.body || {}, req.user || {});
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao criar exceção." });
+  }
+});
+
+router.get("/funcionarios/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) {
+      return res.status(400).json({ error: "ID inválido." });
+    }
+    const result = await getFuncionarioById(id);
+    if (!result) {
+      return res.status(404).json({ error: "Funcionário não encontrado." });
+    }
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao buscar funcionário." });
+  }
+});
+
+router.get("/config/desconto-folha", async (req, res) => {
+  try {
+    const config = await getDescontoFolhaConfig();
+    res.json({ success: true, data: config });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao carregar configuração." });
+  }
+});
+
+router.put("/config/desconto-folha", async (req, res) => {
+  try {
+    const { parametro, valor } = req.body || {};
+    if (!parametro || valor === undefined) {
+      return res.status(400).json({ error: "Informe parametro e valor." });
+    }
+    const validParams = [
+      "carencia_dias", "limite_parcela", "max_parcelas",
+      "email_contabilidade", "promissoria_obrigatoria", "baixa_automatica"
+    ];
+    if (!validParams.includes(parametro)) {
+      return res.status(400).json({ error: `Parâmetro '${parametro}' não é editável via esta rota.` });
+    }
+    const config = await updateDescontoFolhaConfig(parametro, String(valor), req.user || {});
+    res.json({ success: true, data: config });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao atualizar configuração." });
   }
 });
 
