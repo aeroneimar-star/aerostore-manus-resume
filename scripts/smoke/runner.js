@@ -53,7 +53,9 @@ const SMOKE_CATALOG = {
 
   // ---- VENDA ----
   sale: [
-    "pdv_sale_unauthorized_discount_smoke", // ainda não criado
+    "pdv_sale_pix_stock_deduction_smoke",      // Bloco C: PIX + stock deduction + cancel
+    "pdv_sale_cash_change_correct_smoke",      // Bloco C: dinheiro + troco + cancel
+    "pdv_sale_discount_unauthorized_smoke",   // Bloco C: 15% discount blocked (negative test)
     "pdv_sale_manager_approved_discount_smoke", // ainda não criado
   ],
 
