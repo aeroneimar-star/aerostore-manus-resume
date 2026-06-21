@@ -21,7 +21,23 @@ const {
   loadAuthorizationAudit,
   saveAuthorizationAudit
 } = require("../services/pdvControlService");
-const { saveChequePagamento } = require("../services/pdvFuncionarioService");
+const {
+  saveChequePagamento,
+  saveDescontoFolhaParcela,
+  listDescontoFolhaParcelasByVenda,
+  updateDescontoFolhaParcelaStatus,
+  calcularParcelasReferences,
+  validateDescontoFolha,
+  getDescontoFolhaConfig,
+  getFuncionarioById,
+  isFuncionarioExcecao
+} = require("../services/pdvFuncionarioService");
+const {
+  settlesSalePaymentMethod,
+  isCashRegisterReceivedMethod,
+  isInternalReceivablePaymentMethod,
+  isCreditBenefitMethod
+} = require("../utils/pdvConfig");
 const { registerGiftExperienceFromSale } = require("../services/pdvExperienceService");
 const {
   validateStockAvailability,
@@ -1084,7 +1100,7 @@ function computeSaleTotals(session, payload = {}) {
   const giftCardUsed = sumPaymentMethods(paymentMethods, ["vale_presente"]);
   const exchangeCredit = sumPaymentMethods(paymentMethods, ["credito_troca"]);
   const permutaAmount = sumPaymentMethods(paymentMethods, ["permuta"]);
-  const paidAmount = roundMoney(paymentMethods.filter((item) => isRealPaymentMethod(item.method)).reduce((sum, item) => sum + toNumber(item.amount), 0));
+  const paidAmount = roundMoney(paymentMethods.filter((item) => settlesSalePaymentMethod(item.method)).reduce((sum, item) => sum + toNumber(item.amount), 0));
   const requestedExtraDiscount = roundMoney(
     payload.desconto_extra
     ?? payload.extra_discount
@@ -2254,6 +2270,19 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
         throw new Error("Valor do cheque precisa ser maior que zero.");
       }
     }
+    if (payment.method === "desconto_folha") {
+      const funcId = payment.funcionario_id || session.funcionario_id;
+      if (!funcId) {
+        throw new Error("ID do funcionário não informado para desconto em folha.");
+      }
+      if (roundMoney(payment.amount || 0) <= 0) {
+        throw new Error("Valor do desconto em folha precisa ser maior que zero.");
+      }
+      const installments = Math.max(1, Math.round(Number(payment.installments || 1)));
+      if (installments < 1) {
+        throw new Error("Número de parcelas inválido para desconto em folha.");
+      }
+    }
   }
   const reservations = readJson(reservationsFilePath, []);
   const matchedReservation = reservations.find((item) => item.session_snapshot?.session_id === session.session_id && item.inventory_status === "HELD");
@@ -2496,6 +2525,43 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
         valor: payment.amount || 0,
         observacao: payment.observacao || ""
       }, user);
+    }
+    if (payment.method === "desconto_folha") {
+      const funcId = payment.funcionario_id || session.funcionario_id;
+      const config = await getDescontoFolhaConfig();
+      const funcionario = await getFuncionarioById(funcId);
+      const carenciaOk = await isFuncionarioExcecao(funcId, "carencia_ignorada");
+      validateDescontoFolha(session, payment, config, funcionario, carenciaOk);
+
+      const installments = Math.max(1, Math.round(Number(payment.installments || 1)));
+      const installmentAmount = roundMoney((payment.amount || 0) / installments);
+      const refs = calcularParcelasReferences(installments);
+
+      for (let i = 0; i < installments; i++) {
+        await saveDescontoFolhaParcela({
+          venda_id: sale.sale_id,
+          funcionario_id: funcId,
+          parcela_n: i + 1,
+          valor: installmentAmount,
+          mes_referencia: refs[i].mes_referencia,
+          ano: refs[i].ano,
+          status: "pendente",
+          email_status: config.email_contabilidade ? "nao_enviado" : "nao_configurado"
+        }, user);
+      }
+
+      if (!config.email_contabilidade) {
+        appendAuditLog({
+          audit_id: `AUD_${Date.now()}_DF_EMAIL`,
+          action: "DESCONTO_FOLHA_SEM_EMAIL_CONTABILIDADE",
+          created_at: new Date().toISOString(),
+          actor: user?.name || user?.email || "sistema",
+          actor_role: user?.role || "",
+          reason: `Venda ${sale.sale_id} sem email de contabilidade. Parcelas criadas pendentes.`,
+          before: null,
+          after: { venda_id: sale.sale_id }
+        });
+      }
     }
   }
 
@@ -2819,6 +2885,36 @@ async function cancelSale(saleId, user = {}, options = {}) {
   if (sale.status === "CANCELLED") {
     return sale;
   }
+
+  // ── Desconto em Folha: verificar status das parcelas antes de cancelar ──
+  if (Array.isArray(sale.pagamentos)) {
+    const descontoFolhaPayments = sale.pagamentos.filter((p) => p.method === "desconto_folha");
+    if (descontoFolhaPayments.length > 0) {
+      const parcelas = await listDescontoFolhaParcelasByVenda(sale.sale_id);
+      if (parcelas.length > 0) {
+        const bloqueantes = parcelas.filter(
+          (p) => ["enviada_contabilidade", "descontada"].includes(String(p.status || "").toLowerCase())
+        );
+        if (bloqueantes.length > 0) {
+          throw new Error(
+            `Venda com desconto em folha já enviada/descontada na contabilidade. ` +
+            `${bloqueantes.length} parcela(s) em status '${bloqueantes[0].status}'. ` +
+            `Acione financeiro/admin para regularizar antes de cancelar.`
+          );
+        }
+        // Parcelas pendentes / nao_enviado / erro_envio_email → marcar como cancelada
+        const aCancelar = parcelas.filter(
+          (p) => ["pendente", "nao_enviado", "erro_envio_email", "nao_configurado"].includes(
+            String(p.status || "").toLowerCase()
+          )
+        );
+        for (const parcela of aCancelar) {
+          await updateDescontoFolhaParcelaStatus(parcela.id, "cancelada", user);
+        }
+      }
+    }
+  }
+
   const cancelReason = normalizeText(options.reason || "");
   const operationalCashbackReversal = await reverseOperationalCashbackForCancelledSale(sale, user, cancelReason);
   sale.status = "CANCELLED";

@@ -821,6 +821,7 @@ function buildCashRegisterSaleMovement(sale = {}) {
     if (["credito", "credit", "credito_ate_10x", "cartao_credito"].includes(method)) totals.credit += amount;
     if (method === "link_pagamento") totals.paymentLink += amount;
     if (method === "cheque") totals.cheque += amount;
+    if (method === "desconto_folha") totals.descontoFolha += amount;
     return totals;
   }, {
     money: 0,
@@ -828,7 +829,8 @@ function buildCashRegisterSaleMovement(sale = {}) {
     debit: 0,
     credit: 0,
     paymentLink: 0,
-    cheque: 0
+    cheque: 0,
+    descontoFolha: 0
   });
   const saleId = normalizeText(sale.sale_id || "");
   return {
@@ -851,6 +853,7 @@ function buildCashRegisterSaleMovement(sale = {}) {
       credito_amount: roundMoney(paymentTotals.credit),
       link_pagamento_amount: roundMoney(paymentTotals.paymentLink),
       cheque_amount: roundMoney(paymentTotals.cheque),
+      desconto_folha_amount: roundMoney(paymentTotals.descontoFolha),
       cashback_amount: roundMoney(sale.cashback_usado ?? sale.cashback_used_amount ?? 0),
       vale_presente_amount: roundMoney(sale.vale_presente_usado ?? 0),
       credito_troca_amount: roundMoney(sale.credito_troca_usado ?? 0),
@@ -2226,6 +2229,7 @@ function computeCashRegisterExpected(register) {
     credit_count: saleMovements.filter((item) => toNumber(item.payload?.credito_amount || 0) > 0).length,
     link_pagamento: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.link_pagamento_amount || 0), 0)),
     cheque: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.cheque_amount || 0), 0)),
+    desconto_folha: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.desconto_folha_amount || 0), 0)),
     cashback_usado: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.cashback_amount || 0), 0)),
     vale_presente_usado: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.vale_presente_amount || 0), 0)),
     permuta: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.permuta_amount || 0), 0)),

@@ -142,7 +142,8 @@ const PDV_PAYMENT_METHODS = [
   "vale_presente",
   "permuta",
   "link_pagamento",
-  "cheque"
+  "cheque",
+  "desconto_folha"
 ];
 
 const PDV_IMPORT_PIPELINE = ["preview", "validacao", "confirmacao", "logs", "rollback"];
@@ -181,6 +182,62 @@ function getPdvRouteMeta(route) {
   return PDV_ROUTE_META.find((item) => item.path === normalized) || PDV_ROUTE_META[0];
 }
 
+// ─── Payment method classification ─────────────────────────────────────────
+
+function normalizeText(str) {
+  return String(str || "").trim().toLowerCase();
+}
+
+/**
+ * Este método quita a venda (paga)?
+ * Inclui tudo que representa pagamento real: dinheiro, cartão, pix, link,
+ * cheque e também desconto_folha (que é quita, mas não entra no caixa).
+ */
+function settlesSalePaymentMethod(method = "") {
+  const m = normalizeText(method || "");
+  return [
+    "dinheiro",
+    "pix",
+    "debito",
+    "credito_ate_10x",
+    "link_pagamento",
+    "cheque",
+    "desconto_folha"
+  ].includes(m);
+}
+
+/**
+ * Este método entra como DINHEIRO RECEBIDO no caixa?
+ * Desconto em folha NÃO entra aqui — é quitação mas não influxo de caixa.
+ */
+function isCashRegisterReceivedMethod(method = "") {
+  const m = normalizeText(method || "");
+  return [
+    "dinheiro",
+    "pix",
+    "debito",
+    "credito_ate_10x",
+    "link_pagamento",
+    "cheque"
+  ].includes(m);
+}
+
+/**
+ * Este método é um recebível interno (desconto em folha)?
+ */
+function isInternalReceivablePaymentMethod(method = "") {
+  return normalizeText(method || "") === "desconto_folha";
+}
+
+/**
+ * Este método é crédito ou benefício do cliente?
+ * Não quita a venda diretamente — abate um crédito existente.
+ */
+function isCreditBenefitMethod(method = "") {
+  const m = normalizeText(method || "");
+  return ["cashback", "credito_troca", "vale_presente", "permuta"].includes(m);
+}
+
 module.exports = {
   PDV_BASE_ROUTES,
   PDV_ROUTE_META,
@@ -189,5 +246,9 @@ module.exports = {
   PDV_SECURITY_FOUNDATION,
   PDV_BUSINESS_GUARDRAILS,
   normalizePdvRoutePath,
-  getPdvRouteMeta
+  getPdvRouteMeta,
+  settlesSalePaymentMethod,
+  isCashRegisterReceivedMethod,
+  isInternalReceivablePaymentMethod,
+  isCreditBenefitMethod
 };
