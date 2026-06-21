@@ -221,6 +221,35 @@ async function updateDescontoFolhaConfig(parametro, valor, user = {}) {
   return getDescontoFolhaConfig();
 }
 
+async function saveChequePagamento(data = {}, user = {}) {
+  const now = new Date().toISOString();
+  await run(
+    `INSERT INTO cheque_pagamentos
+      (venda_id, cliente_id, banco, numero_cheque, data_cheque, valor, observacao, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      data.venda_id || "",
+      data.cliente_id || "",
+      data.banco || "",
+      data.numero_cheque || "",
+      data.data_cheque || "",
+      data.valor || 0,
+      data.observacao || "",
+      now
+    ]
+  );
+  appendAuditLog({
+    audit_id: `AUD_${Date.now()}_CHEQUE`,
+    action: "CHEQUE_PAGAMENTO_REGISTRADO",
+    created_at: now,
+    actor: user?.name || user?.email || "sistema",
+    actor_role: user?.role || "",
+    reason: `Cheque R$ ${data.valor} na venda ${data.venda_id}`,
+    before: null,
+    after: data
+  });
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────
 
 function sanitizeFuncionario(row = {}) {
@@ -251,5 +280,6 @@ module.exports = {
   createFuncionarioExcecao,
   isFuncionarioExcecao,
   getDescontoFolhaConfig,
-  updateDescontoFolhaConfig
+  updateDescontoFolhaConfig,
+  saveChequePagamento
 };

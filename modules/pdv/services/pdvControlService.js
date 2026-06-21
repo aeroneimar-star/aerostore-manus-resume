@@ -820,13 +820,15 @@ function buildCashRegisterSaleMovement(sale = {}) {
     if (["debito", "debit", "cartao_debito"].includes(method)) totals.debit += amount;
     if (["credito", "credit", "credito_ate_10x", "cartao_credito"].includes(method)) totals.credit += amount;
     if (method === "link_pagamento") totals.paymentLink += amount;
+    if (method === "cheque") totals.cheque += amount;
     return totals;
   }, {
     money: 0,
     pix: 0,
     debit: 0,
     credit: 0,
-    paymentLink: 0
+    paymentLink: 0,
+    cheque: 0
   });
   const saleId = normalizeText(sale.sale_id || "");
   return {
@@ -848,6 +850,7 @@ function buildCashRegisterSaleMovement(sale = {}) {
       debito_amount: roundMoney(paymentTotals.debit),
       credito_amount: roundMoney(paymentTotals.credit),
       link_pagamento_amount: roundMoney(paymentTotals.paymentLink),
+      cheque_amount: roundMoney(paymentTotals.cheque),
       cashback_amount: roundMoney(sale.cashback_usado ?? sale.cashback_used_amount ?? 0),
       vale_presente_amount: roundMoney(sale.vale_presente_usado ?? 0),
       credito_troca_amount: roundMoney(sale.credito_troca_usado ?? 0),
@@ -2222,6 +2225,7 @@ function computeCashRegisterExpected(register) {
     credito_count: saleMovements.filter((item) => toNumber(item.payload?.credito_amount || 0) > 0).length,
     credit_count: saleMovements.filter((item) => toNumber(item.payload?.credito_amount || 0) > 0).length,
     link_pagamento: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.link_pagamento_amount || 0), 0)),
+    cheque: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.cheque_amount || 0), 0)),
     cashback_usado: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.cashback_amount || 0), 0)),
     vale_presente_usado: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.vale_presente_amount || 0), 0)),
     permuta: roundMoney(saleMovements.reduce((sum, item) => sum + toNumber(item.payload?.permuta_amount || 0), 0)),

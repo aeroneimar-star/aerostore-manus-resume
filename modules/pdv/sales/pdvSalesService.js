@@ -21,6 +21,7 @@ const {
   loadAuthorizationAudit,
   saveAuthorizationAudit
 } = require("../services/pdvControlService");
+const { saveChequePagamento } = require("../services/pdvFuncionarioService");
 const { registerGiftExperienceFromSale } = require("../services/pdvExperienceService");
 const {
   validateStockAvailability,
@@ -2235,6 +2236,25 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
   if (totals.paidAmount > totals.totalFinal + 0.01) {
     throw new Error("O total pago excede o valor final da venda. Revise os pagamentos lancados antes de finalizar.");
   }
+  for (const payment of totals.paymentMethods) {
+    if (payment.method === "cheque") {
+      if (!session.customer?.id && !session.customer?.phone) {
+        throw new Error("Cheque exige cliente vinculado a venda.");
+      }
+      if (!normalizeText(payment.banco || "")) {
+        throw new Error("Informe o banco do cheque.");
+      }
+      if (!normalizeText(payment.numero_cheque || "")) {
+        throw new Error("Informe o numero do cheque.");
+      }
+      if (!normalizeText(payment.data_cheque || "")) {
+        throw new Error("Informe a data do cheque.");
+      }
+      if (roundMoney(payment.amount || 0) <= 0) {
+        throw new Error("Valor do cheque precisa ser maior que zero.");
+      }
+    }
+  }
   const reservations = readJson(reservationsFilePath, []);
   const matchedReservation = reservations.find((item) => item.session_snapshot?.session_id === session.session_id && item.inventory_status === "HELD");
   const fulfillmentPlan = resolveSaleFulfillmentPlan(session.cart_items || [], saleStoreKey, {
@@ -2464,6 +2484,20 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
   const sales = loadSales();
   sales.unshift(sale);
   saveSales(sales);
+
+  for (const payment of (sale.pagamentos || [])) {
+    if (payment.method === "cheque") {
+      await saveChequePagamento({
+        venda_id: sale.sale_id,
+        cliente_id: session.customer?.id || session.customer?.phone || "",
+        banco: payment.banco || "",
+        numero_cheque: payment.numero_cheque || "",
+        data_cheque: payment.data_cheque || "",
+        valor: payment.amount || 0,
+        observacao: payment.observacao || ""
+      }, user);
+    }
+  }
 
   const commission = createCommissionEntry(sale);
   const commissions = loadCommissions();

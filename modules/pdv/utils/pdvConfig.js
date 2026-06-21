@@ -141,7 +141,8 @@ const PDV_PAYMENT_METHODS = [
   "credito_troca",
   "vale_presente",
   "permuta",
-  "link_pagamento"
+  "link_pagamento",
+  "cheque"
 ];
 
 const PDV_IMPORT_PIPELINE = ["preview", "validacao", "confirmacao", "logs", "rollback"];
