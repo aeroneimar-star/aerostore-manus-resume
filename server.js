@@ -196,7 +196,12 @@ function saveInstanceConfig(nextConfig = instanceConfig) {
 }
 
 function getInstanceSessionPath() {
-  return path.resolve(__dirname, instanceConfig.whatsapp?.session_path || DEFAULT_INSTANCE_CONFIG.whatsapp.session_path);
+  const basePath = instanceConfig.whatsapp?.session_path || DEFAULT_INSTANCE_CONFIG.whatsapp.session_path;
+  const suffix = getWhatsAppSessionSuffix();
+  const resolvedPath = suffix && !String(basePath || "").endsWith(`_${suffix}`)
+    ? `${basePath}_${suffix}`
+    : basePath;
+  return path.resolve(__dirname, resolvedPath);
 }
 
 function getLegacyWhatsAppSessionPath() {
@@ -213,6 +218,9 @@ function getConfiguredWhatsAppAuthMode() {
 }
 
 function isLegacyWhatsAppQrFallbackEnabled() {
+  if (process.env.WHATSAPP_LEGACY_FALLBACK_ENABLED !== undefined) {
+    return String(process.env.WHATSAPP_LEGACY_FALLBACK_ENABLED || "").trim().toLowerCase() === "true";
+  }
   return instanceConfig.whatsapp?.legacy_qr_fallback !== false;
 }
 
@@ -230,7 +238,13 @@ function getWhatsAppQrRequestTtlMs() {
 }
 
 function getConfiguredWhatsAppSessionName() {
-  return String(instanceConfig.whatsapp?.session_name || DEFAULT_INSTANCE_CONFIG.whatsapp.session_name || "default").trim() || "default";
+  const baseName = String(instanceConfig.whatsapp?.session_name || DEFAULT_INSTANCE_CONFIG.whatsapp.session_name || "default").trim() || "default";
+  const suffix = getWhatsAppSessionSuffix();
+  return suffix && !baseName.endsWith(`_${suffix}`) ? `${baseName}_${suffix}` : baseName;
+}
+
+function getWhatsAppSessionSuffix() {
+  return String(process.env.WHATSAPP_SESSION_SUFFIX || "").trim().replace(/[^\w-]+/g, "");
 }
 
 function getWhatsAppAuthProfiles() {
@@ -239,8 +253,8 @@ function getWhatsAppAuthProfiles() {
     label: "LocalAuth por instância",
     clientId: getConfiguredWhatsAppSessionName(),
     sessionPath: getInstanceSessionPath(),
-    browserProfilePath: getInstanceBrowserProfilePath(),
-    useDedicatedBrowserProfile: true,
+    browserProfilePath: null,
+    useDedicatedBrowserProfile: false,
     createAuthStrategy() {
       return new LocalAuth({
         clientId: scopedProfile.clientId,
@@ -435,6 +449,10 @@ const WHATSAPP_BOOTSTRAP_TIMEOUT_MS = Number(process.env.WHATSAPP_BOOTSTRAP_TIME
 const WHATSAPP_QR_REQUEST_MIN_TTL_MS = 30000;
 const WHATSAPP_QR_REQUEST_DEFAULT_TTL_MS = 120000;
 const WHATSAPP_WEB_ENABLED = String(process.env.WHATSAPP_WEB_ENABLED ?? "true").trim().toLowerCase() !== "false";
+const WHATSAPP_PUPPETEER_HEADLESS = String(process.env.WHATSAPP_PUPPETEER_HEADLESS ?? "true").trim().toLowerCase() !== "false";
+const WHATSAPP_BOOTSTRAP_DEBUG_DIR = path.join(__dirname, "debug");
+const WHATSAPP_BOOTSTRAP_TIMEOUT_SCREENSHOT_PATH = path.join(WHATSAPP_BOOTSTRAP_DEBUG_DIR, "whatsapp-bootstrap-timeout.png");
+const WHATSAPP_BOOTSTRAP_PAGE_LOG_LIMIT = 80;
 const CANCEL_REASONS = [
   "Arrependimento da compra",
   "Não recebimento do PIN",
@@ -550,7 +568,7 @@ function resolveWhatsAppPuppeteerLaunchConfig(options = {}) {
     ? (options.browserProfilePath || getInstanceBrowserProfilePath())
     : null;
   return {
-    headless: true,
+    headless: WHATSAPP_PUPPETEER_HEADLESS,
     protocolTimeout: WHATSAPP_PROTOCOL_TIMEOUT_MS,
     executablePath: executablePath || undefined,
     ...(userDataDir ? { userDataDir } : {}),
@@ -558,21 +576,130 @@ function resolveWhatsAppPuppeteerLaunchConfig(options = {}) {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-quic',
-      '--disable-http2',
       '--disable-extensions',
       '--disable-gpu',
       '--disable-software-rasterizer',
-      '--disable-background-networking',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
       '--no-zygote',
       '--no-first-run',
       '--no-default-browser-check',
-      '--disable-features=IsolateOrigins,site-per-process,Translate,BackForwardCache'
+      '--disable-features=IsolateOrigins,site-per-process,Translate,BackForwardCache,StorageBuckets',
+      '--enable-features=PersistentStorage',
+      '--disable-blink-features=AutomationControlled'
     ]
   };
+}
+
+function isWhatsAppVisualDebugEnabled() {
+  return !WHATSAPP_PUPPETEER_HEADLESS;
+}
+
+function pushWhatsAppBootstrapPageLog(pageLogs, entry = {}) {
+  if (!Array.isArray(pageLogs)) return;
+  pageLogs.push({
+    at: new Date().toISOString(),
+    ...entry
+  });
+  if (pageLogs.length > WHATSAPP_BOOTSTRAP_PAGE_LOG_LIMIT) {
+    pageLogs.splice(0, pageLogs.length - WHATSAPP_BOOTSTRAP_PAGE_LOG_LIMIT);
+  }
+}
+
+async function readWhatsAppBootstrapPageSnapshot(client) {
+  const page = client?.pupPage || null;
+  if (!page) {
+    return { hasPage: false, url: "", title: "", screenshot: "" };
+  }
+  let url = "";
+  let title = "";
+  try {
+    url = typeof page.url === "function" ? page.url() : "";
+  } catch (error) {
+    url = `url_error:${String(error.message || error).slice(0, 120)}`;
+  }
+  try {
+    title = typeof page.title === "function" ? await page.title() : "";
+  } catch (error) {
+    title = `title_error:${String(error.message || error).slice(0, 120)}`;
+  }
+  return { hasPage: true, url, title, screenshot: "" };
+}
+
+function attachWhatsAppBootstrapPageDiagnostics(client, pageLogs) {
+  let attachedPage = null;
+  const attach = (page) => {
+    if (!page || page === attachedPage) return;
+    attachedPage = page;
+    pushWhatsAppBootstrapPageLog(pageLogs, { type: "page_attached" });
+    page.on("console", (message) => {
+      pushWhatsAppBootstrapPageLog(pageLogs, {
+        type: "console",
+        level: typeof message.type === "function" ? message.type() : "",
+        text: typeof message.text === "function" ? message.text().slice(0, 500) : ""
+      });
+    });
+    page.on("pageerror", (error) => {
+      pushWhatsAppBootstrapPageLog(pageLogs, {
+        type: "pageerror",
+        message: String(error?.message || error || "").slice(0, 500)
+      });
+    });
+    page.on("requestfailed", (request) => {
+      const failure = typeof request.failure === "function" ? request.failure() : null;
+      pushWhatsAppBootstrapPageLog(pageLogs, {
+        type: "requestfailed",
+        method: typeof request.method === "function" ? request.method() : "",
+        url: typeof request.url === "function" ? request.url().slice(0, 500) : "",
+        errorText: String(failure?.errorText || "").slice(0, 240)
+      });
+    });
+  };
+
+  const interval = setInterval(() => attach(client?.pupPage), 250);
+  attach(client?.pupPage);
+  return () => clearInterval(interval);
+}
+
+async function captureWhatsAppBootstrapDiagnostics(client, profile = {}, reason = "", pageLogs = []) {
+  const snapshot = await readWhatsAppBootstrapPageSnapshot(client);
+  let screenshotPath = "";
+  if (isWhatsAppVisualDebugEnabled() && client?.pupPage && typeof client.pupPage.screenshot === "function") {
+    try {
+      fs.mkdirSync(WHATSAPP_BOOTSTRAP_DEBUG_DIR, { recursive: true });
+      await client.pupPage.screenshot({
+        path: WHATSAPP_BOOTSTRAP_TIMEOUT_SCREENSHOT_PATH,
+        fullPage: true
+      });
+      screenshotPath = WHATSAPP_BOOTSTRAP_TIMEOUT_SCREENSHOT_PATH;
+    } catch (error) {
+      pushWhatsAppBootstrapPageLog(pageLogs, {
+        type: "screenshot_error",
+        message: String(error?.message || error || "").slice(0, 240)
+      });
+    }
+  }
+
+  if (isWhatsAppVisualDebugEnabled()) {
+    console.error("[WHATSAPP BOOTSTRAP DIAGNOSTICS]", {
+      reason,
+      profile: profile.key || "",
+      clientId: profile.clientId || "",
+      sessionPath: profile.sessionPath || "",
+      sessionSuffix: getWhatsAppSessionSuffix(),
+      legacyFallbackEnabled: isLegacyWhatsAppQrFallbackEnabled(),
+      page: {
+        hasPage: snapshot.hasPage,
+        url: snapshot.url,
+        title: snapshot.title
+      },
+      screenshotPath,
+      pageLogs: pageLogs.slice(-WHATSAPP_BOOTSTRAP_PAGE_LOG_LIMIT)
+    });
+  }
+
+  return { ...snapshot, screenshot: screenshotPath, pageLogs: pageLogs.slice(-WHATSAPP_BOOTSTRAP_PAGE_LOG_LIMIT) };
 }
 
 function normalizeWhatsAppBootstrapError(error) {
@@ -25644,12 +25771,26 @@ async function initializeWhatsAppClient() {
         fs.mkdirSync(profile.browserProfilePath, { recursive: true });
       }
 
+      const launchConfig = resolveWhatsAppPuppeteerLaunchConfig({
+        useDedicatedBrowserProfile: profile.useDedicatedBrowserProfile,
+        browserProfilePath: profile.browserProfilePath
+      });
+
+      console.log("[WHATSAPP BOOTSTRAP CONFIG]", {
+        executablePath: launchConfig.executablePath || "",
+        headless: launchConfig.headless,
+        args: launchConfig.args,
+        authPath: profile.sessionPath,
+        clientId: profile.clientId,
+        sessionSuffix: getWhatsAppSessionSuffix(),
+        legacyFallbackEnabled: isLegacyWhatsAppQrFallbackEnabled()
+      });
+
       const client = new Client({
         authStrategy: profile.createAuthStrategy(),
-        puppeteer: resolveWhatsAppPuppeteerLaunchConfig({
-          useDedicatedBrowserProfile: profile.useDedicatedBrowserProfile,
-          browserProfilePath: profile.browserProfilePath
-        })
+        authTimeoutMs: WHATSAPP_BOOTSTRAP_TIMEOUT_MS,
+        userAgent: false,
+        puppeteer: launchConfig
       });
       whatsappClient = client;
       whatsappRuntimeProfile = {
@@ -25798,12 +25939,21 @@ async function initializeWhatsAppClient() {
         }
       });
 
-      await Promise.race([
-        client.initialize(),
-        new Promise((_, reject) => setTimeout(() => {
-          reject(new Error(`WhatsApp CRM bootstrap timed out before QR Code generation [${profile.key}].`));
-        }, WHATSAPP_BOOTSTRAP_TIMEOUT_MS))
-      ]);
+      const pageLogs = [];
+      const stopPageDiagnostics = attachWhatsAppBootstrapPageDiagnostics(client, pageLogs);
+      const initializePromise = client.initialize();
+      try {
+        await Promise.race([
+          initializePromise,
+          new Promise((_, reject) => setTimeout(async () => {
+            const timeoutError = new Error(`WhatsApp CRM bootstrap timed out before QR Code generation [${profile.key}].`);
+            await captureWhatsAppBootstrapDiagnostics(client, profile, timeoutError.message, pageLogs);
+            reject(timeoutError);
+          }, WHATSAPP_BOOTSTRAP_TIMEOUT_MS))
+        ]);
+      } finally {
+        stopPageDiagnostics();
+      }
     };
 
     try {
@@ -25817,8 +25967,10 @@ async function initializeWhatsAppClient() {
         } catch (profileError) {
           lastInitializationError = profileError;
           console.error(`[WHATSAPP] Falha ao inicializar em modo ${profile.key}:`, profileError?.message || profileError);
-          if (isRecoverableWhatsAppRuntimeError(profileError)) {
+          if (isRecoverableWhatsAppRuntimeError(profileError) && !isWhatsAppVisualDebugEnabled()) {
             await destroyWhatsAppClientSafely(`initialize_failure_${profile.key}`);
+          } else if (isRecoverableWhatsAppRuntimeError(profileError)) {
+            console.warn(`[WHATSAPP] Debug visual ativo: Chromium preservado apos falha em ${profile.key}.`);
           }
           const hasNextProfile = index < authProfiles.length - 1;
           if (!hasNextProfile) {
@@ -25839,8 +25991,10 @@ async function initializeWhatsAppClient() {
         whatsappState.connectedNumber = null;
         whatsappState.lastError = normalizeWhatsAppBootstrapError(error);
       }
-      if (isRecoverableWhatsAppRuntimeError(error)) {
+      if (isRecoverableWhatsAppRuntimeError(error) && !isWhatsAppVisualDebugEnabled()) {
         await destroyWhatsAppClientSafely("initialize_failure");
+      } else if (isRecoverableWhatsAppRuntimeError(error)) {
+        console.warn("[WHATSAPP] Debug visual ativo: Chromium preservado apos falha geral de inicializacao.");
       }
       throw error;
     } finally {
@@ -27191,7 +27345,7 @@ initializeDatabase()
     await expireCashbacks();
     scheduleWarmupIncrement();
     startCashbackReminderScheduler({ dryRun: getNotificationDryRunDefault() });
-    if (WHATSAPP_WEB_ENABLED && instanceConfig.whatsapp?.auto_connect !== false) {
+    if (WHATSAPP_WEB_ENABLED && instanceConfig.whatsapp?.auto_connect !== false && !isWhatsAppQrManualRefreshEnabled()) {
       initializeWhatsAppClient().catch((error) => {
         console.error('Falha ao inicializar WhatsApp:', error);
         whatsappState.status = 'erro';

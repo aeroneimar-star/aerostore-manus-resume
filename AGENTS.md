@@ -453,3 +453,28 @@ Todo trabalho deve aproximar o sistema de uma AEROSTORE OS:
 - experiência simples para loja física
 - relatórios como painel do dono
 - frente de caixa rápida para vendedor
+
+
+---
+
+## Memoria de code review — server.js (2026-06-21)
+
+### Regra de debug em server.js
+
+Nunca deixar `console.log` ou `console.error` de diagnostico em failure paths de server.js
+que exponham sessionPath, clientId, authPath, ou paths internos — eles vazam para agregadores
+de log em producao.
+
+**Padrao seguro:** sempre gatear dumps de diagnostico atras de um flag de debug:
+
+```js
+if (isWhatsAppVisualDebugEnabled()) {
+  console.error("[WHATSAPP BOOTSTRAP DIAGNOSTICS]", { ... });
+}
+```
+
+O flag `isWhatsAppVisualDebugEnabled()` existe em server.js para este proposito.
+Aplicavel a qualquer novo diagnostico em failure/timeout paths.
+
+**Contexto:** diff `0c9eb7c..5f867c7` (2026-06-20) continha dois console dumps nao-gated
+que foram identificados como risco MEDIO — ambos agora devem ser removidos/regateados antes de commitar.
