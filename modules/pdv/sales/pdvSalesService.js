@@ -956,16 +956,25 @@ function computeIncrementalBase({ subtotal, itemDiscountAmount = 0, extraDiscoun
 }
 
 function buildNormalizedPaymentMethods(methods = []) {
-  return (methods || []).map((item) => ({
-    method: normalizeText(item.method || ""),
-    amount: roundMoney(item.amount || 0),
-    installments: Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1)))),
-    installment_amount: roundMoney(item.installment_amount || (toNumber(item.amount || 0) / Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1)))))),
-    brand: normalizeText(item.brand || ""),
-    nsu: normalizeText(item.nsu || ""),
-    credit_id: normalizeText(item.credit_id || item.exchange_credit_id || ""),
-    customer_id: normalizeText(item.customer_id || "")
-  })).filter((item) => item.method);
+  return (methods || []).map((item) => {
+    const base = {
+      method: normalizeText(item.method || ""),
+      amount: roundMoney(item.amount || 0),
+      installments: Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1)))),
+      installment_amount: roundMoney(item.installment_amount || (toNumber(item.amount || 0) / Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1)))))),
+      brand: normalizeText(item.brand || ""),
+      nsu: normalizeText(item.nsu || ""),
+      credit_id: normalizeText(item.credit_id || item.exchange_credit_id || ""),
+      customer_id: normalizeText(item.customer_id || "")
+    };
+    if (base.method === "cheque") {
+      base.banco = normalizeText(item.banco || "");
+      base.numero_cheque = normalizeText(item.numero_cheque || "");
+      base.data_cheque = normalizeText(item.data_cheque || "");
+      base.observacao = normalizeText(item.observacao || "");
+    }
+    return base;
+  }).filter((item) => item.method);
 }
 
 function isRealPaymentMethod(method = "") {

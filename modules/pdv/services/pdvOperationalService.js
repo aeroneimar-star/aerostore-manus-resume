@@ -3962,14 +3962,23 @@ function updatePaymentPlan(sessionId, methods = []) {
   if (!session) {
     throw new Error("SessÃ£o do atendimento nÃ£o encontrada.");
   }
-  const normalizedMethods = (methods || []).map((item) => ({
-    method: PDV_PAYMENT_METHODS.includes(item.method) ? item.method : "dinheiro",
-    amount: toNumber(item.amount),
-    installments: Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1)))),
-    installment_amount: Number((toNumber(item.amount) / Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1))))).toFixed(2)),
-    credit_id: normalizeText(item.credit_id || item.exchange_credit_id || ""),
-    customer_id: normalizeText(item.customer_id || "")
-  }));
+  const normalizedMethods = (methods || []).map((item) => {
+    const base = {
+      method: PDV_PAYMENT_METHODS.includes(item.method) ? item.method : "dinheiro",
+      amount: toNumber(item.amount),
+      installments: Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1)))),
+      installment_amount: Number((toNumber(item.amount) / Math.max(1, Math.min(10, Math.round(toNumber(item.installments || 1))))).toFixed(2)),
+      credit_id: normalizeText(item.credit_id || item.exchange_credit_id || ""),
+      customer_id: normalizeText(item.customer_id || "")
+    };
+    if (base.method === "cheque") {
+      base.banco = normalizeText(item.banco || "");
+      base.numero_cheque = normalizeText(item.numero_cheque || "");
+      base.data_cheque = normalizeText(item.data_cheque || "");
+      base.observacao = normalizeText(item.observacao || "");
+    }
+    return base;
+  });
   session.payment_plan = {
     methods: normalizedMethods
   };

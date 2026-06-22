@@ -7924,7 +7924,27 @@ async function commitPdvSalePaymentMethod(method = "", amount = 0, installments 
       methods: launched
     }
   };
+  // ── Cache extra cheque fields before sync (backend strips them) ─
+  const chequeCache = (normalizedMethod === "cheque") ? {
+    banco: normalizedEntry.banco,
+    numero_cheque: normalizedEntry.numero_cheque,
+    data_cheque: normalizedEntry.data_cheque,
+    observacao: normalizedEntry.observacao
+  } : null;
   const syncedSession = await syncPdvSalePaymentPlan();
+  // ── Restore extra cheque fields after sync ────────────────────────
+  if (chequeCache) {
+    const methods = state.pdvSale.session?.payment_plan?.methods || [];
+    for (const entry of methods) {
+      if (entry.method === "cheque") {
+        entry.banco = chequeCache.banco;
+        entry.numero_cheque = chequeCache.numero_cheque;
+        entry.data_cheque = chequeCache.data_cheque;
+        entry.observacao = chequeCache.observacao;
+        break;
+      }
+    }
+  }
   handlePdvSaleDiscountPolicyAfterPaymentChange(previousSession, syncedSession);
   handlePdvSalePermutaAuthorizationAfterPaymentChange(previousSession, syncedSession);
   await reconcilePdvSaleCheckoutAfterMutation("payment_method_changed", { silentDraftAdjustment: true });
@@ -8531,6 +8551,32 @@ async function finalizePdvSale(form) {
       || ""
     );
     const formData = new FormData(form);
+    // Preserve cheque extra fields in the finalization payload
+    const paymentMethodsForFinalize = toArray(totals.paymentMethods).map((item) => {
+      const base = {
+        method: item.method,
+        amount: item.amount,
+        installments: item.installments
+      };
+      // For cheques, preserve all extra fields
+      if (item.method === "cheque") {
+        return {
+          ...base,
+          banco: item.banco || "",
+          numero_cheque: item.numero_cheque || "",
+          data_cheque: item.data_cheque || "",
+          observacao: item.observacao || ""
+        };
+      }
+      // For desconto_folha, preserve funcionario_id
+      if (item.method === "desconto_folha") {
+        return {
+          ...base,
+          funcionario_id: item.funcionario_id || null
+        };
+      }
+      return base;
+    });
     const payload = {
       loja: getCurrentPdvStoreId(),
       observacoes: normalizeText(formData.get("observacoes") || ""),
@@ -8539,24 +8585,24 @@ async function finalizePdvSale(form) {
       discount_authorization_id: normalizeText(getCurrentPdvSaleDiscountAuthorization(state.pdvSale.session)?.approvalId || ""),
       permuta_authorization_id: permutaAuthorizationId,
       permuta_reason: totals.permutaApplied > 0 ? "empresa" : "",
-      cashback_application: state.pdvSale.session?.cashback_application || null
+      cashback_application: state.pdvSale.session?.cashback_application || null,
+      paymentMethods: paymentMethodsForFinalize
     };
     const endpoint = `/api/pdv/sales/finalize/${encodeURIComponent(sessionId)}`;
     console.info("[PDV][finalize] payload", payload);
+    console.info("[PDV][finalize] paymentMethods (with cheque fields)", paymentMethodsForFinalize);
     console.info("[PDV][finalize] authorization payload", {
       discount_authorization_id: payload.discount_authorization_id,
       permuta_authorization_id: payload.permuta_authorization_id,
-      payment_methods: toArray(totals.paymentMethods).map((item) => normalizePdvSaleDiscountMethod(item.method || "")),
-      installments: toArray(totals.paymentMethods).map((item) => ({
-        method: normalizePdvSaleDiscountMethod(item.method || ""),
-        installments: getInstallmentCount(item.installments || 1)
-      })),
+      payment_methods: paymentMethodsForFinalize.map((item) => item.method),
       totalAPagar: totals.total,
       totalLancado: totals.paid,
       discountStatus: syncedDiscountAuthorization.status,
       paymentStatus: totals.pending <= 0 && totals.change <= 0 ? "balanced" : "pending_review"
     });
     console.info("[PDV][finalize] endpoint", endpoint);
+    // DEBUG: Show exact payload sent to backend
+    console.log("[PDV][finalize] REAL REQUEST BODY", JSON.stringify(payload, null, 2));
     const profileCustomerBeforeFinalize = state.pdvSale.session?.customer || null;
     const sale = await api(endpoint, {
       method: "POST",
