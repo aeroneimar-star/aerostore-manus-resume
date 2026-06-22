@@ -862,7 +862,8 @@ const PDV_SALE_PAYMENT_METHODS = [
   { method: "credito_troca", label: "Crédito troca" },
   { method: "vale_presente", label: "Vale presente" },
   { method: "permuta", label: "Permuta" },
-  { method: "link_pagamento", label: "Link pagamento" }
+  { method: "link_pagamento", label: "Link pagamento" },
+  { method: "cheque", label: "Cheque" }
 ];
 const PDV_SALE_CHECKOUT_PAYMENT_METHODS = PDV_SALE_PAYMENT_METHODS.filter((item) => !["cashback", "credito_troca"].includes(item.method));
 const PDV_AUTOMATIC_DISCOUNT_METHODS = new Set(["pix", "dinheiro"]);
@@ -2516,7 +2517,7 @@ function normalizePdvSalePaymentMethodEntry(item = {}) {
   const method = normalizeText(item.method || "");
   const amount = Number(Math.max(0, toNumber(item.amount)).toFixed(2));
   const installments = getInstallmentCount(item.installments || 1);
-  return {
+  const entry = {
     method,
     amount,
     installments,
@@ -2524,6 +2525,13 @@ function normalizePdvSalePaymentMethodEntry(item = {}) {
     credit_id: normalizeText(item.credit_id || item.exchange_credit_id || ""),
     customer_id: normalizeText(item.customer_id || "")
   };
+  if (method === "cheque") {
+    entry.banco = normalizeText(item.banco || "");
+    entry.numero_cheque = normalizeText(item.numero_cheque || "");
+    entry.data_cheque = normalizeText(item.data_cheque || "");
+    entry.observacao = normalizeText(item.observacao || "");
+  }
+  return entry;
 }
 
 function getPdvSaleLaunchedPaymentMethods(session = null) {
@@ -5518,6 +5526,17 @@ function buildPdvSalePaymentRows() {
             ${hasInstallments ? `<div class="pdv-payment-installments-wrap"><span>Parcelas</span><input type="number" min="1" max="10" data-pdv-payment-installments="${escapeHtml(item.method)}" value="${Math.max(1, Math.round(toNumber(draft.installments || 1)))}"${cashRegisterClosed ? " disabled" : ""} /></div>` : ""}
           </div>
         </div>
+        ${item.method === "cheque" ? `
+        <div class="pdv-cheque-fields-wrap">
+          <div class="pdv-cheque-field-row">
+            <input class="pdv-cheque-input" type="text" data-pdv-cheque-banco="${escapeHtml(item.method)}" placeholder="Banco" autocomplete="off"${cashRegisterClosed ? " disabled" : ""} />
+            <input class="pdv-cheque-input" type="text" data-pdv-cheque-numero="${escapeHtml(item.method)}" placeholder="N. do cheque" autocomplete="off"${cashRegisterClosed ? " disabled" : ""} />
+          </div>
+          <div class="pdv-cheque-field-row">
+            <input class="pdv-cheque-input" type="date" data-pdv-cheque-data="${escapeHtml(item.method)}"${cashRegisterClosed ? " disabled" : ""} />
+            <input class="pdv-cheque-input" type="text" data-pdv-cheque-obs="${escapeHtml(item.method)}" placeholder="Observação (opcional)" autocomplete="off"${cashRegisterClosed ? " disabled" : ""} />
+          </div>
+        </div>` : ""}
         <div class="pdv-payment-card-foot">
           <button class="pdv-payment-fill-btn" type="button" data-pdv-payment-fill="${escapeHtml(item.method)}"${cashRegisterClosed ? " disabled" : ""}>Restante</button>
           <button class="pdv-payment-add-btn" type="button" data-pdv-payment-add="${escapeHtml(item.method)}"${cashRegisterClosed ? " disabled" : ""}>+ Lancar</button>
@@ -5557,12 +5576,16 @@ function buildPdvSaleLaunchedPayments() {
     const installments = item.method === "credito_ate_10x" || item.method === "credito"
       ? ` - ${item.installments}x de ${currency(item.installment_amount)}`
       : "";
+    const chequeInfo = item.method === "cheque" && item.banco
+      ? `<div class="pdv-cheque-info-line">${escapeHtml(item.banco)} #${escapeHtml(item.numero_cheque)} &bull; ${escapeHtml(item.data_cheque)}</div>`
+      : "";
     const removeButton = canRemove
       ? `<button class="pdv-payment-inline-remove" type="button" data-pdv-payment-remove="${escapeHtml(item.method)}" title="Remover lancamento" aria-label="Remover lancamento">x</button>`
       : "";
     return `
       <div class="pdv-payment-success-line pdv-payment-launched-line">
         <span>${escapeHtml(label)}${escapeHtml(installments)}</span>
+        ${chequeInfo}
         <div class="pdv-payment-success-actions">
           <strong>${currency(item.amount)}</strong>
           ${removeButton}
@@ -7858,6 +7881,23 @@ async function commitPdvSalePaymentMethod(method = "", amount = 0, installments 
   }
   const previousSession = state.pdvSale.session || null;
   let normalizedEntry = normalizePdvSalePaymentMethodEntry({ method: normalizedMethod, amount, installments });
+  // ── Validacao de cheque ──────────────────────────────────────────
+  if (normalizedMethod === "cheque") {
+    if (!state.pdvSale.session?.customer?.id && !state.pdvSale.session?.customer?.phone) {
+      throw new Error("Cheque exige cliente vinculado a venda.");
+    }
+    const row = document.querySelector(`[data-pdv-payment-add="${CSS.escape(normalizedMethod)}"]`)?.closest(".pdv-payment-method-row");
+    const banco    = row?.querySelector(`[data-pdv-cheque-banco="${CSS.escape(normalizedMethod)}"]`)?.value?.trim() || "";
+    const numero   = row?.querySelector(`[data-pdv-cheque-numero="${CSS.escape(normalizedMethod)}"]`)?.value?.trim() || "";
+    const dataCheque = row?.querySelector(`[data-pdv-cheque-data="${CSS.escape(normalizedMethod)}"]`)?.value?.trim() || "";
+    if (!banco) throw new Error("Informe o banco do cheque.");
+    if (!numero) throw new Error("Informe o numero do cheque.");
+    if (!dataCheque) throw new Error("Informe a data do cheque.");
+    normalizedEntry.banco = banco;
+    normalizedEntry.numero_cheque = numero;
+    normalizedEntry.data_cheque = dataCheque;
+    normalizedEntry.observacao = row?.querySelector(`[data-pdv-cheque-obs="${CSS.escape(normalizedMethod)}"]`)?.value?.trim() || "";
+  }
   const currentTotals = getPdvSaleCartTotals(state.pdvSale.session);
   const launched = getPdvSaleFinancialPaymentMethods(state.pdvSale.session).filter((item) => item.method !== normalizedMethod);
   const launchedWithoutPermuta = launched.filter((item) => item.method !== "permuta" && toNumber(item.amount) > 0);
