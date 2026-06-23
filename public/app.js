@@ -23073,6 +23073,7 @@ function getSidebarMenuGroups() {
         title: "Gestão",
         items: [
           { label: "Relatórios", route: "/pdv/relatorios" },
+          { label: "Gestão Comercial", route: "/pdv/gestao", visible: canViewPdvGestaoFrontend() },
           { label: "Relatórios de Cashback", section: "cashback-reports" },
           { label: "Consolidação Estratégica", route: "/pdv/consolidacao", visible: canViewConsolidationMenu() },
           { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() || canImportCrmContactsFrontend() },
@@ -23087,7 +23088,7 @@ function getSidebarMenuGroups() {
         ]
       }
     );
-  } else if (role === "manager" || role === "gerente") {
+  } else if (role === "manager" || role === "gestor") {
     groups.push(
       {
         title: "Operação",
@@ -23115,6 +23116,7 @@ function getSidebarMenuGroups() {
         title: "Gestão",
         items: [
           { label: "Relatórios da loja", route: "/pdv/relatorios", visible: hasPermission("can_view_reports") || hasPermission("can_view_store_reports") },
+          { label: "Gestão Comercial", route: "/pdv/gestao", visible: canViewPdvGestaoFrontend() },
           { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() || canImportCrmContactsFrontend() },
           { label: "Importar clientes", route: "/pdv/importacoes/clientes", visible: canImportCrmContactsFrontend() },
           { label: "AEROINTEL", route: "/aerointel", visible: canViewAerointelMenu() },
