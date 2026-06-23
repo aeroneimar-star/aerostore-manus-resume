@@ -1,7 +1,10 @@
 "use strict";
 
-const { get, run, all } = require("../../db");
-const { getToday } = require("../../serverUtils");
+const { get, run, all } = require("../../../db");
+
+function getToday(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
 
 function toNumber(value, fallback = 0) {
   const n = Number(value);
