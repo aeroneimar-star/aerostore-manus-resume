@@ -3977,6 +3977,10 @@ function updatePaymentPlan(sessionId, methods = []) {
       base.data_cheque = normalizeText(item.data_cheque || "");
       base.observacao = normalizeText(item.observacao || "");
     }
+    if (base.method === "desconto_folha") {
+      base.funcionario_id = normalizeText(item.funcionario_id || "");
+      base.observacao = normalizeText(item.observacao || "");
+    }
     return base;
   });
   session.payment_plan = {

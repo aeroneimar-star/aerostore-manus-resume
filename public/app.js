@@ -863,7 +863,8 @@ const PDV_SALE_PAYMENT_METHODS = [
   { method: "vale_presente", label: "Vale presente" },
   { method: "permuta", label: "Permuta" },
   { method: "link_pagamento", label: "Link pagamento" },
-  { method: "cheque", label: "Cheque" }
+  { method: "cheque", label: "Cheque" },
+  { method: "desconto_folha", label: "Desconto em Folha" }
 ];
 const PDV_SALE_CHECKOUT_PAYMENT_METHODS = PDV_SALE_PAYMENT_METHODS.filter((item) => !["cashback", "credito_troca"].includes(item.method));
 const PDV_AUTOMATIC_DISCOUNT_METHODS = new Set(["pix", "dinheiro"]);
@@ -2531,7 +2532,58 @@ function normalizePdvSalePaymentMethodEntry(item = {}) {
     entry.data_cheque = normalizeText(item.data_cheque || "");
     entry.observacao = normalizeText(item.observacao || "");
   }
+  if (method === "desconto_folha") {
+    entry.funcionario_id = normalizeText(item.funcionario_id || "");
+    entry.observacao = normalizeText(item.observacao || "");
+  }
   return entry;
+}
+
+// ── Desconto em Folha: buscar funcionários ativos ─────────────────────
+
+const pdvFolhaFuncionariosCache = {
+  data: [],
+  loadedAt: null
+};
+
+async function loadPdvFolhaFuncionarios() {
+  const now = Date.now();
+  if (pdvFolhaFuncionariosCache.data.length && pdvFolhaFuncionariosCache.loadedAt && (now - pdvFolhaFuncionariosCache.loadedAt) < 60000) {
+    return pdvFolhaFuncionariosCache.data;
+  }
+  try {
+    const res = await api("/api/pdv/sales/funcionarios?status=ativo");
+    if (res && Array.isArray(res.data)) {
+      pdvFolhaFuncionariosCache.data = res.data;
+      pdvFolhaFuncionariosCache.loadedAt = now;
+      return res.data;
+    }
+  } catch (e) {
+    console.warn("[PDV][folha] Falha ao carregar funcionarios", e);
+  }
+  return [];
+}
+
+function populatePdvFolhaFuncionarioSelect(funcionarios = []) {
+  const selects = document.querySelectorAll("[data-pdv-folha-funcionario]");
+  selects.forEach((select) => {
+    const currentValue = select.value;
+    const method = select.dataset.pdvFolhaFuncionario || "";
+    // Find launched entry for this method to restore selected value
+    const session = state.pdvSale.session;
+    const launchedEntry = toArray(session?.payment_plan?.methods || []).find((e) => e.method === method);
+    const savedFuncionarioId = launchedEntry?.funcionario_id || "";
+    select.innerHTML = '<option value="">Selecione o funcionário</option>';
+    funcionarios.forEach((func) => {
+      const selected = (savedFuncionarioId && String(func.id) === String(savedFuncionarioId)) ? ' selected' : '';
+      select.innerHTML += `<option value="${escapeHtml(String(func.id))}"${selected}>${escapeHtml(func.nome || func.id)}</option>`;
+    });
+  });
+}
+
+async function refreshPdvFolhaFuncionarioSelect() {
+  const funcionarios = await loadPdvFolhaFuncionarios();
+  populatePdvFolhaFuncionarioSelect(funcionarios);
 }
 
 function getPdvSaleLaunchedPaymentMethods(session = null) {
@@ -5537,6 +5589,17 @@ function buildPdvSalePaymentRows() {
             <input class="pdv-cheque-input" type="text" data-pdv-cheque-obs="${escapeHtml(item.method)}" placeholder="Observação (opcional)" autocomplete="off"${cashRegisterClosed ? " disabled" : ""} />
           </div>
         </div>` : ""}
+        ${item.method === "desconto_folha" ? `
+        <div class="pdv-folha-fields-wrap">
+          <div class="pdv-folha-field-row">
+            <select class="pdv-folha-funcionario-select" data-pdv-folha-funcionario="${escapeHtml(item.method)}"${cashRegisterClosed ? " disabled" : ""}>
+              <option value="">Selecione o funcionário</option>
+            </select>
+          </div>
+          <div class="pdv-folha-field-row">
+            <input class="pdv-folha-input" type="text" data-pdv-folha-obs="${escapeHtml(item.method)}" placeholder="Observação (opcional)" autocomplete="off"${cashRegisterClosed ? " disabled" : ""} />
+          </div>
+        </div>` : ""}
         <div class="pdv-payment-card-foot">
           <button class="pdv-payment-fill-btn" type="button" data-pdv-payment-fill="${escapeHtml(item.method)}"${cashRegisterClosed ? " disabled" : ""}>Restante</button>
           <button class="pdv-payment-add-btn" type="button" data-pdv-payment-add="${escapeHtml(item.method)}"${cashRegisterClosed ? " disabled" : ""}>+ Lancar</button>
@@ -5579,6 +5642,13 @@ function buildPdvSaleLaunchedPayments() {
     const chequeInfo = item.method === "cheque" && item.banco
       ? `<div class="pdv-cheque-info-line">${escapeHtml(item.banco)} #${escapeHtml(item.numero_cheque)} &bull; ${escapeHtml(item.data_cheque)}</div>`
       : "";
+    // ── Desconto em folha info ─────────────────────────────────────────
+    let folhaInfo = "";
+    if (item.method === "desconto_folha") {
+      const funcName = state.pdvFolhaFuncionariosCache?.data?.find((f) => String(f.id) === String(item.funcionario_id))?.nome || item.funcionario_id || "";
+      const obsPart = item.observacao ? ` &bull; ${escapeHtml(item.observacao)}` : "";
+      folhaInfo = `<div class="pdv-cheque-info-line">${escapeHtml(funcName)}${obsPart}</div>`;
+    }
     const removeButton = canRemove
       ? `<button class="pdv-payment-inline-remove" type="button" data-pdv-payment-remove="${escapeHtml(item.method)}" title="Remover lancamento" aria-label="Remover lancamento">x</button>`
       : "";
@@ -5586,6 +5656,7 @@ function buildPdvSaleLaunchedPayments() {
       <div class="pdv-payment-success-line pdv-payment-launched-line">
         <span>${escapeHtml(label)}${escapeHtml(installments)}</span>
         ${chequeInfo}
+        ${folhaInfo}
         <div class="pdv-payment-success-actions">
           <strong>${currency(item.amount)}</strong>
           ${removeButton}
@@ -6197,6 +6268,7 @@ function renderPdvSaleOfficialFront(container) {
   });
   bindPdvSalePostSaleActions(container);
   bindPdvSaleDiscountDetails(container);
+  refreshPdvFolhaFuncionarioSelect();
   Array.from(container.querySelectorAll("[data-pdv-payment-remove]")).forEach((button) => {
     if (button.dataset.boundClick === "true") {
       return;
@@ -7898,6 +7970,14 @@ async function commitPdvSalePaymentMethod(method = "", amount = 0, installments 
     normalizedEntry.data_cheque = dataCheque;
     normalizedEntry.observacao = row?.querySelector(`[data-pdv-cheque-obs="${CSS.escape(normalizedMethod)}"]`)?.value?.trim() || "";
   }
+  // ── Validacao de desconto em folha ─────────────────────────────────
+  if (normalizedMethod === "desconto_folha") {
+    const row = document.querySelector(`[data-pdv-payment-add="${CSS.escape(normalizedMethod)}"]`)?.closest(".pdv-payment-method-row");
+    const funcionarioId = row?.querySelector(`[data-pdv-folha-funcionario="${CSS.escape(normalizedMethod)}"]`)?.value?.trim() || "";
+    if (!funcionarioId) throw new Error("Selecione o funcionario para o Desconto em Folha.");
+    normalizedEntry.funcionario_id = funcionarioId;
+    normalizedEntry.observacao = row?.querySelector(`[data-pdv-folha-obs="${CSS.escape(normalizedMethod)}"]`)?.value?.trim() || "";
+  }
   const currentTotals = getPdvSaleCartTotals(state.pdvSale.session);
   const launched = getPdvSaleFinancialPaymentMethods(state.pdvSale.session).filter((item) => item.method !== normalizedMethod);
   const launchedWithoutPermuta = launched.filter((item) => item.method !== "permuta" && toNumber(item.amount) > 0);
@@ -7931,6 +8011,11 @@ async function commitPdvSalePaymentMethod(method = "", amount = 0, installments 
     data_cheque: normalizedEntry.data_cheque,
     observacao: normalizedEntry.observacao
   } : null;
+  // ── Cache extra folha fields before sync ──────────────────────────
+  const folhaCache = (normalizedMethod === "desconto_folha") ? {
+    funcionario_id: normalizedEntry.funcionario_id,
+    observacao: normalizedEntry.observacao
+  } : null;
   const syncedSession = await syncPdvSalePaymentPlan();
   // ── Restore extra cheque fields after sync ────────────────────────
   if (chequeCache) {
@@ -7941,6 +8026,17 @@ async function commitPdvSalePaymentMethod(method = "", amount = 0, installments 
         entry.numero_cheque = chequeCache.numero_cheque;
         entry.data_cheque = chequeCache.data_cheque;
         entry.observacao = chequeCache.observacao;
+        break;
+      }
+    }
+  }
+  // ── Restore extra folha fields after sync ─────────────────────────
+  if (folhaCache) {
+    const methods = state.pdvSale.session?.payment_plan?.methods || [];
+    for (const entry of methods) {
+      if (entry.method === "desconto_folha") {
+        entry.funcionario_id = folhaCache.funcionario_id;
+        entry.observacao = folhaCache.observacao;
         break;
       }
     }
