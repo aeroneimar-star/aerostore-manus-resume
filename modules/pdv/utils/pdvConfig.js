@@ -24,7 +24,8 @@ const PDV_BASE_ROUTES = [
   "/pdv/importacoes/clientes",
   "/pdv/importacoes/vendas",
   "/pdv/importacoes/curva-abc",
-  "/pdv/importacoes/cashback"
+  "/pdv/importacoes/cashback",
+  "/pdv/gestao"
 ];
 
 const PDV_ROUTE_META = [
