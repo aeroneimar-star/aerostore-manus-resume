@@ -1435,6 +1435,10 @@ function canViewPdvReservationsFrontend() {
   return isCurrentUserManagerProfile();
 }
 
+function canViewPdvGestaoFrontend() {
+  return isCurrentUserManagerProfile() || hasPermission("can_view_commercial_management");
+}
+
 function canManageSettings() {
   return isCurrentUserManagerProfile();
 }
@@ -1536,6 +1540,7 @@ const PATHNAME_SECTION_MAP = {
   "/pdv/importacoes": "pdv-imports",
   "/pdv/importacoes/clientes": "pdv-imports",
   "/pdv/importações": "pdv-imports",
+  "/pdv/gestao": "pdv-gestao",
   "/pdv/testes": "pdv-dashboard",
   "/pdv/consumo": "pdv-dashboard",
   "/pdv/eventos": "pdv-dashboard"
@@ -1560,7 +1565,8 @@ const PATHNAME_SECTION_META = {
   "pdv-reservations": { displaySection: "pdv-reservations", title: "Reservas" },
   "pdv-exchanges": { displaySection: "pdv-exchanges", title: "Trocas" },
   "pdv-quotes": { displaySection: "pdv-quotes", title: "Orçamentos" },
-  "pdv-imports": { displaySection: "pdv-imports", title: "Importações" }
+  "pdv-imports": { displaySection: "pdv-imports", title: "Importações" },
+  "pdv-gestao": { displaySection: "pdv-gestao", title: "Gestão Comercial" }
 };
 
 function normalizePathname(pathname = "") {
@@ -1595,7 +1601,8 @@ const OFFICIAL_PDV_SECTIONS = new Set([
   "pdv-reservations",
   "pdv-exchanges",
   "pdv-quotes",
-  "pdv-imports"
+  "pdv-imports",
+  "pdv-gestao"
 ]);
 
 const OFFICIAL_ROUTE_SECTIONS = new Set([
@@ -1619,7 +1626,8 @@ const PDV_ROUTE_ITEMS = [
   { section: "pdv-reports", label: "Relatórios", route: "/pdv/relatorios", visible: () => canViewReports() || hasPermission("can_view_store_reports") },
   { section: "pdv-consolidation", label: "Consolidação", route: "/pdv/consolidacao", visible: () => canViewConsolidationMenu() },
   { section: "pdv-reservations", label: "Reservas", route: "/pdv/reservas", visible: () => canViewPdvReservationsFrontend() },
-  { section: "pdv-exchanges", label: "Trocas", route: "/pdv/trocas", visible: () => canViewPdvExchangesFrontend() }
+  { section: "pdv-exchanges", label: "Trocas", route: "/pdv/trocas", visible: () => canViewPdvExchangesFrontend() },
+  { section: "pdv-gestao", label: "Gestão Comercial", route: "/pdv/gestao", visible: () => canViewPdvGestaoFrontend() }
 ];
 
 const SELLER_HIDDEN_PDV_MENU_SECTIONS = new Set([
@@ -1627,14 +1635,16 @@ const SELLER_HIDDEN_PDV_MENU_SECTIONS = new Set([
   "pdv-reports",
   "pdv-consolidation",
   "pdv-reservations",
-  "pdv-imports"
+  "pdv-imports",
+  "pdv-gestao"
 ]);
 
 const SELLER_RESTRICTED_PDV_SECTIONS = new Set([
   "pdv-reports",
   "pdv-consolidation",
   "pdv-reservations",
-  "pdv-imports"
+  "pdv-imports",
+  "pdv-gestao"
 ]);
 
 function canAccessOfficialSection(sectionId = "") {
@@ -1691,6 +1701,9 @@ function canAccessOfficialSection(sectionId = "") {
   }
   if (sectionId === "pdv-dashboard") {
     return canViewPdvDashboardFrontend();
+  }
+  if (sectionId === "pdv-gestao") {
+    return canViewPdvGestaoFrontend();
   }
   if (["pdv-sale", "pdv-quotes"].includes(sectionId)) {
     return isCurrentUserManagerProfile() || hasPermission("can_sell");
@@ -18944,6 +18957,265 @@ async function commitPdvTinyImportPreview() {
   }
 }
 
+// ── Gestão Comercial / Corridinhas ─────────────────────────────────
+
+const pdvGestaoState = {
+  campaigns: [],
+  loading: false,
+  error: "",
+  selectedCampaign: null,
+  createModalOpen: false
+};
+
+async function loadPdvGestaoFront() {
+  const container = document.getElementById("pdv-gestao-content");
+  if (!container) return;
+  pdvGestaoState.loading = true;
+  pdvGestaoState.error = "";
+  renderPdvGestaoFront(container);
+  try {
+    const res = await api("/api/pdv/commercial/campaigns");
+    pdvGestaoState.campaigns = Array.isArray(res?.data) ? res.data : [];
+    pdvGestaoState.loading = false;
+    renderPdvGestaoFront(container);
+  } catch (err) {
+    pdvGestaoState.loading = false;
+    pdvGestaoState.error = "Sem acesso a Gestão Comercial.";
+    renderPdvGestaoFront(container);
+  }
+}
+
+function renderPdvGestaoFront(container) {
+  const { campaigns, loading, error } = pdvGestaoState;
+  if (loading) {
+    container.innerHTML = '<div class="panel"><div class="panel-header"><h3>Gestão Comercial</h3></div><div class="loading-indicator">Carregando...</div></div>';
+    return;
+  }
+  if (error) {
+    container.innerHTML = '<div class="panel"><div class="panel-header"><h3>Gestão Comercial</h3></div><div class="empty-state"><strong>Sem acesso</strong><span>' + escapeHtml(error) + '</span></div></div>';
+    return;
+  }
+  container.innerHTML = `
+    <div class="panel">
+      <div class="panel-header">
+        <h3>Gestão Comercial</h3>
+        <div class="action-row">
+          ${canManageCampaignChallenges() ? '<button class="primary-button" type="button" data-action="gestao-create">+ Nova Corridinha</button>' : ""}
+          <button class="secondary-button" type="button" data-action="gestao-refresh">Atualizar</button>
+        </div>
+      </div>
+      ${campaigns.length === 0 ? '<div class="empty-state"><strong>Sem campanhas</strong><span>Crie uma Corridinha para iniciar.</span></div>' :
+        '<div class="gestao-campaigns-list">' + campaigns.map(renderGestaoCampaignCard).join("") + "</div>"}
+    </div>
+    <div class="panel" id="gestao-ranking-panel"></div>
+    <div class="gestao-create-modal" id="gestao-create-modal" style="display:none;">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header"><h3>Nova Corridinha</h3><button class="ghost-button" type="button" data-action="gestao-close-create">✕</button></div>
+        <form class="modal-form" id="gestao-create-form">
+          <div class="form-field"><label>Nome</label><input type="text" name="name" required placeholder="Ex: Corridinha de Junho" /></div>
+          <div class="form-field"><label>Descrição</label><textarea name="description" placeholder="Descrição opcional"></textarea></div>
+          <div class="form-row">
+            <div class="form-field"><label>Início</label><input type="date" name="start_date" required /></div>
+            <div class="form-field"><label>Término</label><input type="date" name="end_date" required /></div>
+          </div>
+          <div class="form-field"><label>Regra</label>
+            <select name="rule_type" required>
+              <option value="quantity_target">Quantidade de itens</option>
+              <option value="ticket_threshold_count">Vendas acima de ticket</option>
+              <option value="highest_quantity">Maior volume por venda</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <div class="form-field"><label>Meta (itens/vendas)</label><input type="number" name="quantity_target" min="1" value="1" /></div>
+            <div class="form-field"><label>Ticket mínimo (R$)</label><input type="number" name="ticket_threshold" min="0" step="0.01" value="0" /></div>
+          </div>
+          <div class="form-field"><label>Prêmio (R$)</label><input type="number" name="prize_value" min="0" step="0.01" value="0" /></div>
+          <div class="form-field"><label>Tipo de prêmio</label>
+            <select name="prize_type">
+              <option value="fixed">Valor fixo</option>
+              <option value="per_item">Por item vendido</option>
+              <option value="per_win">Só para o 1º lugar</option>
+            </select>
+          </div>
+          <div class="form-field"><label>Loja</label><input type="text" name="store_id" placeholder="Vazio = todas" /></div>
+          <div class="action-row" style="margin-top:1rem;">
+            <button class="primary-button" type="submit">Criar</button>
+            <button class="ghost-button" type="button" data-action="gestao-close-create">Cancelar</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+  bindPdvGestaoActions(container);
+}
+
+function renderGestaoCampaignCard(campaign) {
+  const statusClass = campaign.status === "active" ? "status-active" : campaign.status === "settled" ? "status-settled" : "status-draft";
+  const statusLabel = campaign.status === "active" ? "Ativa" : campaign.status === "settled" ? "Apurada" : "Rascunho";
+  const ruleLabel = campaign.rule_type === "quantity_target" ? "Qtd. itens" : campaign.rule_type === "ticket_threshold_count" ? "Vendas acima de ticket" : "Maior volume";
+  const prize = campaign.prize || {};
+  const prizeStr = prize.type === "per_item" ? "R$ " + (prize.value || 0) + "/item" : prize.type === "per_win" ? "R$ " + (prize.value || 0) + " (1º lugar)" : "R$ " + (prize.value || 0);
+  const canManage = canManageCampaignChallenges();
+  const actions = [];
+  if (canManage && campaign.status === "draft") actions.push('<button class="small-primary" type="button" data-gestao-action="activate" data-id="' + campaign.id + '">Ativar</button>');
+  if (canManage && (campaign.status === "draft" || campaign.status === "active")) actions.push('<button class="small-danger" type="button" data-gestao-action="cancel" data-id="' + campaign.id + '">Cancelar</button>');
+  if (campaign.status === "active") actions.push('<button class="small-secondary" type="button" data-gestao-action="live" data-id="' + campaign.id + '">Ranking Live</button>');
+  if ((canManageCampaignSettle() || isCurrentUserManagerProfile()) && campaign.status === "active") actions.push('<button class="small-primary" type="button" data-gestao-action="settle" data-id="' + campaign.id + '">Apurar</button>');
+  if (campaign.status === "settled") actions.push('<button class="small-secondary" type="button" data-gestao-action="results" data-id="' + campaign.id + '">Resultados</button>');
+  return `
+    <div class="gestao-card ${statusClass}">
+      <div class="gestao-card-header">
+        <div>
+          <strong>${escapeHtml(campaign.name || "")}</strong>
+          <span class="gestao-badge ${statusClass}">${statusLabel}</span>
+        </div>
+        <div class="gestao-card-actions">${actions.join("")}</div>
+      </div>
+      <div class="gestao-card-meta">
+        <span>${escapeHtml(ruleLabel)}</span>
+        <span>${campaign.start_date} a ${campaign.end_date}</span>
+        <span>Prêmio: ${prizeStr}</span>
+      </div>
+    </div>`;
+}
+
+function canManageCampaignChallenges() {
+  return isCurrentUserManagerProfile() || hasPermission("can_manage_campaign_challenges");
+}
+
+function canManageCampaignSettle() {
+  return isCurrentUserManagerProfile() || hasPermission("can_settle_campaign_rewards");
+}
+
+function bindPdvGestaoActions(container) {
+  container.querySelectorAll("[data-action]").forEach((btn) => {
+    if (btn.dataset.boundAction) return;
+    btn.dataset.boundAction = "true";
+    btn.addEventListener("click", async () => {
+      const action = btn.dataset.action;
+      if (action === "gestao-refresh") { await loadPdvGestaoFront(); return; }
+      if (action === "gestao-create") { openGestaoCreateModal(); return; }
+      if (action === "gestao-close-create") { closeGestaoCreateModal(); return; }
+    });
+  });
+  container.querySelectorAll("[data-gestao-action]").forEach((btn) => {
+    if (btn.dataset.boundGa) return;
+    btn.dataset.boundGa = "true";
+    btn.addEventListener("click", async () => {
+      await handleGestaoAction(btn.dataset.gestaoAction, Number(btn.dataset.id));
+    });
+  });
+  const form = container.querySelector("#gestao-create-form");
+  if (form && !form.dataset.boundSubmit) {
+    form.dataset.boundSubmit = "true";
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      await handleGestaoCreateSubmit(form);
+    });
+  }
+  const backdrop = container.querySelector(".modal-backdrop");
+  if (backdrop && !backdrop.dataset.boundBackdrop) {
+    backdrop.dataset.boundBackdrop = "true";
+    backdrop.addEventListener("click", closeGestaoCreateModal);
+  }
+}
+
+function openGestaoCreateModal() {
+  pdvGestaoState.createModalOpen = true;
+  const modal = document.getElementById("gestao-create-modal");
+  if (modal) modal.style.display = "";
+  const today = getToday();
+  const form = document.querySelector("#gestao-create-form");
+  if (form) {
+    form.reset();
+    form.start_date.value = today;
+    form.end_date.value = today;
+  }
+}
+
+function closeGestaoCreateModal() {
+  pdvGestaoState.createModalOpen = false;
+  const modal = document.getElementById("gestao-create-modal");
+  if (modal) modal.style.display = "none";
+}
+
+async function handleGestaoCreateSubmit(form) {
+  const fd = new FormData(form);
+  const prizeValue = Number(fd.get("prize_value") || 0);
+  const prizeType = fd.get("prize_type") || "fixed";
+  try {
+    const res = await api("/api/pdv/commercial/campaigns", {
+      method: "POST",
+      body: JSON.stringify({
+        name: fd.get("name"),
+        description: fd.get("description"),
+        start_date: fd.get("start_date"),
+        end_date: fd.get("end_date"),
+        rule_type: fd.get("rule_type"),
+        rules: { quantity_target: Number(fd.get("quantity_target") || 1), ticket_threshold: Number(fd.get("ticket_threshold") || 0) },
+        prize: { type: prizeType, value: prizeValue }
+      })
+    });
+    closeGestaoCreateModal();
+    await loadPdvGestaoFront();
+  } catch (err) {
+    alert("Erro ao criar: " + (err.message || err.error || ""));
+  }
+}
+
+async function handleGestaoAction(action, campaignId) {
+  try {
+    if (action === "activate") {
+      await api("/api/pdv/commercial/campaigns/" + campaignId + "/activate", { method: "POST" });
+      await loadPdvGestaoFront();
+    } else if (action === "cancel") {
+      if (!confirm("Cancelar esta campanha?")) return;
+      await api("/api/pdv/commercial/campaigns/" + campaignId + "/cancel", { method: "POST" });
+      await loadPdvGestaoFront();
+    } else if (action === "live") {
+      await loadGestaoRankingPanel(campaignId);
+    } else if (action === "settle") {
+      if (!confirm("Apurar esta campanha? Esta acao nao pode ser desfeita.")) return;
+      await api("/api/pdv/commercial/campaigns/" + campaignId + "/settle", { method: "POST" });
+      await loadPdvGestaoFront();
+    } else if (action === "results") {
+      await loadGestaoRankingPanel(campaignId, true);
+    }
+  } catch (err) {
+    alert("Erro: " + (err.message || err.error || ""));
+  }
+}
+
+async function loadGestaoRankingPanel(campaignId, settled = false) {
+  const panel = document.getElementById("gestao-ranking-panel");
+  if (!panel) return;
+  panel.innerHTML = '<div class="panel-header"><h3>Ranking</h3></div><div class="loading-indicator">Carregando...</div>';
+  try {
+    const endpoint = settled ? "/api/pdv/commercial/campaigns/" + campaignId + "/results" : "/api/pdv/commercial/campaigns/" + campaignId + "/live";
+    const res = await api(endpoint);
+    const data = res?.data || {};
+    const challenge = data.challenge || {};
+    const ranking = data.ranking || data.results || [];
+    panel.innerHTML = `
+      <div class="panel">
+        <div class="panel-header">
+          <h3>${escapeHtml(challenge.name || "Ranking")} — ${settled ? "Resultados" : "Live"}</h3>
+          <button class="ghost-button" type="button" data-action="gestao-close-ranking">Fechar</button>
+        </div>
+        ${ranking.length === 0 ? '<div class="empty-state"><strong>Sem dados</strong></div>' :
+          '<table class="data-table"><thead><tr><th>#</th><th>Vendedor</th><th>Valor</th><th>Vendas</th><th>Itens</th>' + (settled ? "<th>Prêmio</th><th>Pago</th>" : "") + "</tr></thead><tbody>" +
+          ranking.map((r) => {
+            const isWinner = r.rank === 1 || r.is_winner;
+            const prizeCell = settled ? "<td>R$ " + (r.prize_earned || 0).toFixed(2) + "</td><td>" + (r.paid ? "✅" : "—") + "</td>" : "";
+            return "<tr" + (isWinner ? ' class="winner-row"' : "") + "><td>" + (r.rank || "-") + "</td><td>" + escapeHtml(r.seller_name || "") + "</td><td>" + (settled ? "R$ " : "") + (r.current_value || 0) + (settled ? "" : " itens") + "</td><td>" + (r.eligible_sales_count || 0) + "</td><td>" + (r.eligible_items_count || 0) + "</td>" + prizeCell + "</tr>";
+          }).join("") + "</tbody></table>"}
+      </div>`;
+    panel.querySelector('[data-action="gestao-close-ranking"]')?.addEventListener("click", () => { panel.innerHTML = ""; });
+  } catch (err) {
+    panel.innerHTML = '<div class="panel"><div class="panel-header"><h3>Ranking</h3></div><div class="empty-state"><strong>Erro ao carregar ranking</strong></div></div>';
+  }
+}
+
 async function loadPdvImportsFront() {
   ensurePdvImportsState();
   const container = document.getElementById("pdv-imports-content");
@@ -19890,6 +20162,13 @@ function renderPdvFront(sectionId = "") {
   if (sectionId === "pdv-exchanges") {
     loadPdvExchangesFront().catch((error) => {
       handleUiError("Erro ao carregar a frente de trocas do PDV", error);
+    });
+    return;
+  }
+
+  if (sectionId === "pdv-gestao") {
+    loadPdvGestaoFront().catch((error) => {
+      handleUiError("Erro ao carregar a frente de gestão comercial", error);
     });
     return;
   }

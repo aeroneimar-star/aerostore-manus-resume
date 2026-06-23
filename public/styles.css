@@ -26733,3 +26733,174 @@ body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-b
     grid-template-columns: 1fr;
   }
 }
+/* ── Gestão Comercial / Corridinhas ──────────────────────────────── */
+
+.gestao-campaigns-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.gestao-card {
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  padding: 0.875rem 1rem;
+  background: var(--card-bg, #1a1a2e);
+}
+
+.gestao-card.status-active {
+  border-color: #22c55e;
+  background: linear-gradient(135deg, #0a1f0a 0%, #1a1a2e 100%);
+}
+
+.gestao-card.status-settled {
+  border-color: #f59e0b;
+  background: linear-gradient(135deg, #1a1500 0%, #1a1a2e 100%);
+}
+
+.gestao-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.gestao-card-header > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.gestao-card-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.gestao-badge {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.gestao-badge.status-active { background: #22c55e; color: #000; }
+.gestao-badge.status-draft  { background: #475569; color: #fff; }
+.gestao-badge.status-settled { background: #f59e0b; color: #000; }
+
+.gestao-card-meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.8rem;
+  color: var(--text-muted, #94a3b8);
+  flex-wrap: wrap;
+}
+
+.gestao-card-meta span + span::before {
+  content: "·";
+  margin-right: 1rem;
+}
+
+/* ── Modal de criação ─────────────────────────────────────────────── */
+
+.gestao-create-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gestao-create-modal[style*="display: none"] {
+  display: none !important;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+}
+
+.modal-content {
+  position: relative;
+  background: var(--panel-bg, #16162a);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 10px;
+  padding: 1.5rem;
+  width: min(560px, calc(100vw - 2rem));
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.25rem;
+}
+
+.modal-header h3 { margin: 0; }
+
+.modal-form { display: flex; flex-direction: column; gap: 0.875rem; }
+
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+
+.form-field { display: flex; flex-direction: column; gap: 0.3rem; }
+.form-field label { font-size: 0.8rem; color: var(--text-muted, #94a3b8); font-weight: 600; }
+.form-field input,
+.form-field select,
+.form-field textarea {
+  background: var(--input-bg, #0d0d1a);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 5px;
+  color: var(--text-color, #e2e8f0);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+.form-field input:focus,
+.form-field select:focus,
+.form-field textarea:focus {
+  outline: none;
+  border-color: var(--accent-color, #7c3aed);
+}
+.form-field textarea { resize: vertical; min-height: 60px; }
+
+/* ── Ranking table ─────────────────────────────────────────────────── */
+
+.winner-row td { color: #f59e0b; font-weight: 600; }
+
+/* ── Small action buttons ──────────────────────────────────────────── */
+
+.small-primary,
+.small-secondary,
+.small-danger {
+  font-size: 0.72rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-family: inherit;
+  transition: opacity 0.15s;
+}
+
+.small-primary { background: #7c3aed; color: #fff; }
+.small-secondary { background: #334155; color: #e2e8f0; }
+.small-danger { background: #7f1d1d; color: #fca5a5; }
+.small-primary:hover { opacity: 0.85; }
+.small-secondary:hover { background: #475569; }
+.small-danger:hover { background: #991b1b; }
+
+@media (max-width: 480px) {
+  .gestao-card-header { flex-direction: column; align-items: flex-start; }
+  .gestao-card-actions { width: 100%; }
+  .form-row { grid-template-columns: 1fr; }
+}
