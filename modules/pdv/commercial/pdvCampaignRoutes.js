@@ -21,12 +21,18 @@ const {
 const router = express.Router();
 
 function hasPermission(user = {}, permission = "") {
-  return Boolean(user?.permissions?.[permission]);
+  const perms = user?.permissions || user?.perms || {};
+  return Boolean(perms[permission]);
 }
 
 function isAdminOrManager(user = {}) {
-  const role = String(user?.role_key || user?.role || "").toLowerCase();
-  return ["admin", "manager"].includes(role);
+  const rawRole = String(user?.role_key || user?.role || user?.perfil || user?.profile || user?.permission_profile || "").toLowerCase();
+  const normalizedRole = (() => {
+    if (["admin", "administrator", "administrador"].includes(rawRole)) return "admin";
+    if (["manager", "gerente", "gestor"].includes(rawRole)) return "gestor";
+    return rawRole;
+  })();
+  return ["admin", "gestor"].includes(normalizedRole);
 }
 
 function requireCommercialAccess(req, res, next) {
