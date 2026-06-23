@@ -38,6 +38,7 @@ const { pdvImportRouter } = require("./modules/pdv/routes/pdvImportRoutes");
 const { pdvConsolidationRouter } = require("./modules/pdv/consolidation/routes/pdvConsolidationRoutes");
 const { pdvOperationalRouter } = require("./modules/pdv/routes/pdvOperationalRoutes");
 const { pdvSalesRouter } = require("./modules/pdv/routes/pdvSalesRoutes");
+const { pdvCommercialRouter } = require("./modules/pdv/commercial/pdvCampaignRoutes");
 const { pdvExchangeRouter } = require("./modules/pdv/routes/pdvExchangeRoutes");
 const { pdvControlRouter } = require("./modules/pdv/routes/pdvControlRoutes");
 const { pdvCashRouter } = require("./modules/pdv/routes/pdvCashRoutes");
@@ -12342,7 +12343,12 @@ const USER_PERMISSION_CATALOG = [
       ["can_export_data", "Exportar dados"],
       ["can_view_aerointel", "Acessar AEROINTEL"],
       ["can_view_campaigns", "Ver campanhas"],
-      ["can_manage_campaigns", "Gerenciar campanhas"]
+      ["can_manage_campaigns", "Gerenciar campanhas"],
+      ["can_view_commercial_management", "Ver gestao comercial"],
+      ["can_manage_commercial_goals", "Gerenciar metas comerciais"],
+      ["can_manage_campaign_challenges", "Gerenciar Corridinhas"],
+      ["can_view_campaign_rankings", "Ver ranking de Corridinhas"],
+      ["can_settle_campaign_rewards", "Apurar e pagar premiacoes"]
     ]
   }
 ].map((group) => ({
@@ -18867,6 +18873,7 @@ app.use("/api/pdv/imports", pdvImportRouter);
 app.use("/api/pdv/consolidation", requirePermission("can_view_consolidation"), pdvConsolidationRouter);
 app.use("/api/pdv/operational", requirePermission("can_sell"), pdvOperationalRouter);
 app.use("/api/pdv/sales", pdvSalesRouter);
+app.use("/api/pdv/commercial", requirePermission("can_view_commercial_management", "Voce nao tem acesso a Gestao Comercial."), pdvCommercialRouter);
 app.use("/api/pdv/exchanges", requirePermission("can_sell"), pdvExchangeRouter);
 app.use("/api/pdv/control", pdvControlRouter);
 app.use("/api/pdv/cash", pdvCashRouter);

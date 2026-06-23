@@ -2314,6 +2314,70 @@ async function initializeDatabase() {
   `);
   await run(`CREATE INDEX IF NOT EXISTS idx_cheque_pagamentos_venda ON cheque_pagamentos(venda_id)`);
 
+  // ── Campaign Challenges (Corridinhas) ──────────────────────────────
+  await run(`
+    CREATE TABLE IF NOT EXISTS campaign_challenges (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      store_id TEXT DEFAULT '',
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      rule_type TEXT NOT NULL,
+      rules_json TEXT DEFAULT '{}',
+      target_skus_json TEXT DEFAULT '[]',
+      target_categories_json TEXT DEFAULT '[]',
+      prize_json TEXT DEFAULT '{}',
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_challenge_store ON campaign_challenges(store_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_challenge_status ON campaign_challenges(status)`);
+
+  // ── Campaign Participants ──────────────────────────────────────────
+  await run(`
+    CREATE TABLE IF NOT EXISTS campaign_participants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      challenge_id INTEGER NOT NULL,
+      seller_id INTEGER NOT NULL,
+      seller_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      joined_at TEXT NOT NULL,
+      FOREIGN KEY (challenge_id) REFERENCES campaign_challenges(id)
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_participant_challenge ON campaign_participants(challenge_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_participant_seller ON campaign_participants(seller_id)`);
+
+  // ── Campaign Results ───────────────────────────────────────────────
+  await run(`
+    CREATE TABLE IF NOT EXISTS campaign_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      challenge_id INTEGER NOT NULL,
+      seller_id INTEGER NOT NULL,
+      seller_name TEXT NOT NULL,
+      current_value REAL DEFAULT 0,
+      eligible_sales_count INTEGER DEFAULT 0,
+      eligible_items_count INTEGER DEFAULT 0,
+      rank_position INTEGER,
+      prize_earned REAL DEFAULT 0,
+      settled INTEGER DEFAULT 0,
+      settled_at TEXT DEFAULT '',
+      settled_by INTEGER,
+      paid INTEGER DEFAULT 0,
+      paid_at TEXT DEFAULT '',
+      paid_by INTEGER,
+      evidence_json TEXT DEFAULT '{}',
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (challenge_id) REFERENCES campaign_challenges(id)
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_result_challenge ON campaign_results(challenge_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_result_seller ON campaign_results(seller_id)`);
+
   await ensureSeedData();
   await ensureAiCatalogSeed();
   await migrateLegacyCashbacks();
