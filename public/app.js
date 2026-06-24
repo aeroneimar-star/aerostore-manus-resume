@@ -26353,7 +26353,9 @@ function buildPdvSalesOrdersList() {
     return `<div class="empty-state compact"><strong>Nenhum pedido encontrado para os filtros selecionados.</strong><span>Ajuste a busca, periodo ou status para consultar outras vendas.</span></div>`;
   }
   return `
-    <div class="pdv-orders-table-wrap">
+    <div class="pdv-orders-table-scroll-sync">
+      <div class="pdv-orders-table-sync-bar" id="pdv-orders-sync-bar" tabindex="-1"></div>
+      <div class="pdv-orders-table-wrap">
       <table class="pdv-orders-table">
         <thead>
           <tr>
@@ -26423,6 +26425,7 @@ function buildPdvSalesOrdersList() {
           }).join("")}
         </tbody>
       </table>
+    </div>
     </div>
   `;
 }
@@ -26551,7 +26554,7 @@ function buildPdvSalesOrderDetailDrawer() {
           </div>
         </div>
         <div class="pdv-orders-drawer-actions">
-          <button class="secondary-button" type="button" data-pdv-sale-generate-coupon="${escapeHtml(saleId)}">Abrir / imprimir cupom</button>
+          <button class="secondary-button" type="button" data-pdv-sale-print-coupon="${escapeHtml(saleId)}">Abrir / imprimir cupom</button>
           <button class="ghost-button" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(saleId)}">Enviar WhatsApp</button>
           ${canCancelPdvSaleFrontend() && !isPdvSalesOrderCancelled(row) ? `<button class="danger-button" type="button" data-pdv-sales-order-cancel="${escapeHtml(saleId)}">Cancelar venda</button>` : ""}
           ${row.uses_payment_link ? `<button class="ghost-button" type="button" data-pdv-sale-refresh-payment-link="${escapeHtml(saleId)}"${paymentLink.checkoutId ? "" : " disabled"}>Atualizar PagBank</button>` : ""}
@@ -26592,6 +26595,17 @@ function renderPdvSalesOrdersFront(container = getPdvSalesOrdersContainer()) {
     `,
     compactTabs: true
   });
+  // ── Scroll sync: top bar ↔ bottom table ──────────────────────────
+  const syncBar = document.getElementById("pdv-orders-sync-bar");
+  const tableWrap = document.querySelector(".pdv-orders-table-wrap");
+  if (syncBar && tableWrap) {
+    syncBar.onscroll = () => {
+      tableWrap.scrollLeft = syncBar.scrollLeft;
+    };
+    tableWrap.onscroll = () => {
+      syncBar.scrollLeft = tableWrap.scrollLeft;
+    };
+  }
 }
 
 async function loadPdvSalesOrdersFront({ preservePage = false } = {}) {

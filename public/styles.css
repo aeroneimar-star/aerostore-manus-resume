@@ -23325,6 +23325,34 @@ body[data-route-section="pdv-sales-orders"] .pdv-orders-table-wrap::-webkit-scro
   background: linear-gradient(180deg, rgba(45, 212, 191, 0.78), rgba(148, 163, 184, 0.42));
 }
 
+.pdv-orders-table-scroll-sync {
+  display: flex;
+  flex-direction: column;
+}
+
+.pdv-orders-table-sync-bar {
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 14px;
+  cursor: default;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(192, 201, 199, 0.22) transparent;
+  min-width: 1120px;
+}
+
+.pdv-orders-table-sync-bar::-webkit-scrollbar {
+  height: 5px;
+}
+
+.pdv-orders-table-sync-bar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pdv-orders-table-sync-bar::-webkit-scrollbar-thumb {
+  background: rgba(192, 201, 199, 0.22);
+  border-radius: 3px;
+}
+
 body[data-route-section="pdv-cash-register"] .pdv-cash-pending-card {
   display: grid;
   gap: 10px;
