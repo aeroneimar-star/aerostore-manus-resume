@@ -11316,6 +11316,29 @@ body.theme-dark .pdv-sale-zone .secondary-button:hover {
   text-align: center;
 }
 
+.pdv-payment-installments-select {
+  height: 34px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: rgba(30, 40, 37, 0.85);
+  color: #d0e4de;
+  border: 1px solid rgba(192, 201, 199, 0.22);
+  font-size: 0.82rem;
+  cursor: pointer;
+  min-width: 60px;
+}
+
+body.theme-light .pdv-payment-installments-select {
+  background: rgba(245, 247, 246, 0.95);
+  color: #1a2b28;
+  border-color: rgba(26, 43, 40, 0.22);
+}
+
+.pdv-payment-installments-select:focus {
+  outline: none;
+  border-color: #4a8c7a;
+}
+
 .pdv-payment-fill-btn,
 .pdv-payment-add-btn,
 .pdv-payment-inline-remove {

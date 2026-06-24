@@ -5610,6 +5610,13 @@ function buildPdvSalePaymentRows() {
             </select>
           </div>
           <div class="pdv-folha-field-row">
+            <select class="pdv-payment-installments-select" data-pdv-payment-installments="${escapeHtml(item.method)}"${cashRegisterClosed ? " disabled" : ""}>
+              <option value="1"${Math.max(1, Math.round(toNumber(draft.installments || 1))) === 1 ? " selected" : ""}>1x</option>
+              <option value="2"${Math.max(1, Math.round(toNumber(draft.installments || 1))) === 2 ? " selected" : ""}>2x</option>
+              <option value="3"${Math.max(1, Math.round(toNumber(draft.installments || 1))) === 3 ? " selected" : ""}>3x</option>
+            </select>
+          </div>
+          <div class="pdv-folha-field-row">
             <input class="pdv-folha-input" type="text" data-pdv-folha-obs="${escapeHtml(item.method)}" placeholder="Observação (opcional)" autocomplete="off"${cashRegisterClosed ? " disabled" : ""} />
           </div>
         </div>` : ""}
@@ -5659,8 +5666,13 @@ function buildPdvSaleLaunchedPayments() {
     let folhaInfo = "";
     if (item.method === "desconto_folha") {
       const funcName = state.pdvFolhaFuncionariosCache?.data?.find((f) => String(f.id) === String(item.funcionario_id))?.nome || item.funcionario_id || "";
+      const installmentsCount = getInstallmentCount(item.installments || 1);
+      const installmentAmount = getInstallmentAmount(item.amount || 0, installmentsCount);
+      const installmentsPart = installmentsCount > 1
+        ? ` &bull; ${installmentsCount}x de ${currency(installmentAmount)}`
+        : "";
       const obsPart = item.observacao ? ` &bull; ${escapeHtml(item.observacao)}` : "";
-      folhaInfo = `<div class="pdv-cheque-info-line">${escapeHtml(funcName)}${obsPart}</div>`;
+      folhaInfo = `<div class="pdv-cheque-info-line">${escapeHtml(funcName)}${installmentsPart}${obsPart}</div>`;
     }
     const removeButton = canRemove
       ? `<button class="pdv-payment-inline-remove" type="button" data-pdv-payment-remove="${escapeHtml(item.method)}" title="Remover lancamento" aria-label="Remover lancamento">x</button>`
@@ -26722,12 +26734,20 @@ function openPdvSalePrintWindow(sale = null, options = {}) {
       <td style="text-align:right;"><strong>${currency(item.total)}</strong></td>
     </tr>
   `).join("");
-  const paymentsHtml = getPdvSalePostSalePayments(sale).filter((item) => toNumber(item.amount) > 0).map((item) => `
+  const paymentsHtml = getPdvSalePostSalePayments(sale).filter((item) => toNumber(item.amount) > 0).map((item) => {
+      const installmentsCount = getInstallmentCount(item.installments || 1);
+      const installmentAmount = getInstallmentAmount(item.amount || 0, installmentsCount);
+      const isFolha = normalizeText(item.method || "") === "desconto_folha";
+      const labelExtra = (isFolha && installmentsCount > 1)
+        ? ` &bull; ${installmentsCount}x de ${currency(installmentAmount)}`
+        : "";
+      return `
     <tr>
-      <td>${escapeHtml(item.label)}</td>
+      <td>${escapeHtml(item.label)}${labelExtra}</td>
       <td style="text-align:right;">${currency(item.amount)}</td>
     </tr>
-  `).join("");
+  `;
+    }).join("");
   const printWindow = window.open("", "_blank", "width=420,height=760");
   if (!printWindow) {
     showFeedback("Nao foi possivel abrir a janela de impressao.", "error");
