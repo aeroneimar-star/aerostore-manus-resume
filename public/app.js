@@ -6287,7 +6287,7 @@ function renderPdvSaleOfficialFront(container) {
     title: "Venda",
     subtitle: "Frente de caixa operacional da loja ativa, com carrinho, cliente e recebimento real do PDV.",
     compactTabs: true,
-    contentHtml: hasCompletedSale ? buildPdvSaleCompletedContent() : buildPdvSaleActiveContent()
+    contentHtml: hasCompletedSale ? buildPdvSaleSuccessState(state.pdvSale.lastCompletedSale) : buildPdvSaleActiveContent()
   });
   bindPdvSalePostSaleActions(container);
   bindPdvSaleDiscountDetails(container);
