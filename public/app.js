@@ -18974,7 +18974,8 @@ const pdvGestaoState = {
   loading: false,
   error: "",
   selectedCampaign: null,
-  createModalOpen: false
+  createModalOpen: false,
+  editingId: null
 };
 
 async function loadPdvGestaoFront() {
@@ -19060,8 +19061,12 @@ function renderPdvGestaoFront(container) {
 }
 
 function renderGestaoCampaignCard(campaign) {
-  const statusClass = campaign.status === "active" ? "status-active" : campaign.status === "settled" ? "status-settled" : "status-draft";
-  const statusLabel = campaign.status === "active" ? "Ativa" : campaign.status === "settled" ? "Apurada" : "Rascunho";
+  const rawStatus = (campaign.status || "draft").toString().toLowerCase().trim();
+  const isActive = rawStatus === "active" || rawStatus === "ativa";
+  const isSettled = rawStatus === "settled" || rawStatus === "apurada";
+  const isDraft = !isActive && !isSettled;
+  const statusClass = isActive ? "status-active" : isSettled ? "status-settled" : "status-draft";
+  const statusLabel = isActive ? "Ativa" : isSettled ? "Apurada" : "Rascunho";
   const ruleLabel = campaign.rule_type === "quantity_target" ? "Qtd. itens" : campaign.rule_type === "ticket_threshold_count" ? "Vendas acima de ticket" : "Maior volume";
   const prize = campaign.prize || {};
   const prizeStr = prize.type === "per_item" ? "R$ " + (prize.value || 0) + "/item" : prize.type === "per_win" ? "R$ " + (prize.value || 0) + " (1º lugar)" : "R$ " + (prize.value || 0);
@@ -19071,12 +19076,19 @@ function renderGestaoCampaignCard(campaign) {
   const isIncomplete = !hasName || !hasPrize;
   const canManage = canManageCampaignChallenges();
   const actions = [];
-  if (canManage && campaign.status === "draft") actions.push('<button class="small-primary" type="button" data-gestao-action="activate" data-id="' + campaign.id + '">Ativar</button>');
-  if (canManage && campaign.status === "draft") actions.push('<button class="small-danger" type="button" data-gestao-action="delete" data-id="' + campaign.id + '">Excluir</button>');
-  if (canManage && campaign.status === "active") actions.push('<button class="small-danger" type="button" data-gestao-action="cancel" data-id="' + campaign.id + '">Cancelar</button>');
-  if (campaign.status === "active") actions.push('<button class="small-secondary" type="button" data-gestao-action="live" data-id="' + campaign.id + '">Ranking Live</button>');
-  if ((canManageCampaignSettle() || isCurrentUserManagerProfile()) && campaign.status === "active") actions.push('<button class="small-primary" type="button" data-gestao-action="settle" data-id="' + campaign.id + '">Apurar</button>');
-  if (campaign.status === "settled") actions.push('<button class="small-secondary" type="button" data-gestao-action="results" data-id="' + campaign.id + '">Resultados</button>');
+  // Rascunho: Editar sempre (para revisar antes de ativar)
+  if (canManage && isDraft) actions.push('<button class="small-secondary" type="button" data-gestao-action="edit" data-id="' + campaign.id + '">Editar</button>');
+  // Completa + rascunho: Ativar
+  if (canManage && isDraft && !isIncomplete) actions.push('<button class="small-primary" type="button" data-gestao-action="activate" data-id="' + campaign.id + '">Ativar</button>');
+  // Rascunho: Excluir
+  if (canManage && isDraft) actions.push('<button class="small-danger" type="button" data-gestao-action="delete" data-id="' + campaign.id + '">Excluir</button>');
+  // Ativa: Cancelar
+  if (canManage && isActive) actions.push('<button class="small-danger" type="button" data-gestao-action="cancel" data-id="' + campaign.id + '">Cancelar</button>');
+  // Ativa + completa: Ranking Live e Apurar
+  if (isActive && !isIncomplete) actions.push('<button class="small-secondary" type="button" data-gestao-action="live" data-id="' + campaign.id + '">Ranking Live</button>');
+  if ((canManageCampaignSettle() || isCurrentUserManagerProfile()) && isActive && !isIncomplete) actions.push('<button class="small-primary" type="button" data-gestao-action="settle" data-id="' + campaign.id + '">Apurar</button>');
+  // Settled: Resultados
+  if (isSettled) actions.push('<button class="small-secondary" type="button" data-gestao-action="results" data-id="' + campaign.id + '">Resultados</button>');
   return `
     <div class="gestao-card ${statusClass}${isIncomplete ? " gestao-card-incomplete" : ""}">
       <div class="gestao-card-header">
@@ -19126,7 +19138,11 @@ function bindPdvGestaoActions(container) {
     form.dataset.boundSubmit = "true";
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      await handleGestaoCreateSubmit(form);
+      if (pdvGestaoState.editingId) {
+        await handleGestaoEditSubmit(form);
+      } else {
+        await handleGestaoCreateSubmit(form);
+      }
     });
   }
   const backdrop = container.querySelector(".modal-backdrop");
@@ -19151,8 +19167,53 @@ function openGestaoCreateModal() {
 
 function closeGestaoCreateModal() {
   pdvGestaoState.createModalOpen = false;
+  pdvGestaoState.editingId = null;
   const modal = document.getElementById("gestao-create-modal");
   if (modal) modal.style.display = "none";
+  const title = modal ? modal.querySelector("h3") : null;
+  if (title) title.textContent = "Nova Corridinha";
+  const submitBtn = modal ? modal.querySelector('button[type="submit"]') : null;
+  if (submitBtn) submitBtn.textContent = "Criar";
+}
+
+function openGestaoEditModal(campaign) {
+  pdvGestaoState.createModalOpen = true;
+  pdvGestaoState.editingId = campaign.id;
+  const modal = document.getElementById("gestao-create-modal");
+  if (!modal) return;
+  modal.style.display = "";
+  const title = modal.querySelector("h3");
+  if (title) title.textContent = "Editar Corridinha";
+  const submitBtn = modal.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.textContent = "Salvar alterações";
+  const form = modal.querySelector("#gestao-create-form");
+  if (!form) return;
+  form.reset();
+  const rules = campaign.rules_json ? (typeof campaign.rules_json === "string" ? JSON.parse(campaign.rules_json) : campaign.rules_json) : {};
+  const prize = campaign.prize_json ? (typeof campaign.prize_json === "string" ? JSON.parse(campaign.prize_json) : campaign.prize_json) : (campaign.prize || {});
+  // name
+  if (form.name) form.name.value = campaign.name || "";
+  // description
+  if (form.description) form.description.value = campaign.description || "";
+  // dates
+  if (form.start_date) form.start_date.value = campaign.start_date || "";
+  if (form.end_date) form.end_date.value = campaign.end_date || "";
+  // rule_type
+  if (form.rule_type) form.rule_type.value = campaign.rule_type || "quantity_target";
+  // quantity_target — usado para ambos: quantity_target e ticket_threshold_count
+  if (form.quantity_target) {
+    form.quantity_target.value = rules.quantity_target || rules.ticket_threshold_count || 1;
+  }
+  // ticket_threshold — min_ticket do rules
+  if (form.ticket_threshold) {
+    form.ticket_threshold.value = rules.ticket_threshold || rules.min_ticket || 0;
+  }
+  // prize
+  const prizeValue = prize.amount ?? prize.value ?? 0;
+  if (form.prize_value) form.prize_value.value = prizeValue;
+  if (form.prize_type) form.prize_type.value = prize.type || "fixed";
+  // store_id
+  if (form.store_id) form.store_id.value = campaign.store_id || "";
 }
 
 async function handleGestaoCreateSubmit(form) {
@@ -19160,29 +19221,99 @@ async function handleGestaoCreateSubmit(form) {
   const name = (fd.get("name") || "").toString().trim();
   const startDate = (fd.get("start_date") || "").toString().trim();
   const endDate = (fd.get("end_date") || "").toString().trim();
+  const ruleType = (fd.get("rule_type") || "").toString().trim();
   const prizeValue = Number(fd.get("prize_value") || 0);
-  const prizeType = fd.get("prize_type") || "fixed";
+  const prizeType = (fd.get("prize_type") || "fixed").toString().trim();
   if (!name) { alert("Nome da campanha e obrigatorio."); return; }
   if (!startDate) { alert("Data de inicio e obrigatoria."); return; }
   if (!endDate) { alert("Data de termino e obrigatoria."); return; }
+  if (!["quantity_target", "ticket_threshold_count", "highest_quantity"].includes(ruleType)) { alert("Tipo de regra invalido."); return; }
   if (prizeValue <= 0) { alert("Premio deve ser maior que zero."); return; }
+  // Montar rules conforme tipo de regra
+  let rules = {};
+  if (ruleType === "quantity_target") {
+    rules = { quantity_target: Number(fd.get("quantity_target") || 1) };
+  } else if (ruleType === "ticket_threshold_count") {
+    const ticketThreshold = Number(fd.get("ticket_threshold") || 0);
+    const ticketCount = Number(fd.get("quantity_target") || 1);
+    rules = { min_ticket: ticketThreshold, ticket_threshold: ticketThreshold, required_count: ticketCount, ticket_threshold_count: ticketCount };
+  } else {
+    rules = {};
+  }
+  const storeId = (fd.get("store_id") || "all").toString().trim();
+  const payload = {
+    name: name,
+    description: (fd.get("description") || "").toString().trim(),
+    store_id: storeId,
+    start_date: startDate,
+    end_date: endDate,
+    rule_type: ruleType,
+    rules: rules,
+    target_skus: [],
+    target_categories: [],
+    prize: { type: prizeType, value: prizeValue }
+  };
   try {
     const res = await api("/api/pdv/commercial/campaigns", {
       method: "POST",
-      body: JSON.stringify({
-        name: fd.get("name"),
-        description: fd.get("description"),
-        start_date: fd.get("start_date"),
-        end_date: fd.get("end_date"),
-        rule_type: fd.get("rule_type"),
-        rules: { quantity_target: Number(fd.get("quantity_target") || 1), ticket_threshold: Number(fd.get("ticket_threshold") || 0) },
-        prize: { type: prizeType, value: prizeValue }
-      })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
     });
     closeGestaoCreateModal();
     await loadPdvGestaoFront();
   } catch (err) {
     alert("Erro ao criar: " + (err.message || err.error || ""));
+  }
+}
+
+async function handleGestaoEditSubmit(form) {
+  const editingId = pdvGestaoState.editingId;
+  if (!editingId) return;
+  const fd = new FormData(form);
+  const name = (fd.get("name") || "").toString().trim();
+  const startDate = (fd.get("start_date") || "").toString().trim();
+  const endDate = (fd.get("end_date") || "").toString().trim();
+  const ruleType = (fd.get("rule_type") || "").toString().trim();
+  const prizeValue = Number(fd.get("prize_value") || 0);
+  const prizeType = (fd.get("prize_type") || "fixed").toString().trim();
+  if (!name) { alert("Nome da campanha e obrigatorio."); return; }
+  if (!startDate) { alert("Data de inicio e obrigatoria."); return; }
+  if (!endDate) { alert("Data de termino e obrigatoria."); return; }
+  if (!["quantity_target", "ticket_threshold_count", "highest_quantity"].includes(ruleType)) { alert("Tipo de regra invalido."); return; }
+  if (prizeValue <= 0) { alert("Premio deve ser maior que zero."); return; }
+  let rules = {};
+  if (ruleType === "quantity_target") {
+    rules = { quantity_target: Number(fd.get("quantity_target") || 1) };
+  } else if (ruleType === "ticket_threshold_count") {
+    const ticketThreshold = Number(fd.get("ticket_threshold") || 0);
+    const ticketCount = Number(fd.get("quantity_target") || 1);
+    rules = { min_ticket: ticketThreshold, ticket_threshold: ticketThreshold, required_count: ticketCount, ticket_threshold_count: ticketCount };
+  } else {
+    rules = {};
+  }
+  const storeId = (fd.get("store_id") || "").toString().trim();
+  const payload = {
+    name: name || null,
+    description: (fd.get("description") || "").toString().trim() || null,
+    store_id: storeId || null,
+    start_date: startDate,
+    end_date: endDate,
+    rule_type: ruleType,
+    rules: rules,
+    target_skus: [],
+    target_categories: [],
+    prize: { type: prizeType, value: prizeValue }
+  };
+  try {
+    const res = await api("/api/pdv/commercial/campaigns/" + editingId, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    closeGestaoCreateModal();
+    await loadPdvGestaoFront();
+  } catch (err) {
+    alert("Erro ao editar: " + (err.message || err.error || ""));
   }
 }
 
@@ -19203,6 +19334,15 @@ async function handleGestaoAction(action, campaignId) {
       await loadPdvGestaoFront();
     } else if (action === "results") {
       await loadGestaoRankingPanel(campaignId, true);
+    } else if (action === "edit") {
+      // Busca campanha completa para abrir no modal de edição
+      try {
+        const res = await api("/api/pdv/commercial/campaigns/" + campaignId);
+        const campaign = res?.data;
+        if (campaign) openGestaoEditModal(campaign);
+      } catch (err) {
+        alert("Erro ao carregar campanha: " + (err.message || err.error || ""));
+      }
     } else if (action === "delete") {
       if (!confirm("Excluir esta campanha? Esta acao nao pode ser desfeita.")) return;
       await api("/api/pdv/commercial/campaigns/" + campaignId, { method: "DELETE" });

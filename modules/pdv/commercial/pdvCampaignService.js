@@ -307,7 +307,7 @@ function validateCampaignData(data = {}) {
   const validRuleTypes = ["quantity_target", "ticket_threshold_count", "highest_quantity"];
   if (!ruleType || !validRuleTypes.includes(ruleType)) errors.push("Tipo de regra invalido.");
   const prize = typeof data.prize === "object" && data.prize !== null ? data.prize : { type: "fixed", value: 0 };
-  const prizeValue = toNumber(prize.value || 0);
+  const prizeValue = toNumber(prize.amount ?? prize.value ?? 0);
   if (prizeValue <= 0) errors.push("Premio deve ser maior que zero.");
   if (ruleType === "quantity_target") {
     const rules = data.rules || {};
@@ -316,8 +316,10 @@ function validateCampaignData(data = {}) {
   }
   if (ruleType === "ticket_threshold_count") {
     const rules = data.rules || {};
-    const threshold = toNumber(rules.ticket_threshold || 0);
-    const count = toNumber(rules.ticket_threshold_count || 0);
+    // Aceita min_ticket ou ticket_threshold (compatibilidade)
+    const threshold = toNumber(rules.min_ticket ?? rules.ticket_threshold ?? 0);
+    // Aceita required_count ou ticket_threshold_count (compatibilidade)
+    const count = toNumber(rules.required_count ?? rules.ticket_threshold_count ?? 0);
     if (threshold <= 0) errors.push("Ticket minimo deve ser maior que zero para regra 'Vendas acima de ticket'.");
     if (count <= 0) errors.push("Quantidade minima de vendas deve ser maior que zero.");
   }
@@ -332,7 +334,9 @@ function validateCampaignData(data = {}) {
 async function createCampaign(data = {}, user = {}) {
   const now = getToday();
   const validated = validateCampaignData(data);
-  const prize = validated.prize;
+  // Normaliza prize: aceita amount, normaliza para value
+  const rawPrize = validated.prize;
+  const prize = { type: rawPrize.type || "fixed", value: toNumber(rawPrize.amount ?? rawPrize.value ?? 0) };
   const result = await run(
     `INSERT INTO campaign_challenges
      (name, description, store_id, start_date, end_date, status, rule_type, rules_json,
@@ -360,6 +364,12 @@ async function createCampaign(data = {}, user = {}) {
 
 async function updateCampaign(id, data = {}) {
   const now = getToday();
+  // Normaliza prize: aceita amount, normaliza para value
+  let prizeJson = null;
+  if (data.prize) {
+    const p = data.prize;
+    prizeJson = JSON.stringify({ type: p.type || "fixed", value: toNumber(p.amount ?? p.value ?? 0) });
+  }
   await run(
     `UPDATE campaign_challenges SET
      name = COALESCE(?, name),
@@ -371,7 +381,7 @@ async function updateCampaign(id, data = {}) {
      rules_json = COALESCE(?, rules_json),
      target_skus_json = COALESCE(?, target_skus_json),
      target_categories_json = COALESCE(?, target_categories_json),
-     prize_json = COALESCE(?, prize_json),
+     prize_json = ?,
      updated_at = ?
      WHERE id = ?`,
     [
@@ -384,7 +394,7 @@ async function updateCampaign(id, data = {}) {
       data.rules ? JSON.stringify(data.rules) : null,
       data.target_skus ? JSON.stringify(data.target_skus) : null,
       data.target_categories ? JSON.stringify(data.target_categories) : null,
-      data.prize ? JSON.stringify(data.prize) : null,
+      prizeJson,
       now,
       id
     ]
