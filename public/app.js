@@ -19224,7 +19224,7 @@ async function loadGestaoRankingPanel(campaignId, settled = false) {
       </div>`;
     panel.querySelector('[data-action="gestao-close-ranking"]')?.addEventListener("click", () => { panel.innerHTML = ""; });
   } catch (err) {
-    panel.innerHTML = '<div class="panel"><div class="panel-header"><h3>Ranking</h3></div><div class="empty-state"><strong>Erro ao carregar ranking</strong></div></div>';
+    panel.innerHTML = '<div class="panel"><div class="panel-header"><h3>Ranking</h3></div><div class="empty-state"><strong>Erro ao carregar ranking</strong><span>' + escapeHtml(err.message || err.error || "") + '</span></div></div>';
   }
 }
 

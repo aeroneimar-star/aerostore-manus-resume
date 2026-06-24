@@ -1,5 +1,7 @@
 "use strict";
 
+const fs = require("fs");
+const path = require("path");
 const { get, run, all } = require("../../../db");
 
 function getToday(date = new Date()) {
@@ -17,6 +19,30 @@ function safeJsonParse(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function readSalesJson() {
+  try {
+    const filePath = path.join(process.cwd(), "data", "pdv", "sales", "sales.json");
+    if (!fs.existsSync(filePath)) return [];
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function filterSalesByDateRange(sales, startDate, endDate) {
+  const start = startDate ? new Date(startDate) : null;
+  const end = endDate ? new Date(endDate + "T23:59:59.999Z") : null;
+  return sales.filter((sale) => {
+    if (sale.status === "CANCELLED") return false;
+    const saleDate = new Date(sale.created_at || sale.date || "");
+    if (!saleDate.getTime()) return false;
+    if (start && saleDate < start) return false;
+    if (end && saleDate > end) return false;
+    return true;
+  });
 }
 
 // ── Normalização ─────────────────────────────────────────────────────
@@ -132,24 +158,15 @@ async function getSellerPerformance(sellerId, options = {}) {
   const seller = await get("SELECT * FROM sellers WHERE id = ?", [sellerNum]);
   if (!seller) return null;
 
-  let salesQuery = "SELECT * FROM pdv_sales WHERE seller_id = ?";
-  const params = [sellerNum];
-
-  if (start_date) {
-    salesQuery += " AND created_at >= ?";
-    params.push(start_date);
-  }
-  if (end_date) {
-    salesQuery += " AND created_at <= ?";
-    params.push(end_date + " 23:59:59");
-  }
-
-  const sales = await all(salesQuery, params);
-  const validSales = sales.filter((s) => s.operational_status !== "cancelled");
-  const totalSold = validSales.reduce((sum, s) => sum + toNumber(s.total || 0), 0);
+  const allSales = readSalesJson();
+  const sellerSales = allSales.filter(
+    (s) => String(s.vendedor || "").trim().toLowerCase() === String(seller.name || "").trim().toLowerCase()
+  );
+  const validSales = filterSalesByDateRange(sellerSales, start_date, end_date);
+  const totalSold = validSales.reduce((sum, s) => sum + toNumber(s.total_final || s.total || 0), 0);
   const totalItems = validSales.reduce((sum, s) => {
-    const items = Array.isArray(s.items) ? s.items : safeJsonParse(s.items_json, []);
-    return sum + items.reduce((is, item) => is + Number(item.quantity || item.quantidade || 0), 0);
+    const items = Array.isArray(s.items) ? s.items : [];
+    return sum + items.reduce((is, item) => is + Number(item.quantidade || item.quantity || 0), 0);
   }, 0);
 
   return {
@@ -163,8 +180,8 @@ async function getSellerPerformance(sellerId, options = {}) {
     sales: validSales.slice(0, 20).map((s) => ({
       id: s.id || s.sale_id,
       date: s.created_at,
-      total: toNumber(s.total || 0),
-      status: s.operational_status
+      total: toNumber(s.total_final || s.total || 0),
+      status: s.status
     }))
   };
 }
@@ -186,25 +203,16 @@ async function getPerformanceRanking(options = {}) {
   const sellers = await all(sellersQuery, sellersParams);
   const today = getToday();
 
-  const rankings = [];
+  const allSales = readSalesJson();
   for (const seller of sellers) {
-    let salesQuery = "SELECT * FROM pdv_sales WHERE seller_id = ? AND operational_status != 'cancelled'";
-    const salesParams = [seller.id];
-
-    if (start_date) {
-      salesQuery += " AND created_at >= ?";
-      salesParams.push(start_date);
-    }
-    if (end_date) {
-      salesQuery += " AND created_at <= ?";
-      salesParams.push(end_date + " 23:59:59");
-    }
-
-    const sales = await all(salesQuery, salesParams);
-    const totalSold = sales.reduce((sum, s) => sum + toNumber(s.total || 0), 0);
+    const sellerSales = allSales.filter(
+      (s) => String(s.vendedor || "").trim().toLowerCase() === String(seller.name || "").trim().toLowerCase()
+    );
+    const sales = filterSalesByDateRange(sellerSales, start_date, end_date);
+    const totalSold = sales.reduce((sum, s) => sum + toNumber(s.total_final || s.total || 0), 0);
     const totalItems = sales.reduce((sum, s) => {
-      const items = Array.isArray(s.items) ? s.items : safeJsonParse(s.items_json, []);
-      return sum + items.reduce((is, item) => is + Number(item.quantity || item.quantidade || 0), 0);
+      const items = Array.isArray(s.items) ? s.items : [];
+      return sum + items.reduce((is, item) => is + Number(item.quantidade || item.quantity || 0), 0);
     }, 0);
 
     rankings.push({
@@ -230,23 +238,15 @@ async function getStorePerformance(storeId, options = {}) {
   const { start_date, end_date } = options;
   if (!storeId) return null;
 
-  let salesQuery = "SELECT * FROM pdv_sales WHERE store_id = ? AND operational_status != 'cancelled'";
-  const params = [storeId];
-
-  if (start_date) {
-    salesQuery += " AND created_at >= ?";
-    params.push(start_date);
-  }
-  if (end_date) {
-    salesQuery += " AND created_at <= ?";
-    params.push(end_date + " 23:59:59");
-  }
-
-  const sales = await all(salesQuery, params);
-  const totalSold = sales.reduce((sum, s) => sum + toNumber(s.total || 0), 0);
+  const allSales = readSalesJson();
+  const storeSales = allSales.filter(
+    (s) => String(s.loja || "").trim().toLowerCase() === String(storeId || "").trim().toLowerCase()
+  );
+  const sales = filterSalesByDateRange(storeSales, start_date, end_date);
+  const totalSold = sales.reduce((sum, s) => sum + toNumber(s.total_final || s.total || 0), 0);
   const totalItems = sales.reduce((sum, s) => {
-    const items = Array.isArray(s.items) ? s.items : safeJsonParse(s.items_json, []);
-    return sum + items.reduce((is, item) => is + Number(item.quantity || item.quantidade || 0), 0);
+    const items = Array.isArray(s.items) ? s.items : [];
+    return sum + items.reduce((is, item) => is + Number(item.quantidade || item.quantity || 0), 0);
   }, 0);
 
   const sellersInStore = await all(
@@ -264,9 +264,9 @@ async function getStorePerformance(storeId, options = {}) {
     sales: sales.slice(0, 20).map((s) => ({
       id: s.id || s.sale_id,
       date: s.created_at,
-      seller_name: s.seller_name || "",
-      total: toNumber(s.total || 0),
-      status: s.operational_status
+      seller_name: s.vendedor || "",
+      total: toNumber(s.total_final || s.total || 0),
+      status: s.status
     }))
   };
 }
@@ -403,22 +403,20 @@ async function getLiveStatus(challengeId, options = {}) {
   const config = buildRuleConfig(challenge.rule_type, challenge.rules);
 
   const today = getToday();
-  let salesQuery = "SELECT * FROM pdv_sales WHERE operational_status != 'cancelled'";
-  const params = [];
-  salesQuery += " AND created_at >= ? AND created_at <= ?";
-  params.push(challenge.start_date, challenge.end_date + " 23:59:59");
-
-  const sales = await all(salesQuery, params);
+  const allSales = readSalesJson();
+  const sales = filterSalesByDateRange(allSales, challenge.start_date, challenge.end_date);
   const results = [];
 
   for (const participant of participants) {
-    const sellerSales = sales.filter((s) => Number(s.seller_id) === Number(participant.seller_id));
+    const sellerSales = sales.filter(
+      (s) => String(s.vendedor || "").trim().toLowerCase() === String(participant.seller_name || "").trim().toLowerCase()
+    );
     let currentValue = 0;
     let eligibleSalesCount = 0;
     let eligibleItemsCount = 0;
 
     for (const sale of sellerSales) {
-      const saleItems = Array.isArray(sale.items) ? sale.items : safeJsonParse(sale.items_json, []);
+      const saleItems = Array.isArray(sale.items) ? sale.items : [];
       const saleObj = { ...sale, items: saleItems };
       if (isSaleEligible(saleObj, challenge.rule_type, config)) {
         eligibleSalesCount++;
