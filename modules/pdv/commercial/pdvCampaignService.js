@@ -295,22 +295,57 @@ async function getCampaignById(id) {
   return normalizeChallenge(row);
 }
 
+function validateCampaignData(data = {}) {
+  const errors = [];
+  const name = (data.name || "").toString().trim();
+  if (!name) errors.push("Nome da campanha e obrigatorio.");
+  const startDate = (data.start_date || "").toString().trim();
+  if (!startDate) errors.push("Data de inicio e obrigatoria.");
+  const endDate = (data.end_date || "").toString().trim();
+  if (!endDate) errors.push("Data de termino e obrigatoria.");
+  const ruleType = (data.rule_type || "").toString().trim();
+  const validRuleTypes = ["quantity_target", "ticket_threshold_count", "highest_quantity"];
+  if (!ruleType || !validRuleTypes.includes(ruleType)) errors.push("Tipo de regra invalido.");
+  const prize = typeof data.prize === "object" && data.prize !== null ? data.prize : { type: "fixed", value: 0 };
+  const prizeValue = toNumber(prize.value || 0);
+  if (prizeValue <= 0) errors.push("Premio deve ser maior que zero.");
+  if (ruleType === "quantity_target") {
+    const rules = data.rules || {};
+    const target = toNumber(rules.quantity_target || 0);
+    if (target <= 0) errors.push("Meta de itens deve ser maior que zero para regra 'Quantidade de itens'.");
+  }
+  if (ruleType === "ticket_threshold_count") {
+    const rules = data.rules || {};
+    const threshold = toNumber(rules.ticket_threshold || 0);
+    const count = toNumber(rules.ticket_threshold_count || 0);
+    if (threshold <= 0) errors.push("Ticket minimo deve ser maior que zero para regra 'Vendas acima de ticket'.");
+    if (count <= 0) errors.push("Quantidade minima de vendas deve ser maior que zero.");
+  }
+  if (errors.length > 0) {
+    const err = new Error(errors.join(" "));
+    err.status = 400;
+    throw err;
+  }
+  return { name, startDate, endDate, ruleType, prize };
+}
+
 async function createCampaign(data = {}, user = {}) {
   const now = getToday();
-  const prize = typeof data.prize === "object" ? data.prize : { type: "fixed", value: 0 };
+  const validated = validateCampaignData(data);
+  const prize = validated.prize;
   const result = await run(
     `INSERT INTO campaign_challenges
      (name, description, store_id, start_date, end_date, status, rule_type, rules_json,
       target_skus_json, target_categories_json, prize_json, created_by, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      data.name || "",
+      validated.name,
       data.description || "",
       data.store_id || "",
-      data.start_date || now,
-      data.end_date || now,
+      validated.startDate,
+      validated.endDate,
       "draft",
-      data.rule_type || "quantity_target",
+      validated.ruleType,
       JSON.stringify(data.rules || {}),
       JSON.stringify(data.target_skus || []),
       JSON.stringify(data.target_categories || []),
@@ -366,6 +401,11 @@ async function deleteCampaign(id) {
 // ── Status da Campanha ───────────────────────────────────────────────
 
 async function activateCampaign(id) {
+  const existing = await getCampaignById(id);
+  if (!existing) throw new Error("Campanha nao encontrada.");
+  if (!existing.name || !existing.name.trim()) throw new Error("Campanha sem nome nao pode ser ativada.");
+  const prize = existing.prize || {};
+  if (!prize.value || Number(prize.value) <= 0) throw new Error("Premio invalido. Defina um valor maior que zero antes de ativar.");
   await run("UPDATE campaign_challenges SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'", [getToday(), id]);
   const challenge = await getCampaignById(id);
   if (!challenge) throw new Error("Campanha nao encontrada.");

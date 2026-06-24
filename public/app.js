@@ -19040,7 +19040,7 @@ function renderPdvGestaoFront(container) {
             <div class="form-field"><label>Meta (itens/vendas)</label><input type="number" name="quantity_target" min="1" value="1" /></div>
             <div class="form-field"><label>Ticket mínimo (R$)</label><input type="number" name="ticket_threshold" min="0" step="0.01" value="0" /></div>
           </div>
-          <div class="form-field"><label>Prêmio (R$)</label><input type="number" name="prize_value" min="0" step="0.01" value="0" /></div>
+          <div class="form-field"><label>Prêmio (R$)</label><input type="number" name="prize_value" min="0.01" step="0.01" value="10" /></div>
           <div class="form-field"><label>Tipo de prêmio</label>
             <select name="prize_type">
               <option value="fixed">Valor fixo</option>
@@ -19065,25 +19065,31 @@ function renderGestaoCampaignCard(campaign) {
   const ruleLabel = campaign.rule_type === "quantity_target" ? "Qtd. itens" : campaign.rule_type === "ticket_threshold_count" ? "Vendas acima de ticket" : "Maior volume";
   const prize = campaign.prize || {};
   const prizeStr = prize.type === "per_item" ? "R$ " + (prize.value || 0) + "/item" : prize.type === "per_win" ? "R$ " + (prize.value || 0) + " (1º lugar)" : "R$ " + (prize.value || 0);
+  const campaignName = (campaign.name || "").toString().trim();
+  const hasName = Boolean(campaignName);
+  const hasPrize = prize.value && Number(prize.value) > 0;
+  const isIncomplete = !hasName || !hasPrize;
   const canManage = canManageCampaignChallenges();
   const actions = [];
   if (canManage && campaign.status === "draft") actions.push('<button class="small-primary" type="button" data-gestao-action="activate" data-id="' + campaign.id + '">Ativar</button>');
-  if (canManage && (campaign.status === "draft" || campaign.status === "active")) actions.push('<button class="small-danger" type="button" data-gestao-action="cancel" data-id="' + campaign.id + '">Cancelar</button>');
+  if (canManage && campaign.status === "draft") actions.push('<button class="small-danger" type="button" data-gestao-action="delete" data-id="' + campaign.id + '">Excluir</button>');
+  if (canManage && campaign.status === "active") actions.push('<button class="small-danger" type="button" data-gestao-action="cancel" data-id="' + campaign.id + '">Cancelar</button>');
   if (campaign.status === "active") actions.push('<button class="small-secondary" type="button" data-gestao-action="live" data-id="' + campaign.id + '">Ranking Live</button>');
   if ((canManageCampaignSettle() || isCurrentUserManagerProfile()) && campaign.status === "active") actions.push('<button class="small-primary" type="button" data-gestao-action="settle" data-id="' + campaign.id + '">Apurar</button>');
   if (campaign.status === "settled") actions.push('<button class="small-secondary" type="button" data-gestao-action="results" data-id="' + campaign.id + '">Resultados</button>');
   return `
-    <div class="gestao-card ${statusClass}">
+    <div class="gestao-card ${statusClass}${isIncomplete ? " gestao-card-incomplete" : ""}">
       <div class="gestao-card-header">
         <div>
-          <strong>${escapeHtml(campaign.name || "")}</strong>
+          <strong>${escapeHtml(campaignName || "Campanha sem nome")}</strong>
+          ${isIncomplete ? '<span class="gestao-badge gestao-badge-warning">⚠️ Incompleta</span>' : ""}
           <span class="gestao-badge ${statusClass}">${statusLabel}</span>
         </div>
         <div class="gestao-card-actions">${actions.join("")}</div>
       </div>
       <div class="gestao-card-meta">
         <span>${escapeHtml(ruleLabel)}</span>
-        <span>${campaign.start_date} a ${campaign.end_date}</span>
+        <span>${campaign.start_date || "—"} a ${campaign.end_date || "—"}</span>
         <span>Prêmio: ${prizeStr}</span>
       </div>
     </div>`;
@@ -19151,8 +19157,15 @@ function closeGestaoCreateModal() {
 
 async function handleGestaoCreateSubmit(form) {
   const fd = new FormData(form);
+  const name = (fd.get("name") || "").toString().trim();
+  const startDate = (fd.get("start_date") || "").toString().trim();
+  const endDate = (fd.get("end_date") || "").toString().trim();
   const prizeValue = Number(fd.get("prize_value") || 0);
   const prizeType = fd.get("prize_type") || "fixed";
+  if (!name) { alert("Nome da campanha e obrigatorio."); return; }
+  if (!startDate) { alert("Data de inicio e obrigatoria."); return; }
+  if (!endDate) { alert("Data de termino e obrigatoria."); return; }
+  if (prizeValue <= 0) { alert("Premio deve ser maior que zero."); return; }
   try {
     const res = await api("/api/pdv/commercial/campaigns", {
       method: "POST",
@@ -19190,6 +19203,10 @@ async function handleGestaoAction(action, campaignId) {
       await loadPdvGestaoFront();
     } else if (action === "results") {
       await loadGestaoRankingPanel(campaignId, true);
+    } else if (action === "delete") {
+      if (!confirm("Excluir esta campanha? Esta acao nao pode ser desfeita.")) return;
+      await api("/api/pdv/commercial/campaigns/" + campaignId, { method: "DELETE" });
+      await loadPdvGestaoFront();
     }
   } catch (err) {
     alert("Erro: " + (err.message || err.error || ""));

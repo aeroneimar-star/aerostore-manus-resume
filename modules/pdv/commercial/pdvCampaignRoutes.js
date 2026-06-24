@@ -107,7 +107,8 @@ router.post("/campaigns", requireCampaignManage, async (req, res) => {
     const result = await createCampaign(req.body, req.user || {});
     res.status(201).json({ success: true, data: result });
   } catch (error) {
-    res.status(400).json({ error: error.message || "Falha ao criar campanha." });
+    const status = error.status === 400 ? 400 : 500;
+    res.status(status).json({ error: error.message || "Falha ao criar campanha." });
   }
 });
 
