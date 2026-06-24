@@ -26369,7 +26369,9 @@ function buildPdvSalesOrdersList() {
   }
   return `
     <div class="pdv-orders-table-scroll-sync">
-      <div class="pdv-orders-table-sync-bar" id="pdv-orders-sync-bar" tabindex="-1"></div>
+      <div class="pdv-orders-table-sync-bar" id="pdv-orders-sync-bar" tabindex="-1">
+        <div class="pdv-orders-table-sync-inner"></div>
+      </div>
       <div class="pdv-orders-table-wrap">
       <table class="pdv-orders-table">
         <thead>
@@ -26614,6 +26616,12 @@ function renderPdvSalesOrdersFront(container = getPdvSalesOrdersContainer()) {
   const syncBar = document.getElementById("pdv-orders-sync-bar");
   const tableWrap = document.querySelector(".pdv-orders-table-wrap");
   if (syncBar && tableWrap) {
+    const syncInner = syncBar.querySelector(".pdv-orders-table-sync-inner");
+    const table = tableWrap.querySelector(".pdv-orders-table");
+    // Sync bar needs an inner child wider than itself to trigger overflow → scrollbar
+    if (syncInner && table) {
+      syncInner.style.width = table.scrollWidth + "px";
+    }
     syncBar.onscroll = () => {
       tableWrap.scrollLeft = syncBar.scrollLeft;
     };
