@@ -5668,9 +5668,7 @@ function buildPdvSaleLaunchedPayments() {
       const funcName = state.pdvFolhaFuncionariosCache?.data?.find((f) => String(f.id) === String(item.funcionario_id))?.nome || item.funcionario_id || "";
       const installmentsCount = getInstallmentCount(item.installments || 1);
       const installmentAmount = getInstallmentAmount(item.amount || 0, installmentsCount);
-      const installmentsPart = installmentsCount > 1
-        ? ` &bull; ${installmentsCount}x de ${currency(installmentAmount)}`
-        : "";
+      const installmentsPart = ` &bull; ${installmentsCount}x de ${currency(installmentAmount)}`;
       const obsPart = item.observacao ? ` &bull; ${escapeHtml(item.observacao)}` : "";
       folhaInfo = `<div class="pdv-cheque-info-line">${escapeHtml(funcName)}${installmentsPart}${obsPart}</div>`;
     }
@@ -26752,7 +26750,7 @@ function openPdvSalePrintWindow(sale = null, options = {}) {
       const installmentsCount = getInstallmentCount(item.installments || 1);
       const installmentAmount = getInstallmentAmount(item.amount || 0, installmentsCount);
       const isFolha = normalizeText(item.method || "") === "desconto_folha";
-      const labelExtra = (isFolha && installmentsCount > 1)
+      const labelExtra = isFolha
         ? ` &bull; ${installmentsCount}x de ${currency(installmentAmount)}`
         : "";
       return `
