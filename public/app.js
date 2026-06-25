@@ -19049,7 +19049,13 @@ function renderPdvGestaoFront(container) {
               <option value="per_win">Só para o 1º lugar</option>
             </select>
           </div>
-          <div class="form-field"><label>Loja</label><input type="text" name="store_id" placeholder="Vazio = todas" /></div>
+          <div class="form-field"><label>Lojas participantes</label>
+            <div class="checkbox-group">
+              <label><input type="checkbox" name="store_ids" value="vila" checked /> Vila</label>
+              <label><input type="checkbox" name="store_ids" value="botanico" checked /> Botânico</label>
+              <label><input type="checkbox" name="store_ids" value="sul" checked /> Sul</label>
+            </div>
+          </div>
           <div class="action-row" style="margin-top:1rem;">
             <button class="primary-button" type="submit">Criar</button>
             <button class="ghost-button" type="button" data-action="gestao-close-create">Cancelar</button>
@@ -19071,6 +19077,20 @@ function renderGestaoCampaignCard(campaign) {
   const prize = campaign.prize || {};
   const prizeStr = prize.type === "per_item" ? "R$ " + (prize.value || 0) + "/item" : prize.type === "per_win" ? "R$ " + (prize.value || 0) + " (1º lugar)" : "R$ " + (prize.value || 0);
   const campaignName = (campaign.name || "").toString().trim();
+  // Normaliza store_ids para array — usa campaign.store_ids (já array do normalizeChallenge)
+  let storeIds = [];
+  if (Array.isArray(campaign.store_ids) && campaign.store_ids.length > 0) {
+    storeIds = campaign.store_ids;
+  } else if (Array.isArray(campaign.store_ids_json)) {
+    storeIds = campaign.store_ids_json;
+  } else {
+    try { storeIds = JSON.parse(campaign.store_ids_json || "[]"); } catch (_) { }
+  }
+  if (storeIds.length === 0) {
+    if (campaign.store_id) storeIds = [campaign.store_id];
+  }
+  const storeLabels = { vila: "Vila", botanico: "Bot\u00e2nico", sul: "Sul" };
+  const storesDisplay = storeIds.length > 0 ? storeIds.map((s) => storeLabels[s] || s).join(", ") : "Todas";
   const hasName = Boolean(campaignName);
   const hasPrize = prize.value && Number(prize.value) > 0;
   const isIncomplete = !hasName || !hasPrize;
@@ -19103,6 +19123,7 @@ function renderGestaoCampaignCard(campaign) {
         <span>${escapeHtml(ruleLabel)}</span>
         <span>${campaign.start_date || "—"} a ${campaign.end_date || "—"}</span>
         <span>Prêmio: ${prizeStr}</span>
+        <span>Lojas: ${escapeHtml(storesDisplay)}</span>
       </div>
     </div>`;
 }
@@ -19212,8 +19233,22 @@ function openGestaoEditModal(campaign) {
   const prizeValue = prize.amount ?? prize.value ?? 0;
   if (form.prize_value) form.prize_value.value = prizeValue;
   if (form.prize_type) form.prize_type.value = prize.type || "fixed";
-  // store_id
-  if (form.store_id) form.store_id.value = campaign.store_id || "";
+  // store_ids — popula checkboxes (campaign.store_ids já é array do normalizeChallenge)
+  let storeIds = [];
+  if (Array.isArray(campaign.store_ids) && campaign.store_ids.length > 0) {
+    storeIds = campaign.store_ids;
+  } else if (Array.isArray(campaign.store_ids_json)) {
+    storeIds = campaign.store_ids_json;
+  } else {
+    try { storeIds = JSON.parse(campaign.store_ids_json || campaign.store_ids || "[]"); } catch (_) { }
+  }
+  if (storeIds.length === 0) {
+    if (campaign.store_id) storeIds = [campaign.store_id];
+    else storeIds = ["vila", "botanico", "sul"];
+  }
+  form.querySelectorAll('[name="store_ids"]').forEach((cb) => {
+    cb.checked = storeIds.includes(cb.value);
+  });
 }
 
 async function handleGestaoCreateSubmit(form) {
@@ -19240,11 +19275,13 @@ async function handleGestaoCreateSubmit(form) {
   } else {
     rules = {};
   }
-  const storeId = (fd.get("store_id") || "all").toString().trim();
+  // Extrair store_ids dos checkboxes marcados
+  const storeIds = fd.getAll("store_ids");
+  if (storeIds.length === 0) { alert("Selecione pelo menos uma loja participante."); return; }
   const payload = {
     name: name,
     description: (fd.get("description") || "").toString().trim(),
-    store_id: storeId,
+    store_ids: storeIds,
     start_date: startDate,
     end_date: endDate,
     rule_type: ruleType,
@@ -19291,11 +19328,13 @@ async function handleGestaoEditSubmit(form) {
   } else {
     rules = {};
   }
-  const storeId = (fd.get("store_id") || "").toString().trim();
+  // Extrair store_ids dos checkboxes marcados
+  const storeIds = fd.getAll("store_ids");
+  if (storeIds.length === 0) { alert("Selecione pelo menos uma loja participante."); return; }
   const payload = {
     name: name || null,
     description: (fd.get("description") || "").toString().trim() || null,
-    store_id: storeId || null,
+    store_ids: storeIds,
     start_date: startDate,
     end_date: endDate,
     rule_type: ruleType,

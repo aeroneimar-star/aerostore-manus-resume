@@ -26937,6 +26937,26 @@ body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-b
   width: 100%;
   box-sizing: border-box;
 }
+.checkbox-group {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.25rem 0;
+}
+.checkbox-group label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text-color, #e2e8f0);
+  font-weight: normal;
+  cursor: pointer;
+}
+.checkbox-group input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent, #6366f1);
+  cursor: pointer;
+}
 .form-field input:focus,
 .form-field select:focus,
 .form-field textarea:focus {

@@ -21,6 +21,34 @@ function safeJsonParse(value, fallback) {
   }
 }
 
+function normalizeCampaignStoreKey(value = "") {
+  const key = String(value || "").trim().toLowerCase().replace(/[\s\-_]+/g, "");
+  if (["vila", "vilamasc", "vilafem", "vilainfant", "vilafeminino", "vilamasculino"].includes(key)) return "vila";
+  if (["botanico", "botan", "bot"].includes(key)) return "botanico";
+  if (["sul", "sulbr"].includes(key)) return "sul";
+  if (["camboriu", "camboriu", "camb"].includes(key)) return "sul";
+  return key;
+}
+
+function getCampaignStores(challenge = {}) {
+  // Tenta store_ids_json primeiro (array)
+  const rawIds = challenge.store_ids_json || challenge.store_ids || "[]";
+  const parsed = safeJsonParse(rawIds, []);
+  if (Array.isArray(parsed) && parsed.length > 0) {
+    return parsed.map(normalizeCampaignStoreKey).filter(Boolean);
+  }
+  // Fallback: store_id único
+  const single = normalizeCampaignStoreKey(challenge.store_id);
+  if (single) return [single];
+  // Default: todas
+  return ["vila", "botanico", "sul"];
+}
+
+function getStoreLabel(storeKey) {
+  const labels = { vila: "Vila", botanico: "Botânico", sul: "Sul" };
+  return labels[normalizeCampaignStoreKey(storeKey)] || storeKey;
+}
+
 function readSalesJson() {
   try {
     const filePath = path.join(process.cwd(), "data", "pdv", "sales", "sales.json");
@@ -54,6 +82,7 @@ function normalizeChallenge(row = {}) {
     name: row.name || "",
     description: row.description || "",
     store_id: row.store_id || "",
+    store_ids: getCampaignStores({ store_ids_json: row.store_ids_json, store_id: row.store_id }),
     start_date: row.start_date || "",
     end_date: row.end_date || "",
     status: row.status || "draft",
@@ -332,20 +361,31 @@ function validateCampaignData(data = {}) {
 }
 
 async function createCampaign(data = {}, user = {}) {
+  // Migração: garante coluna store_ids_json
+  try { await run("ALTER TABLE campaign_challenges ADD COLUMN store_ids_json TEXT DEFAULT '[]'"); } catch (_) { /* coluna pode já existir */ }
   const now = getToday();
   const validated = validateCampaignData(data);
   // Normaliza prize: aceita amount, normaliza para value
   const rawPrize = validated.prize;
   const prize = { type: rawPrize.type || "fixed", value: toNumber(rawPrize.amount ?? rawPrize.value ?? 0) };
+  // Normaliza store_ids (array de strings)
+  let storeIds = ["vila", "botanico", "sul"];
+  if (Array.isArray(data.store_ids) && data.store_ids.length > 0) {
+    storeIds = data.store_ids.map(normalizeCampaignStoreKey).filter(Boolean);
+  } else if (data.store_id) {
+    const single = normalizeCampaignStoreKey(data.store_id);
+    if (single) storeIds = [single];
+  }
+  const storeId = storeIds[0] || "";
   const result = await run(
     `INSERT INTO campaign_challenges
      (name, description, store_id, start_date, end_date, status, rule_type, rules_json,
-      target_skus_json, target_categories_json, prize_json, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      target_skus_json, target_categories_json, prize_json, store_ids_json, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       validated.name,
       data.description || "",
-      data.store_id || "",
+      storeId,
       validated.startDate,
       validated.endDate,
       "draft",
@@ -354,6 +394,7 @@ async function createCampaign(data = {}, user = {}) {
       JSON.stringify(data.target_skus || []),
       JSON.stringify(data.target_categories || []),
       JSON.stringify(prize),
+      JSON.stringify(storeIds),
       user.id ? Number(user.id) : null,
       now,
       now
@@ -370,6 +411,18 @@ async function updateCampaign(id, data = {}) {
     const p = data.prize;
     prizeJson = JSON.stringify({ type: p.type || "fixed", value: toNumber(p.amount ?? p.value ?? 0) });
   }
+  // Normaliza store_ids
+  let storeIdsJson = null;
+  if (data.store_ids !== undefined) {
+    let storeIds = ["vila", "botanico", "sul"];
+    if (Array.isArray(data.store_ids) && data.store_ids.length > 0) {
+      storeIds = data.store_ids.map(normalizeCampaignStoreKey).filter(Boolean);
+    } else if (data.store_id) {
+      const single = normalizeCampaignStoreKey(data.store_id);
+      if (single) storeIds = [single];
+    }
+    storeIdsJson = JSON.stringify(storeIds);
+  }
   await run(
     `UPDATE campaign_challenges SET
      name = COALESCE(?, name),
@@ -382,6 +435,7 @@ async function updateCampaign(id, data = {}) {
      target_skus_json = COALESCE(?, target_skus_json),
      target_categories_json = COALESCE(?, target_categories_json),
      prize_json = ?,
+     store_ids_json = ?,
      updated_at = ?
      WHERE id = ?`,
     [
@@ -395,6 +449,7 @@ async function updateCampaign(id, data = {}) {
       data.target_skus ? JSON.stringify(data.target_skus) : null,
       data.target_categories ? JSON.stringify(data.target_categories) : null,
       prizeJson,
+      storeIdsJson,
       now,
       id
     ]
@@ -422,7 +477,10 @@ async function activateCampaign(id) {
   if (challenge.status !== "active") throw new Error("Campanha nao pode ser ativada.");
 
   const sellers = await all("SELECT * FROM sellers WHERE status = 'ativo'");
+  const campaignStores = getCampaignStores(challenge);
   for (const seller of sellers) {
+    const sellerStore = normalizeCampaignStoreKey(seller.store);
+    if (campaignStores.length > 0 && !campaignStores.includes(sellerStore)) continue;
     const existing = await get("SELECT id FROM campaign_participants WHERE challenge_id = ? AND seller_id = ?", [id, seller.id]);
     if (!existing) {
       await run(
@@ -451,10 +509,18 @@ async function getLiveStatus(challengeId, options = {}) {
   );
 
   const config = buildRuleConfig(challenge.rule_type, challenge.rules);
+  const campaignStores = getCampaignStores(challenge);
 
   const today = getToday();
   const allSales = readSalesJson();
-  const sales = filterSalesByDateRange(allSales, challenge.start_date, challenge.end_date);
+  let sales = filterSalesByDateRange(allSales, challenge.start_date, challenge.end_date);
+  // Filtra por lojas participantes se definido
+  if (campaignStores.length > 0) {
+    sales = sales.filter((s) => {
+      const saleStore = normalizeCampaignStoreKey(s.loja || s.store || s.loja_venda || "");
+      return campaignStores.includes(saleStore);
+    });
+  }
   const results = [];
 
   for (const participant of participants) {
