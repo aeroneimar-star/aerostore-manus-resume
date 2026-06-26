@@ -89,6 +89,7 @@ function normalizeChallenge(row = {}) {
     rule_type: row.rule_type || "",
     rules: safeJsonParse(row.rules_json, {}),
     target_skus: safeJsonParse(row.target_skus_json, []),
+    target_products: safeJsonParse(row.target_products_json, []),
     target_categories: safeJsonParse(row.target_categories_json, []),
     prize: safeJsonParse(row.prize_json, {}),
     created_by: row.created_by ? Number(row.created_by) : null,
@@ -129,8 +130,43 @@ function buildRuleConfig(ruleType = "", rulesJson = {}) {
     ticket_threshold_count: 0,
     highest_quantity: false
   };
-  const overrides = safeJsonParse(rulesJson, {});
+  // rulesJson ja chega como objeto (vem de normalizeChallenge via safeJsonParse).
+  // safeJsonParse em objeto viraria "[object Object]" e quebraria, entao so aplica se vier como string.
+  const overrides = (rulesJson && typeof rulesJson === "object" && !Array.isArray(rulesJson))
+    ? rulesJson
+    : safeJsonParse(rulesJson, {});
   return { ...defaults, ...overrides, rule_type: ruleType };
+}
+
+// Filtra itens da venda que casam com target_skus (com fallback para codigo)
+// OU target_categories. Se nao houver filtro, retorna todos os itens.
+// SKU primario; codigo como fallback para itens legados.
+function filterQualifyingItems(items = [], config = {}) {
+  const list = Array.isArray(items) ? items : [];
+  const targetSkus = Array.isArray(config.target_skus) ? config.target_skus.map((v) => String(v || "").trim()).filter(Boolean) : [];
+  const targetCategories = Array.isArray(config.target_categories) ? config.target_categories.map((v) => String(v || "").trim()).filter(Boolean) : [];
+  if (targetSkus.length === 0 && targetCategories.length === 0) return list;
+  return list.filter((item) => {
+    const sku = String(item.sku || item.product_sku || "").trim();
+    const codigo = String(item.codigo || "").trim();
+    const category = String(item.category || item.categoria || "").trim();
+    if (targetSkus.length > 0) {
+      return targetSkus.includes(sku) || (codigo && targetSkus.includes(codigo));
+    }
+    return targetCategories.includes(category);
+  });
+}
+
+// Valor monetario do item para evidencia/desempate.
+// Prioriza campos derivados ja normalizados, senao recalcula a partir de preco * quantidade.
+function getItemTotal(item = {}) {
+  const net = item.item_net_total;
+  const gross = item.item_gross_total;
+  if (net !== undefined && net !== null && net !== "") return toNumber(net);
+  if (gross !== undefined && gross !== null && gross !== "") return toNumber(gross);
+  const unitPrice = toNumber(item.preco_venda || item.preco_referencia || item.price || 0);
+  const qty = toNumber(item.quantidade || item.quantity || 1);
+  return unitPrice * qty;
 }
 
 function isSaleEligible(sale = {}, ruleType = "", config = {}) {
@@ -138,24 +174,16 @@ function isSaleEligible(sale = {}, ruleType = "", config = {}) {
   const total = toNumber(sale.total || sale.total_venda || 0);
   const items = Array.isArray(sale.items || sale.produtos) ? sale.items || sale.produtos : [];
 
-  const hasSkuFilter = Array.isArray(config.target_skus) && config.target_skus.length > 0;
-  const hasCategoryFilter = Array.isArray(config.target_categories) && config.target_categories.length > 0;
-  const hasItemFilter = hasSkuFilter || hasCategoryFilter;
-
-  function matchesItemFilter(item) {
-    const sku = String(item.sku || item.product_sku || "").trim();
-    const category = String(item.category || item.categoria || "").trim();
-    if (hasSkuFilter) return config.target_skus.includes(sku);
-    if (hasCategoryFilter) return config.target_categories.includes(category);
-    return true;
-  }
+  const qualifyingItems = filterQualifyingItems(items, config);
+  const hasItemFilter = (Array.isArray(config.target_skus) && config.target_skus.length > 0)
+    || (Array.isArray(config.target_categories) && config.target_categories.length > 0);
 
   if (ruleType === "quantity_target") {
     const target = toNumber(config.quantity_target, 0);
     const ticketThreshold = toNumber(config.ticket_threshold, 0);
     const ticketCount = toNumber(config.ticket_threshold_count, 0);
     if (ticketThreshold > 0 && total < ticketThreshold) return false;
-    const qualifyingItems = hasItemFilter ? items.filter(matchesItemFilter) : items;
+    // ticket_threshold_count = minimo de itens qualificados por venda (nao total da venda)
     if (ticketCount > 0 && qualifyingItems.length < ticketCount) return false;
     const totalItems = qualifyingItems.reduce((sum, item) => sum + Number(item.quantity || item.quantidade || 0), 0);
     return totalItems >= target;
@@ -165,13 +193,16 @@ function isSaleEligible(sale = {}, ruleType = "", config = {}) {
     const threshold = toNumber(config.ticket_threshold, 0);
     const count = toNumber(config.ticket_threshold_count, 0);
     if (threshold > 0 && total < threshold) return false;
+    // Regra por valor da venda, nao por produto. Conta itens da venda inteira.
     return items.length >= count;
   }
 
   if (ruleType === "highest_quantity") {
     const threshold = toNumber(config.ticket_threshold, 0);
     if (threshold > 0 && total < threshold) return false;
-    return true;
+    // Venda com pelo menos 1 item qualificado conta.
+    // Sem filtro, qualquer venda acima do ticket conta.
+    return hasItemFilter ? qualifyingItems.length > 0 : true;
   }
 
   return false;
@@ -343,6 +374,16 @@ function validateCampaignData(data = {}) {
     const target = toNumber(rules.quantity_target || 0);
     if (target <= 0) errors.push("Meta de itens deve ser maior que zero para regra 'Quantidade de itens'.");
   }
+  // Regras por quantidade de produto exigem ao menos 1 SKU ou categoria selecionada.
+  // ticket_threshold_count e' por valor da venda, nao exige produto.
+  if (ruleType === "quantity_target" || ruleType === "highest_quantity") {
+    const skus = Array.isArray(data.target_skus) ? data.target_skus.filter(Boolean) : [];
+    const products = Array.isArray(data.target_products) ? data.target_products.filter((p) => p && (p.parent_sku || p.sku)) : [];
+    const cats = Array.isArray(data.target_categories) ? data.target_categories.filter(Boolean) : [];
+    if (skus.length === 0 && products.length === 0 && cats.length === 0) {
+      errors.push("Selecione ao menos um produto (SKU) ou categoria para esta regra.");
+    }
+  }
   if (ruleType === "ticket_threshold_count") {
     const rules = data.rules || {};
     // Aceita min_ticket ou ticket_threshold (compatibilidade)
@@ -361,8 +402,9 @@ function validateCampaignData(data = {}) {
 }
 
 async function createCampaign(data = {}, user = {}) {
-  // Migração: garante coluna store_ids_json
+  // Migração: garante colunas store_ids_json e target_products_json
   try { await run("ALTER TABLE campaign_challenges ADD COLUMN store_ids_json TEXT DEFAULT '[]'"); } catch (_) { /* coluna pode já existir */ }
+  try { await run("ALTER TABLE campaign_challenges ADD COLUMN target_products_json TEXT DEFAULT '[]'"); } catch (_) { /* coluna pode já existir */ }
   const now = getToday();
   const validated = validateCampaignData(data);
   // Normaliza prize: aceita amount, normaliza para value
@@ -377,11 +419,15 @@ async function createCampaign(data = {}, user = {}) {
     if (single) storeIds = [single];
   }
   const storeId = storeIds[0] || "";
+  // Normaliza target_products: aceita products[] do frontend ou cai no flatten de target_skus
+  const targetProducts = Array.isArray(data.target_products) && data.target_products.length > 0
+    ? data.target_products
+    : (Array.isArray(data.target_skus) ? data.target_skus.filter(Boolean).map((sku) => ({ parent_sku: String(sku), name: "", skus: [String(sku)] })) : []);
   const result = await run(
     `INSERT INTO campaign_challenges
      (name, description, store_id, start_date, end_date, status, rule_type, rules_json,
-      target_skus_json, target_categories_json, prize_json, store_ids_json, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      target_skus_json, target_products_json, target_categories_json, prize_json, store_ids_json, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       validated.name,
       data.description || "",
@@ -392,6 +438,7 @@ async function createCampaign(data = {}, user = {}) {
       validated.ruleType,
       JSON.stringify(data.rules || {}),
       JSON.stringify(data.target_skus || []),
+      JSON.stringify(targetProducts),
       JSON.stringify(data.target_categories || []),
       JSON.stringify(prize),
       JSON.stringify(storeIds),
@@ -423,6 +470,14 @@ async function updateCampaign(id, data = {}) {
     }
     storeIdsJson = JSON.stringify(storeIds);
   }
+  // Normaliza target_products: aceita products[] do frontend, ou cai no flatten de target_skus.
+  let targetProductsJson = null;
+  if (Array.isArray(data.target_products) && data.target_products.length > 0) {
+    targetProductsJson = JSON.stringify(data.target_products);
+  } else if (Array.isArray(data.target_skus) && data.target_skus.length > 0 && data.target_products === undefined) {
+    // Frontend mandou apenas SKUs sem products[] — nao sobrescreve target_products_json.
+    targetProductsJson = null;
+  }
   await run(
     `UPDATE campaign_challenges SET
      name = COALESCE(?, name),
@@ -433,6 +488,7 @@ async function updateCampaign(id, data = {}) {
      rule_type = COALESCE(?, rule_type),
      rules_json = COALESCE(?, rules_json),
      target_skus_json = COALESCE(?, target_skus_json),
+     target_products_json = COALESCE(?, target_products_json),
      target_categories_json = COALESCE(?, target_categories_json),
      prize_json = ?,
      store_ids_json = ?,
@@ -447,6 +503,7 @@ async function updateCampaign(id, data = {}) {
       data.rule_type,
       data.rules ? JSON.stringify(data.rules) : null,
       data.target_skus ? JSON.stringify(data.target_skus) : null,
+      targetProductsJson,
       data.target_categories ? JSON.stringify(data.target_categories) : null,
       prizeJson,
       storeIdsJson,
@@ -530,21 +587,49 @@ async function getLiveStatus(challengeId, options = {}) {
     let currentValue = 0;
     let eligibleSalesCount = 0;
     let eligibleItemsCount = 0;
+    let eligibleAmount = 0;
+    const evidenceSales = [];
 
     for (const sale of sellerSales) {
       const saleItems = Array.isArray(sale.items) ? sale.items : [];
       const saleObj = { ...sale, items: saleItems };
       if (isSaleEligible(saleObj, challenge.rule_type, config)) {
         eligibleSalesCount++;
-        const itemCount = saleItems.reduce((sum, item) => sum + Number(item.quantity || item.quantidade || 0), 0);
+        // Regra por produto: contar somente itens qualificados.
+        // ticket_threshold_count: conta itens da venda inteira (regra por valor).
+        const qualifyingItems = challenge.rule_type === "ticket_threshold_count"
+          ? saleItems
+          : filterQualifyingItems(saleItems, config);
+        const itemCount = qualifyingItems.reduce((sum, item) => sum + Number(item.quantity || item.quantidade || 0), 0);
+        const saleAmount = qualifyingItems.reduce((sum, item) => sum + getItemTotal(item), 0);
         eligibleItemsCount += itemCount;
+        eligibleAmount += saleAmount;
+
+        evidenceSales.push({
+          sale_id: sale.sale_id || sale.id || "",
+          date: sale.created_at || sale.data_hora || "",
+          store: sale.loja || sale.loja_venda || "",
+          seller: sale.vendedor || sale.seller || "",
+          qualifying_items_count: itemCount,
+          qualifying_amount: roundMoney(saleAmount),
+          items: qualifyingItems.map((item) => ({
+            sku: String(item.sku || item.codigo || "").trim(),
+            name: item.nome || item.name || "",
+            color: item.cor || item.color || "",
+            size: item.tamanho || item.size || "",
+            category: item.categoria || item.category || "",
+            quantity: Number(item.quantidade || item.quantity || 0),
+            unit_price: roundMoney(toNumber(item.preco_venda || item.preco_referencia || item.price || 0)),
+            item_total: roundMoney(getItemTotal(item))
+          }))
+        });
 
         if (challenge.rule_type === "quantity_target") {
           currentValue = eligibleItemsCount;
         } else if (challenge.rule_type === "ticket_threshold_count") {
           currentValue = eligibleSalesCount;
         } else if (challenge.rule_type === "highest_quantity") {
-          currentValue = Math.max(currentValue, eligibleItemsCount);
+          currentValue = Math.max(currentValue, itemCount);
         }
       }
     }
@@ -554,11 +639,21 @@ async function getLiveStatus(challengeId, options = {}) {
       seller_name: participant.seller_name || "",
       current_value: currentValue,
       eligible_sales_count: eligibleSalesCount,
-      eligible_items_count: eligibleItemsCount
+      eligible_items_count: eligibleItemsCount,
+      eligible_amount: roundMoney(eligibleAmount),
+      evidence: { sales: evidenceSales }
     });
   }
 
-  results.sort((a, b) => b.current_value - a.current_value);
+  // Ordenacao: current_value DESC; desempate por valor liquido qualificado (quantity/highest); estavel por nome
+  results.sort((a, b) => {
+    if (b.current_value !== a.current_value) return b.current_value - a.current_value;
+    const useAmount = challenge.rule_type !== "ticket_threshold_count";
+    if (useAmount && (b.eligible_amount || 0) !== (a.eligible_amount || 0)) {
+      return (b.eligible_amount || 0) - (a.eligible_amount || 0);
+    }
+    return String(a.seller_name || "").localeCompare(String(b.seller_name || ""));
+  });
   results.forEach((item, idx) => {
     item.rank = idx + 1;
     item.is_winner = idx === 0 && item.current_value > 0;
@@ -593,24 +688,26 @@ async function settleCampaign(challengeId, user = {}) {
   for (const entry of ranking) {
     const existing = await get("SELECT id FROM campaign_results WHERE challenge_id = ? AND seller_id = ?", [challengeId, entry.seller_id]);
     const prizeEarned = computePrize(entry, config, challenge.prize);
+    const evidenceJson = JSON.stringify(entry.evidence || { sales: [] });
 
     if (existing) {
       await run(
         `UPDATE campaign_results SET
          current_value = ?, eligible_sales_count = ?, eligible_items_count = ?,
-         rank_position = ?, prize_earned = ?, settled = 1, settled_at = ?, settled_by = ?, updated_at = ?
+         rank_position = ?, prize_earned = ?, settled = 1, settled_at = ?, settled_by = ?,
+         evidence_json = ?, updated_at = ?
          WHERE id = ?`,
         [entry.current_value, entry.eligible_sales_count, entry.eligible_items_count,
-         entry.rank, prizeEarned, now, userId, now, existing.id]
+         entry.rank, prizeEarned, now, userId, evidenceJson, now, existing.id]
       );
     } else {
       await run(
         `INSERT INTO campaign_results
          (challenge_id, seller_id, seller_name, current_value, eligible_sales_count, eligible_items_count,
-          rank_position, prize_earned, settled, settled_at, settled_by, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+          rank_position, prize_earned, settled, settled_at, settled_by, evidence_json, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
         [challengeId, entry.seller_id, entry.seller_name, entry.current_value,
-         entry.eligible_sales_count, entry.eligible_items_count, entry.rank, prizeEarned, now, userId, now]
+         entry.eligible_sales_count, entry.eligible_items_count, entry.rank, prizeEarned, now, userId, evidenceJson, now]
       );
     }
   }

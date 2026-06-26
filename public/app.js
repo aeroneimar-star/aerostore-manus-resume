@@ -18975,8 +18975,123 @@ const pdvGestaoState = {
   error: "",
   selectedCampaign: null,
   createModalOpen: false,
-  editingId: null
+  editingId: null,
+  // Selecao de produtos para Corridinhas (quantity_target / highest_quantity)
+  productSearch: {
+    query: "",
+    results: [],
+    loading: false,
+    error: "",
+    timer: null,
+    lastQuery: ""
+  },
+  // Produtos (pai) adicionados a campanha. Cada item tem { parent_id, parent_sku, name, variations: [{sku,color,size,price}] }.
+  selectedProducts: [],
+  // Projecao flatten de selectedProducts — lista de SKUs individuais, mantida por compat com consumidores legados.
+  selectedSkus: []
 };
+
+function resetGestaoSelectedSkus() {
+  pdvGestaoState.selectedSkus = [];
+  pdvGestaoState.selectedProducts = [];
+  pdvGestaoState.productSearch.query = "";
+  pdvGestaoState.productSearch.results = [];
+  pdvGestaoState.productSearch.error = "";
+  pdvGestaoState.productSearch.lastQuery = "";
+}
+
+function getGestaoSelectedSkuSet() {
+  return new Set(
+    (Array.isArray(pdvGestaoState.selectedSkus) ? pdvGestaoState.selectedSkus : [])
+      .map((entry) => String(entry?.sku || entry?.codigo || "").trim())
+      .filter(Boolean)
+  );
+}
+
+function addGestaoSelectedSku(product) {
+  if (!product) return false;
+  const sku = String(product.sku || product.codigo || "").trim();
+  if (!sku) return false;
+  const set = getGestaoSelectedSkuSet();
+  if (set.has(sku)) return false;
+  pdvGestaoState.selectedSkus.push({
+    sku,
+    name: String(product.nome || product.name || "").trim(),
+    color: String(product.cor || product.color || "").trim(),
+    size: String(product.tamanho || product.size || "").trim(),
+    category: String(product.categoria || product.category || "").trim(),
+    price: Number(product.preco_venda || product.preco_referencia || product.price || 0) || 0
+  });
+  return true;
+}
+
+function removeGestaoSelectedSku(sku) {
+  const target = String(sku || "").trim();
+  if (!target) return;
+  pdvGestaoState.selectedSkus = (pdvGestaoState.selectedSkus || []).filter(
+    (entry) => String(entry?.sku || "").trim() !== target
+  );
+}
+
+// Adiciona um produto (pai) inteiro a campanha, com todas as suas variacoes.
+// Aceita { parent_id, parent_sku, name, variations: [{sku, color, size, price}] }.
+// Reflete em selectedSkus (projecao flatten) para nao quebrar consumidores legados.
+function addGestaoSelectedProduct(group) {
+  if (!group) return false;
+  const parentSku = String(group.parent_sku || group.base_sku || "").trim();
+  if (!parentSku) return false;
+  const alreadySelected = (pdvGestaoState.selectedProducts || []).some(
+    (p) => String(p.parent_sku || "").trim() === parentSku
+  );
+  if (alreadySelected) return false;
+  const variations = Array.isArray(group.variations) && group.variations.length > 0
+    ? group.variations
+        .map((v) => ({
+          sku: String(v.sku || v.codigo || "").trim(),
+          color: String(v.color || v.cor || "").trim(),
+          size: String(v.size || v.tamanho || "").trim(),
+          price: Number(v.price || v.preco_venda || 0) || 0
+        }))
+        .filter((v) => v.sku)
+    : [{ sku: parentSku, color: "", size: "", price: 0 }];
+  const product = {
+    parent_id: String(group.parent_id || group.normalized_parent_product_id || "").trim(),
+    parent_sku: parentSku,
+    name: String(group.name || group.nome || "").trim(),
+    origin: String(group.origin || "").trim(),
+    variations: variations
+  };
+  pdvGestaoState.selectedProducts.push(product);
+  // Reflete em selectedSkus (projecao flatten).
+  variations.forEach((v) => {
+    pdvGestaoState.selectedSkus.push({
+      sku: v.sku,
+      name: product.name,
+      color: v.color,
+      size: v.size,
+      category: "",
+      price: v.price
+    });
+  });
+  return true;
+}
+
+// Remove um produto (pai) da campanha, junto com todas as suas variacoes.
+function removeGestaoSelectedProduct(parentSku) {
+  const target = String(parentSku || "").trim();
+  if (!target) return;
+  const product = (pdvGestaoState.selectedProducts || []).find(
+    (p) => String(p.parent_sku || "").trim() === target
+  );
+  if (!product) return;
+  const skusToRemove = new Set((product.variations || []).map((v) => String(v.sku || "").trim()).filter(Boolean));
+  pdvGestaoState.selectedProducts = pdvGestaoState.selectedProducts.filter(
+    (p) => String(p.parent_sku || "").trim() !== target
+  );
+  pdvGestaoState.selectedSkus = (pdvGestaoState.selectedSkus || []).filter(
+    (entry) => !skusToRemove.has(String(entry.sku || "").trim())
+  );
+}
 
 async function loadPdvGestaoFront() {
   const container = document.getElementById("pdv-gestao-content");
@@ -19056,6 +19171,15 @@ function renderPdvGestaoFront(container) {
               <label><input type="checkbox" name="store_ids" value="sul" checked /> Sul</label>
             </div>
           </div>
+          <div class="form-field" id="gestao-products-field" data-gestao-products-field="true">
+            <label>Produtos participantes</label>
+            <p class="gestao-products-hint" id="gestao-products-hint">Busque por nome, SKU ou código de barras e adicione os produtos que entram na regra. Obrigatório para Quantidade de itens e Maior volume.</p>
+            <div class="gestao-products-search">
+              <input type="text" id="gestao-product-search-input" placeholder="Buscar produto por nome, SKU ou código" autocomplete="off" />
+            </div>
+            <div class="gestao-products-results" id="gestao-products-results" aria-live="polite"></div>
+            <div class="gestao-products-selected" id="gestao-products-selected"></div>
+          </div>
           <div class="action-row" style="margin-top:1rem;">
             <button class="primary-button" type="submit">Criar</button>
             <button class="ghost-button" type="button" data-action="gestao-close-create">Cancelar</button>
@@ -19091,6 +19215,36 @@ function renderGestaoCampaignCard(campaign) {
   }
   const storeLabels = { vila: "Vila", botanico: "Bot\u00e2nico", sul: "Sul" };
   const storesDisplay = storeIds.length > 0 ? storeIds.map((s) => storeLabels[s] || s).join(", ") : "Todas";
+  // Resumo de produtos participantes (prioriza target_products agrupado por pai).
+  const targetProducts = Array.isArray(campaign.target_products) ? campaign.target_products.filter((p) => p && (p.parent_sku || (Array.isArray(p.skus) && p.skus.length > 0) || (Array.isArray(p.variations) && p.variations.length > 0))) : [];
+  const targetSkus = Array.isArray(campaign.target_skus) ? campaign.target_skus.filter(Boolean) : [];
+  const targetCategories = Array.isArray(campaign.target_categories) ? campaign.target_categories.filter(Boolean) : [];
+  let productsDisplay = "Sem produtos";
+  if (targetProducts.length > 0) {
+    if (targetProducts.length === 1) {
+      const single = targetProducts[0];
+      const singleName = String(single.name || single.parent_sku || "").trim();
+      const variationsCount = Array.isArray(single.variations) ? single.variations.length : (Array.isArray(single.skus) ? single.skus.length : 0);
+      if (singleName && variationsCount > 1) {
+        productsDisplay = "Produtos: " + escapeHtml(singleName) + " (" + variationsCount + " variações)";
+      } else if (singleName) {
+        productsDisplay = "Produtos: " + escapeHtml(singleName);
+      } else {
+        productsDisplay = "1 produto selecionado";
+      }
+    } else if (targetProducts.length <= 3) {
+      productsDisplay = "Produtos: " + targetProducts.map((p) => escapeHtml(String(p.name || p.parent_sku || ""))).join(", ");
+    } else {
+      productsDisplay = "Produtos: " + targetProducts.length + " produtos selecionados";
+    }
+  } else if (targetSkus.length > 0) {
+    // Fallback para campanhas legadas (só tinham target_skus).
+    productsDisplay = targetSkus.length <= 3
+      ? "Produtos: " + targetSkus.map((s) => escapeHtml(String(s))).join(", ")
+      : "Produtos: " + targetSkus.length + " SKUs";
+  } else if (targetCategories.length > 0) {
+    productsDisplay = "Categorias: " + targetCategories.map((c) => escapeHtml(String(c))).join(", ");
+  }
   const hasName = Boolean(campaignName);
   const hasPrize = prize.value && Number(prize.value) > 0;
   const isIncomplete = !hasName || !hasPrize;
@@ -19124,6 +19278,7 @@ function renderGestaoCampaignCard(campaign) {
         <span>${campaign.start_date || "—"} a ${campaign.end_date || "—"}</span>
         <span>Prêmio: ${prizeStr}</span>
         <span>Lojas: ${escapeHtml(storesDisplay)}</span>
+        <span>${productsDisplay}</span>
       </div>
     </div>`;
 }
@@ -19171,6 +19326,317 @@ function bindPdvGestaoActions(container) {
     backdrop.dataset.boundBackdrop = "true";
     backdrop.addEventListener("click", closeGestaoCreateModal);
   }
+
+  // Picker de produtos
+  const searchInput = container.querySelector("#gestao-product-search-input");
+  if (searchInput && !searchInput.dataset.boundInput) {
+    searchInput.dataset.boundInput = "true";
+    searchInput.addEventListener("input", (e) => {
+      const value = (e.target.value || "").toString();
+      pdvGestaoState.productSearch.query = value;
+      scheduleGestaoProductSearch(value);
+    });
+    // Enter no campo de busca NAO pode submeter o form / acionar Criar.
+    // Dispara a busca imediatamente (bypass do debounce de 280ms).
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      e.stopPropagation();
+      const value = (e.target.value || "").toString();
+      pdvGestaoState.productSearch.query = value;
+      executeGestaoProductSearchNow(value);
+    });
+  }
+  const ruleSelect = container.querySelector('select[name="rule_type"]');
+  if (ruleSelect && !ruleSelect.dataset.boundRule) {
+    ruleSelect.dataset.boundRule = "true";
+    ruleSelect.addEventListener("change", () => {
+      renderGestaoProductsVisibility();
+    });
+  }
+
+  // Delegacao para botoes Adicionar / Remover do picker
+  if (!container.dataset.boundProductClick) {
+    container.dataset.boundProductClick = "true";
+    container.addEventListener("click", (e) => {
+      const addBtn = e.target.closest("[data-gestao-product-add]");
+      if (addBtn) {
+        const parentSku = addBtn.getAttribute("data-gestao-product-add");
+        const groups = groupProductsByParent(pdvGestaoState.productSearch.results || []);
+        const group = groups.find((g) => String(g.parent_sku || "") === String(parentSku || ""));
+        if (group) {
+          addGestaoSelectedProduct(group);
+          renderGestaoSelectedSkus();
+          renderGestaoProductResults();
+        }
+        return;
+      }
+      const removeBtn = e.target.closest("[data-gestao-product-remove]");
+      if (removeBtn) {
+        const parentSku = removeBtn.getAttribute("data-gestao-product-remove");
+        removeGestaoSelectedProduct(parentSku);
+        renderGestaoSelectedSkus();
+        renderGestaoProductResults();
+      }
+    });
+  }
+
+  renderGestaoProductResults();
+  renderGestaoSelectedSkus();
+  renderGestaoProductsVisibility();
+}
+
+function renderGestaoProductsVisibility() {
+  const field = document.getElementById("gestao-products-field");
+  if (!field) return;
+  const form = document.getElementById("gestao-create-form");
+  const ruleType = form?.rule_type?.value || "";
+  const requiresProducts = ruleType === "quantity_target" || ruleType === "highest_quantity";
+  field.style.display = requiresProducts ? "" : "none";
+  const hint = document.getElementById("gestao-products-hint");
+  if (hint) {
+    hint.textContent = requiresProducts
+      ? "Obrigatório para esta regra. Busque por nome, SKU ou código de barras e adicione os produtos que entram na regra."
+      : "Esta regra é por valor de venda. Produtos não são obrigatórios.";
+  }
+}
+
+// Executa a busca de produtos imediatamente (sem debounce) com loading e
+// tratamento de erro. Reaproveitada por Enter (keydown) e pelo scheduler.
+function executeGestaoProductSearchNow(query) {
+  if (pdvGestaoState.productSearch.timer) {
+    clearTimeout(pdvGestaoState.productSearch.timer);
+    pdvGestaoState.productSearch.timer = null;
+  }
+  const trimmed = (query || "").toString().trim();
+  if (!trimmed) {
+    pdvGestaoState.productSearch.results = [];
+    pdvGestaoState.productSearch.loading = false;
+    pdvGestaoState.productSearch.lastQuery = "";
+    renderGestaoProductResults();
+    return;
+  }
+  // Backend exige >=2 chars ou pattern numerico/sku
+  if (trimmed.length < 2 && !/^\d+$/.test(trimmed) && !/^(sku|cod)[a-z0-9_-]*$/i.test(trimmed)) {
+    pdvGestaoState.productSearch.results = [];
+    pdvGestaoState.productSearch.lastQuery = trimmed;
+    renderGestaoProductResults();
+    return;
+  }
+  pdvGestaoState.productSearch.loading = true;
+  pdvGestaoState.productSearch.lastQuery = trimmed;
+  renderGestaoProductResults();
+  runGestaoProductSearch(trimmed).catch(() => {
+    pdvGestaoState.productSearch.loading = false;
+    pdvGestaoState.productSearch.error = "Falha ao buscar produtos.";
+    renderGestaoProductResults();
+  });
+}
+
+function scheduleGestaoProductSearch(query) {
+  if (pdvGestaoState.productSearch.timer) {
+    clearTimeout(pdvGestaoState.productSearch.timer);
+    pdvGestaoState.productSearch.timer = null;
+  }
+  pdvGestaoState.productSearch.timer = setTimeout(() => {
+    executeGestaoProductSearchNow(query);
+  }, 280);
+}
+
+async function runGestaoProductSearch(query) {
+  try {
+    const url = `/api/pdv/operational/search/products?q=${encodeURIComponent(query)}&limit=10`;
+    const res = await api(url);
+    const items = (res && Array.isArray(res.items)) ? res.items : [];
+    // Preserva o shape completo do backend (incluindo campos parentais e variants[])
+    // para suportar agrupamento por produto pai no picker.
+    pdvGestaoState.productSearch.results = items.map((it) => ({
+      sku: String(it.sku || it.codigo || "").trim(),
+      codigo: String(it.codigo || it.sku || "").trim(),
+      nome: String(it.nome || it.name || "").trim(),
+      cor: String(it.cor || it.color || "").trim(),
+      tamanho: String(it.tamanho || it.size || "").trim(),
+      categoria: String(it.categoria || it.category || "").trim(),
+      preco_venda: Number(it.preco_venda || it.preco_referencia || it.price || 0) || 0,
+      parent_sku: String(it.parent_sku || it.base_sku || "").trim(),
+      parent_id: String(it.parent_product_id || it.normalized_parent_product_id || "").trim(),
+      normalized_parent_product_id: String(it.normalized_parent_product_id || "").trim(),
+      variants: Array.isArray(it.variants)
+        ? it.variants.map((v) => ({
+            sku: String(v.sku || v.codigo || "").trim(),
+            color: String(v.color || v.cor || "").trim(),
+            size: String(v.size || v.tamanho || "").trim(),
+            price: Number(v.preco_venda || v.price || 0) || 0
+          })).filter((v) => v.sku)
+        : [],
+      origin: String(it.origin || "").trim()
+    })).filter((it) => it.sku);
+    pdvGestaoState.productSearch.loading = false;
+    pdvGestaoState.productSearch.error = "";
+    renderGestaoProductResults();
+  } catch (err) {
+    pdvGestaoState.productSearch.loading = false;
+    pdvGestaoState.productSearch.error = (err && (err.message || err.error)) || "Falha ao buscar produtos.";
+    renderGestaoProductResults();
+  }
+}
+
+// Agrupa os resultados crus do backend por produto pai.
+// - Itens com variants[] (searchNormalizedProductParents) viram 1 grupo.
+// - Itens soltos com parent_sku conhecido sao anexados ao grupo do pai.
+// - Itens sem parent_sku viram grupos proprios (produto simples ou legado).
+function groupProductsByParent(items) {
+  const groups = new Map();
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const hasVariations = Array.isArray(item.variants) && item.variants.length > 0;
+    let parentSku = String(item.parent_sku || "").trim();
+    let parentId = String(item.parent_id || item.normalized_parent_product_id || "").trim();
+    let name = String(item.nome || item.name || "").trim();
+    let variations = [];
+    if (hasVariations) {
+      // Item ja e um pai (vem de searchNormalizedProductParents).
+      if (!parentSku && item.sku) parentSku = String(item.sku).trim();
+      if (!parentId && item.product_id) parentId = String(item.product_id).trim();
+      variations = item.variants.map((v) => ({
+        sku: String(v.sku || "").trim(),
+        color: String(v.color || v.cor || "").trim(),
+        size: String(v.size || v.tamanho || "").trim(),
+        price: Number(v.price || v.preco_venda || 0) || 0
+      })).filter((v) => v.sku);
+    } else {
+      const ownSku = String(item.sku || "").trim();
+      if (parentSku && ownSku && ownSku !== parentSku) {
+        // Item solto com parent_sku conhecido (vem de ai_products/inventory).
+        variations = [{
+          sku: ownSku,
+          color: String(item.cor || item.color || "").trim(),
+          size: String(item.tamanho || item.size || "").trim(),
+          price: Number(item.preco_venda || 0) || 0
+        }];
+      } else if (ownSku) {
+        // Item sem pai conhecido — proprio grupo (produto simples).
+        parentSku = ownSku;
+        variations = [{
+          sku: ownSku,
+          color: String(item.cor || item.color || "").trim(),
+          size: String(item.tamanho || item.size || "").trim(),
+          price: Number(item.preco_venda || 0) || 0
+        }];
+      }
+    }
+    if (!parentSku) return;
+    if (!groups.has(parentSku)) {
+      groups.set(parentSku, {
+        parent_id: parentId,
+        parent_sku: parentSku,
+        name: name,
+        origin: String(item.origin || "").trim(),
+        variations: []
+      });
+    }
+    const group = groups.get(parentSku);
+    if (!group.name && name) group.name = name;
+    variations.forEach((v) => {
+      if (v.sku && !group.variations.some((existing) => existing.sku === v.sku)) {
+        group.variations.push(v);
+      }
+    });
+  });
+  return Array.from(groups.values()).sort((a, b) => {
+    return String(a.name || a.parent_sku).localeCompare(String(b.name || b.parent_sku));
+  });
+}
+
+function renderGestaoProductResults() {
+  const container = document.getElementById("gestao-products-results");
+  if (!container) return;
+  const state = pdvGestaoState.productSearch || {};
+  const selectedKeys = new Set(
+    (Array.isArray(pdvGestaoState.selectedProducts) ? pdvGestaoState.selectedProducts : [])
+      .map((p) => String(p.parent_sku || p.parent_id || "").trim())
+      .filter(Boolean)
+  );
+  if (state.loading) {
+    container.innerHTML = '<div class="gestao-products-status">Buscando produtos...</div>';
+    return;
+  }
+  if (state.error) {
+    container.innerHTML = '<div class="gestao-products-status gestao-products-status-error">' + escapeHtml(state.error) + '</div>';
+    return;
+  }
+  if (!state.query || !state.query.trim()) {
+    container.innerHTML = '<div class="gestao-products-status">Digite para buscar produtos.</div>';
+    return;
+  }
+  const items = Array.isArray(state.results) ? state.results : [];
+  if (items.length === 0) {
+    container.innerHTML = '<div class="gestao-products-status">Nenhum produto encontrado.</div>';
+    return;
+  }
+  const groups = groupProductsByParent(items);
+  if (groups.length === 0) {
+    container.innerHTML = '<div class="gestao-products-status">Nenhum produto encontrado.</div>';
+    return;
+  }
+  const rows = groups.map((group) => {
+    const variations = Array.isArray(group.variations) ? group.variations : [];
+    const alreadySelected = selectedKeys.has(group.parent_sku);
+    const safeName = escapeHtml(group.name || "(sem nome)");
+    const safeParentSku = escapeHtml(group.parent_sku || "");
+    const sizes = Array.from(new Set(variations.map((v) => v.size).filter(Boolean)));
+    const colors = Array.from(new Set(variations.map((v) => v.color).filter(Boolean)));
+    const variationsLabel = variations.length === 1
+      ? "1 variação"
+      : variations.length + " variações";
+    const metaBits = ["SKU " + safeParentSku, variations.length > 0 ? variationsLabel : "1 SKU"];
+    if (colors.length > 0 && colors.length <= 4) metaBits.push("Cores: " + escapeHtml(colors.join(", ")));
+    else if (colors.length > 4) metaBits.push(colors.length + " cores");
+    if (sizes.length > 0 && sizes.length <= 8) metaBits.push("Tamanhos: " + escapeHtml(sizes.join(", ")));
+    else if (sizes.length > 8) metaBits.push(sizes.length + " tamanhos");
+    const metaLine = metaBits.join(" • ");
+    return `
+      <div class="gestao-products-row${alreadySelected ? " gestao-products-row-selected" : ""}">
+        <div class="gestao-products-row-main">
+          <div class="gestao-products-row-name">${safeName}</div>
+          <div class="gestao-products-row-meta">${metaLine}</div>
+        </div>
+        <button class="${alreadySelected ? "ghost-button" : "small-primary"}" type="button" data-gestao-product-add="${safeParentSku}" ${alreadySelected ? "disabled" : ""}>${alreadySelected ? "Adicionado" : "Adicionar produto"}</button>
+      </div>`;
+  }).join("");
+  container.innerHTML = rows;
+}
+
+function renderGestaoSelectedSkus() {
+  const container = document.getElementById("gestao-products-selected");
+  if (!container) return;
+  const products = Array.isArray(pdvGestaoState.selectedProducts) ? pdvGestaoState.selectedProducts : [];
+  if (products.length === 0) {
+    container.innerHTML = '<div class="gestao-products-status">Nenhum produto selecionado.</div>';
+    return;
+  }
+  const rows = products.map((product) => {
+    const variations = Array.isArray(product.variations) ? product.variations : [];
+    const safeName = escapeHtml(product.name || "(sem nome)");
+    const safeParentSku = escapeHtml(product.parent_sku || "");
+    const sizes = Array.from(new Set(variations.map((v) => v.size).filter(Boolean)));
+    const colors = Array.from(new Set(variations.map((v) => v.color).filter(Boolean)));
+    const variationsLabel = variations.length === 1
+      ? "1 variação"
+      : variations.length + " variações";
+    const metaBits = ["SKU " + safeParentSku, variations.length > 0 ? variationsLabel : "1 SKU"];
+    if (colors.length > 0 && colors.length <= 4) metaBits.push("Cores: " + escapeHtml(colors.join(", ")));
+    if (sizes.length > 0 && sizes.length <= 8) metaBits.push("Tamanhos: " + escapeHtml(sizes.join(", ")));
+    const metaLine = metaBits.join(" • ");
+    return `
+      <div class="gestao-products-row gestao-products-row-active">
+        <div class="gestao-products-row-main">
+          <div class="gestao-products-row-name">${safeName}</div>
+          <div class="gestao-products-row-meta">${metaLine}</div>
+        </div>
+        <button class="small-danger" type="button" data-gestao-product-remove="${safeParentSku}">Remover</button>
+      </div>`;
+  }).join("");
+  container.innerHTML = rows;
 }
 
 function openGestaoCreateModal() {
@@ -19184,6 +19650,10 @@ function openGestaoCreateModal() {
     form.start_date.value = today;
     form.end_date.value = today;
   }
+  resetGestaoSelectedSkus();
+  renderGestaoProductResults();
+  renderGestaoSelectedSkus();
+  renderGestaoProductsVisibility();
 }
 
 function closeGestaoCreateModal() {
@@ -19195,6 +19665,7 @@ function closeGestaoCreateModal() {
   if (title) title.textContent = "Nova Corridinha";
   const submitBtn = modal ? modal.querySelector('button[type="submit"]') : null;
   if (submitBtn) submitBtn.textContent = "Criar";
+  resetGestaoSelectedSkus();
 }
 
 function openGestaoEditModal(campaign) {
@@ -19249,6 +19720,78 @@ function openGestaoEditModal(campaign) {
   form.querySelectorAll('[name="store_ids"]').forEach((cb) => {
     cb.checked = storeIds.includes(cb.value);
   });
+  // Produtos participantes — hidrata selectedProducts (agrupado por pai).
+// Prioriza campaign.target_products; faz fallback em campaign.target_skus para campanhas legadas.
+  resetGestaoSelectedSkus();
+  const targetProducts = Array.isArray(campaign.target_products) ? campaign.target_products : [];
+  if (targetProducts.length > 0) {
+    targetProducts.forEach((p) => {
+      const parentSku = String(p.parent_sku || p.sku || "").trim();
+      if (!parentSku) return;
+      const variationsFromP = Array.isArray(p.variations) && p.variations.length > 0
+        ? p.variations
+        : (Array.isArray(p.skus) ? p.skus.map((s) => ({ sku: String(s), color: "", size: "", price: 0 })) : []);
+      addGestaoSelectedProduct({
+        parent_id: String(p.parent_id || "").trim(),
+        parent_sku: parentSku,
+        name: String(p.name || "").trim(),
+        variations: variationsFromP
+      });
+    });
+    (pdvGestaoState.selectedProducts || []).forEach((product) => {
+      if (product.name || !product.parent_sku) return;
+      api(`/api/pdv/operational/search/products?q=${encodeURIComponent(product.parent_sku)}&limit=1`)
+        .then((res) => {
+          const items = (res && Array.isArray(res.items)) ? res.items : [];
+          const hit = items.find((it) => String(it.base_sku || it.parent_sku || it.sku || "").trim() === product.parent_sku) || items[0];
+          if (!hit) return;
+          product.name = String(hit.nome || hit.name || "").trim() || product.name;
+          if (Array.isArray(hit.variants) && hit.variants.length > 0 && product.variations.length <= 1) {
+            product.variations = hit.variants.map((v) => ({
+              sku: String(v.sku || "").trim(),
+              color: String(v.color || v.cor || "").trim(),
+              size: String(v.size || v.tamanho || "").trim(),
+              price: Number(v.preco_venda || v.price || 0) || 0
+            })).filter((v) => v.sku);
+            pdvGestaoState.selectedSkus = pdvGestaoState.selectedSkus.filter((s) => s.sku !== product.parent_sku);
+            product.variations.forEach((v) => {
+              pdvGestaoState.selectedSkus.push({
+                sku: v.sku, name: product.name, color: v.color, size: v.size, category: "", price: v.price
+              });
+            });
+          }
+          renderGestaoSelectedSkus();
+        })
+        .catch(() => { /* silencioso */ });
+    });
+  } else {
+    // Fallback legado: campanhas antigas só tinham target_skus.
+    const targetSkus = Array.isArray(campaign.target_skus) ? campaign.target_skus.filter(Boolean) : [];
+    if (targetSkus.length > 0) {
+      targetSkus.forEach((sku) => {
+        addGestaoSelectedProduct({
+          parent_sku: String(sku).trim(),
+          name: "",
+          variations: [{ sku: String(sku).trim(), color: "", size: "", price: 0 }]
+        });
+      });
+      (pdvGestaoState.selectedProducts || []).forEach((product) => {
+        if (product.name || !product.parent_sku) return;
+        api(`/api/pdv/operational/search/products?q=${encodeURIComponent(product.parent_sku)}&limit=1`)
+          .then((res) => {
+            const items = (res && Array.isArray(res.items)) ? res.items : [];
+            const hit = items.find((it) => String(it.base_sku || it.parent_sku || it.sku || "").trim() === product.parent_sku) || items[0];
+            if (!hit) return;
+            product.name = String(hit.nome || hit.name || "").trim() || product.name;
+            renderGestaoSelectedSkus();
+          })
+          .catch(() => { /* silencioso */ });
+      });
+    }
+  }
+  renderGestaoProductResults();
+  renderGestaoSelectedSkus();
+  renderGestaoProductsVisibility();
 }
 
 async function handleGestaoCreateSubmit(form) {
@@ -19278,6 +19821,28 @@ async function handleGestaoCreateSubmit(form) {
   // Extrair store_ids dos checkboxes marcados
   const storeIds = fd.getAll("store_ids");
   if (storeIds.length === 0) { alert("Selecione pelo menos uma loja participante."); return; }
+  // target_products e target_skus (flatten) a partir de selectedProducts (state do picker)
+  const targetProducts = (Array.isArray(pdvGestaoState.selectedProducts) ? pdvGestaoState.selectedProducts : [])
+    .map((p) => ({
+      parent_id: String(p.parent_id || "").trim(),
+      parent_sku: String(p.parent_sku || "").trim(),
+      name: String(p.name || "").trim(),
+      origin: String(p.origin || "").trim(),
+      variations: (Array.isArray(p.variations) ? p.variations : [])
+        .map((v) => ({
+          sku: String(v.sku || "").trim(),
+          color: String(v.color || "").trim(),
+          size: String(v.size || "").trim(),
+          price: Number(v.price || 0) || 0
+        }))
+        .filter((v) => v.sku)
+    }))
+    .filter((p) => p.parent_sku || p.variations.length > 0);
+  const targetSkus = targetProducts.flatMap((p) => p.variations.map((v) => v.sku));
+  if ((ruleType === "quantity_target" || ruleType === "highest_quantity") && targetProducts.length === 0) {
+    alert("Selecione ao menos um produto (SKU) para esta regra.");
+    return;
+  }
   const payload = {
     name: name,
     description: (fd.get("description") || "").toString().trim(),
@@ -19286,7 +19851,8 @@ async function handleGestaoCreateSubmit(form) {
     end_date: endDate,
     rule_type: ruleType,
     rules: rules,
-    target_skus: [],
+    target_skus: targetSkus,
+    target_products: targetProducts,
     target_categories: [],
     prize: { type: prizeType, value: prizeValue }
   };
@@ -19331,6 +19897,28 @@ async function handleGestaoEditSubmit(form) {
   // Extrair store_ids dos checkboxes marcados
   const storeIds = fd.getAll("store_ids");
   if (storeIds.length === 0) { alert("Selecione pelo menos uma loja participante."); return; }
+  // target_products e target_skus (flatten) a partir de selectedProducts (state do picker)
+  const targetProducts = (Array.isArray(pdvGestaoState.selectedProducts) ? pdvGestaoState.selectedProducts : [])
+    .map((p) => ({
+      parent_id: String(p.parent_id || "").trim(),
+      parent_sku: String(p.parent_sku || "").trim(),
+      name: String(p.name || "").trim(),
+      origin: String(p.origin || "").trim(),
+      variations: (Array.isArray(p.variations) ? p.variations : [])
+        .map((v) => ({
+          sku: String(v.sku || "").trim(),
+          color: String(v.color || "").trim(),
+          size: String(v.size || "").trim(),
+          price: Number(v.price || 0) || 0
+        }))
+        .filter((v) => v.sku)
+    }))
+    .filter((p) => p.parent_sku || p.variations.length > 0);
+  const targetSkus = targetProducts.flatMap((p) => p.variations.map((v) => v.sku));
+  if ((ruleType === "quantity_target" || ruleType === "highest_quantity") && targetProducts.length === 0) {
+    alert("Selecione ao menos um produto (SKU) para esta regra.");
+    return;
+  }
   const payload = {
     name: name || null,
     description: (fd.get("description") || "").toString().trim() || null,
@@ -19339,7 +19927,8 @@ async function handleGestaoEditSubmit(form) {
     end_date: endDate,
     rule_type: ruleType,
     rules: rules,
-    target_skus: [],
+    target_skus: targetSkus,
+    target_products: targetProducts,
     target_categories: [],
     prize: { type: prizeType, value: prizeValue }
   };
