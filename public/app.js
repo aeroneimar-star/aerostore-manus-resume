@@ -19275,7 +19275,7 @@ function renderGestaoCampaignCard(campaign) {
       </div>
       <div class="gestao-card-meta">
         <span>${escapeHtml(ruleLabel)}</span>
-        <span>${campaign.start_date || "—"} a ${campaign.end_date || "—"}</span>
+        <span>${formatDateBR(campaign.start_date) || "—"} a ${formatDateBR(campaign.end_date) || "—"}</span>
         <span>Prêmio: ${prizeStr}</span>
         <span>Lojas: ${escapeHtml(storesDisplay)}</span>
         <span>${productsDisplay}</span>
