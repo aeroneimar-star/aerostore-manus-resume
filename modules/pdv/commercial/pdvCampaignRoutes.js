@@ -17,6 +17,21 @@ const {
   getCampaignResults,
   markRewardPaid
 } = require("./pdvCampaignService");
+const {
+  listGoals,
+  getGoalById,
+  createGoal,
+  updateGoal,
+  activateGoal,
+  cancelGoal,
+  closeGoal,
+  deleteGoal,
+  getGoalProgress,
+  snapshotGoalProgress,
+  getGoalsSellerPerformance,
+  getGoalsStorePerformance,
+  listSellerOptions
+} = require("./pdvCommercialGoalsService");
 
 const router = express.Router();
 
@@ -54,6 +69,13 @@ function requireSettleAccess(req, res, next) {
     return next();
   }
   return res.status(403).json({ error: "Voce nao tem permissao para apurar campanhas." });
+}
+
+function requireGoalsManage(req, res, next) {
+  if (isAdminOrManager(req.user) || hasPermission(req.user, "can_manage_commercial_goals")) {
+    return next();
+  }
+  return res.status(403).json({ error: "Voce nao tem permissao para gerenciar metas comerciais." });
 }
 
 // ── Performance Base ─────────────────────────────────────────────────
@@ -207,6 +229,139 @@ router.post("/campaigns/:id/results/:result_id/mark-paid", requireSettleAccess, 
     res.json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao marcar premio como pago." });
+  }
+});
+
+// ── Commercial Goals (Motor de Metas) ────────────────────────────────
+
+router.get("/goals/catalog/sellers", requireCommercialAccess, async (req, res) => {
+  try {
+    const sellers = await listSellerOptions();
+    res.json({ success: true, data: sellers });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao listar vendedores." });
+  }
+});
+
+router.get("/goals/performance/seller/:seller_id", requireCommercialAccess, async (req, res) => {
+  try {
+    const { start_date, end_date } = req.query;
+    const result = await getGoalsSellerPerformance(req.params.seller_id, { start_date, end_date });
+    if (!result) return res.status(404).json({ error: "Vendedor nao encontrado." });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao buscar desempenho do vendedor (metas)." });
+  }
+});
+
+router.get("/goals/performance/store/:store_id", requireCommercialAccess, async (req, res) => {
+  try {
+    const { start_date, end_date } = req.query;
+    const result = await getGoalsStorePerformance(req.params.store_id, { start_date, end_date });
+    if (!result) return res.status(404).json({ error: "Loja invalida." });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao buscar desempenho da loja (metas)." });
+  }
+});
+
+router.get("/goals", requireCommercialAccess, async (req, res) => {
+  try {
+    const { store_id, status, seller_id } = req.query;
+    const result = await listGoals({ store_id, status, seller_id });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao listar metas." });
+  }
+});
+
+router.post("/goals", requireGoalsManage, async (req, res) => {
+  try {
+    const result = await createGoal(req.body || {}, req.user || {}, req);
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    const status = error.status === 400 ? 400 : 500;
+    res.status(status).json({ error: error.message || "Falha ao criar meta." });
+  }
+});
+
+router.get("/goals/:id", requireCommercialAccess, async (req, res) => {
+  try {
+    const result = await getGoalById(req.params.id);
+    if (!result) return res.status(404).json({ error: "Meta nao encontrada." });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao buscar meta." });
+  }
+});
+
+router.put("/goals/:id", requireGoalsManage, async (req, res) => {
+  try {
+    const result = await updateGoal(req.params.id, req.body || {}, req.user || {}, req);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    const status = error.status === 400 ? 400 : error.status === 404 ? 404 : 500;
+    res.status(status).json({ error: error.message || "Falha ao atualizar meta." });
+  }
+});
+
+router.post("/goals/:id/activate", requireGoalsManage, async (req, res) => {
+  try {
+    const result = await activateGoal(req.params.id, req.user || {}, req);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    const status = error.status === 400 ? 400 : error.status === 404 ? 404 : 500;
+    res.status(status).json({ error: error.message || "Falha ao ativar meta." });
+  }
+});
+
+router.post("/goals/:id/cancel", requireGoalsManage, async (req, res) => {
+  try {
+    const result = await cancelGoal(req.params.id, req.user || {}, req);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    const status = error.status === 400 ? 400 : error.status === 404 ? 404 : 500;
+    res.status(status).json({ error: error.message || "Falha ao cancelar meta." });
+  }
+});
+
+router.post("/goals/:id/close", requireGoalsManage, async (req, res) => {
+  try {
+    const result = await closeGoal(req.params.id, req.user || {}, req);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    const status = error.status === 400 ? 400 : error.status === 404 ? 404 : 500;
+    res.status(status).json({ error: error.message || "Falha ao encerrar meta." });
+  }
+});
+
+router.get("/goals/:id/progress", requireCommercialAccess, async (req, res) => {
+  try {
+    const result = await getGoalProgress(req.params.id);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    const status = error.status === 404 ? 404 : 500;
+    res.status(status).json({ error: error.message || "Falha ao calcular progresso." });
+  }
+});
+
+router.post("/goals/:id/snapshot", requireGoalsManage, async (req, res) => {
+  try {
+    const result = await snapshotGoalProgress(req.params.id);
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    const status = error.status === 404 ? 404 : 500;
+    res.status(status).json({ error: error.message || "Falha ao registrar snapshot." });
+  }
+});
+
+router.delete("/goals/:id", requireGoalsManage, async (req, res) => {
+  try {
+    const result = await deleteGoal(req.params.id, req.user || {}, req);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    const status = error.status === 400 ? 400 : error.status === 404 ? 404 : 500;
+    res.status(status).json({ error: error.message || "Falha ao excluir meta." });
   }
 });
 

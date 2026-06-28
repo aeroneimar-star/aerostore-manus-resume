@@ -2378,6 +2378,61 @@ async function initializeDatabase() {
   await run(`CREATE INDEX IF NOT EXISTS idx_result_challenge ON campaign_results(challenge_id)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_result_seller ON campaign_results(seller_id)`);
 
+  // ── Commercial Goals (Motor de Metas Comerciais) ─────────────────────
+  await run(`
+    CREATE TABLE IF NOT EXISTS commercial_goals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      store_ids_json TEXT NOT NULL DEFAULT '[]',
+      seller_ids_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_commercial_goals_status ON commercial_goals(status)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_commercial_goals_period ON commercial_goals(period_start, period_end)`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS commercial_goal_targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      goal_id INTEGER NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL DEFAULT '',
+      metric TEXT NOT NULL,
+      target_value REAL NOT NULL,
+      weight REAL NOT NULL DEFAULT 1,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (goal_id) REFERENCES commercial_goals(id)
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_commercial_goal_targets_goal ON commercial_goal_targets(goal_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_commercial_goal_targets_metric ON commercial_goal_targets(metric)`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS commercial_goal_progress_snapshot (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      goal_id INTEGER NOT NULL,
+      target_id INTEGER,
+      metric TEXT NOT NULL,
+      current_value REAL NOT NULL DEFAULT 0,
+      target_value REAL NOT NULL DEFAULT 0,
+      progress_percent REAL NOT NULL DEFAULT 0,
+      projection_value REAL,
+      snapshot_date TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (goal_id) REFERENCES commercial_goals(id)
+    )
+  `);
+  await run(`CREATE INDEX IF NOT EXISTS idx_commercial_goal_snapshot_goal ON commercial_goal_progress_snapshot(goal_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_commercial_goal_snapshot_date ON commercial_goal_progress_snapshot(snapshot_date)`);
+
   await ensureSeedData();
   await ensureAiCatalogSeed();
   await migrateLegacyCashbacks();
