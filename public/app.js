@@ -20224,12 +20224,6 @@ function renderPdvGoalEditorModalMarkup() {
         <span class="metas-kpi-suffix">&nbsp;</span>
       </div>`;
   }).join("");
-  const sellerOptions = (Array.isArray(pdvGestaoState.sellerCatalog) ? pdvGestaoState.sellerCatalog : [])
-    .map((s) => {
-      const label = (s.name || ("Vendedor #" + s.id)) + (s.store ? " \u00b7 " + (METAS_STORE_LABELS[s.store_key] || s.store) : "");
-      return `<option value="${escapeHtml(String(s.id))}">${escapeHtml(label)}</option>`;
-    })
-    .join("");
   return `
     <div class="metas-modal" id="pdv-goal-editor-modal" style="display:none;">
       <div class="modal-backdrop"></div>
@@ -20268,11 +20262,9 @@ function renderPdvGoalEditorModalMarkup() {
           </div>
           <div class="metas-modal-section">
             <h4 class="metas-modal-section-title">Vendedores <span style="color:#64748b">(opcional)</span></h4>
-            <p class="metas-modal-section-hint">Se vazio, a meta vale para toda a loja. Para meta por vendedor, selecione um ou mais.</p>
-            <div class="form-field">
-              <select name="seller_ids" multiple size="4" style="min-height: 5rem;">
-                ${sellerOptions || '<option disabled>Nenhum vendedor disponivel</option>'}
-              </select>
+            <p class="metas-modal-section-hint">Marque os vendedores que entram na meta. Se nenhum for marcado, a meta vale para toda a loja.</p>
+            <div class="metas-sellers-checklist" id="pdv-goal-sellers-checklist" data-sellers-state="loading">
+              <div class="metas-sellers-empty">Carregando vendedores\u2026</div>
             </div>
           </div>
           <div class="metas-modal-section">
@@ -20508,12 +20500,12 @@ function openPdvGoalEditor(goal) {
   pdvGestaoState.goalEditorOpen = true;
   pdvGestaoState.goalEditingId = goal ? Number(goal.id) : null;
   ensurePdvSellerCatalogLoaded((catalog) => {
-    // Re-renderiza o <select> do modal assim que o catalogo chega.
+    // Re-renderiza a checklist do modal assim que o catalogo chega.
     // Necessario porque o markup inicial do modal e gerado antes do fetch
     // assincrono terminar — sem isso, o usuario veria "Nenhum vendedor
     // disponivel" mesmo com vendedores cadastrados.
     if (pdvGestaoState.goalEditorOpen) {
-      refreshPdvGoalSellersSelect(catalog);
+      refreshPdvGoalSellersChecklist(catalog);
     }
   }).catch(() => {});
   if (goal) {
@@ -20584,11 +20576,17 @@ function fillPdvGoalEditorForm(goal) {
     cb.checked = storeIds.includes(cb.value);
   });
   const sellerIds = Array.isArray(goal.seller_ids) ? goal.seller_ids.map(String) : [];
-  Array.from(form.seller_ids?.options || []).forEach((opt) => {
-    opt.selected = sellerIds.includes(opt.value);
-  });
-  // Guarda para o refreshPdvGoalSellersSelect aplicar caso o catalogo chegue
-  // apos o select ja ter sido populado com placeholder.
+  // Marca as checkboxes imediatamente caso a checklist ja esteja pronta.
+  // Caso o catalogo ainda esteja carregando, refreshPdvGoalSellersChecklist
+  // aplicara os IDs pendentes quando o fetch terminar.
+  const sellerCheckboxes = form.querySelectorAll('#pdv-goal-sellers-checklist input[name="seller_ids"]');
+  if (sellerCheckboxes.length > 0) {
+    sellerCheckboxes.forEach((cb) => {
+      cb.checked = sellerIds.includes(cb.value);
+    });
+  }
+  // Guarda para o refreshPdvGoalSellersChecklist aplicar caso o catalogo chegue
+  // apos a checklist ja ter sido populada com placeholder.
   pdvGestaoState.goalEditingSellerIds = sellerIds.slice();
   const targets = Array.isArray(goal.targets) ? goal.targets.filter((t) => t.enabled !== false) : [];
   // Mapa metric -> target_value (pega o primeiro valor de cada metrica).
@@ -20838,36 +20836,48 @@ async function ensurePdvSellerCatalogLoaded(onLoaded) {
   }
 }
 
-// Re-renderiza o <select name="seller_ids"> do modal de Meta com base no
-// catalogo. Preserva os valores ja selecionados (re-aplicando apos reconstruir).
-// Tambem aplica seller_ids pendentes da edicao quando o catalogo chega depois.
-function refreshPdvGoalSellersSelect(catalog) {
-  const select = document.querySelector("#pdv-goal-editor-form select[name='seller_ids']");
-  if (!select) return;
-  const previous = Array.from(select.options)
-    .filter((o) => o.selected && !o.disabled)
-    .map((o) => String(o.value));
+// Re-renderiza a checklist de vendedores (#pdv-goal-sellers-checklist) do
+// modal de Meta com base no catalogo. Substituiu o antigo <select multiple>
+// para permitir marcacao com clique simples (UX operacional).
+// Preserva os valores ja marcados e aplica seller_ids pendentes da edicao
+// quando o catalogo chega depois.
+function refreshPdvGoalSellersChecklist(catalog) {
+  const list = document.getElementById("pdv-goal-sellers-checklist");
+  if (!list) return;
+  const previous = Array.from(list.querySelectorAll('input[name="seller_ids"]'))
+    .filter((cb) => cb.checked)
+    .map((cb) => String(cb.value));
   const pendingEditing = Array.isArray(pdvGestaoState.goalEditingSellerIds)
     ? pdvGestaoState.goalEditingSellerIds.map(String)
     : [];
-  const list = Array.isArray(catalog) ? catalog.filter((s) => s && (s.id !== undefined && s.id !== null)) : [];
-  if (list.length === 0) {
-    select.innerHTML = '<option disabled>Nenhum vendedor disponivel</option>';
+  const sellers = Array.isArray(catalog)
+    ? catalog.filter((s) => s && (s.id !== undefined && s.id !== null))
+    : [];
+  if (sellers.length === 0) {
+    list.setAttribute("data-sellers-state", "empty");
+    list.innerHTML = '<div class="metas-sellers-empty">Nenhum vendedor disponivel</div>';
     return;
   }
-  const optionsHtml = list.map((s) => {
+  list.setAttribute("data-sellers-state", "ready");
+  list.innerHTML = sellers.map((s) => {
     const id = String(s.id);
     const name = String(s.name || ("Vendedor #" + id));
     const storeLabel = s.store ? (METAS_STORE_LABELS[s.store_key] || s.store) : "";
-    const label = storeLabel ? (name + " \u00b7 " + storeLabel) : name;
-    return '<option value="' + escapeHtml(id) + '">' + escapeHtml(label) + '</option>';
+    const storeBadge = storeLabel
+      ? '<span class="metas-seller-item-store">' + escapeHtml(storeLabel) + '</span>'
+      : '';
+    return `
+      <label class="metas-seller-item">
+        <input type="checkbox" name="seller_ids" value="${escapeHtml(id)}" />
+        <span class="metas-seller-item-name">${escapeHtml(name)}</span>
+        ${storeBadge}
+      </label>`;
   }).join("");
-  select.innerHTML = optionsHtml;
-  // Restaura selecao: prioriza pendentes de edicao, senao usa selecao anterior.
+  // Restaura marcacao: prioriza pendentes de edicao, senao usa marcacao anterior.
   const wantSelected = pendingEditing.length > 0 ? pendingEditing : previous;
-  Array.from(select.options).forEach((opt) => {
-    if (wantSelected.includes(String(opt.value))) {
-      opt.selected = true;
+  list.querySelectorAll('input[name="seller_ids"]').forEach((cb) => {
+    if (wantSelected.includes(String(cb.value))) {
+      cb.checked = true;
     }
   });
 }
