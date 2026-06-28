@@ -18999,6 +18999,9 @@ const pdvGestaoState = {
   goalEditorOpen: false,
   goalEditingId: null,
   goalSubmitting: false,
+  // Seller IDs que devem ficar pre-selecionados quando o catalogo terminar de
+  // carregar (usado em edicao, quando o select ainda esta vazio).
+  goalEditingSellerIds: [],
   goalProgressOpen: false,
   goalProgressId: null,
   goalProgressLoading: false,
@@ -19007,7 +19010,10 @@ const pdvGestaoState = {
   // Catalogo de vendedores para o seletor multi (opcional nesta fase).
   sellerCatalog: [],
   sellerCatalogLoading: false,
-  sellerCatalogLoaded: false
+  sellerCatalogLoaded: false,
+  // Callbacks que devem ser disparados quando o catalogo terminar de carregar
+  // (usado para re-renderizar selects que ja estavam no DOM sem dados).
+  sellerCatalogPendingCallbacks: []
 };
 
 function resetGestaoSelectedSkus() {
@@ -20501,7 +20507,15 @@ function openPdvGoalEditor(goal) {
   if (!modal) return;
   pdvGestaoState.goalEditorOpen = true;
   pdvGestaoState.goalEditingId = goal ? Number(goal.id) : null;
-  ensurePdvSellerCatalogLoaded().catch(() => {});
+  ensurePdvSellerCatalogLoaded((catalog) => {
+    // Re-renderiza o <select> do modal assim que o catalogo chega.
+    // Necessario porque o markup inicial do modal e gerado antes do fetch
+    // assincrono terminar — sem isso, o usuario veria "Nenhum vendedor
+    // disponivel" mesmo com vendedores cadastrados.
+    if (pdvGestaoState.goalEditorOpen) {
+      refreshPdvGoalSellersSelect(catalog);
+    }
+  }).catch(() => {});
   if (goal) {
     fillPdvGoalEditorForm(goal);
   } else {
@@ -20520,6 +20534,7 @@ function closePdvGoalEditor() {
   pdvGestaoState.goalEditorOpen = false;
   pdvGestaoState.goalEditingId = null;
   pdvGestaoState.goalSubmitting = false;
+  pdvGestaoState.goalEditingSellerIds = [];
   const modal = document.getElementById("pdv-goal-editor-modal");
   if (modal) modal.style.display = "none";
   const errBox = document.getElementById("pdv-goal-editor-error");
@@ -20551,6 +20566,7 @@ function resetPdvGoalEditorForm() {
   if (title) title.textContent = "Nova Meta";
   const submit = modal.querySelector("#pdv-goal-editor-submit");
   if (submit) submit.textContent = "Criar meta";
+  pdvGestaoState.goalEditingSellerIds = [];
 }
 
 function fillPdvGoalEditorForm(goal) {
@@ -20571,6 +20587,9 @@ function fillPdvGoalEditorForm(goal) {
   Array.from(form.seller_ids?.options || []).forEach((opt) => {
     opt.selected = sellerIds.includes(opt.value);
   });
+  // Guarda para o refreshPdvGoalSellersSelect aplicar caso o catalogo chegue
+  // apos o select ja ter sido populado com placeholder.
+  pdvGestaoState.goalEditingSellerIds = sellerIds.slice();
   const targets = Array.isArray(goal.targets) ? goal.targets.filter((t) => t.enabled !== false) : [];
   // Mapa metric -> target_value (pega o primeiro valor de cada metrica).
   const valueByMetric = {};
@@ -20774,8 +20793,29 @@ async function submitPdvGoalEditor(form) {
 }
 
 // Carrega catalogo de vendedores (silencioso — nao bloqueia UI).
-async function ensurePdvSellerCatalogLoaded() {
-  if (pdvGestaoState.sellerCatalogLoaded || pdvGestaoState.sellerCatalogLoading) return;
+// Carrega catalogo de vendedores (silencioso). Aceita um callback opcional
+// disparado quando o catalogo termina de carregar — usado para re-renderizar
+// selects que ja estavam no DOM antes da chegada dos dados (issue do modal
+// Nova Meta mostrando "Nenhum vendedor disponivel" antes do fetch terminar).
+async function ensurePdvSellerCatalogLoaded(onLoaded) {
+  const fireCallback = (catalog) => {
+    if (typeof onLoaded === "function") {
+      try { onLoaded(catalog); } catch (e) { /* ignora erro do consumer */ }
+    }
+  };
+  // Ja carregado: dispara callback de imediato.
+  if (pdvGestaoState.sellerCatalogLoaded) {
+    fireCallback(pdvGestaoState.sellerCatalog);
+    return;
+  }
+  // Em andamento: enfileira callback para disparar quando terminar.
+  if (pdvGestaoState.sellerCatalogLoading) {
+    if (typeof onLoaded === "function") {
+      pdvGestaoState.sellerCatalogPendingCallbacks = pdvGestaoState.sellerCatalogPendingCallbacks || [];
+      pdvGestaoState.sellerCatalogPendingCallbacks.push(onLoaded);
+    }
+    return;
+  }
   pdvGestaoState.sellerCatalogLoading = true;
   try {
     const res = await api("/api/pdv/commercial/goals/catalog/sellers");
@@ -20787,6 +20827,49 @@ async function ensurePdvSellerCatalogLoaded() {
   } finally {
     pdvGestaoState.sellerCatalogLoading = false;
   }
+  fireCallback(pdvGestaoState.sellerCatalog);
+  // Drena callbacks enfileirados durante o load.
+  const pending = pdvGestaoState.sellerCatalogPendingCallbacks || [];
+  pdvGestaoState.sellerCatalogPendingCallbacks = [];
+  for (const cb of pending) {
+    if (typeof cb === "function") {
+      try { cb(pdvGestaoState.sellerCatalog); } catch (e) { /* ignora */ }
+    }
+  }
+}
+
+// Re-renderiza o <select name="seller_ids"> do modal de Meta com base no
+// catalogo. Preserva os valores ja selecionados (re-aplicando apos reconstruir).
+// Tambem aplica seller_ids pendentes da edicao quando o catalogo chega depois.
+function refreshPdvGoalSellersSelect(catalog) {
+  const select = document.querySelector("#pdv-goal-editor-form select[name='seller_ids']");
+  if (!select) return;
+  const previous = Array.from(select.options)
+    .filter((o) => o.selected && !o.disabled)
+    .map((o) => String(o.value));
+  const pendingEditing = Array.isArray(pdvGestaoState.goalEditingSellerIds)
+    ? pdvGestaoState.goalEditingSellerIds.map(String)
+    : [];
+  const list = Array.isArray(catalog) ? catalog.filter((s) => s && (s.id !== undefined && s.id !== null)) : [];
+  if (list.length === 0) {
+    select.innerHTML = '<option disabled>Nenhum vendedor disponivel</option>';
+    return;
+  }
+  const optionsHtml = list.map((s) => {
+    const id = String(s.id);
+    const name = String(s.name || ("Vendedor #" + id));
+    const storeLabel = s.store ? (METAS_STORE_LABELS[s.store_key] || s.store) : "";
+    const label = storeLabel ? (name + " \u00b7 " + storeLabel) : name;
+    return '<option value="' + escapeHtml(id) + '">' + escapeHtml(label) + '</option>';
+  }).join("");
+  select.innerHTML = optionsHtml;
+  // Restaura selecao: prioriza pendentes de edicao, senao usa selecao anterior.
+  const wantSelected = pendingEditing.length > 0 ? pendingEditing : previous;
+  Array.from(select.options).forEach((opt) => {
+    if (wantSelected.includes(String(opt.value))) {
+      opt.selected = true;
+    }
+  });
 }
 
 // ── Modal de Progresso ────────────────────────────────────────────
