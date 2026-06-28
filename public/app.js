@@ -18970,6 +18970,8 @@ async function commitPdvTinyImportPreview() {
 // ── Gestão Comercial / Corridinhas ─────────────────────────────────
 
 const pdvGestaoState = {
+  // Aba ativa em /pdv/gestao. Default "campaigns" preserva Corridinhas como ponto de entrada.
+  activeTab: "campaigns",
   campaigns: [],
   loading: false,
   error: "",
@@ -18988,7 +18990,24 @@ const pdvGestaoState = {
   // Produtos (pai) adicionados a campanha. Cada item tem { parent_id, parent_sku, name, variations: [{sku,color,size,price}] }.
   selectedProducts: [],
   // Projecao flatten de selectedProducts — lista de SKUs individuais, mantida por compat com consumidores legados.
-  selectedSkus: []
+  selectedSkus: [],
+  // ── Metas Comerciais (Fase 4 — frontend minimo) ─────────────────
+  goals: [],
+  goalsLoading: false,
+  goalsError: "",
+  goalsLoaded: false,
+  goalEditorOpen: false,
+  goalEditingId: null,
+  goalSubmitting: false,
+  goalProgressOpen: false,
+  goalProgressId: null,
+  goalProgressLoading: false,
+  goalProgressError: "",
+  goalProgressData: null,
+  // Catalogo de vendedores para o seletor multi (opcional nesta fase).
+  sellerCatalog: [],
+  sellerCatalogLoading: false,
+  sellerCatalogLoaded: false
 };
 
 function resetGestaoSelectedSkus() {
@@ -19130,8 +19149,17 @@ function renderPdvGestaoFront(container) {
           <button class="secondary-button" type="button" data-action="gestao-refresh">Atualizar</button>
         </div>
       </div>
-      ${campaigns.length === 0 ? '<div class="empty-state"><strong>Sem campanhas</strong><span>Crie uma Corridinha para iniciar.</span></div>' :
-        '<div class="gestao-campaigns-list">' + campaigns.map(renderGestaoCampaignCard).join("") + "</div>"}
+      ${renderPdvGestaoTabsBar()}
+      <div id="pdv-gestao-tab-campaigns" class="pdv-gestao-tab-panel"${(pdvGestaoState.activeTab === "campaigns") ? "" : " hidden"}>
+        ${campaigns.length === 0 ? '<div class="empty-state"><strong>Sem campanhas</strong><span>Crie uma Corridinha para iniciar.</span></div>' :
+          '<div class="gestao-campaigns-list">' + campaigns.map(renderGestaoCampaignCard).join("") + "</div>"}
+      </div>
+      <div id="pdv-gestao-tab-goals" class="pdv-gestao-tab-panel"${(pdvGestaoState.activeTab === "goals") ? "" : " hidden"}>
+        ${renderPdvGestaoGoalsTabContent()}
+      </div>
+      <div id="pdv-gestao-tab-performance" class="pdv-gestao-tab-panel"${(pdvGestaoState.activeTab === "performance") ? "" : " hidden"}>
+        ${renderPdvGestaoPerformanceTabContent()}
+      </div>
     </div>
     <div class="panel" id="gestao-ranking-panel"></div>
     <div class="gestao-create-modal" id="gestao-create-modal" style="display:none;">
@@ -19186,8 +19214,28 @@ function renderPdvGestaoFront(container) {
           </div>
         </form>
       </div>
-    </div>`;
+    </div>
+    ${renderPdvGoalEditorModalMarkup()}
+    ${renderPdvGoalProgressModalMarkup()}`;
   bindPdvGestaoActions(container);
+}
+
+// Renderiza a barra de abas (Corridinhas / Metas / Performance).
+// A aba ativa é destacada e o estado fica em pdvGestaoState.activeTab.
+function renderPdvGestaoTabsBar() {
+  const active = pdvGestaoState.activeTab || "campaigns";
+  const campaignsCount = Array.isArray(pdvGestaoState.campaigns) ? pdvGestaoState.campaigns.length : 0;
+  const goalsCount = Array.isArray(pdvGestaoState.goals) ? pdvGestaoState.goals.length : 0;
+  const tabBtn = (id, label, count, badgeCount) => `
+    <button class="pdv-gestao-tab-btn${active === id ? " active" : ""}" type="button" data-pdv-gestao-tab="${id}">
+      ${escapeHtml(label)}${badgeCount ? `<span class="pdv-gestao-tab-count">${count}</span>` : ""}
+    </button>`;
+  return `
+    <div class="pdv-gestao-tabs" role="tablist" aria-label="Gestão Comercial">
+      ${tabBtn("campaigns", "Corridinhas", campaignsCount, true)}
+      ${tabBtn("goals", "Metas", goalsCount, true)}
+      ${tabBtn("performance", "Performance", 0, false)}
+    </div>`;
 }
 
 function renderGestaoCampaignCard(campaign) {
@@ -19300,6 +19348,10 @@ function bindPdvGestaoActions(container) {
       if (action === "gestao-refresh") { await loadPdvGestaoFront(); return; }
       if (action === "gestao-create") { openGestaoCreateModal(); return; }
       if (action === "gestao-close-create") { closeGestaoCreateModal(); return; }
+      if (action === "gestao-tab-goals-new") { openPdvGoalEditor(); return; }
+      if (action === "gestao-tab-goals-refresh") { await loadPdvGestaoGoals(true); return; }
+      if (action === "gestao-close-goal-editor") { closePdvGoalEditor(); return; }
+      if (action === "gestao-close-goal-progress") { closePdvGoalProgress(); return; }
     });
   });
   container.querySelectorAll("[data-gestao-action]").forEach((btn) => {
@@ -19309,6 +19361,46 @@ function bindPdvGestaoActions(container) {
       await handleGestaoAction(btn.dataset.gestaoAction, Number(btn.dataset.id));
     });
   });
+  // Botoes de aba (Corridinhas / Metas / Performance)
+  container.querySelectorAll("[data-pdv-gestao-tab]").forEach((btn) => {
+    if (btn.dataset.boundTab) return;
+    btn.dataset.boundTab = "true";
+    btn.addEventListener("click", () => {
+      setPdvGestaoActiveTab(btn.dataset.pdvGestaoTab);
+    });
+  });
+  // Botoes de acao das Metas (cards)
+  container.querySelectorAll("[data-pdv-goal-action]").forEach((btn) => {
+    if (btn.dataset.boundGoalAction) return;
+    btn.dataset.boundGoalAction = "true";
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      await handlePdvGoalAction(btn.dataset.pdvGoalAction, Number(btn.dataset.id));
+    });
+  });
+  // Form de Nova/Editar Meta
+  const goalForm = container.querySelector("#pdv-goal-editor-form");
+  if (goalForm && !goalForm.dataset.boundSubmit) {
+    goalForm.dataset.boundSubmit = "true";
+    goalForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      await submitPdvGoalEditor(goalForm);
+    });
+  }
+  // Backdrop do modal de Meta
+  const goalBackdrop = container.querySelector("#pdv-goal-editor-modal .modal-backdrop");
+  if (goalBackdrop && !goalBackdrop.dataset.boundBackdrop) {
+    goalBackdrop.dataset.boundBackdrop = "true";
+    goalBackdrop.addEventListener("click", closePdvGoalEditor);
+  }
+  const progressBackdrop = container.querySelector("#pdv-goal-progress-modal .modal-backdrop");
+  if (progressBackdrop && !progressBackdrop.dataset.boundBackdrop) {
+    progressBackdrop.dataset.boundBackdrop = "true";
+    progressBackdrop.addEventListener("click", closePdvGoalProgress);
+  }
+  // Liga toggles dos KPIs no editor de meta
+  bindPdvGoalEditorKpiToggles();
   const form = container.querySelector("#gestao-create-form");
   if (form && !form.dataset.boundSubmit) {
     form.dataset.boundSubmit = "true";
@@ -20009,6 +20101,836 @@ async function loadGestaoRankingPanel(campaignId, settled = false) {
   } catch (err) {
     panel.innerHTML = '<div class="panel"><div class="panel-header"><h3>Ranking</h3></div><div class="empty-state"><strong>Erro ao carregar ranking</strong><span>' + escapeHtml(err.message || err.error || "") + '</span></div></div>';
   }
+}
+
+// ── Metas Comerciais (Fase 4 — frontend minimo) ─────────────────
+// Catalogo sincronizado com METRIC_LABELS/STORE_LABELS do backend (pdvCommercialGoalsService).
+const METAS_METRIC_LABELS = {
+  net_revenue: "Faturamento liquido",
+  average_ticket: "Ticket medio",
+  pa: "PA (pecas por atendimento)",
+  customer_linked_percent: "% vendas com cliente vinculado",
+  customer_size_percent: "% cadastro com tamanho"
+};
+const METAS_METRIC_DECIMALS = {
+  net_revenue: 2,
+  average_ticket: 2,
+  pa: 2,
+  customer_linked_percent: 2,
+  customer_size_percent: 2
+};
+const METAS_STORE_LABELS = {
+  vila: "Vila",
+  botanico: "Botanico",
+  sul: "Sul"
+};
+const METAS_STATUS_LABELS = {
+  draft: "Rascunho",
+  active: "Ativa",
+  closed: "Encerrada",
+  cancelled: "Cancelada"
+};
+
+// Definicao dos KPIs exibidos no formulario de Nova/Editar Meta.
+const METAS_KPI_DEFINITIONS = [
+  { metric: "net_revenue", label: "Faturamento liquido", suffix: "R$", step: "0.01" },
+  { metric: "average_ticket", label: "Ticket medio", suffix: "R$", step: "0.01" },
+  { metric: "pa", label: "PA (pecas por atendimento)", suffix: "pecas", step: "0.01" },
+  { metric: "customer_linked_percent", label: "% vendas com cliente vinculado", suffix: "%", step: "0.01", max: 100 },
+  { metric: "customer_size_percent", label: "% cadastro com tamanho", suffix: "%", step: "0.01", max: 100 }
+];
+
+// Permissoes — leitura: gestor ou can_view_commercial_management; gestao: gestor ou can_manage_commercial_goals.
+function canViewCommercialGoals() {
+  return isCurrentUserManagerProfile() || hasPermission("can_view_commercial_management");
+}
+
+function canManageCommercialGoals() {
+  return isCurrentUserManagerProfile() || hasPermission("can_manage_commercial_goals");
+}
+
+// Conteudo do painel de Metas — renderizado dentro do panel unico de Gestao Comercial.
+function renderPdvGestaoGoalsTabContent() {
+  const canManage = canManageCommercialGoals();
+  if (pdvGestaoState.goalsError) {
+    return `
+      <div class="metas-state">
+        <strong>Nao foi possivel carregar as metas</strong>
+        <span>${escapeHtml(pdvGestaoState.goalsError)}</span>
+        <div class="metas-state-action">
+          <button class="secondary-button" type="button" data-action="gestao-tab-goals-refresh">Tentar novamente</button>
+        </div>
+      </div>`;
+  }
+  if (pdvGestaoState.goalsLoading && !pdvGestaoState.goalsLoaded) {
+    return '<div class="metas-state"><span>Carregando metas...</span></div>';
+  }
+  if (!pdvGestaoState.goalsLoaded) {
+    return `
+      <div class="metas-state">
+        <strong>Metas Comerciais</strong>
+        <span>Clique em "Atualizar" para carregar as metas existentes.</span>
+        <div class="metas-state-action">
+          ${canManage ? '<button class="primary-button" type="button" data-action="gestao-tab-goals-new">+ Nova Meta</button>' : ""}
+          <button class="secondary-button" type="button" data-action="gestao-tab-goals-refresh">Atualizar</button>
+        </div>
+      </div>`;
+  }
+  const goals = Array.isArray(pdvGestaoState.goals) ? pdvGestaoState.goals : [];
+  const toolbar = `
+    <div class="action-row" style="margin-bottom: 0.85rem;">
+      ${canManage ? '<button class="primary-button" type="button" data-action="gestao-tab-goals-new">+ Nova Meta</button>' : ""}
+      <button class="secondary-button" type="button" data-action="gestao-tab-goals-refresh">Atualizar</button>
+    </div>`;
+  if (goals.length === 0) {
+    return toolbar + `
+      <div class="metas-state">
+        <strong>Sem metas ainda</strong>
+        <span>Crie a primeira meta comercial para acompanhar faturamento, ticket, PA e indicadores de cadastro.</span>
+      </div>`;
+  }
+  return toolbar + '<div class="metas-list">' + goals.map(renderPdvGoalCard).join("") + '</div>';
+}
+
+// Placeholder da aba Performance (Fase 5).
+function renderPdvGestaoPerformanceTabContent() {
+  return `
+    <div class="metas-state">
+      <strong>Performance comercial</strong>
+      <span>Sera exibida na proxima fase. Aqui aparecera o ranking consolidado por loja e vendedor.</span>
+    </div>`;
+}
+
+// Markup do modal de Nova/Editar Meta. Sempre presente no DOM, display:none por padrao.
+function renderPdvGoalEditorModalMarkup() {
+  const kpiRows = METAS_KPI_DEFINITIONS.map((kpi) => {
+    const maxAttr = kpi.max != null ? ' max="' + kpi.max + '"' : '';
+    return `
+      <div class="metas-kpi-row" data-metas-kpi="${kpi.metric}">
+        <label class="metas-kpi-toggle">
+          <input type="checkbox" data-metas-kpi-toggle="${kpi.metric}" />
+          <span class="metas-kpi-label">${escapeHtml(kpi.label)}</span>
+        </label>
+        <div class="metas-kpi-input">
+          <input type="number" min="0" step="${kpi.step || "0.01"}"${maxAttr} data-metas-kpi-value="${kpi.metric}" placeholder="0" disabled />
+          <span class="metas-kpi-suffix">${escapeHtml(kpi.suffix || "")}</span>
+        </div>
+        <span class="metas-kpi-suffix">&nbsp;</span>
+      </div>`;
+  }).join("");
+  const sellerOptions = (Array.isArray(pdvGestaoState.sellerCatalog) ? pdvGestaoState.sellerCatalog : [])
+    .map((s) => {
+      const label = (s.name || ("Vendedor #" + s.id)) + (s.store ? " \u00b7 " + (METAS_STORE_LABELS[s.store_key] || s.store) : "");
+      return `<option value="${escapeHtml(String(s.id))}">${escapeHtml(label)}</option>`;
+    })
+    .join("");
+  return `
+    <div class="metas-modal" id="pdv-goal-editor-modal" style="display:none;">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="pdv-goal-editor-title">Nova Meta</h3>
+          <button class="ghost-button" type="button" data-action="gestao-close-goal-editor" aria-label="Fechar">\u2715</button>
+        </div>
+        <form class="modal-form" id="pdv-goal-editor-form">
+          <div class="form-field">
+            <label>Nome da meta</label>
+            <input type="text" name="name" required maxlength="120" placeholder="Ex: Meta Junho Vila" />
+          </div>
+          <div class="form-field">
+            <label>Descricao <span style="color:#64748b">(opcional)</span></label>
+            <textarea name="description" maxlength="500" placeholder="Detalhes, contexto, observacao"></textarea>
+          </div>
+          <div class="form-row">
+            <div class="form-field">
+              <label>Periodo inicial</label>
+              <input type="date" name="period_start" required />
+            </div>
+            <div class="form-field">
+              <label>Periodo final</label>
+              <input type="date" name="period_end" required />
+            </div>
+          </div>
+          <div class="metas-modal-section">
+            <h4 class="metas-modal-section-title">Lojas participantes</h4>
+            <p class="metas-modal-section-hint">Selecione ao menos uma loja. Os KPIs ativos serao replicados para cada loja escolhida.</p>
+            <div class="checkbox-group">
+              <label><input type="checkbox" name="store_ids" value="vila" /> Vila</label>
+              <label><input type="checkbox" name="store_ids" value="botanico" /> Botanico</label>
+              <label><input type="checkbox" name="store_ids" value="sul" /> Sul</label>
+            </div>
+          </div>
+          <div class="metas-modal-section">
+            <h4 class="metas-modal-section-title">Vendedores <span style="color:#64748b">(opcional)</span></h4>
+            <p class="metas-modal-section-hint">Se vazio, a meta vale para toda a loja. Para meta por vendedor, selecione um ou mais.</p>
+            <div class="form-field">
+              <select name="seller_ids" multiple size="4" style="min-height: 5rem;">
+                ${sellerOptions || '<option disabled>Nenhum vendedor disponivel</option>'}
+              </select>
+            </div>
+          </div>
+          <div class="metas-modal-section">
+            <h4 class="metas-modal-section-title">KPIs ativos</h4>
+            <p class="metas-modal-section-hint">Marque os indicadores que entram na meta e defina o valor-alvo. Pelo menos um KPI precisa estar ativo.</p>
+            <div class="metas-kpi-list">
+              ${kpiRows}
+            </div>
+          </div>
+          <div class="metas-form-error" id="pdv-goal-editor-error" hidden></div>
+          <div class="metas-modal-actions">
+            <button class="ghost-button" type="button" data-action="gestao-close-goal-editor">Cancelar</button>
+            <button class="primary-button" type="submit" id="pdv-goal-editor-submit">Criar meta</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+}
+
+// Markup do modal de Progresso. Sempre presente no DOM, display:none por padrao.
+function renderPdvGoalProgressModalMarkup() {
+  return `
+    <div class="metas-progress-modal" id="pdv-goal-progress-modal" style="display:none;">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="pdv-goal-progress-title">Progresso da Meta</h3>
+          <button class="ghost-button" type="button" data-action="gestao-close-goal-progress" aria-label="Fechar">\u2715</button>
+        </div>
+        <div class="metas-progress-modal-body" id="pdv-goal-progress-body"></div>
+      </div>
+    </div>`;
+}
+
+// Card individual de meta — segue paleta dark premium (borda esquerda colorida por status).
+function renderPdvGoalCard(goal) {
+  const status = (goal.status || "draft").toString().toLowerCase();
+  const statusLabel = METAS_STATUS_LABELS[status] || status;
+  const name = (goal.name || "Meta sem nome").toString();
+  const description = (goal.description || "").toString();
+  const startBR = formatDateBR(goal.period_start) || "\u2014";
+  const endBR = formatDateBR(goal.period_end) || "\u2014";
+  const storeIds = Array.isArray(goal.store_ids) ? goal.store_ids : [];
+  const sellerIds = Array.isArray(goal.seller_ids) ? goal.seller_ids : [];
+  const storesLabel = storeIds.length > 0
+    ? storeIds.map((s) => METAS_STORE_LABELS[s] || s).join(" \u00b7 ")
+    : "\u2014";
+  const targets = Array.isArray(goal.targets) ? goal.targets : [];
+  const enabledTargets = targets.filter((t) => t && t.enabled !== false);
+  const kpiSummary = enabledTargets.length > 0
+    ? summarizePdvGoalKpis(enabledTargets)
+    : "Sem KPIs ativos";
+  const actions = [];
+  const canManage = canManageCommercialGoals();
+  if (status === "draft") {
+    if (canManage) {
+      actions.push('<button class="small-secondary" type="button" data-pdv-goal-action="edit" data-id="' + goal.id + '">Editar</button>');
+      actions.push('<button class="small-primary" type="button" data-pdv-goal-action="activate" data-id="' + goal.id + '">Ativar</button>');
+      actions.push('<button class="small-danger" type="button" data-pdv-goal-action="delete" data-id="' + goal.id + '">Excluir</button>');
+    }
+  } else if (status === "active") {
+    actions.push('<button class="small-secondary" type="button" data-pdv-goal-action="progress" data-id="' + goal.id + '">Progresso</button>');
+    if (canManage) {
+      actions.push('<button class="small-secondary" type="button" data-pdv-goal-action="close" data-id="' + goal.id + '">Encerrar</button>');
+      actions.push('<button class="small-danger" type="button" data-pdv-goal-action="cancel" data-id="' + goal.id + '">Cancelar</button>');
+    }
+  } else if (status === "closed" || status === "cancelled") {
+    actions.push('<button class="small-secondary" type="button" data-pdv-goal-action="progress" data-id="' + goal.id + '">Progresso</button>');
+  }
+  const sellerLabel = sellerIds.length > 0
+    ? sellerIds.length + " vendedor" + (sellerIds.length > 1 ? "es" : "")
+    : null;
+  return `
+    <div class="metas-card status-${status}">
+      <div class="metas-card-header">
+        <div class="metas-card-title">
+          <strong>${escapeHtml(name)}</strong>
+          ${description ? '<small>' + escapeHtml(description) + '</small>' : ''}
+        </div>
+        <div class="metas-card-actions">${actions.join("")}</div>
+      </div>
+      <div>
+        <span class="metas-badge status-${status}">${escapeHtml(statusLabel)}</span>
+      </div>
+      <div class="metas-card-meta">
+        <div>
+          <span class="metas-meta-label">Periodo</span>
+          <span class="metas-meta-value">${escapeHtml(startBR)} \u2192 ${escapeHtml(endBR)}</span>
+        </div>
+        <div>
+          <span class="metas-meta-label">Lojas</span>
+          <span class="metas-meta-value">${escapeHtml(storesLabel)}</span>
+        </div>
+        <div>
+          <span class="metas-meta-label">Vendedores</span>
+          <span class="metas-meta-value">${sellerLabel ? escapeHtml(sellerLabel) : "Geral"}</span>
+        </div>
+        <div>
+          <span class="metas-meta-label">KPIs</span>
+          <span class="metas-meta-value">${enabledTargets.length} ativo${enabledTargets.length === 1 ? "" : "s"} \u00b7 ${escapeHtml(kpiSummary)}</span>
+        </div>
+      </div>
+    </div>`;
+}
+
+// Resumo textual dos KPIs ativos para o card.
+function summarizePdvGoalKpis(targets) {
+  const labels = targets.map((t) => METAS_METRIC_LABELS[t.metric] || t.metric);
+  if (labels.length <= 2) return labels.join(" \u00b7 ");
+  return labels[0] + " \u00b7 " + labels[1] + " +" + (labels.length - 2);
+}
+
+// Carrega lista de metas via API. Forca reload quando called com true.
+async function loadPdvGestaoGoals(force = false) {
+  if (pdvGestaoState.goalsLoading) return;
+  if (pdvGestaoState.goalsLoaded && !force) return;
+  pdvGestaoState.goalsLoading = true;
+  pdvGestaoState.goalsError = "";
+  renderPdvGestaoGoalsPanel();
+  try {
+    const res = await api("/api/pdv/commercial/goals");
+    pdvGestaoState.goals = Array.isArray(res?.data) ? res.data : [];
+    pdvGestaoState.goalsLoading = false;
+    pdvGestaoState.goalsLoaded = true;
+    renderPdvGestaoGoalsPanel();
+  } catch (err) {
+    pdvGestaoState.goalsLoading = false;
+    pdvGestaoState.goalsError = err?.message || err?.error || "Falha ao carregar metas.";
+    renderPdvGestaoGoalsPanel();
+  }
+}
+
+// Re-renderiza apenas o painel de Metas (sem reload de campanhas).
+function renderPdvGestaoGoalsPanel() {
+  const goalsPanel = document.getElementById("pdv-gestao-tab-goals");
+  if (!goalsPanel) return;
+  goalsPanel.innerHTML = renderPdvGestaoGoalsTabContent();
+  bindPdvGestaoActions(goalsPanel);
+  refreshPdvGoalKpiRowsVisual();
+}
+
+// Troca a aba ativa dentro de /pdv/gestao. Faz lazy-load da aba Metas.
+function setPdvGestaoActiveTab(tab) {
+  const valid = ["campaigns", "goals", "performance"];
+  if (!valid.includes(tab)) return;
+  pdvGestaoState.activeTab = tab;
+  const container = document.getElementById("pdv-gestao-content");
+  if (!container) return;
+  valid.forEach((id) => {
+    const panel = container.querySelector("#pdv-gestao-tab-" + id);
+    if (!panel) return;
+    if (id === tab) {
+      panel.removeAttribute("hidden");
+    } else {
+      panel.setAttribute("hidden", "");
+    }
+  });
+  container.querySelectorAll("[data-pdv-gestao-tab]").forEach((btn) => {
+    if (btn.dataset.pdvGestaoTab === tab) {
+      btn.classList.add("active");
+    } else {
+      btn.classList.remove("active");
+    }
+  });
+  if (tab === "goals" && !pdvGestaoState.goalsLoaded && !pdvGestaoState.goalsLoading) {
+    loadPdvGestaoGoals(false).catch(() => {});
+  }
+}
+
+// Handlers das acoes dos cards de meta.
+async function handlePdvGoalAction(action, goalId) {
+  if (!goalId) return;
+  if (action === "edit") {
+    try {
+      const res = await api("/api/pdv/commercial/goals/" + goalId);
+      const goal = res?.data;
+      if (goal) openPdvGoalEditor(goal);
+    } catch (err) {
+      alert("Erro ao carregar meta: " + (err?.message || err?.error || ""));
+    }
+    return;
+  }
+  if (action === "progress") {
+    openPdvGoalProgress(goalId);
+    return;
+  }
+  if (action === "activate") {
+    if (!confirm("Ativar esta meta? Apos ativar, ela nao podera mais ser editada.")) return;
+    try {
+      await api("/api/pdv/commercial/goals/" + goalId + "/activate", { method: "POST" });
+      await loadPdvGestaoGoals(true);
+    } catch (err) {
+      alert("Erro ao ativar: " + (err?.message || err?.error || ""));
+    }
+    return;
+  }
+  if (action === "cancel") {
+    if (!confirm("Cancelar esta meta? Esta acao nao pode ser desfeita.")) return;
+    try {
+      await api("/api/pdv/commercial/goals/" + goalId + "/cancel", { method: "POST" });
+      await loadPdvGestaoGoals(true);
+    } catch (err) {
+      alert("Erro ao cancelar: " + (err?.message || err?.error || ""));
+    }
+    return;
+  }
+  if (action === "close") {
+    if (!confirm("Encerrar esta meta? Ela nao podera mais ser reaberta.")) return;
+    try {
+      await api("/api/pdv/commercial/goals/" + goalId + "/close", { method: "POST" });
+      await loadPdvGestaoGoals(true);
+    } catch (err) {
+      alert("Erro ao encerrar: " + (err?.message || err?.error || ""));
+    }
+    return;
+  }
+  if (action === "delete") {
+    if (!confirm("Excluir esta meta em rascunho? Esta acao nao pode ser desfeita.")) return;
+    try {
+      await api("/api/pdv/commercial/goals/" + goalId, { method: "DELETE" });
+      await loadPdvGestaoGoals(true);
+    } catch (err) {
+      alert("Erro ao excluir: " + (err?.message || err?.error || ""));
+    }
+    return;
+  }
+}
+
+// Abre o modal de Nova/Editar Meta.
+function openPdvGoalEditor(goal) {
+  const modal = document.getElementById("pdv-goal-editor-modal");
+  if (!modal) return;
+  pdvGestaoState.goalEditorOpen = true;
+  pdvGestaoState.goalEditingId = goal ? Number(goal.id) : null;
+  ensurePdvSellerCatalogLoaded().catch(() => {});
+  if (goal) {
+    fillPdvGoalEditorForm(goal);
+  } else {
+    resetPdvGoalEditorForm();
+  }
+  modal.style.display = "";
+  refreshPdvGoalKpiRowsVisual();
+  bindPdvGoalEditorKpiToggles();
+  setTimeout(() => {
+    const nameInput = modal.querySelector('input[name="name"]');
+    if (nameInput) nameInput.focus();
+  }, 30);
+}
+
+function closePdvGoalEditor() {
+  pdvGestaoState.goalEditorOpen = false;
+  pdvGestaoState.goalEditingId = null;
+  pdvGestaoState.goalSubmitting = false;
+  const modal = document.getElementById("pdv-goal-editor-modal");
+  if (modal) modal.style.display = "none";
+  const errBox = document.getElementById("pdv-goal-editor-error");
+  if (errBox) { errBox.hidden = true; errBox.textContent = ""; }
+  const submit = document.getElementById("pdv-goal-editor-submit");
+  if (submit) submit.disabled = false;
+}
+
+function resetPdvGoalEditorForm() {
+  const modal = document.getElementById("pdv-goal-editor-modal");
+  if (!modal) return;
+  const form = modal.querySelector("#pdv-goal-editor-form");
+  if (!form) return;
+  form.reset();
+  const today = getPdvTodayIso();
+  const startField = form.querySelector('input[name="period_start"]');
+  const endField = form.querySelector('input[name="period_end"]');
+  if (startField && !startField.value) startField.value = today;
+  if (endField && !endField.value) endField.value = today;
+  const vila = form.querySelector('input[name="store_ids"][value="vila"]');
+  if (vila) vila.checked = true;
+  METAS_KPI_DEFINITIONS.forEach((kpi) => {
+    const toggle = form.querySelector('[data-metas-kpi-toggle="' + kpi.metric + '"]');
+    const valueInput = form.querySelector('[data-metas-kpi-value="' + kpi.metric + '"]');
+    if (toggle) toggle.checked = false;
+    if (valueInput) valueInput.value = "";
+  });
+  const title = modal.querySelector("#pdv-goal-editor-title");
+  if (title) title.textContent = "Nova Meta";
+  const submit = modal.querySelector("#pdv-goal-editor-submit");
+  if (submit) submit.textContent = "Criar meta";
+}
+
+function fillPdvGoalEditorForm(goal) {
+  const modal = document.getElementById("pdv-goal-editor-modal");
+  if (!modal) return;
+  const form = modal.querySelector("#pdv-goal-editor-form");
+  if (!form) return;
+  form.reset();
+  if (form.name) form.name.value = String(goal.name || "");
+  if (form.description) form.description.value = String(goal.description || "");
+  if (form.period_start) form.period_start.value = String(goal.period_start || "");
+  if (form.period_end) form.period_end.value = String(goal.period_end || "");
+  const storeIds = Array.isArray(goal.store_ids) ? goal.store_ids : [];
+  form.querySelectorAll('input[name="store_ids"]').forEach((cb) => {
+    cb.checked = storeIds.includes(cb.value);
+  });
+  const sellerIds = Array.isArray(goal.seller_ids) ? goal.seller_ids.map(String) : [];
+  Array.from(form.seller_ids?.options || []).forEach((opt) => {
+    opt.selected = sellerIds.includes(opt.value);
+  });
+  const targets = Array.isArray(goal.targets) ? goal.targets.filter((t) => t.enabled !== false) : [];
+  // Mapa metric -> target_value (pega o primeiro valor de cada metrica).
+  const valueByMetric = {};
+  targets.forEach((t) => {
+    if (valueByMetric[t.metric] === undefined) {
+      valueByMetric[t.metric] = t.target_value;
+    }
+  });
+  METAS_KPI_DEFINITIONS.forEach((kpi) => {
+    const toggle = form.querySelector('[data-metas-kpi-toggle="' + kpi.metric + '"]');
+    const valueInput = form.querySelector('[data-metas-kpi-value="' + kpi.metric + '"]');
+    const hasValue = valueByMetric[kpi.metric] !== undefined;
+    if (toggle) toggle.checked = hasValue;
+    if (valueInput) valueInput.value = hasValue ? String(valueByMetric[kpi.metric]) : "";
+  });
+  const title = modal.querySelector("#pdv-goal-editor-title");
+  if (title) title.textContent = "Editar Meta";
+  const submit = modal.querySelector("#pdv-goal-editor-submit");
+  if (submit) submit.textContent = "Salvar alteracoes";
+}
+
+// ISO local YYYY-MM-DD para o input date.
+function getPdvTodayIso() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return yyyy + "-" + mm + "-" + dd;
+}
+
+// Atualiza visual das linhas de KPI (ativa/inativa) e habilita/desabilita input de valor.
+function refreshPdvGoalKpiRowsVisual() {
+  const modal = document.getElementById("pdv-goal-editor-modal");
+  if (!modal) return;
+  METAS_KPI_DEFINITIONS.forEach((kpi) => {
+    const row = modal.querySelector('[data-metas-kpi="' + kpi.metric + '"]');
+    if (!row) return;
+    const toggle = row.querySelector('[data-metas-kpi-toggle="' + kpi.metric + '"]');
+    const valueInput = row.querySelector('[data-metas-kpi-value="' + kpi.metric + '"]');
+    if (!toggle || !valueInput) return;
+    const active = toggle.checked;
+    row.classList.toggle("is-active", active);
+    valueInput.disabled = !active;
+    if (!active) valueInput.value = "";
+  });
+}
+
+// Liga o onchange dos toggles de KPI no editor de meta (idempotente).
+function bindPdvGoalEditorKpiToggles() {
+  const modal = document.getElementById("pdv-goal-editor-modal");
+  if (!modal) return;
+  METAS_KPI_DEFINITIONS.forEach((kpi) => {
+    const row = modal.querySelector('[data-metas-kpi="' + kpi.metric + '"]');
+    if (!row || row.dataset.boundToggle) return;
+    row.dataset.boundToggle = "true";
+    const toggle = row.querySelector('[data-metas-kpi-toggle="' + kpi.metric + '"]');
+    if (toggle) {
+      toggle.addEventListener("change", () => {
+        refreshPdvGoalKpiRowsVisual();
+      });
+    }
+  });
+}
+
+// Le dados do form de meta.
+function readPdvGoalEditorForm(form) {
+  const fd = new FormData(form);
+  const name = (fd.get("name") || "").toString().trim();
+  const description = (fd.get("description") || "").toString().trim();
+  const period_start = (fd.get("period_start") || "").toString().trim();
+  const period_end = (fd.get("period_end") || "").toString().trim();
+  const store_ids = fd.getAll("store_ids").map(String).filter(Boolean);
+  const seller_ids = fd.getAll("seller_ids").map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0);
+  const kpis = [];
+  METAS_KPI_DEFINITIONS.forEach((kpi) => {
+    const toggle = form.querySelector('[data-metas-kpi-toggle="' + kpi.metric + '"]');
+    const valueInput = form.querySelector('[data-metas-kpi-value="' + kpi.metric + '"]');
+    if (!toggle || !toggle.checked) return;
+    const raw = valueInput ? valueInput.value : "";
+    const num = Number(raw);
+    kpis.push({ metric: kpi.metric, target_value: num, max: kpi.max });
+  });
+  return { name, description, period_start, period_end, store_ids, seller_ids, kpis };
+}
+
+// Validacao client-side. Replica o backend (pdvCommercialGoalsService.validateGoalPayload).
+function validatePdvGoalFormData(data) {
+  const errors = [];
+  if (!data.name) errors.push("Nome da meta e obrigatorio.");
+  if (!data.period_start) errors.push("Periodo inicial e obrigatorio.");
+  if (!data.period_end) errors.push("Periodo final e obrigatorio.");
+  if (data.period_start && data.period_end && data.period_end < data.period_start) {
+    errors.push("Periodo final nao pode ser anterior ao periodo inicial.");
+  }
+  if (data.store_ids.length === 0 && data.seller_ids.length === 0) {
+    errors.push("Selecione ao menos uma loja ou um vendedor.");
+  }
+  if (data.kpis.length === 0) {
+    errors.push("Selecione ao menos um KPI ativo.");
+  }
+  data.kpis.forEach((kpi) => {
+    if (!(kpi.target_value > 0)) {
+      errors.push("KPI \"" + (METAS_METRIC_LABELS[kpi.metric] || kpi.metric) + "\": valor precisa ser maior que zero.");
+    }
+    if (kpi.max != null && kpi.target_value > kpi.max) {
+      errors.push("KPI \"" + (METAS_METRIC_LABELS[kpi.metric] || kpi.metric) + "\": valor maximo " + kpi.max + ".");
+    }
+  });
+  return errors;
+}
+
+// Monta payload no formato aceito pelo backend (replica lojas x KPIs).
+function buildPdvGoalPayload(data) {
+  const targets = [];
+  data.store_ids.forEach((storeId) => {
+    data.kpis.forEach((kpi) => {
+      targets.push({
+        target_type: "store",
+        target_id: storeId,
+        metric: kpi.metric,
+        target_value: kpi.target_value,
+        weight: 1,
+        enabled: true
+      });
+    });
+  });
+  data.seller_ids.forEach((sellerId) => {
+    data.kpis.forEach((kpi) => {
+      targets.push({
+        target_type: "seller",
+        target_id: String(sellerId),
+        metric: kpi.metric,
+        target_value: kpi.target_value,
+        weight: 1,
+        enabled: true
+      });
+    });
+  });
+  return {
+    name: data.name,
+    description: data.description || "",
+    period_start: data.period_start,
+    period_end: data.period_end,
+    store_ids: data.store_ids,
+    seller_ids: data.seller_ids,
+    targets: targets
+  };
+}
+
+async function submitPdvGoalEditor(form) {
+  const data = readPdvGoalEditorForm(form);
+  const errors = validatePdvGoalFormData(data);
+  const errBox = document.getElementById("pdv-goal-editor-error");
+  if (errors.length > 0) {
+    if (errBox) {
+      errBox.hidden = false;
+      errBox.textContent = errors.join(" \u00b7 ");
+    }
+    return;
+  }
+  if (errBox) {
+    errBox.hidden = true;
+    errBox.textContent = "";
+  }
+  const payload = buildPdvGoalPayload(data);
+  pdvGestaoState.goalSubmitting = true;
+  const submit = document.getElementById("pdv-goal-editor-submit");
+  if (submit) {
+    submit.disabled = true;
+    submit.textContent = pdvGestaoState.goalEditingId ? "Salvando..." : "Criando...";
+  }
+  try {
+    const editingId = pdvGestaoState.goalEditingId;
+    if (editingId) {
+      await api("/api/pdv/commercial/goals/" + editingId, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    } else {
+      await api("/api/pdv/commercial/goals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    }
+    pdvGestaoState.goalSubmitting = false;
+    closePdvGoalEditor();
+    await loadPdvGestaoGoals(true);
+  } catch (err) {
+    pdvGestaoState.goalSubmitting = false;
+    if (submit) {
+      submit.disabled = false;
+      submit.textContent = pdvGestaoState.goalEditingId ? "Salvar alteracoes" : "Criar meta";
+    }
+    if (errBox) {
+      errBox.hidden = false;
+      errBox.textContent = err?.message || err?.error || "Falha ao salvar meta.";
+    }
+  }
+}
+
+// Carrega catalogo de vendedores (silencioso — nao bloqueia UI).
+async function ensurePdvSellerCatalogLoaded() {
+  if (pdvGestaoState.sellerCatalogLoaded || pdvGestaoState.sellerCatalogLoading) return;
+  pdvGestaoState.sellerCatalogLoading = true;
+  try {
+    const res = await api("/api/pdv/commercial/goals/catalog/sellers");
+    pdvGestaoState.sellerCatalog = Array.isArray(res?.data) ? res.data : [];
+    pdvGestaoState.sellerCatalogLoaded = true;
+  } catch (err) {
+    pdvGestaoState.sellerCatalog = [];
+    pdvGestaoState.sellerCatalogLoaded = true;
+  } finally {
+    pdvGestaoState.sellerCatalogLoading = false;
+  }
+}
+
+// ── Modal de Progresso ────────────────────────────────────────────
+
+function openPdvGoalProgress(goalId) {
+  const modal = document.getElementById("pdv-goal-progress-modal");
+  if (!modal) return;
+  pdvGestaoState.goalProgressOpen = true;
+  pdvGestaoState.goalProgressId = goalId;
+  pdvGestaoState.goalProgressLoading = true;
+  pdvGestaoState.goalProgressError = "";
+  pdvGestaoState.goalProgressData = null;
+  const title = modal.querySelector("#pdv-goal-progress-title");
+  if (title) title.textContent = "Progresso da Meta";
+  const body = modal.querySelector("#pdv-goal-progress-body");
+  if (body) body.innerHTML = '<div class="loading-indicator">Carregando progresso...</div>';
+  modal.style.display = "";
+  loadPdvGoalProgress(goalId).catch(() => {});
+}
+
+function closePdvGoalProgress() {
+  pdvGestaoState.goalProgressOpen = false;
+  pdvGestaoState.goalProgressId = null;
+  pdvGestaoState.goalProgressData = null;
+  pdvGestaoState.goalProgressError = "";
+  const modal = document.getElementById("pdv-goal-progress-modal");
+  if (modal) modal.style.display = "none";
+}
+
+async function loadPdvGoalProgress(goalId) {
+  pdvGestaoState.goalProgressLoading = true;
+  try {
+    const res = await api("/api/pdv/commercial/goals/" + goalId + "/progress");
+    pdvGestaoState.goalProgressData = res?.data || null;
+    pdvGestaoState.goalProgressLoading = false;
+    pdvGestaoState.goalProgressError = "";
+    renderPdvGoalProgressModal(pdvGestaoState.goalProgressData);
+  } catch (err) {
+    pdvGestaoState.goalProgressLoading = false;
+    pdvGestaoState.goalProgressError = err?.message || err?.error || "Falha ao carregar progresso.";
+    const body = document.getElementById("pdv-goal-progress-body");
+    if (body) {
+      body.innerHTML = '<div class="empty-state"><strong>Erro</strong><span>' + escapeHtml(pdvGestaoState.goalProgressError) + '</span></div>';
+    }
+  }
+}
+
+function renderPdvGoalProgressModal(data) {
+  const modal = document.getElementById("pdv-goal-progress-modal");
+  if (!modal) return;
+  const title = modal.querySelector("#pdv-goal-progress-title");
+  const body = modal.querySelector("#pdv-goal-progress-body");
+  if (!body) return;
+  if (!data) {
+    body.innerHTML = '<div class="empty-state"><strong>Sem dados</strong><span>Nao recebemos o progresso desta meta.</span></div>';
+    return;
+  }
+  const goal = data.goal || {};
+  const aggregate = data.aggregate || {};
+  const metrics = aggregate.metrics || {};
+  const targets = Array.isArray(data.targets) ? data.targets : [];
+  if (title) title.textContent = "Progresso \u00b7 " + (goal.name || "Meta");
+  const storeLabels = (Array.isArray(aggregate.store_ids) ? aggregate.store_ids : [])
+    .map((s) => METAS_STORE_LABELS[s] || s)
+    .join(" \u00b7 ") || "Todas as lojas";
+  const tiles = [
+    { label: "Vendas no periodo", value: Number(metrics.sales_count || 0).toLocaleString("pt-BR") },
+    { label: "Faturamento liquido", value: currency(metrics.net_revenue || 0) },
+    { label: "Ticket medio", value: currency(metrics.average_ticket || 0) },
+    { label: "PA", value: (Number(metrics.pa || 0)).toFixed(2) },
+    { label: "% c/ cliente", value: (Number(metrics.customer_linked_percent || 0)).toFixed(2) + "%" }
+  ];
+  const tilesHtml = tiles.map((t) => `
+    <div class="metas-progress-tile">
+      <span class="metas-progress-tile-label">${escapeHtml(t.label)}</span>
+      <span class="metas-progress-tile-value">${escapeHtml(String(t.value))}</span>
+    </div>`).join("");
+  let targetsHtml = "";
+  if (targets.length === 0) {
+    targetsHtml = '<div class="empty-state"><strong>Sem KPIs nesta meta</strong></div>';
+  } else {
+    const rows = targets.map((t) => {
+      const pct = Math.max(0, Number(t.progress_percent || 0));
+      const widthPct = Math.min(100, pct);
+      const done = pct >= 100;
+      const over = pct > 100;
+      const rowClass = over ? "row-over" : (done ? "row-done" : "");
+      const meta = (METAS_STORE_LABELS[t.target_id] || t.target_id || "") + (t.target_type === "seller" ? " (vendedor)" : "");
+      return `
+        <tr class="${rowClass}">
+          <td>
+            <strong>${escapeHtml(METAS_METRIC_LABELS[t.metric] || t.metric)}</strong><br/>
+            <small style="color:#94a3b8;">${escapeHtml(meta)}</small>
+          </td>
+          <td class="right">${escapeHtml(formatPdvGoalMetricValue(t.metric, t.current_value))}</td>
+          <td class="right">${escapeHtml(formatPdvGoalMetricValue(t.metric, t.target_value))}</td>
+          <td class="right">${pct.toFixed(1)}%</td>
+          <td class="right">${t.projection_value != null ? escapeHtml(formatPdvGoalMetricValue(t.metric, t.projection_value)) : "\u2014"}</td>
+          <td class="right">${Number(t.days_elapsed || 0)}/${Number(t.days_total || 0)} dias</td>
+          <td class="metas-progress-bar-cell">
+            <div class="metas-progress-bar"><span style="width:${widthPct}%"></span></div>
+          </td>
+        </tr>`;
+    }).join("");
+    targetsHtml = `
+      <table class="metas-progress-table">
+        <thead>
+          <tr>
+            <th>KPI</th>
+            <th class="right">Realizado</th>
+            <th class="right">Meta</th>
+            <th class="right">%</th>
+            <th class="right">Projecao</th>
+            <th class="right">Dias</th>
+            <th>Andamento</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+  const periodLabel = (formatDateBR(goal.period_start) || "\u2014") + " \u2192 " + (formatDateBR(goal.period_end) || "\u2014");
+  const statusLabel = METAS_STATUS_LABELS[goal.status] || goal.status;
+  body.innerHTML = `
+    <div class="action-row" style="justify-content:space-between;align-items:flex-start;">
+      <div>
+        <div><span class="metas-status-pill metas-badge status-${goal.status || "draft"}">${escapeHtml(statusLabel || "Rascunho")}</span></div>
+        <div style="margin-top:0.4rem;color:#cbd5e1;font-size:0.92rem;">${escapeHtml(goal.name || "")}</div>
+        <small style="color:#94a3b8;">Periodo: ${escapeHtml(periodLabel)} \u00b7 Lojas: ${escapeHtml(storeLabels)}</small>
+      </div>
+    </div>
+    <div class="metas-progress-summary">${tilesHtml}</div>
+    ${targetsHtml}`;
+}
+
+function formatPdvGoalMetricValue(metric, value) {
+  const num = Number(value || 0);
+  const decimals = METAS_METRIC_DECIMALS[metric] != null ? METAS_METRIC_DECIMALS[metric] : 2;
+  if (metric === "net_revenue" || metric === "average_ticket") {
+    return currency(num);
+  }
+  if (metric === "customer_linked_percent" || metric === "customer_size_percent") {
+    return num.toFixed(decimals) + "%";
+  }
+  return num.toFixed(decimals);
 }
 
 async function loadPdvImportsFront() {

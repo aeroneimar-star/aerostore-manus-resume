@@ -27059,3 +27059,505 @@ body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-b
   .form-row { grid-template-columns: 1fr; }
   .gestao-products-row { flex-direction: column; align-items: flex-start; }
 }
+
+/* ── Sistema de abas em /pdv/gestao ─────────────────────────────────── */
+
+.pdv-gestao-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  padding: 0 0.25rem;
+  margin: -0.25rem 0 1rem;
+  border-bottom: 1px solid #1e293b;
+  position: relative;
+}
+
+.pdv-gestao-tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #94a3b8);
+  font-size: 0.88rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.7rem 1.1rem;
+  cursor: pointer;
+  position: relative;
+  font-family: inherit;
+  border-radius: 6px 6px 0 0;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.pdv-gestao-tab-btn:hover {
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.pdv-gestao-tab-btn.active {
+  color: #f1e9d2;
+  background: linear-gradient(180deg, rgba(212, 165, 116, 0.10) 0%, rgba(212, 165, 116, 0) 100%);
+}
+
+.pdv-gestao-tab-btn.active::after {
+  content: "";
+  position: absolute;
+  left: 0.6rem;
+  right: 0.6rem;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #d4a574 0%, #b88a55 100%);
+  box-shadow: 0 0 12px rgba(212, 165, 116, 0.4);
+}
+
+.pdv-gestao-tab-btn .pdv-gestao-tab-count {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.68rem;
+  background: rgba(148, 163, 184, 0.18);
+  color: #cbd5e1;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.pdv-gestao-tab-btn.active .pdv-gestao-tab-count {
+  background: rgba(212, 165, 116, 0.22);
+  color: #f1e9d2;
+}
+
+.pdv-gestao-tab-panel { display: block; }
+.pdv-gestao-tab-panel[hidden] { display: none; }
+
+@media (max-width: 640px) {
+  .pdv-gestao-tabs { overflow-x: auto; }
+  .pdv-gestao-tab-btn { padding: 0.6rem 0.85rem; font-size: 0.82rem; }
+}
+
+/* ── Metas Comerciais ───────────────────────────────────────────────── */
+
+.metas-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 0.875rem;
+}
+
+.metas-card {
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+  background: linear-gradient(180deg, #16162a 0%, #13132a 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  transition: border-color 0.18s ease, transform 0.18s ease;
+}
+
+.metas-card:hover {
+  border-color: #334155;
+  transform: translateY(-1px);
+}
+
+.metas-card.status-draft    { border-left: 3px solid #64748b; }
+.metas-card.status-active   { border-left: 3px solid #22c55e; background: linear-gradient(180deg, #0d2018 0%, #13132a 100%); }
+.metas-card.status-closed   { border-left: 3px solid #f59e0b; background: linear-gradient(180deg, #1f1a08 0%, #13132a 100%); }
+.metas-card.status-cancelled{ border-left: 3px solid #ef4444; background: linear-gradient(180deg, #1f0d0d 0%, #13132a 100%); opacity: 0.85; }
+
+.metas-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.metas-card-title {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.metas-card-title strong {
+  font-size: 0.95rem;
+  color: #f1f5f9;
+  font-weight: 700;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.metas-card-title small {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.metas-card-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.metas-badge {
+  display: inline-block;
+  font-size: 0.66rem;
+  padding: 0.12rem 0.5rem;
+  border-radius: 3px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.metas-badge.status-draft    { background: #475569; color: #fff; }
+.metas-badge.status-active   { background: #22c55e; color: #002b0f; }
+.metas-badge.status-closed   { background: #f59e0b; color: #2a1500; }
+.metas-badge.status-cancelled{ background: #7f1d1d; color: #fee2e2; }
+
+.metas-card-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem 0.75rem;
+  font-size: 0.78rem;
+  color: #cbd5e1;
+}
+
+.metas-card-meta .metas-meta-label {
+  display: block;
+  font-size: 0.66rem;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  margin-bottom: 0.1rem;
+}
+
+.metas-card-meta .metas-meta-value {
+  color: #e2e8f0;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.metas-progress-summary {
+  margin-top: 0.25rem;
+  border-top: 1px solid #1e293b;
+  padding-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.metas-progress-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.metas-progress-row .metas-progress-bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  background: #1e293b;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 0.15rem;
+}
+
+.metas-progress-row .metas-progress-bar > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 100%);
+  transition: width 0.4s ease;
+}
+
+.metas-progress-row.done .metas-progress-bar > span {
+  background: linear-gradient(90deg, #22c55e 0%, #4ade80 100%);
+}
+
+.metas-progress-row .metas-progress-meta {
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+/* ── Modal de Metas ─────────────────────────────────────────────────── */
+
+.metas-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.metas-modal[style*="display: none"] {
+  display: none !important;
+}
+
+.metas-modal .modal-content {
+  width: min(640px, calc(100vw - 2rem));
+}
+
+.metas-modal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.7rem 0;
+  border-top: 1px solid #1e293b;
+}
+
+.metas-modal-section:first-of-type { border-top: none; padding-top: 0; }
+
+.metas-modal-section-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #d4a574;
+  margin: 0;
+}
+
+.metas-modal-section-hint {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  margin: -0.15rem 0 0.1rem;
+}
+
+.metas-kpi-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.metas-kpi-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  background: #0f1024;
+  transition: border-color 0.18s ease;
+}
+
+.metas-kpi-row.is-active { border-color: #b88a55; background: #181730; }
+
+.metas-kpi-row .metas-kpi-label {
+  font-size: 0.85rem;
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.metas-kpi-row .metas-kpi-input {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.metas-kpi-row .metas-kpi-input input {
+  width: 8rem;
+  background: #0a0a18;
+  border: 1px solid #2d2d4a;
+  color: #f1f5f9;
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+  font-family: inherit;
+  text-align: right;
+}
+
+.metas-kpi-row .metas-kpi-input input:focus {
+  outline: none;
+  border-color: #b88a55;
+  box-shadow: 0 0 0 1px rgba(212, 165, 116, 0.4);
+}
+
+.metas-kpi-row .metas-kpi-suffix {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  font-weight: 600;
+  min-width: 1.5rem;
+}
+
+.metas-kpi-row .metas-kpi-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.metas-kpi-row .metas-kpi-toggle input { accent-color: #b88a55; }
+
+.metas-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid #1e293b;
+}
+
+.metas-form-error {
+  margin-top: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 5px;
+  background: rgba(127, 29, 29, 0.25);
+  border: 1px solid #7f1d1d;
+  color: #fca5a5;
+  font-size: 0.82rem;
+}
+
+/* ── Modal de Progresso ─────────────────────────────────────────────── */
+
+.metas-progress-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.metas-progress-modal[style*="display: none"] { display: none !important; }
+
+.metas-progress-modal .modal-content {
+  width: min(720px, calc(100vw - 2rem));
+  max-height: calc(100vh - 4rem);
+  display: flex;
+  flex-direction: column;
+}
+
+.metas-progress-modal-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.metas-progress-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.6rem;
+  margin: 0;
+}
+
+.metas-progress-summary .metas-progress-tile {
+  padding: 0.7rem 0.85rem;
+  background: linear-gradient(135deg, #1a1a30 0%, #0f0f22 100%);
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+}
+
+.metas-progress-summary .metas-progress-tile-label {
+  display: block;
+  font-size: 0.66rem;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+
+.metas-progress-summary .metas-progress-tile-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #f1e9d2;
+}
+
+.metas-progress-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.metas-progress-table th,
+.metas-progress-table td {
+  text-align: left;
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid #1e293b;
+}
+
+.metas-progress-table th {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.metas-progress-table td.right { text-align: right; }
+
+.metas-progress-bar-cell {
+  width: 100%;
+  min-width: 100px;
+}
+
+.metas-progress-table .metas-progress-bar {
+  height: 6px;
+  background: #1e293b;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.metas-progress-table .metas-progress-bar > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 100%);
+  transition: width 0.4s ease;
+}
+
+.metas-progress-table .row-done .metas-progress-bar > span {
+  background: linear-gradient(90deg, #22c55e 0%, #4ade80 100%);
+}
+
+.metas-progress-table .row-over .metas-progress-bar > span {
+  background: linear-gradient(90deg, #f59e0b 0%, #fb923c 100%);
+}
+
+.metas-status-pill {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 3px;
+}
+
+/* ── Empty/loading state para metas ─────────────────────────────────── */
+
+.metas-state {
+  padding: 1.6rem;
+  border: 1px dashed #2a2a4a;
+  border-radius: 8px;
+  text-align: center;
+  color: #94a3b8;
+}
+
+.metas-state strong {
+  display: block;
+  color: #e2e8f0;
+  font-size: 1rem;
+  margin-bottom: 0.25rem;
+}
+
+.metas-state span { font-size: 0.85rem; }
+
+.metas-state .metas-state-action {
+  margin-top: 0.9rem;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .metas-card-meta { grid-template-columns: 1fr; }
+  .metas-kpi-row { grid-template-columns: auto 1fr; }
+  .metas-kpi-row .metas-kpi-input { grid-column: 1 / -1; }
+  .metas-kpi-row .metas-kpi-input input { width: 100%; }
+}
