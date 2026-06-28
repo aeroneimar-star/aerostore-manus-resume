@@ -1349,6 +1349,12 @@ function isCurrentUserSellerProfile() {
   return getCurrentUserRole() === "vendedor";
 }
 
+function getCurrentUserSellerId() {
+  const raw = state.currentUser?.seller_id;
+  const num = Number(raw);
+  return Number.isFinite(num) && num > 0 ? num : null;
+}
+
 function canManageUsersPanel() {
   return getCurrentUserRole() === "admin" || hasPermission("can_manage_users");
 }
@@ -19013,7 +19019,13 @@ const pdvGestaoState = {
   sellerCatalogLoaded: false,
   // Callbacks que devem ser disparados quando o catalogo terminar de carregar
   // (usado para re-renderizar selects que ja estavam no DOM sem dados).
-  sellerCatalogPendingCallbacks: []
+  sellerCatalogPendingCallbacks: [],
+  // ── Performance de Metas (Fase 5 — leitura operacional) ──────────
+  // Lista flatten de { meta, target } — uma linha por (meta × KPI).
+  performance: [],
+  performanceLoading: false,
+  performanceError: "",
+  performanceLoaded: false
 };
 
 function resetGestaoSelectedSkus() {
@@ -19121,6 +19133,12 @@ function removeGestaoSelectedProduct(parentSku) {
 async function loadPdvGestaoFront() {
   const container = document.getElementById("pdv-gestao-content");
   if (!container) return;
+  if (!canViewCommercialGoals()) {
+    pdvGestaoState.loading = false;
+    pdvGestaoState.error = "Sem acesso a Gestão Comercial.";
+    renderPdvGestaoFront(container);
+    return;
+  }
   pdvGestaoState.loading = true;
   pdvGestaoState.error = "";
   renderPdvGestaoFront(container);
@@ -19356,6 +19374,7 @@ function bindPdvGestaoActions(container) {
       if (action === "gestao-close-create") { closeGestaoCreateModal(); return; }
       if (action === "gestao-tab-goals-new") { openPdvGoalEditor(); return; }
       if (action === "gestao-tab-goals-refresh") { await loadPdvGestaoGoals(true); return; }
+      if (action === "gestao-performance-refresh") { await loadPdvGestaoPerformanceData(true); return; }
       if (action === "gestao-close-goal-editor") { closePdvGoalEditor(); return; }
       if (action === "gestao-close-goal-progress") { closePdvGoalProgress(); return; }
     });
@@ -20200,11 +20219,123 @@ function renderPdvGestaoGoalsTabContent() {
 
 // Placeholder da aba Performance (Fase 5).
 function renderPdvGestaoPerformanceTabContent() {
-  return `
-    <div class="metas-state">
-      <strong>Performance comercial</strong>
-      <span>Sera exibida na proxima fase. Aqui aparecera o ranking consolidado por loja e vendedor.</span>
+  if (pdvGestaoState.performanceError) {
+    return `
+      <div class="metas-state">
+        <strong>Nao foi possivel carregar a performance</strong>
+        <span>${escapeHtml(pdvGestaoState.performanceError)}</span>
+        <div class="metas-state-action">
+          <button class="secondary-button" type="button" data-action="gestao-performance-refresh">Tentar novamente</button>
+        </div>
+      </div>`;
+  }
+  if (pdvGestaoState.performanceLoading && !pdvGestaoState.performanceLoaded) {
+    return '<div class="metas-state"><span>Carregando performance...</span></div>';
+  }
+  if (!pdvGestaoState.performanceLoaded) {
+    return `
+      <div class="metas-state">
+        <strong>Performance de Metas</strong>
+        <span>Clique em "Atualizar" para carregar a leitura operacional de metas em andamento.</span>
+        <div class="metas-state-action">
+          <button class="secondary-button" type="button" data-action="gestao-performance-refresh">Atualizar</button>
+        </div>
+      </div>`;
+  }
+  const rows = Array.isArray(pdvGestaoState.performance) ? pdvGestaoState.performance : [];
+  const toolbar = `
+    <div class="action-row" style="margin-bottom: 0.85rem;">
+      <button class="secondary-button" type="button" data-action="gestao-performance-refresh">Atualizar</button>
     </div>`;
+  if (rows.length === 0) {
+    return toolbar + `
+      <div class="metas-state">
+        <strong>Sem dados no periodo</strong>
+        <span>Nao ha metas ativas ou encerradas com KPI para exibir. Crie ou ative uma meta para ver a performance.</span>
+      </div>`;
+  }
+  const TOP_N = 10;
+  const showRows = rows.slice(0, TOP_N);
+  const hidden = rows.length - showRows.length;
+  return toolbar + `
+    <div class="metas-performance-wrap">
+      <table class="metas-performance-table">
+        <thead>
+          <tr>
+            <th>Meta</th>
+            <th>Periodo</th>
+            <th>Lojas</th>
+            <th>Vendedores</th>
+            <th>KPI</th>
+            <th class="num">Alvo</th>
+            <th class="num">Realizado</th>
+            <th class="num">%</th>
+            <th class="num">Projecao</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${showRows.map(renderPdvPerformanceRow).join("")}
+        </tbody>
+      </table>
+      ${hidden > 0 ? '<p class="metas-performance-note">Exibindo ' + showRows.length + ' de ' + rows.length + ' linhas. Use filtros ou ajuste o periodo para reduzir a lista.</p>' : ''}
+    </div>`;
+}
+
+// Linha da tabela de Performance (1 linha por meta x KPI).
+function renderPdvPerformanceRow(row) {
+  const meta = row?.meta || {};
+  const target = row?.target || {};
+  const status = (meta.status || "").toString().toLowerCase();
+  const statusLabel = METAS_STATUS_LABELS[status] || meta.status || "—";
+  const startBR = formatDateBR(meta.period_start) || "—";
+  const endBR = formatDateBR(meta.period_end) || "—";
+  const storesLabel = (Array.isArray(meta.store_ids) && meta.store_ids.length > 0)
+    ? meta.store_ids.map((s) => METAS_STORE_LABELS[s] || s).join(" · ")
+    : "—";
+  const sellerIds = Array.isArray(meta.seller_ids) ? meta.seller_ids : [];
+  const sellerLabel = sellerIds.length > 0
+    ? sellerIds.length + " vendedor" + (sellerIds.length > 1 ? "es" : "")
+    : "Geral";
+  const kpiLabel = target.metric_label || target.metric || "—";
+  const targetValue = formatPdvMetricValue(target.metric, target.target_value);
+  const currentValue = formatPdvMetricValue(target.metric, target.current_value);
+  const percent = target.progress_percent != null && target.progress_percent !== ""
+    ? Math.round(Number(target.progress_percent)) + "%"
+    : "—";
+  const projection = target.projection_value != null && target.projection_value !== ""
+    ? formatPdvMetricValue(target.metric, target.projection_value)
+    : "—";
+  return `
+    <tr>
+      <td><strong>${escapeHtml(meta.name || "—")}</strong></td>
+      <td>${escapeHtml(startBR)} → ${escapeHtml(endBR)}</td>
+      <td>${escapeHtml(storesLabel)}</td>
+      <td>${escapeHtml(sellerLabel)}</td>
+      <td>${escapeHtml(kpiLabel)}</td>
+      <td class="num">${escapeHtml(targetValue)}</td>
+      <td class="num">${escapeHtml(currentValue)}</td>
+      <td class="num">${escapeHtml(percent)}</td>
+      <td class="num">${escapeHtml(projection)}</td>
+      <td><span class="metas-badge status-${escapeHtml(status)}">${escapeHtml(statusLabel)}</span></td>
+    </tr>`;
+}
+
+// Formatador generico de KPI por tipo. pt-BR, sem cortar valores.
+function formatPdvMetricValue(metric, value) {
+  if (value == null || value === "") return "—";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "—";
+  if (metric === "net_revenue" || metric === "average_ticket") {
+    return "R$ " + num.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  if (metric === "pa") {
+    return num.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " pçs";
+  }
+  if (metric === "customer_linked_percent" || metric === "customer_size_percent") {
+    return num.toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: 1 }) + "%";
+  }
+  return String(num);
 }
 
 // Markup do modal de Nova/Editar Meta. Sempre presente no DOM, display:none por padrao.
@@ -20378,6 +20509,9 @@ function summarizePdvGoalKpis(targets) {
 }
 
 // Carrega lista de metas via API. Forca reload quando called com true.
+// Vendedor logado recebe apenas metas onde ele aparece em seller_ids — backend
+// ja aplica o filtro quando isSellerOnly(req), mas mandamos o seller_id na URL
+// para deixar o pedido explicito e evitar cache de UI antiga.
 async function loadPdvGestaoGoals(force = false) {
   if (pdvGestaoState.goalsLoading) return;
   if (pdvGestaoState.goalsLoaded && !force) return;
@@ -20385,7 +20519,11 @@ async function loadPdvGestaoGoals(force = false) {
   pdvGestaoState.goalsError = "";
   renderPdvGestaoGoalsPanel();
   try {
-    const res = await api("/api/pdv/commercial/goals");
+    const sellerId = getCurrentUserSellerId();
+    const url = isCurrentUserSellerProfile() && sellerId
+      ? "/api/pdv/commercial/goals?seller_id=" + encodeURIComponent(sellerId)
+      : "/api/pdv/commercial/goals";
+    const res = await api(url);
     pdvGestaoState.goals = Array.isArray(res?.data) ? res.data : [];
     pdvGestaoState.goalsLoading = false;
     pdvGestaoState.goalsLoaded = true;
@@ -20404,6 +20542,54 @@ function renderPdvGestaoGoalsPanel() {
   goalsPanel.innerHTML = renderPdvGestaoGoalsTabContent();
   bindPdvGestaoActions(goalsPanel);
   refreshPdvGoalKpiRowsVisual();
+}
+
+// Carrega dados da aba Performance (read-only): lista metas + progresso de cada.
+// Mantem ate 10 metas para evitar chamadas excessivas em tenants grandes.
+async function loadPdvGestaoPerformanceData(force = false) {
+  if (pdvGestaoState.performanceLoading) return;
+  if (pdvGestaoState.performanceLoaded && !force) return;
+  pdvGestaoState.performanceLoading = true;
+  pdvGestaoState.performanceError = "";
+  renderPdvGestaoPerformancePanel();
+  try {
+    const sellerId = getCurrentUserSellerId();
+    const url = isCurrentUserSellerProfile() && sellerId
+      ? "/api/pdv/commercial/goals?seller_id=" + encodeURIComponent(sellerId)
+      : "/api/pdv/commercial/goals";
+    const listRes = await api(url);
+    const goals = Array.isArray(listRes?.data) ? listRes.data : [];
+    const limitedGoals = goals.slice(0, 10);
+    const progressResults = await Promise.allSettled(
+      limitedGoals.map((g) =>
+        api("/api/pdv/commercial/goals/" + g.id + "/progress")
+          .then((r) => ({ goal: g, progress: r?.data || null }))
+          .catch((err) => ({ goal: g, error: err?.message || err?.error || "Falha ao buscar progresso." }))
+      )
+    );
+    const rows = [];
+    progressResults.forEach((result) => {
+      if (result.status !== "fulfilled") return;
+      const { goal, progress, error } = result.value;
+      if (error || !progress || !Array.isArray(progress.targets)) return;
+      progress.targets.forEach((t) => rows.push({ meta: goal, target: t }));
+    });
+    pdvGestaoState.performance = rows;
+    pdvGestaoState.performanceLoading = false;
+    pdvGestaoState.performanceLoaded = true;
+    renderPdvGestaoPerformancePanel();
+  } catch (err) {
+    pdvGestaoState.performanceLoading = false;
+    pdvGestaoState.performanceError = err?.message || err?.error || "Falha ao carregar performance.";
+    renderPdvGestaoPerformancePanel();
+  }
+}
+
+function renderPdvGestaoPerformancePanel() {
+  const panel = document.getElementById("pdv-gestao-tab-performance");
+  if (!panel) return;
+  panel.innerHTML = renderPdvGestaoPerformanceTabContent();
+  bindPdvGestaoActions(panel);
 }
 
 // Troca a aba ativa dentro de /pdv/gestao. Faz lazy-load da aba Metas.
@@ -20431,6 +20617,9 @@ function setPdvGestaoActiveTab(tab) {
   });
   if (tab === "goals" && !pdvGestaoState.goalsLoaded && !pdvGestaoState.goalsLoading) {
     loadPdvGestaoGoals(false).catch(() => {});
+  }
+  if (tab === "performance" && !pdvGestaoState.performanceLoaded && !pdvGestaoState.performanceLoading) {
+    loadPdvGestaoPerformanceData(false).catch(() => {});
   }
 }
 

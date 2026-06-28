@@ -124,7 +124,12 @@ function buildRolePermissions(role = "seller") {
     can_adjust_inventory: false,
     can_adjust_product_price: false,
     can_move_stock: false,
-    can_export_data: false
+    can_export_data: false,
+    can_view_commercial_management: false,
+    can_manage_commercial_goals: false,
+    can_view_campaign_rankings: false,
+    can_settle_campaign_rewards: false,
+    can_manage_campaign_challenges: false
   };
 
   if (["admin", "administrator", "administrador", "master"].includes(normalized)) {

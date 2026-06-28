@@ -12211,7 +12211,12 @@ function buildDefaultPermissions(role = "seller") {
       can_adjust_inventory: true,
       can_adjust_product_price: true,
       can_move_stock: true,
-      can_export_data: true
+      can_export_data: true,
+      can_view_commercial_management: true,
+      can_manage_commercial_goals: true,
+      can_view_campaign_rankings: true,
+      can_settle_campaign_rewards: true,
+      can_manage_campaign_challenges: true
     };
   }
 
@@ -12238,7 +12243,8 @@ function buildDefaultPermissions(role = "seller") {
       can_view_customers: true,
       can_view_cashback: true,
       can_view_orders: true,
-      can_view_whatsapp_status: true
+      can_view_whatsapp_status: true,
+      can_view_commercial_management: true
     };
   }
 

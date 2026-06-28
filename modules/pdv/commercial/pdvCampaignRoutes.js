@@ -78,6 +78,16 @@ function requireGoalsManage(req, res, next) {
   return res.status(403).json({ error: "Voce nao tem permissao para gerenciar metas comerciais." });
 }
 
+// Vendedor logado sem ser admin/gestor: seu escopo de leitura deve se limitar
+// as proprias metas. Helpers abaixo aplicam o filtro/forcam 403 quando ele tenta
+// acessar dados de outro vendedor via URL ou query param.
+function isSellerOnly(req) {
+  if (!req || !req.user) return false;
+  if (isAdminOrManager(req.user)) return false;
+  const rawRole = String(req.user?.role_key || req.user?.role || req.user?.perfil || req.user?.profile || req.user?.permission_profile || "").toLowerCase();
+  return ["seller", "vendedor", "sales"].includes(rawRole);
+}
+
 // ── Performance Base ─────────────────────────────────────────────────
 
 router.get("/performance/seller/:seller_id", requireCommercialAccess, async (req, res) => {
@@ -245,6 +255,13 @@ router.get("/goals/catalog/sellers", requireCommercialAccess, async (req, res) =
 
 router.get("/goals/performance/seller/:seller_id", requireCommercialAccess, async (req, res) => {
   try {
+    if (isSellerOnly(req)) {
+      const userSellerId = Number(req.user?.seller_id || 0);
+      const requestedSellerId = Number(req.params.seller_id || 0);
+      if (!userSellerId || userSellerId !== requestedSellerId) {
+        return res.status(403).json({ error: "Voce so pode consultar sua propria performance." });
+      }
+    }
     const { start_date, end_date } = req.query;
     const result = await getGoalsSellerPerformance(req.params.seller_id, { start_date, end_date });
     if (!result) return res.status(404).json({ error: "Vendedor nao encontrado." });
@@ -267,8 +284,16 @@ router.get("/goals/performance/store/:store_id", requireCommercialAccess, async 
 
 router.get("/goals", requireCommercialAccess, async (req, res) => {
   try {
-    const { store_id, status, seller_id } = req.query;
-    const result = await listGoals({ store_id, status, seller_id });
+    const { store_id, status } = req.query;
+    // Vendedor nao pode forcar query param para ver metas de outro seller.
+    let effectiveSellerId;
+    if (isSellerOnly(req)) {
+      const userSellerId = Number(req.user?.seller_id || 0);
+      effectiveSellerId = Number.isFinite(userSellerId) && userSellerId > 0 ? userSellerId : -1;
+    } else {
+      effectiveSellerId = req.query.seller_id ? Number(req.query.seller_id) : undefined;
+    }
+    const result = await listGoals({ store_id, status, seller_id: effectiveSellerId });
     res.json({ success: true, data: result });
   } catch (error) {
     res.status(500).json({ error: error.message || "Falha ao listar metas." });

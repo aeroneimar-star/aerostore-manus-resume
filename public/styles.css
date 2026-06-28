@@ -27562,6 +27562,78 @@ body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-b
   .metas-kpi-row .metas-kpi-input input { width: 100%; }
 }
 
+/* ── Tabela de Performance (Metas) — Dark Premium ──────────────────── */
+
+.metas-performance-wrap {
+  max-height: 520px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  background: rgba(15, 15, 28, 0.6);
+}
+
+.metas-performance-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  color: #e2e8f0;
+  table-layout: fixed;
+}
+
+.metas-performance-table thead {
+  position: sticky;
+  top: 0;
+  background: linear-gradient(180deg, #1a1a2e 0%, #13132a 100%);
+  z-index: 1;
+}
+
+.metas-performance-table th {
+  text-align: left;
+  padding: 0.7rem 0.85rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  border-bottom: 1px solid #2a2a4a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.metas-performance-table th.num,
+.metas-performance-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.metas-performance-table td {
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid rgba(42, 42, 74, 0.5);
+  vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.metas-performance-table tbody tr:hover {
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.metas-performance-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.metas-performance-table td strong {
+  color: #f1f5f9;
+  font-weight: 600;
+}
+
+.metas-performance-note {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  color: #94a3b8;
+  font-size: 0.8rem;
+  text-align: right;
+}
+
 /* ── Checklist de vendedores (modal de Metas) ──────────────────────── */
 
 .metas-sellers-checklist {
