@@ -19030,7 +19030,12 @@ const pdvGestaoState = {
   performance: [],
   performanceLoading: false,
   performanceError: "",
-  performanceLoaded: false
+  performanceLoaded: false,
+  // Cache de progresso por meta para enriquecimento do card de Meta do
+  // Vendedor (sem recalcular regra — reaproveita /goals/:id/progress).
+  // Formato: { [goalId]: { targets: [{...}], loadedAt: ISO } }
+  goalProgressByGoalId: {},
+  goalProgressLoading: false
 };
 
 function resetGestaoSelectedSkus() {
@@ -19135,6 +19140,19 @@ function removeGestaoSelectedProduct(parentSku) {
   );
 }
 
+// Resolve a URL da listagem de Corridinhas para a role atual.
+// Vendedor logado: restringe por loja ativa do usuario quando disponivel
+// (campo store_id no usuario). Sem store_id seguro, nao inventa fallback
+// agressivo — URL fica sem query e o frontend documenta via estado de UI.
+// Demais roles: lista completa, sem filtro.
+function buildPdvGestaoCampaignsUrl() {
+  const base = "/api/pdv/commercial/campaigns";
+  if (!isCurrentUserSellerProfile()) return base;
+  const sellerStore = normalizePdvStoreIdentifier(getCurrentPdvStoreId() || "");
+  if (!sellerStore) return base;
+  return base + "?store_id=" + encodeURIComponent(sellerStore);
+}
+
 async function loadPdvGestaoFront() {
   const container = document.getElementById("pdv-gestao-content");
   if (!container) return;
@@ -19148,7 +19166,7 @@ async function loadPdvGestaoFront() {
   pdvGestaoState.error = "";
   renderPdvGestaoFront(container);
   try {
-    const res = await api("/api/pdv/commercial/campaigns");
+    const res = await api(buildPdvGestaoCampaignsUrl());
     pdvGestaoState.campaigns = Array.isArray(res?.data) ? res.data : [];
     pdvGestaoState.loading = false;
     renderPdvGestaoFront(container);
@@ -19157,6 +19175,61 @@ async function loadPdvGestaoFront() {
     pdvGestaoState.error = "Sem acesso a " + getCommercialSectionLabel() + ".";
     renderPdvGestaoFront(container);
   }
+}
+
+// Resumo operacional exibido somente para Vendedor no topo da tela /pdv/gestao.
+// Leitura exclusiva do estado ja carregado em pdvGestaoState (campaigns, goals, performance)
+// - nenhuma formula nova, nenhuma chamada extra. Quando o vendedor ainda nao abriu a aba
+// Performance, o tile de progresso medio fica em "--" ate carregar.
+function renderPdvGestaoSellerSummary() {
+  const campaigns = Array.isArray(pdvGestaoState.campaigns) ? pdvGestaoState.campaigns : [];
+  const goals = Array.isArray(pdvGestaoState.goals) ? pdvGestaoState.goals : [];
+  const performanceRows = Array.isArray(pdvGestaoState.performance) ? pdvGestaoState.performance : [];
+  // Corridinhas ativas: status "active" (normalizado para lowercase).
+  const activeCampaigns = campaigns.filter((c) => String(c?.status || "").toLowerCase() === "active");
+  // Metas ativas: status "active".
+  const activeGoals = goals.filter((g) => String(g?.status || "").toLowerCase() === "active");
+  // Progresso medio: media simples dos progress_percent ja calculados pelo backend
+  // (reaproveita pdvGestaoState.performance carregado pela aba Performance).
+  let avgProgressText = "--";
+  if (performanceRows.length > 0) {
+    const percents = performanceRows
+      .map((row) => Number(row?.target?.progress_percent || 0))
+      .filter((n) => Number.isFinite(n));
+    if (percents.length > 0) {
+      const avg = percents.reduce((sum, n) => sum + n, 0) / percents.length;
+      avgProgressText = Math.round(avg) + "%";
+    }
+  }
+  // Status geral: derivacao simples baseada em metas ativas + carregamento.
+  let statusLabel = "Em acompanhamento";
+  let statusTone = "tone-neutral";
+  if (activeGoals.length > 0) {
+    statusLabel = "Em andamento";
+    statusTone = "tone-positive";
+  } else if (activeCampaigns.length === 0 && activeGoals.length === 0) {
+    statusLabel = "Sem meta vinculada";
+    statusTone = "tone-muted";
+  }
+  // Mensagem auxiliar sobre o escopo de Corridinhas (visa de loja).
+  const sellerStore = normalizePdvStoreIdentifier(getCurrentPdvStoreId() || "");
+  const scopeNote = sellerStore
+    ? "Corridinhas listadas apenas da sua loja (" + escapeHtml(formatStoreIdLabel(sellerStore)) + ")."
+    : "Loja ativa nao definida — Corridinhas exibem todas as campanhas ate sua loja ser vinculada.";
+  const tile = (label, value, sub, tone) => `
+    <div class="metas-seller-tile${tone ? " " + tone : ""}">
+      <span class="metas-seller-tile-label">${escapeHtml(label)}</span>
+      <span class="metas-seller-tile-value">${value}</span>
+      ${sub ? '<span class="metas-seller-tile-sub">' + escapeHtml(sub) + '</span>' : ""}
+    </div>`;
+  return `
+    <section class="metas-seller-summary" aria-label="Resumo de Minhas Metas">
+      ${tile("Corridinhas ativas", String(activeCampaigns.length), activeCampaigns.length > 0 ? "Na sua loja" : "Sem campanha ativa")}
+      ${tile("Metas ativas", String(activeGoals.length), activeGoals.length > 0 ? "Para voce" : "Sem meta ativa")}
+      ${tile("Progresso medio", avgProgressText, "Baseado em metas com progresso carregado")}
+      ${tile("Status", statusLabel, "", statusTone)}
+      <p class="metas-seller-summary-note">${scopeNote}</p>
+    </section>`;
 }
 
 function renderPdvGestaoFront(container) {
@@ -19178,9 +19251,14 @@ function renderPdvGestaoFront(container) {
           <button class="secondary-button" type="button" data-action="gestao-refresh">Atualizar</button>
         </div>
       </div>
+      ${isCurrentUserSellerProfile() ? renderPdvGestaoSellerSummary() : ""}
       ${renderPdvGestaoTabsBar()}
       <div id="pdv-gestao-tab-campaigns" class="pdv-gestao-tab-panel"${(pdvGestaoState.activeTab === "campaigns") ? "" : " hidden"}>
-        ${campaigns.length === 0 ? '<div class="empty-state"><strong>Sem campanhas</strong><span>Crie uma Corridinha para iniciar.</span></div>' :
+        ${campaigns.length === 0
+          ? (isCurrentUserSellerProfile()
+              ? '<div class="empty-state"><strong>Nenhuma Corridinha ativa para você</strong><span>Quando houver campanhas vinculadas a sua loja, elas aparecem aqui.</span></div>'
+              : '<div class="empty-state"><strong>Sem campanhas</strong><span>Crie uma Corridinha para iniciar.</span></div>')
+          :
           '<div class="gestao-campaigns-list">' + campaigns.map(renderGestaoCampaignCard).join("") + "</div>"}
       </div>
       <div id="pdv-gestao-tab-goals" class="pdv-gestao-tab-panel"${(pdvGestaoState.activeTab === "goals") ? "" : " hidden"}>
@@ -19340,6 +19418,24 @@ function renderGestaoCampaignCard(campaign) {
   if ((canManageCampaignSettle() || isCurrentUserManagerProfile()) && isActive && !isIncomplete) actions.push('<button class="small-primary" type="button" data-gestao-action="settle" data-id="' + campaign.id + '">Apurar</button>');
   // Settled: Resultados
   if (isSettled) actions.push('<button class="small-secondary" type="button" data-gestao-action="results" data-id="' + campaign.id + '">Resultados</button>');
+  // Indicacao de escopo para o Vendedor: mostra se a loja dele esta inclusa
+  // na campanha. Sem mexer em regra - e derivado direto de campaign.store_ids
+  // normalizado pelo helper getCampaignStores no service.
+  let scopeBadgeHtml = "";
+  if (isCurrentUserSellerProfile()) {
+    const sellerStore = normalizePdvStoreIdentifier(getCurrentPdvStoreId() || "");
+    if (sellerStore) {
+      const includes = storeIds.some((s) => normalizePdvStoreIdentifier(s) === sellerStore);
+      const isAllStores = storeIds.length === 0 || storeIds.length >= 3;
+      if (includes || isAllStores) {
+        scopeBadgeHtml = '<span class="gestao-scope-badge gestao-scope-included">✓ Sua loja</span>';
+      } else {
+        scopeBadgeHtml = '<span class="gestao-scope-badge gestao-scope-out">Outra loja</span>';
+      }
+    } else {
+      scopeBadgeHtml = '<span class="gestao-scope-badge gestao-scope-unknown">Sem loja vinculada</span>';
+    }
+  }
   return `
     <div class="gestao-card ${statusClass}${isIncomplete ? " gestao-card-incomplete" : ""}">
       <div class="gestao-card-header">
@@ -19347,6 +19443,7 @@ function renderGestaoCampaignCard(campaign) {
           <strong>${escapeHtml(campaignName || "Campanha sem nome")}</strong>
           ${isIncomplete ? '<span class="gestao-badge gestao-badge-warning">⚠️ Incompleta</span>' : ""}
           <span class="gestao-badge ${statusClass}">${statusLabel}</span>
+          ${scopeBadgeHtml}
         </div>
         <div class="gestao-card-actions">${actions.join("")}</div>
       </div>
@@ -20199,7 +20296,9 @@ function renderPdvGestaoGoalsTabContent() {
     return `
       <div class="metas-state">
         <strong>Metas Comerciais</strong>
-        <span>Clique em "Atualizar" para carregar as metas existentes.</span>
+        <span>${isCurrentUserSellerProfile()
+          ? "Clique em \"Atualizar\" para carregar as metas vinculadas a voce."
+          : "Clique em \"Atualizar\" para carregar as metas existentes."}</span>
         <div class="metas-state-action">
           ${canManage ? '<button class="primary-button" type="button" data-action="gestao-tab-goals-new">+ Nova Meta</button>' : ""}
           <button class="secondary-button" type="button" data-action="gestao-tab-goals-refresh">Atualizar</button>
@@ -20213,6 +20312,13 @@ function renderPdvGestaoGoalsTabContent() {
       <button class="secondary-button" type="button" data-action="gestao-tab-goals-refresh">Atualizar</button>
     </div>`;
   if (goals.length === 0) {
+    if (isCurrentUserSellerProfile()) {
+      return toolbar + `
+        <div class="metas-state">
+          <strong>Nenhuma meta comercial ativa vinculada a voce no momento.</strong>
+          <span>Quando sua gestao criar metas para voce, elas aparecerao aqui com seu progresso.</span>
+        </div>`;
+    }
     return toolbar + `
       <div class="metas-state">
         <strong>Sem metas ainda</strong>
@@ -20253,11 +20359,18 @@ function renderPdvGestaoPerformanceTabContent() {
       <button class="secondary-button" type="button" data-action="gestao-performance-refresh">Atualizar</button>
     </div>`;
   if (rows.length === 0) {
+    const emptyNote = isCurrentUserSellerProfile()
+      ? "Quando sua gestao criar metas vinculadas a voce, a leitura de cada meta aparecera aqui."
+      : "Nao ha metas ativas ou encerradas com KPI para exibir. Crie ou ative uma meta para ver a performance.";
     return toolbar + `
       <div class="metas-state">
         <strong>Sem dados no periodo</strong>
-        <span>Nao ha metas ativas ou encerradas com KPI para exibir. Crie ou ative uma meta para ver a performance.</span>
+        <span>${escapeHtml(emptyNote)}</span>
       </div>`;
+  }
+  // Vendedor: cards simples, sem ranking, sem projecao, sem agregados admin.
+  if (isCurrentUserSellerProfile()) {
+    return toolbar + '<div class="metas-performance-seller">' + renderPdvPerformanceSellerCards(rows) + '</div>';
   }
   const TOP_N = 10;
   const showRows = rows.slice(0, TOP_N);
@@ -20285,6 +20398,60 @@ function renderPdvGestaoPerformanceTabContent() {
       </table>
       ${hidden > 0 ? '<p class="metas-performance-note">Exibindo ' + showRows.length + ' de ' + rows.length + ' linhas. Use filtros ou ajuste o periodo para reduzir a lista.</p>' : ''}
     </div>`;
+}
+
+// Cards verticais de performance para Vendedor.
+// Le SOMENTE os rows ja calculados por /goals/:id/progress (payload.targets[]).
+// Sem projecao, sem ranking, sem contagem de outras lojas/vendedores.
+function renderPdvPerformanceSellerCards(rows) {
+  const grouped = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const meta = row?.meta || {};
+    const metaId = meta.id;
+    if (metaId == null) return;
+    if (!grouped.has(metaId)) grouped.set(metaId, { meta, targets: [] });
+    grouped.get(metaId).targets.push(row.target || {});
+  });
+  if (grouped.size === 0) return "";
+  const cards = [];
+  grouped.forEach((entry) => {
+    const meta = entry.meta || {};
+    const status = String(meta.status || "").toLowerCase();
+    const statusLabel = METAS_STATUS_LABELS[status] || meta.status || "—";
+    const startBR = formatDateBR(meta.period_start) || "—";
+    const endBR = formatDateBR(meta.period_end) || "—";
+    const targets = entry.targets || [];
+    const kpis = targets.map((t) => {
+      const pct = Number(t.progress_percent || 0);
+      const safePct = Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0;
+      const tone = safePct >= 100 ? "metas-seller-progress-over" : "metas-seller-progress-on-track";
+      const kpiLabel = t.metric_label || METAS_METRIC_LABELS[t.metric] || t.metric || "—";
+      const alvo = formatPdvMetricValue(t.metric, t.target_value);
+      const realizado = formatPdvMetricValue(t.metric, t.current_value);
+      return `
+        <div class="metas-seller-progress ${tone}">
+          <div class="metas-seller-progress-head">
+            <span class="metas-seller-progress-label">${escapeHtml(kpiLabel)}</span>
+            <span class="metas-seller-progress-value">${Math.round(safePct)}%</span>
+          </div>
+          <div class="metas-progress-bar"><span style="width:${safePct}%"></span></div>
+          <div class="metas-seller-progress-detail">
+            <span>Realizado: ${escapeHtml(realizado)}</span>
+            <span>Alvo: ${escapeHtml(alvo)}</span>
+          </div>
+        </div>`;
+    }).join("");
+    cards.push(`
+      <article class="metas-seller-perf-card status-${escapeHtml(status)}">
+        <header>
+          <strong>${escapeHtml(meta.name || "Meta")}</strong>
+          <span class="metas-badge status-${escapeHtml(status)}">${escapeHtml(statusLabel)}</span>
+        </header>
+        <small>${escapeHtml(startBR)} → ${escapeHtml(endBR)}</small>
+        <div class="metas-seller-perf-kpis">${kpis || '<div class="metas-state"><span>Sem KPI ativo</span></div>'}</div>
+      </article>`);
+  });
+  return cards.join("");
 }
 
 // Linha da tabela de Performance (1 linha por meta x KPI).
@@ -20473,6 +20640,13 @@ function renderPdvGoalCard(goal) {
   const sellerLabel = sellerIds.length > 0
     ? sellerIds.length + " vendedor" + (sellerIds.length > 1 ? "es" : "")
     : null;
+  // Barra de progresso inline para Vendedor em metas ativas - somente
+  // exibida quando ja houver cache de /goals/:id/progress carregado por
+  // preloadSellerGoalProgressIfNeeded. Sem recalculo local.
+  let sellerProgressHtml = "";
+  if (isCurrentUserSellerProfile() && status === "active") {
+    sellerProgressHtml = renderPdvGoalSellerProgressBar(goal, enabledTargets);
+  }
   return `
     <div class="metas-card status-${status}">
       <div class="metas-card-header">
@@ -20503,6 +20677,7 @@ function renderPdvGoalCard(goal) {
           <span class="metas-meta-value">${enabledTargets.length} ativo${enabledTargets.length === 1 ? "" : "s"} \u00b7 ${escapeHtml(kpiSummary)}</span>
         </div>
       </div>
+      ${sellerProgressHtml}
     </div>`;
 }
 
@@ -20511,6 +20686,96 @@ function summarizePdvGoalKpis(targets) {
   const labels = targets.map((t) => METAS_METRIC_LABELS[t.metric] || t.metric);
   if (labels.length <= 2) return labels.join(" \u00b7 ");
   return labels[0] + " \u00b7 " + labels[1] + " +" + (labels.length - 2);
+}
+
+// Barra de progresso inline para o card de Meta do Vendedor.
+// Le SOMENTE o cache (pdvGestaoState.goalProgressByGoalId) populado pelo
+// preload. Sem o cache, retorna string vazia - o card continua identico.
+// A media exibida e calculada exatamente como /goals/:id/progress entrega
+// (progress_percent por target) - sem formula nova.
+function renderPdvGoalSellerProgressBar(goal, targets) {
+  if (!goal || !goal.id) return "";
+  const cache = pdvGestaoState.goalProgressByGoalId && pdvGestaoState.goalProgressByGoalId[goal.id];
+  if (!cache || !Array.isArray(cache.targets) || cache.targets.length === 0) {
+    return '<div class="metas-seller-progress metas-seller-progress-pending">'
+      + '<span class="metas-seller-progress-label">Progresso</span>'
+      + '<span class="metas-seller-progress-pending-text">Toque em Atualizar para carregar seu progresso.</span>'
+      + '</div>';
+  }
+  const enabledTargetIds = new Set(
+    (Array.isArray(targets) ? targets : [])
+      .filter((t) => t && t.enabled !== false)
+      .map((t) => String(t.id))
+  );
+  const percents = cache.targets
+    .filter((t) => enabledTargetIds.size === 0 || enabledTargetIds.has(String(t.target_id ?? "")))
+    .map((t) => Number(t.progress_percent || 0))
+    .filter((n) => Number.isFinite(n));
+  if (percents.length === 0) {
+    return '<div class="metas-seller-progress metas-seller-progress-pending">'
+      + '<span class="metas-seller-progress-label">Progresso</span>'
+      + '<span class="metas-seller-progress-pending-text">Sem KPI com alvo para acompanhar.</span>'
+      + '</div>';
+  }
+  const avg = percents.reduce((sum, n) => sum + n, 0) / percents.length;
+  const clamped = Math.max(0, Math.min(100, avg));
+  const rounded = Math.round(clamped);
+  const tone = clamped >= 100 ? "metas-seller-progress-over" : "metas-seller-progress-on-track";
+  // Mostra melhor e pior KPI para leitura operacional.
+  const bestPct = Math.max(...percents);
+  const worstPct = Math.min(...percents);
+  return `
+    <div class="metas-seller-progress ${tone}">
+      <div class="metas-seller-progress-head">
+        <span class="metas-seller-progress-label">Seu progresso</span>
+        <span class="metas-seller-progress-value">${rounded}%</span>
+      </div>
+      <div class="metas-progress-bar"><span style="width:${clamped}%"></span></div>
+      <div class="metas-seller-progress-detail">
+        <span>Melhor KPI: ${Math.round(bestPct)}%</span>
+        <span>Menor KPI: ${Math.round(worstPct)}%</span>
+      </div>
+    </div>`;
+}
+
+// Carrega o progresso de cada meta ativa do Vendedor em background para
+// popular o card de Meta com a barra inline. Idempotente: nao dispara se ja
+// estiver carregando, e o cache individual e verificado antes do fetch.
+async function preloadSellerGoalProgressIfNeeded(goals) {
+  if (!isCurrentUserSellerProfile()) return;
+  if (pdvGestaoState.goalProgressLoading) return;
+  const list = Array.isArray(goals) ? goals : [];
+  if (list.length === 0) return;
+  pdvGestaoState.goalProgressLoading = true;
+  try {
+    const cache = pdvGestaoState.goalProgressByGoalId || (pdvGestaoState.goalProgressByGoalId = {});
+    const activeGoals = list.filter((g) => String(g?.status || "").toLowerCase() === "active" && g && g.id);
+    // Para cada meta ativa sem cache, busca progresso.
+    const needs = activeGoals.filter((g) => !cache[g.id]);
+    if (needs.length === 0) return;
+    const results = await Promise.allSettled(
+      needs.map((g) =>
+        api("/api/pdv/commercial/goals/" + g.id + "/progress")
+          .then((r) => ({ goalId: g.id, targets: (r?.data?.targets || []) }))
+          .catch(() => ({ goalId: g.id, targets: [] }))
+      )
+    );
+    let touched = false;
+    results.forEach((result) => {
+      if (result.status !== "fulfilled") return;
+      const { goalId, targets } = result.value;
+      cache[goalId] = { targets: Array.isArray(targets) ? targets : [], loadedAt: new Date().toISOString() };
+      touched = true;
+    });
+    if (touched) {
+      // Re-renderiza a aba Metas para que os cards recebam a barra inline.
+      renderPdvGestaoGoalsPanel();
+    }
+  } catch (_) {
+    // silencioso: falha de progress nao pode quebrar a aba Metas
+  } finally {
+    pdvGestaoState.goalProgressLoading = false;
+  }
 }
 
 // Carrega lista de metas via API. Forca reload quando called com true.
@@ -20547,6 +20812,11 @@ function renderPdvGestaoGoalsPanel() {
   goalsPanel.innerHTML = renderPdvGestaoGoalsTabContent();
   bindPdvGestaoActions(goalsPanel);
   refreshPdvGoalKpiRowsVisual();
+  // Vendedor: dispara carregamento em background do progresso de cada meta
+  // ativa para alimentar a barra inline do card. Idempotente.
+  if (isCurrentUserSellerProfile() && pdvGestaoState.goalsLoaded) {
+    preloadSellerGoalProgressIfNeeded(pdvGestaoState.goals).catch(() => {});
+  }
 }
 
 // Carrega dados da aba Performance (read-only): lista metas + progresso de cada.
