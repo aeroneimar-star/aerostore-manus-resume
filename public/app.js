@@ -1576,7 +1576,7 @@ const PATHNAME_SECTION_META = {
   "pdv-exchanges": { displaySection: "pdv-exchanges", title: "Trocas" },
   "pdv-quotes": { displaySection: "pdv-quotes", title: "Orçamentos" },
   "pdv-imports": { displaySection: "pdv-imports", title: "Importações" },
-  "pdv-gestao": { displaySection: "pdv-gestao", title: getCommercialSectionLabel() }
+  "pdv-gestao": { displaySection: "pdv-gestao", get title() { return getCommercialSectionLabel(); } }
 };
 
 function normalizePathname(pathname = "") {
@@ -1637,7 +1637,7 @@ const PDV_ROUTE_ITEMS = [
   { section: "pdv-consolidation", label: "Consolidação", route: "/pdv/consolidacao", visible: () => canViewConsolidationMenu() },
   { section: "pdv-reservations", label: "Reservas", route: "/pdv/reservas", visible: () => canViewPdvReservationsFrontend() },
   { section: "pdv-exchanges", label: "Trocas", route: "/pdv/trocas", visible: () => canViewPdvExchangesFrontend() },
-  { section: "pdv-gestao", label: getCommercialSectionLabel(), route: "/pdv/gestao", visible: () => canViewPdvGestaoFrontend() }
+  { section: "pdv-gestao", label: () => getCommercialSectionLabel(), route: "/pdv/gestao", visible: () => canViewPdvGestaoFrontend() }
 ];
 
 const SELLER_HIDDEN_PDV_MENU_SECTIONS = new Set([
@@ -1730,11 +1730,14 @@ function getVisiblePdvRouteItems() {
 
 function buildPdvRouteTabs(activeSection = "") {
   return getVisiblePdvRouteItems()
-    .map((item) => `
+    .map((item) => {
+      const labelText = typeof item.label === "function" ? item.label() : item.label;
+      return `
       <button class="pdv-route-tab${item.section === activeSection ? " active" : ""}" type="button" data-route="${item.route}">
-        ${item.label}
+        ${labelText}
       </button>
-    `)
+    `;
+    })
     .join("");
 }
 
