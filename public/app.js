@@ -1576,7 +1576,7 @@ const PATHNAME_SECTION_META = {
   "pdv-exchanges": { displaySection: "pdv-exchanges", title: "Trocas" },
   "pdv-quotes": { displaySection: "pdv-quotes", title: "Orçamentos" },
   "pdv-imports": { displaySection: "pdv-imports", title: "Importações" },
-  "pdv-gestao": { displaySection: "pdv-gestao", title: "Gestão Comercial" }
+  "pdv-gestao": { displaySection: "pdv-gestao", title: getCommercialSectionLabel() }
 };
 
 function normalizePathname(pathname = "") {
@@ -19137,7 +19137,7 @@ async function loadPdvGestaoFront() {
   if (!container) return;
   if (!canViewCommercialGoals()) {
     pdvGestaoState.loading = false;
-    pdvGestaoState.error = "Sem acesso a Gestão Comercial.";
+    pdvGestaoState.error = "Sem acesso a " + getCommercialSectionLabel() + ".";
     renderPdvGestaoFront(container);
     return;
   }
@@ -19151,7 +19151,7 @@ async function loadPdvGestaoFront() {
     renderPdvGestaoFront(container);
   } catch (err) {
     pdvGestaoState.loading = false;
-    pdvGestaoState.error = "Sem acesso a Gestão Comercial.";
+    pdvGestaoState.error = "Sem acesso a " + getCommercialSectionLabel() + ".";
     renderPdvGestaoFront(container);
   }
 }
@@ -19159,17 +19159,17 @@ async function loadPdvGestaoFront() {
 function renderPdvGestaoFront(container) {
   const { campaigns, loading, error } = pdvGestaoState;
   if (loading) {
-    container.innerHTML = '<div class="panel"><div class="panel-header"><h3>Gestão Comercial</h3></div><div class="loading-indicator">Carregando...</div></div>';
+    container.innerHTML = '<div class="panel"><div class="panel-header"><h3>' + escapeHtml(getCommercialSectionLabel()) + '</h3></div><div class="loading-indicator">Carregando...</div></div>';
     return;
   }
   if (error) {
-    container.innerHTML = '<div class="panel"><div class="panel-header"><h3>Gestão Comercial</h3></div><div class="empty-state"><strong>Sem acesso</strong><span>' + escapeHtml(error) + '</span></div></div>';
+    container.innerHTML = '<div class="panel"><div class="panel-header"><h3>' + escapeHtml(getCommercialSectionLabel()) + '</h3></div><div class="empty-state"><strong>Sem acesso</strong><span>' + escapeHtml(error) + '</span></div></div>';
     return;
   }
   container.innerHTML = `
     <div class="panel">
       <div class="panel-header">
-        <h3>Gestão Comercial</h3>
+        <h3>${escapeHtml(getCommercialSectionLabel())}</h3>
         <div class="action-row">
           ${canManageCampaignChallenges() ? '<button class="primary-button" type="button" data-action="gestao-create">+ Nova Corridinha</button>' : ""}
           <button class="secondary-button" type="button" data-action="gestao-refresh">Atualizar</button>
@@ -19257,7 +19257,7 @@ function renderPdvGestaoTabsBar() {
       ${escapeHtml(label)}${badgeCount ? `<span class="pdv-gestao-tab-count">${count}</span>` : ""}
     </button>`;
   return `
-    <div class="pdv-gestao-tabs" role="tablist" aria-label="Gestão Comercial">
+    <div class="pdv-gestao-tabs" role="tablist" aria-label="${escapeHtml(getCommercialSectionLabel())}">
       ${tabBtn("campaigns", "Corridinhas", campaignsCount, true)}
       ${tabBtn("goals", "Metas", goalsCount, true)}
       ${tabBtn("performance", "Performance", 0, false)}
