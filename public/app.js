@@ -1445,6 +1445,10 @@ function canViewPdvGestaoFrontend() {
   return isCurrentUserManagerProfile() || hasPermission("can_view_commercial_management");
 }
 
+function getCommercialSectionLabel() {
+  return isCurrentUserSellerProfile() ? "Minhas Metas" : "Gestao Comercial";
+}
+
 function canManageSettings() {
   return isCurrentUserManagerProfile();
 }
@@ -1633,7 +1637,7 @@ const PDV_ROUTE_ITEMS = [
   { section: "pdv-consolidation", label: "Consolidação", route: "/pdv/consolidacao", visible: () => canViewConsolidationMenu() },
   { section: "pdv-reservations", label: "Reservas", route: "/pdv/reservas", visible: () => canViewPdvReservationsFrontend() },
   { section: "pdv-exchanges", label: "Trocas", route: "/pdv/trocas", visible: () => canViewPdvExchangesFrontend() },
-  { section: "pdv-gestao", label: "Gestão Comercial", route: "/pdv/gestao", visible: () => canViewPdvGestaoFrontend() }
+  { section: "pdv-gestao", label: getCommercialSectionLabel(), route: "/pdv/gestao", visible: () => canViewPdvGestaoFrontend() }
 ];
 
 const SELLER_HIDDEN_PDV_MENU_SECTIONS = new Set([
@@ -1641,16 +1645,14 @@ const SELLER_HIDDEN_PDV_MENU_SECTIONS = new Set([
   "pdv-reports",
   "pdv-consolidation",
   "pdv-reservations",
-  "pdv-imports",
-  "pdv-gestao"
+  "pdv-imports"
 ]);
 
 const SELLER_RESTRICTED_PDV_SECTIONS = new Set([
   "pdv-reports",
   "pdv-consolidation",
   "pdv-reservations",
-  "pdv-imports",
-  "pdv-gestao"
+  "pdv-imports"
 ]);
 
 function canAccessOfficialSection(sectionId = "") {
@@ -25072,7 +25074,7 @@ function getSidebarMenuGroups() {
         title: "Gestão",
         items: [
           { label: "Relatórios", route: "/pdv/relatorios" },
-          { label: "Gestão Comercial", route: "/pdv/gestao", visible: canViewPdvGestaoFrontend() },
+          { label: getCommercialSectionLabel(), route: "/pdv/gestao", visible: canViewPdvGestaoFrontend() },
           { label: "Relatórios de Cashback", section: "cashback-reports" },
           { label: "Consolidação Estratégica", route: "/pdv/consolidacao", visible: canViewConsolidationMenu() },
           { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() || canImportCrmContactsFrontend() },
@@ -25115,7 +25117,7 @@ function getSidebarMenuGroups() {
         title: "Gestão",
         items: [
           { label: "Relatórios da loja", route: "/pdv/relatorios", visible: hasPermission("can_view_reports") || hasPermission("can_view_store_reports") },
-          { label: "Gestão Comercial", route: "/pdv/gestao", visible: canViewPdvGestaoFrontend() },
+          { label: getCommercialSectionLabel(), route: "/pdv/gestao", visible: canViewPdvGestaoFrontend() },
           { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() || canImportCrmContactsFrontend() },
           { label: "Importar clientes", route: "/pdv/importacoes/clientes", visible: canImportCrmContactsFrontend() },
           { label: "AEROINTEL", route: "/aerointel", visible: canViewAerointelMenu() },

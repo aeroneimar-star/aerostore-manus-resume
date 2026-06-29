@@ -222,7 +222,8 @@ function buildRolePermissions(role = "seller") {
     can_view_whatsapp_status: true,
     can_request_discount_authorization: true,
     can_view_orders: true,
-    can_view_exchanges: true
+    can_view_exchanges: true,
+    can_view_commercial_management: true
   };
 }
 
