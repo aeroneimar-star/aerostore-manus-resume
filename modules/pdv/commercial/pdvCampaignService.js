@@ -732,6 +732,59 @@ function computePrize(entry = {}, config = {}, prize = {}) {
   return 0;
 }
 
+// ── Live ranking para o vendedor logado ──────────────────────────────
+// Reaproveita getLiveStatus (mesma regra de Corridinha, mesma elegibilidade,
+// mesma evidencia) e filtra o resultado por seller_id no backend. Nao retorna
+// dados de outros participantes nem o array `ranking[]` completo.
+async function getLiveStatusForSeller(challengeId, sellerId) {
+  const challenge = await getCampaignById(challengeId);
+  if (!challenge) throw new Error("Campanha nao encontrada.");
+
+  const sellerIdNum = Number(sellerId);
+  if (!sellerIdNum) {
+    return {
+      challenge: {
+        id: Number(challenge.id),
+        name: challenge.name || "",
+        status: challenge.status || "",
+        rule_type: challenge.rule_type || "",
+        start_date: challenge.start_date || "",
+        end_date: challenge.end_date || ""
+      },
+      participant: null,
+      message: "Vendedor nao identificado para este usuario."
+    };
+  }
+
+  const full = await getLiveStatus(challengeId);
+  const ranking = Array.isArray(full?.ranking) ? full.ranking : [];
+  const mine = ranking.find((entry) => Number(entry?.seller_id) === sellerIdNum) || null;
+
+  return {
+    challenge: full.challenge || {
+      id: Number(challenge.id),
+      name: challenge.name || "",
+      status: challenge.status || "",
+      rule_type: challenge.rule_type || "",
+      start_date: challenge.start_date || "",
+      end_date: challenge.end_date || ""
+    },
+    participant: mine
+      ? {
+          seller_id: Number(mine.seller_id),
+          seller_name: mine.seller_name || "",
+          current_value: Number(mine.current_value) || 0,
+          eligible_sales_count: Number(mine.eligible_sales_count) || 0,
+          eligible_items_count: Number(mine.eligible_items_count) || 0,
+          eligible_amount: Number(mine.eligible_amount) || 0,
+          rank: mine.rank ? Number(mine.rank) : null,
+          is_winner: Boolean(mine.is_winner)
+        }
+      : null,
+    message: mine ? null : "Voce ainda nao tem progresso registrado nesta Corridinha."
+  };
+}
+
 // ── Resultados ───────────────────────────────────────────────────────
 
 async function getCampaignResults(challengeId) {
@@ -784,6 +837,7 @@ module.exports = {
   activateCampaign,
   cancelCampaign,
   getLiveStatus,
+  getLiveStatusForSeller,
   settleCampaign,
   getCampaignResults,
   markRewardPaid,

@@ -13,6 +13,7 @@ const {
   activateCampaign,
   cancelCampaign,
   getLiveStatus,
+  getLiveStatusForSeller,
   settleCampaign,
   getCampaignResults,
   markRewardPaid
@@ -202,12 +203,30 @@ router.post("/campaigns/:id/cancel", requireCampaignManage, async (req, res) => 
 
 // ── Live / Ranking ───────────────────────────────────────────────────
 
+// Vendedor so pode consultar o proprio progresso da Corridinha. Ranking
+// geral (demais participantes + evidencias) so fica visivel para Admin/Gestor
+// e usuarios com can_view_commercial_management sem ser role seller.
 router.get("/campaigns/:id/live", requireCommercialAccess, async (req, res) => {
+  if (isSellerOnly(req)) {
+    return res.status(403).json({ error: "Vendedor so pode consultar o proprio progresso. Use /campaigns/:id/live/mine." });
+  }
   try {
     const result = await getLiveStatus(req.params.id, req.query);
     res.json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao buscar ranking live." });
+  }
+});
+
+// Endpoint seguro dedicado ao Vendedor. Retorna apenas o proprio progresso
+// (sem ranking geral, sem nomes/valores de outros participantes).
+router.get("/campaigns/:id/live/mine", requireCommercialAccess, async (req, res) => {
+  const userSellerId = Number(req.user?.seller_id || 0);
+  try {
+    const result = await getLiveStatusForSeller(req.params.id, userSellerId);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao buscar progresso da Corridinha." });
   }
 });
 
@@ -224,7 +243,12 @@ router.post("/campaigns/:id/settle", requireSettleAccess, async (req, res) => {
 
 // ── Results ──────────────────────────────────────────────────────────
 
+// Seller nao deve ver ranking geral apurado; usa /results/:seller (ainda nao
+// exposto) ou consulta localmente em /live/mine quando precisar.
 router.get("/campaigns/:id/results", requireCommercialAccess, async (req, res) => {
+  if (isSellerOnly(req)) {
+    return res.status(403).json({ error: "Vendedor so pode consultar o proprio resultado. Use /campaigns/:id/live/mine." });
+  }
   try {
     const result = await getCampaignResults(req.params.id);
     res.json({ success: true, data: result });
