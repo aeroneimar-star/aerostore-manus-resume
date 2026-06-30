@@ -19035,7 +19035,13 @@ const pdvGestaoState = {
   // Vendedor (sem recalcular regra — reaproveita /goals/:id/progress).
   // Formato: { [goalId]: { targets: [{...}], loadedAt: ISO } }
   goalProgressByGoalId: {},
-  goalProgressLoading: false
+  goalProgressLoading: false,
+  // ── Progresso de Corridinha para o Vendedor (Fase 6) ───────────────
+  // Cada chave tem o id da campanha. Cada valor:
+  //   { loading, error, participant: null | { current_value, rank, eligible_* , is_winner } }
+  // Preenchido por loadPdvGestaoSellerCampaignProgress via /campaigns/:id/live/mine.
+  campaignProgress: {},
+  campaignProgressLoading: false
 };
 
 function resetGestaoSelectedSkus() {
@@ -19170,11 +19176,66 @@ async function loadPdvGestaoFront() {
     pdvGestaoState.campaigns = Array.isArray(res?.data) ? res.data : [];
     pdvGestaoState.loading = false;
     renderPdvGestaoFront(container);
+    // Vendedor: carrega progresso proprio por campanha ativa em paralelo
+    // (endpoint seguro /live/mine, nao expoe ranking geral).
+    if (isCurrentUserSellerProfile()) {
+      loadPdvGestaoSellerCampaignProgress().catch(() => {});
+    }
   } catch (err) {
     pdvGestaoState.loading = false;
     pdvGestaoState.error = "Sem acesso a " + getCommercialSectionLabel() + ".";
     renderPdvGestaoFront(container);
   }
+}
+
+// Carrega, em paralelo, o progresso proprio do Vendedor para cada campanha
+// ativa. Endpoint: GET /api/pdv/commercial/campaigns/:id/live/mine.
+// Falha em uma campanha nao derruba as demais.
+async function loadPdvGestaoSellerCampaignProgress() {
+  if (pdvGestaoState.campaignProgressLoading) return;
+  const campaigns = Array.isArray(pdvGestaoState.campaigns) ? pdvGestaoState.campaigns : [];
+  const active = campaigns.filter((c) => String(c?.status || "").toLowerCase() === "active");
+  if (active.length === 0) {
+    pdvGestaoState.campaignProgress = {};
+    return;
+  }
+  pdvGestaoState.campaignProgressLoading = true;
+  const next = Object.assign({}, pdvGestaoState.campaignProgress);
+  active.forEach((c) => {
+    next[c.id] = next[c.id] || { loading: true, error: "", participant: null };
+  });
+  pdvGestaoState.campaignProgress = next;
+  const container = document.getElementById("pdv-gestao-content");
+  if (container) renderPdvGestaoFront(container);
+  await Promise.all(active.map(async (c) => {
+    const id = c.id;
+    try {
+      const res = await api("/api/pdv/commercial/campaigns/" + encodeURIComponent(id) + "/live/mine");
+      const data = res?.data || {};
+      pdvGestaoState.campaignProgress = Object.assign({}, pdvGestaoState.campaignProgress, {
+        [id]: {
+          loading: false,
+          error: "",
+          participant: data.participant || null,
+          message: data.message || "",
+          challenge: data.challenge || null
+        }
+      });
+    } catch (err) {
+      pdvGestaoState.campaignProgress = Object.assign({}, pdvGestaoState.campaignProgress, {
+        [id]: {
+          loading: false,
+          error: err?.message || err?.error || "Falha ao buscar progresso.",
+          participant: null,
+          message: "",
+          challenge: null
+        }
+      });
+    }
+  }));
+  pdvGestaoState.campaignProgressLoading = false;
+  const target = document.getElementById("pdv-gestao-content");
+  if (target) renderPdvGestaoFront(target);
 }
 
 // Resumo operacional exibido somente para Vendedor no topo da tela /pdv/gestao.
@@ -19216,6 +19277,19 @@ function renderPdvGestaoSellerSummary() {
   const scopeNote = sellerStore
     ? "Corridinhas listadas apenas da sua loja (" + escapeHtml(formatStoreIdLabel(sellerStore)) + ")."
     : "Loja ativa nao definida — Corridinhas exibem todas as campanhas ate sua loja ser vinculada.";
+  // Contagem de campanhas ativas com progresso proprio ja carregado (cache).
+  // Nao inventa regra: usa pdvGestaoState.campaignProgress, preenchido por
+  // /campaigns/:id/live/mine.
+  let activeProgressLabel = "";
+  let activeProgressSub = "Aguarde carregar";
+  if (!pdvGestaoState.campaignProgressLoading && Object.keys(pdvGestaoState.campaignProgress || {}).length > 0) {
+    const withProgress = activeCampaigns.filter((c) => {
+      const entry = pdvGestaoState.campaignProgress?.[c.id];
+      return entry && !entry.loading && !entry.error && entry.participant;
+    }).length;
+    activeProgressLabel = withProgress + " com progresso / " + activeCampaigns.length + " ativas";
+    activeProgressSub = "Baseado em /live/mine";
+  }
   const tile = (label, value, sub, tone) => `
     <div class="metas-seller-tile${tone ? " " + tone : ""}">
       <span class="metas-seller-tile-label">${escapeHtml(label)}</span>
@@ -19224,7 +19298,11 @@ function renderPdvGestaoSellerSummary() {
     </div>`;
   return `
     <section class="metas-seller-summary" aria-label="Resumo de Minhas Metas">
-      ${tile("Corridinhas ativas", String(activeCampaigns.length), activeCampaigns.length > 0 ? "Na sua loja" : "Sem campanha ativa")}
+      ${tile(
+        "Corridinhas ativas",
+        activeProgressLabel || String(activeCampaigns.length),
+        activeProgressLabel ? activeProgressSub : (activeCampaigns.length > 0 ? "Na sua loja" : "Sem campanha ativa")
+      )}
       ${tile("Metas ativas", String(activeGoals.length), activeGoals.length > 0 ? "Para voce" : "Sem meta ativa")}
       ${tile("Progresso medio", avgProgressText, "Baseado em metas com progresso carregado")}
       ${tile("Status", statusLabel, "", statusTone)}
@@ -19404,6 +19482,7 @@ function renderGestaoCampaignCard(campaign) {
   const hasPrize = prize.value && Number(prize.value) > 0;
   const isIncomplete = !hasName || !hasPrize;
   const canManage = canManageCampaignChallenges();
+  const isSeller = isCurrentUserSellerProfile();
   const actions = [];
   // Rascunho: Editar sempre (para revisar antes de ativar)
   if (canManage && isDraft) actions.push('<button class="small-secondary" type="button" data-gestao-action="edit" data-id="' + campaign.id + '">Editar</button>');
@@ -19413,11 +19492,14 @@ function renderGestaoCampaignCard(campaign) {
   if (canManage && isDraft) actions.push('<button class="small-danger" type="button" data-gestao-action="delete" data-id="' + campaign.id + '">Excluir</button>');
   // Ativa: Cancelar
   if (canManage && isActive) actions.push('<button class="small-danger" type="button" data-gestao-action="cancel" data-id="' + campaign.id + '">Cancelar</button>');
-  // Ativa + completa: Ranking Live e Apurar
-  if (isActive && !isIncomplete) actions.push('<button class="small-secondary" type="button" data-gestao-action="live" data-id="' + campaign.id + '">Ranking Live</button>');
-  if ((canManageCampaignSettle() || isCurrentUserManagerProfile()) && isActive && !isIncomplete) actions.push('<button class="small-primary" type="button" data-gestao-action="settle" data-id="' + campaign.id + '">Apurar</button>');
-  // Settled: Resultados
-  if (isSettled) actions.push('<button class="small-secondary" type="button" data-gestao-action="results" data-id="' + campaign.id + '">Resultados</button>');
+  // Ativa + completa: Ranking Live e Apurar (Admin/Gestor).
+  // Vendedor consulta via /live/mine; ranking geral fica fora do escopo do Seller.
+  if (!isSeller && isActive && !isIncomplete) actions.push('<button class="small-secondary" type="button" data-gestao-action="live" data-id="' + campaign.id + '">Ranking Live</button>');
+  if (!isSeller && (canManageCampaignSettle() || isCurrentUserManagerProfile()) && isActive && !isIncomplete) actions.push('<button class="small-primary" type="button" data-gestao-action="settle" data-id="' + campaign.id + '">Apurar</button>');
+  // Settled: Resultados (Admin/Gestor — Vendedor consulta via /live/mine).
+  if (isSettled && !isSeller) actions.push('<button class="small-secondary" type="button" data-gestao-action="results" data-id="' + campaign.id + '">Resultados</button>');
+  // Bloco de progresso proprio para Vendedor em campanhas ativas.
+  const progressBlock = renderSellerCampaignProgressBlock(campaign);
   // Indicacao de escopo para o Vendedor: mostra se a loja dele esta inclusa
   // na campanha. Sem mexer em regra - e derivado direto de campaign.store_ids
   // normalizado pelo helper getCampaignStores no service.
@@ -19454,6 +19536,7 @@ function renderGestaoCampaignCard(campaign) {
         <span>Lojas: ${escapeHtml(storesDisplay)}</span>
         <span>${productsDisplay}</span>
       </div>
+      ${progressBlock ? '<div class="gestao-card-progress">' + progressBlock + "</div>" : ""}
     </div>`;
 }
 
@@ -19463,6 +19546,69 @@ function canManageCampaignChallenges() {
 
 function canManageCampaignSettle() {
   return isCurrentUserManagerProfile() || hasPermission("can_settle_campaign_rewards");
+}
+
+// Bloco de progresso proprio do Vendedor para uma Corridinha ativa.
+// Leitura exclusiva de pdvGestaoState.campaignProgress[id] (preenchido por
+// /campaigns/:id/live/mine). Nenhum calculo novo — apenas formatacao segura
+// dos campos que o backend devolveu.
+function renderSellerCampaignProgressBlock(campaign) {
+  if (!campaign || !campaign.id) return "";
+  if (!isCurrentUserSellerProfile()) return "";
+  const status = String(campaign.status || "").toLowerCase();
+  if (status !== "active") return ""; // progresso proprio so faz sentido em campanhas ativas
+  const cache = pdvGestaoState.campaignProgress?.[campaign.id];
+  if (!cache) {
+    return '<div class="gestao-seller-progress"><span class="gestao-seller-progress-loading">Carregando progresso...</span></div>';
+  }
+  if (cache.loading) {
+    return '<div class="gestao-seller-progress"><span class="gestao-seller-progress-loading">Carregando progresso...</span></div>';
+  }
+  if (cache.error) {
+    return '<div class="gestao-seller-progress gestao-seller-progress-error"><strong>Sem leitura de progresso</strong><span>' + escapeHtml(cache.error) + '</span></div>';
+  }
+  const participant = cache.participant;
+  if (!participant) {
+    const emptyMessage = cache.message || "Voce ainda nao tem progresso registrado nesta Corridinha.";
+    return '<div class="gestao-seller-progress gestao-seller-progress-empty"><strong>Sem progresso ainda</strong><span>' + escapeHtml(emptyMessage) + '</span></div>';
+  }
+  // Status simples: "Em andamento" enquanto current_value > 0 e nao winner;
+  // "Premiacao liberada" quando is_winner vier true; senao "Em andamento".
+  const cv = Number(participant.current_value || 0);
+  const statusLabel = participant.is_winner ? "Premiacao liberada" : (cv > 0 ? "Em andamento" : "Sem progresso ainda");
+  const statusTone = participant.is_winner ? "tone-positive" : (cv > 0 ? "tone-neutral" : "tone-muted");
+  const rankCell = participant.rank ? ("#" + Number(participant.rank)) : "—";
+  const sales = Number(participant.eligible_sales_count || 0);
+  const items = Number(participant.eligible_items_count || 0);
+  const amount = Number(participant.eligible_amount || 0);
+  const ruleType = String(campaign.rule_type || "");
+  // Unidade de current_value: itens para quantity_target/highest_quantity;
+  // vendas para ticket_threshold_count. Sem regra nova.
+  let valueLabel = "Itens vendidos";
+  let valueDisplay = String(items > 0 ? items : cv);
+  if (ruleType === "ticket_threshold_count") {
+    valueLabel = "Vendas qualificadas";
+    valueDisplay = String(sales > 0 ? sales : cv);
+  } else if (ruleType === "highest_quantity") {
+    valueLabel = "Itens (maior venda)";
+    valueDisplay = String(cv);
+  } else if (ruleType === "quantity_target") {
+    valueLabel = "Itens vendidos";
+    valueDisplay = String(items > 0 ? items : cv);
+  }
+  return `
+    <div class="gestao-seller-progress">
+      <div class="gestao-seller-progress-head">
+        <strong>Seu progresso</strong>
+        <span class="gestao-seller-progress-status ${statusTone}">${escapeHtml(statusLabel)}</span>
+      </div>
+      <div class="gestao-seller-progress-grid">
+        <div><span>Posicao</span><strong>${escapeHtml(rankCell)}</strong></div>
+        <div><span>${escapeHtml(valueLabel)}</span><strong>${escapeHtml(valueDisplay)}</strong></div>
+        <div><span>Vendas qualificadas</span><strong>${escapeHtml(String(sales))}</strong></div>
+        <div><span>Valor qualificado</span><strong>${escapeHtml(currency(amount))}</strong></div>
+      </div>
+    </div>`;
 }
 
 function bindPdvGestaoActions(container) {
@@ -20165,6 +20311,12 @@ async function handleGestaoEditSubmit(form) {
 }
 
 async function handleGestaoAction(action, campaignId) {
+  // Vendedor nao aciona Ranking Live nem Resultados — backend bloqueia /live e
+  // /results para seller por questao de seguranca. Defesa em profundidade:
+  // mesmo se um botao escapar, nao disparamos o handler.
+  if ((action === "live" || action === "results") && isCurrentUserSellerProfile()) {
+    return;
+  }
   try {
     if (action === "activate") {
       await api("/api/pdv/commercial/campaigns/" + campaignId + "/activate", { method: "POST" });
@@ -20203,6 +20355,20 @@ async function handleGestaoAction(action, campaignId) {
 async function loadGestaoRankingPanel(campaignId, settled = false) {
   const panel = document.getElementById("gestao-ranking-panel");
   if (!panel) return;
+  // Vendedor nao consulta ranking geral — backend tambem recusa. Mantemos
+  // painel vazio, com mensagem util.
+  if (isCurrentUserSellerProfile()) {
+    panel.innerHTML = `
+      <div class="panel">
+        <div class="panel-header">
+          <h3>Ranking</h3>
+          <button class="ghost-button" type="button" data-action="gestao-close-ranking">Fechar</button>
+        </div>
+        <div class="empty-state"><strong>Sem acesso ao ranking geral</strong><span>Consulte seu proprio progresso direto no card da Corridinha.</span></div>
+      </div>`;
+    panel.querySelector('[data-action="gestao-close-ranking"]')?.addEventListener("click", () => { panel.innerHTML = ""; });
+    return;
+  }
   panel.innerHTML = '<div class="panel-header"><h3>Ranking</h3></div><div class="loading-indicator">Carregando...</div>';
   try {
     const endpoint = settled ? "/api/pdv/commercial/campaigns/" + campaignId + "/results" : "/api/pdv/commercial/campaigns/" + campaignId + "/live";
