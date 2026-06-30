@@ -185,7 +185,7 @@ router.delete("/campaigns/:id", requireCampaignManage, async (req, res) => {
 
 router.post("/campaigns/:id/activate", requireCampaignManage, async (req, res) => {
   try {
-    const result = await activateCampaign(req.params.id);
+    const result = await activateCampaign(req.params.id, req);
     res.json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao ativar campanha." });
@@ -194,7 +194,7 @@ router.post("/campaigns/:id/activate", requireCampaignManage, async (req, res) =
 
 router.post("/campaigns/:id/cancel", requireCampaignManage, async (req, res) => {
   try {
-    const result = await cancelCampaign(req.params.id);
+    const result = await cancelCampaign(req.params.id, req);
     res.json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao cancelar campanha." });
@@ -234,7 +234,7 @@ router.get("/campaigns/:id/live/mine", requireCommercialAccess, async (req, res)
 
 router.post("/campaigns/:id/settle", requireSettleAccess, async (req, res) => {
   try {
-    const result = await settleCampaign(req.params.id, req.user || {});
+    const result = await settleCampaign(req.params.id, req);
     res.json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao apurar campanha." });
@@ -259,7 +259,7 @@ router.get("/campaigns/:id/results", requireCommercialAccess, async (req, res) =
 
 router.post("/campaigns/:id/results/:result_id/mark-paid", requireSettleAccess, async (req, res) => {
   try {
-    const result = await markRewardPaid(req.params.result_id, req.user || {});
+    const result = await markRewardPaid(req.params.result_id, req);
     res.json({ success: true, data: result });
   } catch (error) {
     res.status(400).json({ error: error.message || "Falha ao marcar premio como pago." });

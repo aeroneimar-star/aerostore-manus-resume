@@ -19186,6 +19186,13 @@ async function loadPdvGestaoFront() {
     if (isCurrentUserSellerProfile()) {
       loadPdvGestaoSellerCampaignProgress().catch(() => {});
     }
+    // Admin/Gestor: carrega dados de apuracao das campanhas settled em
+    // paralelo (settled_by_name, contagem de pagos, etc.) para alimentar o
+    // sub-bloco de Apuracao/Pagamento no card. Vendedor nao aciona aqui -
+    // backend bloqueia /results para seller.
+    if (!isCurrentUserSellerProfile()) {
+      loadPdvGestaoSettlement().catch(() => {});
+    }
   } catch (err) {
     pdvGestaoState.loading = false;
     pdvGestaoState.error = "Sem acesso a " + getCommercialSectionLabel() + ".";
@@ -19241,6 +19248,74 @@ async function loadPdvGestaoSellerCampaignProgress() {
   pdvGestaoState.campaignProgressLoading = false;
   const target = document.getElementById("pdv-gestao-content");
   if (target) renderPdvGestaoFront(target);
+}
+
+// Carrega dados de apuracao (settled) por campanha ja apurada. Alimenta o
+// sub-bloco "Apuracao/Pagamento" no card da Corridinha (Admin/Gestor).
+// Endpoint: GET /api/pdv/commercial/campaigns/:id/results.
+// Falha em uma campanha nao derruba as demais. Reaproveita o padrao do
+// loadPdvGestaoSellerCampaignProgress (cache, loading flag, re-render).
+async function loadPdvGestaoSettlement() {
+  const campaigns = Array.isArray(pdvGestaoState.campaigns) ? pdvGestaoState.campaigns : [];
+  const settled = campaigns.filter((c) => String(c?.status || "").toLowerCase() === "settled");
+  if (settled.length === 0) {
+    pdvGestaoState.campaignSettlement = {};
+    return;
+  }
+  if (!pdvGestaoState.campaignSettlement) pdvGestaoState.campaignSettlement = {};
+  const next = Object.assign({}, pdvGestaoState.campaignSettlement);
+  settled.forEach((c) => {
+    if (!next[c.id]) next[c.id] = { loading: true, data: null, error: "" };
+  });
+  pdvGestaoState.campaignSettlement = next;
+  await Promise.all(settled.map(async (c) => {
+    const id = c.id;
+    try {
+      const res = await api("/api/pdv/commercial/campaigns/" + encodeURIComponent(id) + "/results");
+      const data = res?.data || null;
+      pdvGestaoState.campaignSettlement = Object.assign({}, pdvGestaoState.campaignSettlement, {
+        [id]: { loading: false, data, error: "" }
+      });
+    } catch (err) {
+      pdvGestaoState.campaignSettlement = Object.assign({}, pdvGestaoState.campaignSettlement, {
+        [id]: { loading: false, data: null, error: err?.message || err?.error || "Falha ao buscar apuracao." }
+      });
+    }
+  }));
+  const target = document.getElementById("pdv-gestao-content");
+  if (target) renderPdvGestaoFront(target);
+}
+
+// Helper usado no card da Corridinha para calcular agregados do settlement
+// (Apurado por X, em DD/MM; total de vendedores/premiados; quantos pagos).
+// Leitura exclusiva do cache pdvGestaoState.campaignSettlement[id]. Sem
+// formula nova - so contadores e formatacao.
+function summarizeCampaignSettlement(campaignId) {
+  const cache = (pdvGestaoState.campaignSettlement || {})[campaignId];
+  if (!cache) return { state: "loading" };
+  if (cache.loading) return { state: "loading" };
+  if (cache.error) return { state: "error", error: cache.error };
+  const data = cache.data || {};
+  const results = Array.isArray(data.results) ? data.results : [];
+  const challenge = data.challenge || {};
+  if (results.length === 0) return { state: "empty", challenge };
+  const totalSellers = results.length;
+  const paidCount = results.filter((r) => r && r.paid).length;
+  const totalPrize = results.reduce((sum, r) => sum + toNumber(r.prize_earned), 0);
+  const totalPaid = results.filter((r) => r && r.paid).reduce((sum, r) => sum + toNumber(r.prize_earned), 0);
+  const winner = results.find((r) => r && (r.rank_position === 1 || r.rank === 1)) || results[0];
+  return {
+    state: "ok",
+    challenge,
+    totalSellers,
+    paidCount,
+    pendingCount: totalSellers - paidCount,
+    totalPrize,
+    totalPaid,
+    winner,
+    settledByName: challenge.settled_by_name || "",
+    settledAtReadable: challenge.settled_at_readable || ""
+  };
 }
 
 // Resumo operacional exibido somente para Vendedor no topo da tela /pdv/gestao.
@@ -19432,9 +19507,10 @@ function renderGestaoCampaignCard(campaign) {
   const rawStatus = (campaign.status || "draft").toString().toLowerCase().trim();
   const isActive = rawStatus === "active" || rawStatus === "ativa";
   const isSettled = rawStatus === "settled" || rawStatus === "apurada";
-  const isDraft = !isActive && !isSettled;
-  const statusClass = isActive ? "status-active" : isSettled ? "status-settled" : "status-draft";
-  const statusLabel = isActive ? "Ativa" : isSettled ? "Apurada" : "Rascunho";
+  const isCancelled = rawStatus === "cancelled" || rawStatus === "cancelada";
+  const isDraft = !isActive && !isSettled && !isCancelled;
+  const statusClass = isActive ? "status-active" : isSettled ? "status-settled" : isCancelled ? "status-cancelled" : "status-draft";
+  const statusLabel = isActive ? "Ativa" : isSettled ? "Apurada" : isCancelled ? "Cancelada" : "Rascunho";
   const ruleLabel = campaign.rule_type === "quantity_target" ? "Qtd. itens" : campaign.rule_type === "ticket_threshold_count" ? "Vendas acima de ticket" : "Maior volume";
   const prize = campaign.prize || {};
   const prizeStr = prize.type === "per_item" ? "R$ " + (prize.value || 0) + "/item" : prize.type === "per_win" ? "R$ " + (prize.value || 0) + " (1º lugar)" : "R$ " + (prize.value || 0);
@@ -19542,7 +19618,64 @@ function renderGestaoCampaignCard(campaign) {
         <span>${productsDisplay}</span>
       </div>
       ${progressBlock ? '<div class="gestao-card-progress">' + progressBlock + "</div>" : ""}
+      ${renderCampaignSettlementBlock(campaign)}
     </div>`;
+}
+
+// Sub-bloco exibido no card da Corridinha quando a campanha esta apurada.
+// Mostra: data/hora de apuracao + quem apurou, contagem de vendedores
+// elegiveis, total de premios, e status de pagamento. Leitura exclusiva do
+// cache pdvGestaoState.campaignSettlement[id] - sem formula nova.
+function renderCampaignSettlementBlock(campaign) {
+  if (!campaign || !campaign.id) return "";
+  if (!isSettledCampaign(campaign)) return "";
+  // Vendedor nao tem acesso a /results; nao renderiza sub-bloco para ele.
+  if (isCurrentUserSellerProfile()) return "";
+
+  const summary = summarizeCampaignSettlement(campaign.id);
+  if (!summary || summary.state === "loading") {
+    return '<div class="gestao-settlement-block gestao-settlement-loading">Carregando dados de apuracao...</div>';
+  }
+  if (summary.state === "error") {
+    return '<div class="gestao-settlement-block gestao-settlement-error"><strong>Sem leitura de apuracao</strong><span>' + escapeHtml(summary.error || "") + "</span></div>";
+  }
+  if (summary.state === "empty") {
+    return '<div class="gestao-settlement-block"><strong>Apurada, sem resultados</strong><span>Esta campanha foi encerrada sem vendedores elegiveis.</span></div>';
+  }
+
+  const settledBy = summary.settledByName ? escapeHtml(summary.settledByName) : "Sistema";
+  const settledAt = summary.settledAtReadable ? escapeHtml(formatDateTimeBR(summary.settledAtReadable)) : "-";
+  const winnerName = summary.winner ? escapeHtml(summary.winner.seller_name || summary.winner.sellerName || "-") : "-";
+  const totalPrizeFmt = escapeHtml(currency(summary.totalPrize));
+  const totalPaidFmt = escapeHtml(currency(summary.totalPaid));
+
+  return `
+    <div class="gestao-settlement-block">
+      <div class="gestao-settlement-head">
+        <strong>Apuracao</strong>
+        <span class="gestao-settlement-meta">Apurada em ${settledAt} por ${settledBy}</span>
+      </div>
+      <div class="gestao-settlement-grid">
+        <div><span>Vendedores elegiveis</span><strong>${summary.totalSellers}</strong></div>
+        <div><span>Vencedor</span><strong>${winnerName}</strong></div>
+        <div><span>Premio total</span><strong>${totalPrizeFmt}</strong></div>
+        <div><span>Pago</span><strong>${summary.paidCount} de ${summary.totalSellers}</strong></div>
+      </div>
+      <div class="gestao-settlement-progress">
+        <div class="gestao-settlement-progress-bar${summary.totalSellers ? "" : " is-empty"}" style="--paid:${summary.totalSellers ? Math.round((summary.paidCount / summary.totalSellers) * 100) : 0}%"></div>
+      </div>
+      <div class="gestao-settlement-foot">
+        <span>${escapeHtml(currency(summary.totalPaid))} pagos</span>
+        <span class="gestao-settlement-divider">|</span>
+        <span>${escapeHtml(currency(summary.totalPrize - summary.totalPaid))} pendentes</span>
+      </div>
+    </div>`;
+}
+
+function isSettledCampaign(campaign) {
+  if (!campaign) return false;
+  const rawStatus = String(campaign.status || "").toLowerCase().trim();
+  return rawStatus === "settled" || rawStatus === "apurada";
 }
 
 function canManageCampaignChallenges() {
@@ -20327,6 +20460,57 @@ async function handleGestaoEditSubmit(form) {
   }
 }
 
+// Modal de confirmacao Dark Premium para acoes sensiveis da Corridinha
+// (Apurar, Cancelar, Excluir). Substitui o confirm() nativo. Reaproveita o
+// mesmo esqueleto visual do .gestao-create-modal ja existente. Retorna uma
+// Promise<boolean>: true se o usuario confirmou, false caso contrario.
+function openGestaoConfirmModal(options = {}) {
+  return new Promise((resolve) => {
+    const existing = document.getElementById("gestao-confirm-modal");
+    if (existing) existing.remove();
+    const title = String(options.title || "Confirmar acao");
+    const bodyHtml = String(options.bodyHtml || "");
+    const confirmLabel = String(options.confirmLabel || "Confirmar");
+    const cancelLabel = String(options.cancelLabel || "Voltar");
+    const tone = options.tone === "danger" ? "danger" : "primary";
+    const modal = document.createElement("div");
+    modal.id = "gestao-confirm-modal";
+    modal.className = "gestao-confirm-modal";
+    modal.innerHTML = `
+      <div class="modal-backdrop" data-gestao-confirm="cancel"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>${escapeHtml(title)}</h3>
+          <button class="ghost-button" type="button" data-gestao-confirm="cancel" aria-label="Fechar">✕</button>
+        </div>
+        <div class="modal-body">${bodyHtml}</div>
+        <div class="modal-footer">
+          <button class="ghost-button" type="button" data-gestao-confirm="cancel">${escapeHtml(cancelLabel)}</button>
+          <button class="${tone === "danger" ? "danger-button" : "primary-button"}" type="button" data-gestao-confirm="ok">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    let resolved = false;
+    const cleanup = (result) => {
+      if (resolved) return;
+      resolved = true;
+      document.removeEventListener("keydown", onKey);
+      try { modal.remove(); } catch (_) { /* element may already be gone */ }
+      resolve(Boolean(result));
+    };
+    const onKey = (e) => {
+      if (e && e.key === "Escape") cleanup(false);
+    };
+    modal.addEventListener("click", (e) => {
+      const target = e.target.closest("[data-gestao-confirm]");
+      if (!target) return;
+      const value = target.getAttribute("data-gestao-confirm");
+      cleanup(value === "ok");
+    });
+    document.addEventListener("keydown", onKey);
+  });
+}
+
 async function handleGestaoAction(action, campaignId) {
   // Vendedor nao aciona Ranking Live nem Resultados — backend bloqueia /live e
   // /results para seller por questao de seguranca. Defesa em profundidade:
@@ -20337,16 +20521,32 @@ async function handleGestaoAction(action, campaignId) {
   try {
     if (action === "activate") {
       await api("/api/pdv/commercial/campaigns/" + campaignId + "/activate", { method: "POST" });
+      showPdvToast("Campanha ativada.", "success");
       await loadPdvGestaoFront();
     } else if (action === "cancel") {
-      if (!confirm("Cancelar esta campanha?")) return;
+      const campaign = (pdvGestaoState.campaigns || []).find((c) => Number(c.id) === Number(campaignId));
+      const campaignName = campaign ? (campaign.name || "esta campanha") : "esta campanha";
+      const ok = await openGestaoConfirmModal({
+        title: "Cancelar Corridinha?",
+        bodyHtml: `
+          <p>Voce esta prestes a cancelar <strong>${escapeHtml(campaignName)}</strong>.</p>
+          <p class="gestao-confirm-warning">Esta acao nao pode ser desfeita. A campanha deixa de contar para ranking e nenhum vendedor podera mais pontuar nela.</p>
+        `,
+        confirmLabel: "Cancelar campanha",
+        cancelLabel: "Voltar",
+        tone: "danger"
+      });
+      if (!ok) return;
       await api("/api/pdv/commercial/campaigns/" + campaignId + "/cancel", { method: "POST" });
+      showPdvToast("Campanha cancelada.", "success");
       await loadPdvGestaoFront();
     } else if (action === "live") {
       await loadGestaoRankingPanel(campaignId);
     } else if (action === "settle") {
-      if (!confirm("Apurar esta campanha? Esta acao nao pode ser desfeita.")) return;
+      const ok = await confirmSettleCampaign(campaignId);
+      if (!ok) return;
       await api("/api/pdv/commercial/campaigns/" + campaignId + "/settle", { method: "POST" });
+      showPdvToast("Corridinha apurada com sucesso.", "success");
       await loadPdvGestaoFront();
     } else if (action === "results") {
       await loadGestaoRankingPanel(campaignId, true);
@@ -20357,16 +20557,86 @@ async function handleGestaoAction(action, campaignId) {
         const campaign = res?.data;
         if (campaign) openGestaoEditModal(campaign);
       } catch (err) {
-        alert("Erro ao carregar campanha: " + (err.message || err.error || ""));
+        showPdvToast("Erro ao carregar campanha: " + (err.message || err.error || ""), "error");
       }
     } else if (action === "delete") {
-      if (!confirm("Excluir esta campanha? Esta acao nao pode ser desfeita.")) return;
+      const campaign = (pdvGestaoState.campaigns || []).find((c) => Number(c.id) === Number(campaignId));
+      const campaignName = campaign ? (campaign.name || "esta campanha") : "esta campanha";
+      const ok = await openGestaoConfirmModal({
+        title: "Excluir Corridinha?",
+        bodyHtml: `
+          <p>Voce esta prestes a excluir <strong>${escapeHtml(campaignName)}</strong>.</p>
+          <p class="gestao-confirm-warning">Esta acao nao pode ser desfeita. Resultados e participantes serao removidos juntos.</p>
+        `,
+        confirmLabel: "Excluir campanha",
+        cancelLabel: "Voltar",
+        tone: "danger"
+      });
+      if (!ok) return;
       await api("/api/pdv/commercial/campaigns/" + campaignId, { method: "DELETE" });
+      showPdvToast("Campanha excluida.", "success");
       await loadPdvGestaoFront();
     }
   } catch (err) {
-    alert("Erro: " + (err.message || err.error || ""));
+    showPdvToast(err?.message || err?.error || "Falha na operacao.", "error");
   }
+}
+
+// Modal de confirmacao do Apurar, com preview simples do ranking e premio
+// total. Carrega /live sob demanda para mostrar o top 3 + soma de premios.
+async function confirmSettleCampaign(campaignId) {
+  const campaign = (pdvGestaoState.campaigns || []).find((c) => Number(c.id) === Number(campaignId));
+  const campaignName = campaign ? (campaign.name || "esta campanha") : "esta campanha";
+  const period = campaign
+    ? `${formatDateBR(campaign.start_date) || "?"} a ${formatDateBR(campaign.end_date) || "?"}`
+    : "";
+
+  let previewHtml = '<div class="gestao-confirm-loading">Carregando preview do ranking...</div>';
+  let previewOk = false;
+  let rankingCount = 0;
+  let totalPrize = 0;
+  try {
+    const res = await api("/api/pdv/commercial/campaigns/" + campaignId + "/live");
+    const data = res?.data || {};
+    const ranking = Array.isArray(data.ranking) ? data.ranking : [];
+    rankingCount = ranking.length;
+    // Calcula premio total estimado usando a mesma logica do backend (replica
+    // local de computePrize; resultado reflete o que sera gravado).
+    const cfg = data.config || {};
+    const prize = campaign && campaign.prize ? campaign.prize : {};
+    const type = prize.type || "fixed";
+    const value = toNumber(prize.value || 0);
+    totalPrize = ranking.reduce((sum, entry) => {
+      if (!entry.current_value) return sum;
+      if (type === "fixed") return sum + value;
+      if (type === "per_item") return sum + value * Number(entry.current_value || 0);
+      if (type === "per_win") return sum + (entry.rank === 1 ? value : 0);
+      return sum;
+    }, 0);
+    const top = ranking.slice(0, 3).map((r) => {
+      const isWinner = r.rank === 1 || r.is_winner;
+      return `<tr${isWinner ? ' class="winner-row"' : ""}><td>#${escapeHtml(String(r.rank || "-"))}</td><td>${escapeHtml(r.seller_name || "-")}</td><td>${escapeHtml(String(r.current_value || 0))} ${cfg.rule_type === "ticket_threshold_count" ? "vendas" : "itens"}</td></tr>`;
+    }).join("");
+    previewHtml = `
+      <p class="gestao-confirm-meta">${escapeHtml(period)} - ${rankingCount} vendedor(es) elegiveis - Premio estimado: <strong>${escapeHtml(currency(totalPrize))}</strong></p>
+      <table class="data-table"><thead><tr><th>#</th><th>Vendedor</th><th>Pontuacao</th></tr></thead><tbody>${top || '<tr><td colspan="3">Sem vendedores elegiveis</td></tr>'}</tbody></table>
+    `;
+    previewOk = true;
+  } catch (err) {
+    previewHtml = '<div class="gestao-confirm-loading">Nao foi possivel carregar o preview. Voce ainda pode confirmar.</div>';
+  }
+
+  return openGestaoConfirmModal({
+    title: "Apurar Corridinha?",
+    bodyHtml: `
+      <p>Voce esta prestes a apurar <strong>${escapeHtml(campaignName)}</strong>.</p>
+      <p class="gestao-confirm-warning">Esta acao nao pode ser desfeita. O ranking sera congelado, os premios serao calculados e a campanha passa a ficar disponivel apenas para leitura.</p>
+      ${previewHtml}
+    `,
+    confirmLabel: previewOk ? "Apurar agora" : "Apurar mesmo assim",
+    cancelLabel: "Voltar",
+    tone: "danger"
+  });
 }
 
 async function loadGestaoRankingPanel(campaignId, settled = false) {
@@ -20393,24 +20663,77 @@ async function loadGestaoRankingPanel(campaignId, settled = false) {
     const data = res?.data || {};
     const challenge = data.challenge || {};
     const ranking = data.ranking || data.results || [];
+    const canMarkPaid = settled && canManageCampaignSettle();
+    const paidColHeader = settled ? "<th>Pagamento</th>" : "";
     panel.innerHTML = `
       <div class="panel">
         <div class="panel-header">
           <h3>${escapeHtml(challenge.name || "Ranking")} — ${settled ? "Resultados" : "Live"}</h3>
           <button class="ghost-button" type="button" data-action="gestao-close-ranking">Fechar</button>
         </div>
-        ${ranking.length === 0 ? '<div class="empty-state"><strong>Sem dados</strong></div>' :
-          '<table class="data-table"><thead><tr><th>#</th><th>Vendedor</th><th>Valor</th><th>Vendas</th><th>Itens</th>' + (settled ? "<th>Prêmio</th><th>Pago</th>" : "") + "</tr></thead><tbody>" +
+        ${ranking.length === 0 ? '<div class="empty-state"><strong>' + (settled ? "Apurada sem vendedores elegiveis" : "Sem dados") + '</strong><span>' + (settled ? "A campanha foi encerrada mas nenhum vendedor atingiu a regra." : "") + '</span></div>' :
+          '<table class="data-table"><thead><tr><th>#</th><th>Vendedor</th><th>Valor</th><th>Vendas</th><th>Itens</th>' + (settled ? "<th>Prêmio</th>" + paidColHeader : "") + "</tr></thead><tbody>" +
           ranking.map((r) => {
             const isWinner = r.rank === 1 || r.is_winner;
-            const prizeCell = settled ? "<td>R$ " + (r.prize_earned || 0).toFixed(2) + "</td><td>" + (r.paid ? "✅" : "—") + "</td>" : "";
-            return "<tr" + (isWinner ? ' class="winner-row"' : "") + "><td>" + (r.rank || "-") + "</td><td>" + escapeHtml(r.seller_name || "") + "</td><td>" + (settled ? "R$ " : "") + (r.current_value || 0) + (settled ? "" : " itens") + "</td><td>" + (r.eligible_sales_count || 0) + "</td><td>" + (r.eligible_items_count || 0) + "</td>" + prizeCell + "</tr>";
+            const prizeCell = settled ? "<td>R$ " + (Number(r.prize_earned || 0)).toFixed(2) + "</td>" : "";
+            const paidCell = settled ? renderPaymentCell(campaignId, r, canMarkPaid) : "";
+            return "<tr" + (isWinner ? ' class="winner-row"' : "") + "><td>" + (r.rank || "-") + "</td><td>" + escapeHtml(r.seller_name || "") + "</td><td>" + (settled ? "R$ " : "") + (r.current_value || 0) + (settled ? "" : " itens") + "</td><td>" + (r.eligible_sales_count || 0) + "</td><td>" + (r.eligible_items_count || 0) + "</td>" + prizeCell + paidCell + "</tr>";
           }).join("") + "</tbody></table>"}
       </div>`;
     panel.querySelector('[data-action="gestao-close-ranking"]')?.addEventListener("click", () => { panel.innerHTML = ""; });
+    if (settled) {
+      bindPaymentButtons(panel, campaignId);
+    }
   } catch (err) {
     panel.innerHTML = '<div class="panel"><div class="panel-header"><h3>Ranking</h3></div><div class="empty-state"><strong>Erro ao carregar ranking</strong><span>' + escapeHtml(err.message || err.error || "") + '</span></div></div>';
   }
+}
+
+// Celula de pagamento por linha: mostra "Pago em DD/MM por Nome" quando ja
+// foi pago, ou botao "Marcar pago" para Admin/Gestor quando pendente.
+// Sem premio (prize_earned=0) nao mostra acao.
+function renderPaymentCell(campaignId, result, canMarkPaid) {
+  if (!result) return "<td>-</td>";
+  const prize = toNumber(result.prize_earned);
+  if (prize <= 0) return "<td class=\"gestao-payment-empty\">Sem premio</td>";
+  if (result.paid) {
+    const when = result.paid_at_readable || result.paid_at || "";
+    const by = result.paid_by_name || "";
+    const dateStr = when ? formatDateTimeBR(when) : "";
+    const who = by ? " por " + escapeHtml(by) : "";
+    return '<td class="gestao-payment-status is-paid"><span class="gestao-payment-paid-badge">Pago</span><span class="gestao-payment-when">' + escapeHtml(dateStr) + escapeHtml(who) + "</span></td>";
+  }
+  if (!canMarkPaid) {
+    return '<td class="gestao-payment-status is-pending">Pendente</td>';
+  }
+  return '<td class="gestao-payment-status is-pending"><button class="small-primary" type="button" data-gestao-payment-action="mark-paid" data-campaign-id="' + escapeHtml(String(campaignId)) + '" data-result-id="' + escapeHtml(String(result.id)) + '">Marcar pago</button></td>';
+}
+
+function bindPaymentButtons(panel, campaignId) {
+  panel.querySelectorAll("[data-gestao-payment-action='mark-paid']").forEach((btn) => {
+    if (btn.dataset.boundPay) return;
+    btn.dataset.boundPay = "true";
+    btn.addEventListener("click", async () => {
+      const resultId = Number(btn.getAttribute("data-result-id") || 0);
+      if (!resultId) return;
+      const originalLabel = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Marcando...";
+      try {
+        await api("/api/pdv/commercial/campaigns/" + campaignId + "/results/" + resultId + "/mark-paid", { method: "POST" });
+        showPdvToast("Premio marcado como pago.", "success");
+        await loadGestaoRankingPanel(campaignId, true);
+        // Atualiza tambem o cache do card (sub-bloco Apuracao/Pagamento).
+        if (typeof loadPdvGestaoSettlement === "function") {
+          try { await loadPdvGestaoSettlement(); } catch (_) { /* cache miss nao quebra */ }
+        }
+      } catch (err) {
+        showPdvToast(err?.message || err?.error || "Falha ao marcar pago.", "error");
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      }
+    });
+  });
 }
 
 // ── Metas Comerciais (Fase 4 — frontend minimo) ─────────────────
@@ -26190,6 +26513,33 @@ function toNumber(value) {
 
 function roundMoney(value) {
   return Number(toNumber(value).toFixed(2));
+}
+
+// Toast simples para feedback de sucesso/erro em acoes sensiveis
+// (Apurar, Cancelar, Excluir, Marcar pago). Reaproveita o estilo
+// `.pdv-toast*` definido em public/styles.css.
+function showPdvToast(message, type = "info", durationMs = 3200) {
+  try {
+    let container = document.getElementById("pdv-toast-container");
+    if (!container) {
+      container = document.createElement("div");
+      container.id = "pdv-toast-container";
+      container.className = "pdv-toast-container";
+      document.body.appendChild(container);
+    }
+    const toast = document.createElement("div");
+    toast.className = "pdv-toast pdv-toast-" + String(type || "info");
+    toast.textContent = String(message || "");
+    container.appendChild(toast);
+    setTimeout(() => {
+      toast.classList.add("pdv-toast-hiding");
+      setTimeout(() => {
+        try { toast.remove(); } catch (_) { /* element may already be gone */ }
+      }, 280);
+    }, durationMs);
+  } catch (_) {
+    // Falha de toast nao pode quebrar o fluxo principal
+  }
 }
 
 function parseMoneyAmount(value) {

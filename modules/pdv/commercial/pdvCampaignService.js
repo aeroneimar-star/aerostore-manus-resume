@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { get, run, all } = require("../../../db");
+const { recordAuditEvent } = require("../../audit/auditService");
 
 function getToday(date = new Date()) {
   return date.toISOString().slice(0, 10);
@@ -522,7 +523,7 @@ async function deleteCampaign(id) {
 
 // ── Status da Campanha ───────────────────────────────────────────────
 
-async function activateCampaign(id) {
+async function activateCampaign(id, req = {}) {
   const existing = await getCampaignById(id);
   if (!existing) throw new Error("Campanha nao encontrada.");
   if (!existing.name || !existing.name.trim()) throw new Error("Campanha sem nome nao pode ser ativada.");
@@ -535,23 +536,65 @@ async function activateCampaign(id) {
 
   const sellers = await all("SELECT * FROM sellers WHERE status = 'ativo'");
   const campaignStores = getCampaignStores(challenge);
+  let participantsAdded = 0;
   for (const seller of sellers) {
     const sellerStore = normalizeCampaignStoreKey(seller.store);
     if (campaignStores.length > 0 && !campaignStores.includes(sellerStore)) continue;
-    const existing = await get("SELECT id FROM campaign_participants WHERE challenge_id = ? AND seller_id = ?", [id, seller.id]);
-    if (!existing) {
+    const existingParticipant = await get("SELECT id FROM campaign_participants WHERE challenge_id = ? AND seller_id = ?", [id, seller.id]);
+    if (!existingParticipant) {
       await run(
         "INSERT INTO campaign_participants (challenge_id, seller_id, seller_name, status, joined_at) VALUES (?, ?, ?, 'active', ?)",
         [id, seller.id, seller.name || "", getToday()]
       );
+      participantsAdded++;
     }
   }
+
+  await recordAuditEvent({
+    req,
+    module: "pdv.commercial",
+    action: "campaign.activate",
+    entity_type: "campaign_challenge",
+    entity_id: String(challenge.id),
+    entity_label: challenge.name || "",
+    result: "success",
+    message: "Campanha ativada",
+    metadata: {
+      challenge_id: Number(challenge.id),
+      store_ids: challenge.store_ids || [],
+      rule_type: challenge.rule_type,
+      start_date: challenge.start_date,
+      end_date: challenge.end_date,
+      participants_added: participantsAdded
+    }
+  });
+
   return challenge;
 }
 
-async function cancelCampaign(id) {
+async function cancelCampaign(id, req = {}) {
+  const before = await getCampaignById(id);
+  if (!before) throw new Error("Campanha nao encontrada.");
+  if (!["draft", "active"].includes(before.status)) {
+    throw new Error("Apenas campanhas em rascunho ou ativas podem ser canceladas.");
+  }
   await run("UPDATE campaign_challenges SET status = 'cancelled', updated_at = ? WHERE id = ? AND status IN ('draft','active')", [getToday(), id]);
-  return getCampaignById(id);
+  const after = await getCampaignById(id);
+
+  await recordAuditEvent({
+    req,
+    module: "pdv.commercial",
+    action: "campaign.cancel",
+    entity_type: "campaign_challenge",
+    entity_id: String(id),
+    entity_label: (before && before.name) || "",
+    result: "success",
+    message: `Campanha cancelada (status anterior: ${before.status})`,
+    before_json: JSON.stringify({ status: before.status }),
+    after_json: JSON.stringify({ status: "cancelled" })
+  });
+
+  return after;
 }
 
 // ── Live Ranking ─────────────────────────────────────────────────────
@@ -675,7 +718,7 @@ async function getLiveStatus(challengeId, options = {}) {
 
 // ── Settle / Apuração ────────────────────────────────────────────────
 
-async function settleCampaign(challengeId, user = {}) {
+async function settleCampaign(challengeId, req = {}) {
   const challenge = await getCampaignById(challengeId);
   if (!challenge) throw new Error("Campanha nao encontrada.");
   if (challenge.status !== "active") throw new Error("Apenas campanhas ativas podem ser apuradas.");
@@ -683,7 +726,7 @@ async function settleCampaign(challengeId, user = {}) {
   const liveData = await getLiveStatus(challengeId);
   const { ranking, config } = liveData;
   const now = getToday();
-  const userId = user.id ? Number(user.id) : null;
+  const userId = req?.user?.id ? Number(req.user.id) : null;
 
   for (const entry of ranking) {
     const existing = await get("SELECT id FROM campaign_results WHERE challenge_id = ? AND seller_id = ?", [challengeId, entry.seller_id]);
@@ -713,6 +756,28 @@ async function settleCampaign(challengeId, user = {}) {
   }
 
   await run("UPDATE campaign_challenges SET status = 'settled', updated_at = ? WHERE id = ?", [now, challengeId]);
+
+  const totalPrize = ranking.reduce((sum, entry) => sum + computePrize(entry, config, challenge.prize), 0);
+
+  await recordAuditEvent({
+    req,
+    module: "pdv.commercial",
+    action: "campaign.settle",
+    entity_type: "campaign_challenge",
+    entity_id: String(challengeId),
+    entity_label: challenge.name || "",
+    result: "success",
+    message: `Apuracao concluida com ${ranking.length} vendedores elegiveis`,
+    before_json: JSON.stringify({ status: "active" }),
+    after_json: JSON.stringify({ status: "settled" }),
+    metadata: {
+      challenge_id: Number(challengeId),
+      total_eligible: ranking.length,
+      total_prize: roundMoney(totalPrize),
+      winner_seller_id: ranking.find((r) => r.rank === 1)?.seller_id || null,
+      winner_seller_name: ranking.find((r) => r.rank === 1)?.seller_name || ""
+    }
+  });
 
   return getCampaignResults(challengeId);
 }
@@ -795,6 +860,54 @@ async function getCampaignResults(challengeId) {
     "SELECT * FROM campaign_results WHERE challenge_id = ? ORDER BY rank_position ASC",
     [challengeId]
   );
+
+  // Enriquece com nome de quem apurou e de quem pagou cada premio, lendo do
+  // audit_logs. Sem mexer em schema: o service ja grava user_name nas acoes
+  // sensiveis; aqui so cruzamos por entity_id + action.
+  let settledByName = "";
+  let settledAt = "";
+  const paidByNameBySeller = {};
+  const paidAtBySeller = {};
+  try {
+    const auditRows = await all(
+      `SELECT action, entity_id, user_name, created_at, metadata_json
+         FROM audit_logs
+        WHERE module = 'pdv.commercial'
+          AND action IN ('campaign.settle', 'campaign.results.mark-paid')
+          AND (entity_id = ? OR entity_id IN (SELECT CAST(id AS TEXT) FROM campaign_results WHERE challenge_id = ?))
+        ORDER BY datetime(created_at) ASC, id ASC`,
+      [String(challengeId), challengeId]
+    );
+    for (const ar of auditRows) {
+      if (ar.action === "campaign.settle" && String(ar.entity_id) === String(challengeId)) {
+        if (!settledByName) settledByName = ar.user_name || "";
+        if (!settledAt) settledAt = ar.created_at || "";
+      } else if (ar.action === "campaign.results.mark-paid") {
+        try {
+          const meta = JSON.parse(ar.metadata_json || "{}");
+          const sellerKey = Number(meta.seller_id);
+          if (sellerKey && !paidByNameBySeller[sellerKey]) {
+            paidByNameBySeller[sellerKey] = ar.user_name || "";
+            paidAtBySeller[sellerKey] = ar.created_at || "";
+          }
+        } catch (_) { /* metadata malformada - ignora */ }
+      }
+    }
+  } catch (_) {
+    // Falha ao consultar audit_logs nao pode quebrar a leitura de resultados.
+  }
+
+  const results = rows.map((row) => {
+    const base = normalizeResult(row);
+    if (!base) return null;
+    const sellerKey = Number(base.seller_id);
+    return {
+      ...base,
+      paid_by_name: paidByNameBySeller[sellerKey] || "",
+      paid_at_readable: paidAtBySeller[sellerKey] || base.paid_at || ""
+    };
+  }).filter(Boolean);
+
   return {
     challenge: {
       id: challenge.id,
@@ -803,24 +916,52 @@ async function getCampaignResults(challengeId) {
       rule_type: challenge.rule_type,
       prize: challenge.prize,
       start_date: challenge.start_date,
-      end_date: challenge.end_date
+      end_date: challenge.end_date,
+      settled_by_name: settledByName,
+      settled_at_readable: settledAt
     },
-    results: rows.map(normalizeResult).filter(Boolean)
+    results
   };
 }
 
-async function markRewardPaid(resultId, user = {}) {
+async function markRewardPaid(resultId, req = {}) {
   const result = await get("SELECT * FROM campaign_results WHERE id = ?", [resultId]);
   if (!result) throw new Error("Resultado nao encontrado.");
   if (!result.settled) throw new Error("Resultado ainda nao foi apurado.");
 
+  // Idempotencia: se ja esta pago, retorna sem sobrescrever paid_at/paid_by.
+  if (result.paid) {
+    return normalizeResult(result);
+  }
+
   const now = getToday();
-  const userId = user.id ? Number(user.id) : null;
+  const userId = req?.user?.id ? Number(req.user.id) : null;
   await run(
     "UPDATE campaign_results SET paid = 1, paid_at = ?, paid_by = ?, updated_at = ? WHERE id = ?",
     [now, userId, now, resultId]
   );
-  return normalizeResult(await get("SELECT * FROM campaign_results WHERE id = ?", [resultId]));
+  const updated = await get("SELECT * FROM campaign_results WHERE id = ?", [resultId]);
+
+  await recordAuditEvent({
+    req,
+    module: "pdv.commercial",
+    action: "campaign.results.mark-paid",
+    entity_type: "campaign_result",
+    entity_id: String(resultId),
+    entity_label: result.seller_name || "",
+    result: "success",
+    message: "Premio marcado como pago",
+    before_json: JSON.stringify({ paid: false }),
+    after_json: JSON.stringify({ paid: true, paid_at: now }),
+    metadata: {
+      challenge_id: Number(result.challenge_id),
+      seller_id: Number(result.seller_id),
+      prize_earned: toNumber(result.prize_earned),
+      rank_position: result.rank_position || null
+    }
+  });
+
+  return normalizeResult(updated);
 }
 
 module.exports = {
