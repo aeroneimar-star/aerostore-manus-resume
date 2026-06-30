@@ -19628,6 +19628,18 @@ function bindPdvGestaoActions(container) {
       if (action === "gestao-tab-goals-new") { openPdvGoalEditor(); return; }
       if (action === "gestao-tab-goals-refresh") { await loadPdvGestaoGoals(true); return; }
       if (action === "gestao-performance-refresh") { await loadPdvGestaoPerformanceData(true); return; }
+      if (action === "gestao-performance-campaign-top3") {
+        const id = Number(btn.dataset.id || 0);
+        if (!id) return;
+        // Resolve o container .pdv-perf-top3 correspondente:
+        //   - botao "Ver Top 3" da linha -> irmao seguinte do .pdv-perf-campaign-row
+        //   - botao "Tentar novamente" dentro de erro -> proprio ancestral .pdv-perf-top3
+        const container = btn.closest(".pdv-perf-campaign-row")
+          ? btn.closest(".pdv-perf-campaign-row").nextElementSibling
+          : btn.closest(".pdv-perf-top3");
+        if (container) await loadPdvGestaoPerformanceCampaignTop3(id, container);
+        return;
+      }
       if (action === "gestao-close-goal-editor") { closePdvGoalEditor(); return; }
       if (action === "gestao-close-goal-progress") { closePdvGoalProgress(); return; }
     });
@@ -20499,7 +20511,13 @@ function renderPdvGestaoGoalsTabContent() {
   return toolbar + '<div class="metas-list">' + goals.map(renderPdvGoalCard).join("") + '</div>';
 }
 
-// Placeholder da aba Performance (Fase 5).
+// Aba Performance — visao gerencial para Admin/Gestor (Fase 7).
+// Reaproveita SOMENTE os caches ja carregados:
+//   - pdvGestaoState.performance  (loadPdvGestaoPerformanceData, ja existente)
+//   - pdvGestaoState.campaigns    (loadPdvGestaoFront, ja existente)
+//   - pdvGestaoState.goals        (loadPdvGestaoGoals, ja existente)
+// Sem endpoint novo, sem alteracao em regra de Corridinha/Metas. Top 3 das
+// campanhas e carregado sob demanda via /campaigns/:id/live (ja existente).
 function renderPdvGestaoPerformanceTabContent() {
   if (pdvGestaoState.performanceError) {
     return `
@@ -20529,46 +20547,338 @@ function renderPdvGestaoPerformanceTabContent() {
     <div class="action-row" style="margin-bottom: 0.85rem;">
       <button class="secondary-button" type="button" data-action="gestao-performance-refresh">Atualizar</button>
     </div>`;
-  if (rows.length === 0) {
-    const emptyNote = isCurrentUserSellerProfile()
-      ? "Quando sua gestao criar metas vinculadas a voce, a leitura de cada meta aparecera aqui."
-      : "Nao ha metas ativas ou encerradas com KPI para exibir. Crie ou ative uma meta para ver a performance.";
-    return toolbar + `
-      <div class="metas-state">
-        <strong>Sem dados no periodo</strong>
-        <span>${escapeHtml(emptyNote)}</span>
-      </div>`;
-  }
   // Vendedor: cards simples, sem ranking, sem projecao, sem agregados admin.
+  // Mantido exatamente como na Fase 5 — Performance do Vendedor continua
+  // em visao propria, sem ranking geral, sem blocos novos.
   if (isCurrentUserSellerProfile()) {
+    if (rows.length === 0) {
+      return toolbar + `
+        <div class="metas-state">
+          <strong>Sem dados no periodo</strong>
+          <span>Quando sua gestao criar metas vinculadas a voce, a leitura de cada meta aparecera aqui.</span>
+        </div>`;
+    }
     return toolbar + '<div class="metas-performance-seller">' + renderPdvPerformanceSellerCards(rows) + '</div>';
   }
-  const TOP_N = 10;
-  const showRows = rows.slice(0, TOP_N);
-  const hidden = rows.length - showRows.length;
-  return toolbar + `
-    <div class="metas-performance-wrap">
-      <table class="metas-performance-table">
-        <thead>
-          <tr>
-            <th>Meta</th>
-            <th>Periodo</th>
-            <th>Lojas</th>
-            <th>Vendedores</th>
-            <th>KPI</th>
-            <th class="num">Alvo</th>
-            <th class="num">Realizado</th>
-            <th class="num">%</th>
-            <th class="num">Projecao</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${showRows.map(renderPdvPerformanceRow).join("")}
-        </tbody>
-      </table>
-      ${hidden > 0 ? '<p class="metas-performance-note">Exibindo ' + showRows.length + ' de ' + rows.length + ' linhas. Use filtros ou ajuste o periodo para reduzir a lista.</p>' : ''}
+  // Gestor / Admin: visao gerencial consolidada.
+  const campaigns = Array.isArray(pdvGestaoState.campaigns) ? pdvGestaoState.campaigns : [];
+  const goals = Array.isArray(pdvGestaoState.goals) ? pdvGestaoState.goals : [];
+  return toolbar
+    + renderPdvGestaoPerformanceManagerHeader(rows, campaigns, goals)
+    + renderPdvGestaoPerformanceManagerMetasBlock(rows, goals)
+    + renderPdvGestaoPerformanceManagerCampaignsBlock(campaigns);
+}
+
+// Cabecalho-resumo da aba Performance (Gestor). 4 tiles derivados
+// diretamente dos caches existentes — sem formula nova:
+//   1. Metas ativas        — count de pdvGestaoState.goals com status=active
+//   2. Metas concluidas    — count de pdvGestaoState.goals com status=closed
+//   3. Corridinhas ativas  — count de pdvGestaoState.campaigns com status=active
+//   4. Alertas             — derivado dos targets: X atingidas (>=100%) / Y em risco (<50%) entre metas ativas
+function renderPdvGestaoPerformanceManagerHeader(rows, campaigns, goals) {
+  const safeGoals = Array.isArray(goals) ? goals : [];
+  const safeCampaigns = Array.isArray(campaigns) ? campaigns : [];
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const activeGoals = safeGoals.filter((g) => String(g?.status || "").toLowerCase() === "active");
+  const closedGoals = safeGoals.filter((g) => String(g?.status || "").toLowerCase() === "closed");
+  const activeCampaigns = safeCampaigns.filter((c) => {
+    const s = String(c?.status || "").toLowerCase();
+    return s === "active" || s === "ativa";
+  });
+  // Alertas: a partir do cache performance, agrega o melhor progress_percent
+  // por meta ativa. Sem recalculo novo.
+  let hit = 0;
+  let risk = 0;
+  let tracking = 0;
+  activeGoals.forEach((g) => {
+    if (!g || g.id == null) return;
+    const targetPercents = safeRows
+      .filter((r) => r?.meta && Number(r.meta.id) === Number(g.id))
+      .map((r) => Number(r.target?.progress_percent || 0))
+      .filter((n) => Number.isFinite(n));
+    if (targetPercents.length === 0) return;
+    const best = Math.max(...targetPercents);
+    if (best >= 100) hit += 1;
+    else if (best < 50) risk += 1;
+    else tracking += 1;
+  });
+  let alertsLabel = "Sem alerta";
+  let alertsSub = "Nenhuma meta ativa carregada";
+  let alertsTone = "tone-muted";
+  if (activeGoals.length === 0) {
+    alertsLabel = "Sem metas ativas";
+    alertsSub = "Crie ou ative uma meta para gerar alertas";
+  } else if (hit + risk + tracking > 0) {
+    alertsLabel = hit + " no alvo · " + risk + " em risco";
+    alertsSub = tracking + " no caminho · base: metas ativas";
+    alertsTone = risk > hit ? "tone-muted" : "tone-positive";
+  }
+  const tile = (label, value, sub, tone) => `
+    <div class="metas-seller-tile${tone ? " " + tone : ""}">
+      <span class="metas-seller-tile-label">${escapeHtml(label)}</span>
+      <span class="metas-seller-tile-value">${value}</span>
+      ${sub ? '<span class="metas-seller-tile-sub">' + escapeHtml(sub) + '</span>' : ""}
     </div>`;
+  return `
+    <section class="pdv-perf-manager-header" aria-label="Resumo de Performance do Gestor">
+      ${tile("Metas ativas", String(activeGoals.length), activeGoals.length > 0 ? "Para acompanhar" : "Sem meta ativa")}
+      ${tile("Metas concluidas", String(closedGoals.length), closedGoals.length > 0 ? "Encerradas no periodo" : "Nenhuma encerrada")}
+      ${tile("Corridinhas ativas", String(activeCampaigns.length), activeCampaigns.length > 0 ? "Em andamento" : "Nenhuma ativa")}
+      ${tile("Alertas", alertsLabel, alertsSub, alertsTone)}
+    </section>`;
+}
+
+// Bloco Metas (Gestor). 1 linha por meta, agrupada por meta.id — KPI
+// principal = target de maior progress_percent. Sem projecao nova, sem
+// formula nova: usa progress_percent/current_value/target_value que ja vem
+// do backend em /goals/:id/progress (cache: pdvGestaoState.performance).
+function renderPdvGestaoPerformanceManagerMetasBlock(rows, goals) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const safeGoals = Array.isArray(goals) ? goals : [];
+  if (safeRows.length === 0 && safeGoals.length === 0) {
+    return `
+      <section class="pdv-perf-manager-block">
+        <h4 class="pdv-perf-manager-block-title">Metas comerciais</h4>
+        <div class="metas-state">
+          <strong>Sem metas no periodo</strong>
+          <span>Crie ou ative uma meta comercial para acompanhar faturamento, ticket, PA e indicadores de cadastro.</span>
+        </div>
+      </section>`;
+  }
+  // Agrupa por meta.
+  const byMeta = new Map();
+  safeRows.forEach((row) => {
+    const meta = row?.meta;
+    const metaId = meta?.id;
+    if (metaId == null) return;
+    if (!byMeta.has(metaId)) byMeta.set(metaId, { meta, targets: [] });
+    byMeta.get(metaId).targets.push(row.target || {});
+  });
+  // Inclui metas sem KPI ativo carregado (rascunhos / canceladas / sem /progress).
+  safeGoals.forEach((g) => {
+    if (!g || g.id == null) return;
+    if (!byMeta.has(g.id)) byMeta.set(g.id, { meta: g, targets: [] });
+  });
+  const list = Array.from(byMeta.values());
+  if (list.length === 0) {
+    return `
+      <section class="pdv-perf-manager-block">
+        <h4 class="pdv-perf-manager-block-title">Metas comerciais</h4>
+        <div class="metas-state">
+          <strong>Sem dados no periodo</strong>
+          <span>As metas existentes ainda nao retornaram leitura de KPI. Atualize para recarregar.</span>
+        </div>
+      </section>`;
+  }
+  // Ordenacao:
+  //   1) ativas com menor best-progress primeiro (gestor precisa ver quem precisa de ajuda)
+  //   2) ativas com bom progresso
+  //   3) demais status (rascunho, encerrada, cancelada) no final, por nome
+  const statusRank = (s) => {
+    const k = String(s || "").toLowerCase();
+    if (k === "active") return 0;
+    return 1;
+  };
+  list.sort((a, b) => {
+    const sa = String(a.meta?.status || "").toLowerCase();
+    const sb = String(b.meta?.status || "").toLowerCase();
+    const ra = statusRank(sa);
+    const rb = statusRank(sb);
+    if (ra !== rb) return ra - rb;
+    if (sa === "active" && sb === "active") {
+      const bestA = a.targets.length > 0 ? Math.max(...a.targets.map((t) => Number(t.progress_percent || 0)).filter((n) => Number.isFinite(n)).concat([-1])) : -1;
+      const bestB = b.targets.length > 0 ? Math.max(...b.targets.map((t) => Number(t.progress_percent || 0)).filter((n) => Number.isFinite(n)).concat([-1])) : -1;
+      if (bestA !== bestB) return bestA - bestB;
+    }
+    return String(a.meta?.name || "").localeCompare(String(b.meta?.name || ""));
+  });
+  const rowsHtml = list.map((entry) => {
+    const meta = entry.meta || {};
+    const targets = Array.isArray(entry.targets) ? entry.targets : [];
+    const status = String(meta.status || "draft").toLowerCase();
+    const statusLabel = METAS_STATUS_LABELS[status] || status || "—";
+    const startBR = formatDateBR(meta.period_start) || "—";
+    const endBR = formatDateBR(meta.period_end) || "—";
+    const storeIds = Array.isArray(meta.store_ids) ? meta.store_ids : [];
+    const sellerIds = Array.isArray(meta.seller_ids) ? meta.seller_ids : [];
+    const storesCell = storeIds.length > 0 ? storeIds.length + " loja" + (storeIds.length > 1 ? "s" : "") : "Geral";
+    const sellersCell = sellerIds.length > 0
+      ? sellerIds.length + " vendedor" + (sellerIds.length > 1 ? "es" : "")
+      : "Toda a loja";
+    // KPI principal = target de maior progress_percent (entre os habilitados).
+    const enabledTargets = targets.filter((t) => t && (t.enabled === undefined || t.enabled !== false));
+    const mainTarget = enabledTargets.length > 0
+      ? enabledTargets.reduce((best, t) => {
+          const p = Number(t.progress_percent || 0);
+          return !best || p > Number(best.progress_percent || 0) ? t : best;
+        }, null)
+      : null;
+    let kpiCell = '<span class="pdv-perf-meta-kpi">Sem KPI ativo<small>Sem leitura de KPI para esta meta</small></span>';
+    let alvoCell = '<span class="pdv-perf-meta-num">—</span>';
+    let realizadoCell = '<span class="pdv-perf-meta-num">—</span>';
+    let progressCell = '<span class="pdv-perf-meta-progress-pct">—</span>';
+    if (mainTarget) {
+      const metric = mainTarget.metric;
+      const kpiLabel = mainTarget.metric_label || METAS_METRIC_LABELS[metric] || metric || "—";
+      const targetValue = formatPdvMetricValue(metric, mainTarget.target_value);
+      const currentValue = formatPdvMetricValue(metric, mainTarget.current_value);
+      const pctNum = Number(mainTarget.progress_percent);
+      const pct = Number.isFinite(pctNum) ? Math.max(0, Math.min(100, pctNum)) : 0;
+      const toneClass = pct >= 100 ? "over" : pct < 50 ? "at-risk" : "";
+      const kpisExtras = enabledTargets.length > 1
+        ? '<small>+' + (enabledTargets.length - 1) + ' KPI' + (enabledTargets.length - 1 > 1 ? 's' : '') + '</small>'
+        : '';
+      kpiCell = '<span class="pdv-perf-meta-kpi">' + escapeHtml(kpiLabel) + kpisExtras + '</span>';
+      alvoCell = '<span class="pdv-perf-meta-num">' + escapeHtml(targetValue) + '</span>';
+      realizadoCell = '<span class="pdv-perf-meta-num">' + escapeHtml(currentValue) + '</span>';
+      progressCell = `
+        <span class="pdv-perf-meta-progress">
+          <span class="pdv-perf-meta-progress-bar"><span class="${toneClass}" style="width:${pct}%"></span></span>
+          <span class="pdv-perf-meta-progress-pct">${Math.round(pct)}%</span>
+        </span>`;
+    }
+    return `
+      <div class="pdv-perf-meta-row status-${escapeHtml(status)}">
+        <div class="pdv-perf-meta-name">
+          <strong>${escapeHtml(meta.name || "Meta sem nome")}</strong>
+          <small>${escapeHtml(startBR)} \u2192 ${escapeHtml(endBR)}</small>
+        </div>
+        <div><span class="pdv-perf-meta-kpi">${escapeHtml(storesCell)}</span><small>${escapeHtml(sellersCell)}</small></div>
+        ${kpiCell}
+        ${alvoCell}
+        ${realizadoCell}
+        ${progressCell}
+        <div><span class="metas-badge status-${escapeHtml(status)}">${escapeHtml(statusLabel)}</span></div>
+      </div>`;
+  }).join("");
+  return `
+    <section class="pdv-perf-manager-block">
+      <h4 class="pdv-perf-manager-block-title">Metas comerciais</h4>
+      ${rowsHtml}
+    </section>`;
+}
+
+// Bloco Corridinhas (Gestor). Lista SOMENTE campanhas ativas (decisao da
+// Fase 7). Sem chamada a /live no abrir — Top 3 e' carregado sob demanda
+// via loadPdvGestaoPerformanceCampaignTop3 ao clicar em "Ver Top 3".
+function renderPdvGestaoPerformanceManagerCampaignsBlock(campaigns) {
+  const safe = Array.isArray(campaigns) ? campaigns : [];
+  const active = safe.filter((c) => {
+    const s = String(c?.status || "").toLowerCase();
+    return s === "active" || s === "ativa";
+  });
+  if (active.length === 0) {
+    return `
+      <section class="pdv-perf-manager-block">
+        <h4 class="pdv-perf-manager-block-title">Corridinhas ativas</h4>
+        <div class="metas-state">
+          <strong>Sem Corridinhas ativas no momento</strong>
+          <span>Ative uma Corridinha na aba Corridinhas para acompanhar aqui.</span>
+        </div>
+      </section>`;
+  }
+  // Mais recentes primeiro (start_date DESC, desempate por id DESC).
+  active.sort((a, b) => {
+    const sa = String(a?.start_date || "");
+    const sb = String(b?.start_date || "");
+    if (sa !== sb) return sb.localeCompare(sa);
+    return Number(b?.id || 0) - Number(a?.id || 0);
+  });
+  const rows = active.map((c) => {
+    const name = String(c?.name || "Corridinha").trim();
+    const startBR = formatDateBR(c?.start_date) || "—";
+    const endBR = formatDateBR(c?.end_date) || "—";
+    const rule = c?.rule_type;
+    const ruleLabel = rule === "quantity_target" ? "Qtd. itens" : rule === "ticket_threshold_count" ? "Vendas acima de ticket" : "Maior volume";
+    const storeIds = Array.isArray(c?.store_ids) ? c.store_ids : (Array.isArray(c?.store_ids_json) ? c.store_ids_json : []);
+    const storesCell = storeIds.length > 0 ? storeIds.length + " loja" + (storeIds.length > 1 ? "s" : "") : "Todas";
+    return `
+      <div class="pdv-perf-campaign-row" data-pdv-perf-campaign-id="${escapeHtml(String(c?.id || ""))}">
+        <div>
+          <strong>${escapeHtml(name)}</strong>
+          <small>${escapeHtml(startBR)} \u2192 ${escapeHtml(endBR)}</small>
+        </div>
+        <div><span class="pdv-perf-campaign-rule">${escapeHtml(ruleLabel)}</span></div>
+        <div><span class="pdv-perf-meta-kpi">${escapeHtml(storesCell)}</span></div>
+        <div><span class="pdv-perf-meta-kpi">Premio: ${escapeHtml(formatCampaignPrizeLabel(c))}</span></div>
+        <div><button class="small-secondary" type="button" data-action="gestao-performance-campaign-top3" data-id="${escapeHtml(String(c?.id || ""))}">Ver Top 3</button></div>
+      </div>
+      <div class="pdv-perf-top3" data-pdv-perf-top3-for="${escapeHtml(String(c?.id || ""))}"></div>`;
+  }).join("");
+  return `
+    <section class="pdv-perf-manager-block">
+      <h4 class="pdv-perf-manager-block-title">Corridinhas ativas</h4>
+      <p style="font-size: 0.78rem; color: #94a3b8; margin: 0 0 0.6rem;">Top 3 carregado sob demanda — clique em "Ver Top 3" para consultar o ranking live desta Corridinha.</p>
+      ${rows}
+    </section>`;
+}
+
+// Label enxuta do premio — reaproveita a mesma string usada no card da aba
+// Corridinhas, sem regra nova.
+function formatCampaignPrizeLabel(campaign) {
+  const prize = campaign?.prize || {};
+  const value = prize.value || 0;
+  if (prize.type === "per_item") return "R$ " + value + "/item";
+  if (prize.type === "per_win") return "R$ " + value + " (1º lugar)";
+  return "R$ " + value;
+}
+
+// Carrega /campaigns/:id/live sob demanda (Gestor/Admin) e injeta top 3 do
+// ranking[] num sub-bloco .pdv-perf-top3. Idempotente: nao refaz a chamada
+// se ja existe um resultado renderizado.
+async function loadPdvGestaoPerformanceCampaignTop3(campaignId, containerEl) {
+  if (!containerEl || !campaignId) return;
+  if (containerEl.dataset.loaded === "1") return; // idempotente: ja carregado ok, sem refazer
+  containerEl.dataset.loaded = "1";
+  containerEl.innerHTML = '<div class="pdv-perf-top3-loading">Carregando Top 3...</div>';
+  try {
+    const res = await api("/api/pdv/commercial/campaigns/" + campaignId + "/live");
+    const data = res?.data || {};
+    const challenge = data.challenge || {};
+    const ranking = Array.isArray(data.ranking) ? data.ranking : [];
+    const top = ranking.slice(0, 3);
+    if (top.length === 0) {
+      containerEl.innerHTML = `
+        <p class="pdv-perf-top3-title">Top 3 · ${escapeHtml(challenge.name || "Corridinha")}</p>
+        <div class="pdv-perf-top3-loading">Sem participantes com leitura ainda.</div>`;
+      return;
+    }
+    const rule = String(challenge.rule_type || "");
+    const unit = rule === "ticket_threshold_count" ? "vendas" : "itens";
+    const rows = top.map((r) => {
+      const isWinner = r.rank === 1 || r.is_winner;
+      const cv = Number(r.current_value || 0);
+      return `
+        <div class="pdv-perf-top3-row${isWinner ? " winner-row" : ""}">
+          <span class="pdv-perf-top3-rank">#${escapeHtml(String(r.rank || "-"))}</span>
+          <span class="pdv-perf-top3-name">${escapeHtml(r.seller_name || "Vendedor")}${isWinner ? " \uD83C\uDFC6" : ""}</span>
+          <span class="pdv-perf-top3-num">${escapeHtml(String(cv))} ${escapeHtml(unit)}</span>
+          <span class="pdv-perf-top3-num">${escapeHtml(currency(Number(r.eligible_amount || 0)))}</span>
+        </div>`;
+    }).join("");
+    containerEl.innerHTML = `
+      <p class="pdv-perf-top3-title">Top 3 · ${escapeHtml(challenge.name || "Corridinha")}</p>
+      ${rows}
+      <div style="text-align: right; margin-top: 0.35rem;">
+        <button class="ghost-button" type="button" data-action="gestao-performance-campaign-top3-collapse" data-id="${escapeHtml(String(campaignId))}">Ocultar</button>
+      </div>`;
+    // Liga botao de ocultar
+    const collapseBtn = containerEl.querySelector('[data-action="gestao-performance-campaign-top3-collapse"]');
+    if (collapseBtn) {
+      collapseBtn.addEventListener("click", () => {
+        containerEl.innerHTML = "";
+        containerEl.dataset.loaded = "";
+      });
+    }
+  } catch (err) {
+    containerEl.innerHTML = `
+      <p class="pdv-perf-top3-title">Top 3 indisponivel</p>
+      <div class="pdv-perf-top3-error">
+        <strong>${escapeHtml(err?.message || err?.error || "Falha ao carregar ranking")}</strong>
+        <button class="ghost-button" type="button" data-action="gestao-performance-campaign-top3" data-id="${escapeHtml(String(campaignId))}">Tentar novamente</button>
+      </div>`;
+    containerEl.dataset.loaded = "";
+  }
 }
 
 // Cards verticais de performance para Vendedor.

@@ -27917,4 +27917,112 @@ body[data-route-section="pdv-sale"] .pdv-sale-search-results .pdv-product-card-b
 @media (max-width: 540px) {
   .metas-seller-summary { grid-template-columns: 1fr; }
   .metas-seller-tile { min-height: 76px; }
+}/* ── PDV Gestão Comercial — Performance Manager (isolado) ─────────────── */
+.pdv-perf-manager-header {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 1.1rem;
+}
+.pdv-perf-manager-block { margin-bottom: 1.4rem; }
+.pdv-perf-manager-block-title {
+  font-size: 0.74rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  margin: 0 0 0.6rem;
+  font-weight: 600;
+}
+.pdv-perf-meta-row {
+  display: grid;
+  grid-template-columns: 1.7fr 1fr 1.5fr 1fr 1.1fr 0.7fr;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.45);
+  margin-bottom: 0.5rem;
+}
+.pdv-perf-meta-row.status-active    { border-left: 3px solid #22c55e; }
+.pdv-perf-meta-row.status-closed    { border-left: 3px solid #f59e0b; }
+.pdv-perf-meta-row.status-cancelled { border-left: 3px solid #7f1d1d; }
+.pdv-perf-meta-row.status-draft     { border-left: 3px solid #64748b; }
+.pdv-perf-meta-name strong { color: #f8fafc; font-size: 0.95rem; }
+.pdv-perf-meta-name small { color: #94a3b8; display: block; font-size: 0.72rem; margin-top: 0.15rem; }
+.pdv-perf-meta-progress { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+.pdv-perf-meta-progress-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  overflow: hidden;
+  min-width: 50px;
+}
+.pdv-perf-meta-progress-bar span { display: block; height: 100%; background: linear-gradient(90deg, #22c55e 0%, #6366f1 100%); }
+.pdv-perf-meta-progress-bar span.over { background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%); }
+.pdv-perf-meta-progress-bar span.at-risk { background: linear-gradient(90deg, #f59e0b 0%, #b91c1c 100%); }
+.pdv-perf-meta-progress-pct { color: #f8fafc; font-variant-numeric: tabular-nums; font-weight: 600; min-width: 42px; text-align: right; }
+.pdv-perf-meta-num { text-align: right; color: #f8fafc; font-variant-numeric: tabular-nums; }
+.pdv-perf-meta-num small { display: block; color: #94a3b8; font-size: 0.7rem; margin-top: 0.1rem; font-weight: 400; }
+.pdv-perf-meta-kpi { color: #cbd5e1; font-size: 0.82rem; }
+.pdv-perf-meta-kpi small { display: block; color: #94a3b8; font-size: 0.7rem; }
+.pdv-perf-campaign-row {
+  display: grid;
+  grid-template-columns: 1.7fr 1.2fr 0.9fr 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid rgba(34, 197, 94, 0.28);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.55);
+  margin-bottom: 0.5rem;
+}
+.pdv-perf-campaign-row strong { color: #f8fafc; font-size: 0.95rem; }
+.pdv-perf-campaign-row small { color: #94a3b8; display: block; font-size: 0.72rem; margin-top: 0.15rem; }
+.pdv-perf-campaign-rule { color: #cbd5e1; font-size: 0.84rem; }
+.pdv-perf-top3 {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.6rem 0.85rem;
+  background: rgba(34, 197, 94, 0.06);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: 8px;
+}
+.pdv-perf-top3-title {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  margin: 0 0 0.35rem;
+}
+.pdv-perf-top3-row {
+  display: grid;
+  grid-template-columns: 32px 1fr 90px 90px;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.28rem 0;
+  font-size: 0.86rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.08);
+}
+.pdv-perf-top3-row:first-of-type { border-top: none; }
+.pdv-perf-top3-row.winner-row { color: #bbf7d0; font-weight: 600; }
+.pdv-perf-top3-rank { color: #94a3b8; font-variant-numeric: tabular-nums; }
+.pdv-perf-top3-name { color: #f8fafc; }
+.pdv-perf-top3-num { text-align: right; color: #f8fafc; font-variant-numeric: tabular-nums; }
+.pdv-perf-top3-loading,
+.pdv-perf-top3-error {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  padding: 0.3rem 0;
+}
+.pdv-perf-top3-error strong { color: #fca5a5; display: block; margin-bottom: 0.15rem; }
+@media (max-width: 1100px) {
+  .pdv-perf-manager-header { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pdv-perf-meta-row { grid-template-columns: 1fr 1fr; row-gap: 0.4rem; }
+  .pdv-perf-campaign-row { grid-template-columns: 1fr 1fr; row-gap: 0.4rem; }
+}
+@media (max-width: 640px) {
+  .pdv-perf-manager-header { grid-template-columns: 1fr; }
+  .pdv-perf-meta-row { grid-template-columns: 1fr; }
+  .pdv-perf-campaign-row { grid-template-columns: 1fr; }
 }
