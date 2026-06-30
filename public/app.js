@@ -5829,9 +5829,12 @@ function buildPdvSaleSuccessState(sale = null) {
           <div class="pdv-payment-success-card"><span>Status do link</span><strong>${escapeHtml(paymentLinkStatusMeta?.link?.label || "-")}</strong></div>
           <div class="pdv-payment-success-card"><span>Status do pagamento</span><strong class="pdv-payment-link-tone-${escapeHtml(paymentLinkStatusMeta?.payment?.tone || "neutral")}">${escapeHtml(paymentLinkStatusMeta?.payment?.label || "-")}</strong></div>
           <div class="pdv-payment-success-card"><span>Decisao</span><strong class="pdv-payment-link-tone-${escapeHtml(paymentLinkStatusMeta?.release?.tone || "neutral")}">${escapeHtml(paymentLinkStatusMeta?.release?.label || "-")}</strong></div>
-          <div class="pdv-payment-success-card"><span>Provedor</span><strong>${escapeHtml((paymentLink.provider || "pagbank").toUpperCase())}</strong></div>
-          <div class="pdv-payment-success-card"><span>Status PagBank</span><strong>${escapeHtml(paymentLink.providerStatus || "-")}</strong></div>
-          <div class="pdv-payment-success-card"><span>Checkout ID</span><strong>${escapeHtml(paymentLink.checkoutId || "-")}</strong></div>
+          <div class="pdv-payment-success-card"><span>Provedor</span><strong>${escapeHtml(getPdvSalePaymentLinkProviderLabel(paymentLink.provider).toUpperCase())}</strong></div>
+          <div class="pdv-payment-success-card"><span>Status ${escapeHtml(getPdvSalePaymentLinkProviderLabel(paymentLink.provider))}</span><strong>${escapeHtml(paymentLink.providerStatus || "-")}</strong></div>
+          <div class="pdv-payment-success-card"><span>${paymentLink.provider === "infinitepay" ? "Slug" : "Checkout ID"}</span><strong>${escapeHtml(paymentLink.checkoutId || "-")}</strong></div>
+          <div class="pdv-payment-success-card"><span>Transaction NSU</span><strong>${escapeHtml(paymentLink.transactionNsu || "-")}</strong></div>
+          <div class="pdv-payment-success-card"><span>Parcelas / Captura</span><strong>${escapeHtml(`${toNumber(paymentLink.installments || 1)}x • ${escapeHtml(paymentLink.captureMethod || "-") || "-"}`)}</strong></div>
+          <div class="pdv-payment-success-card"><span>Comprovante</span><strong>${paymentLink.receiptUrl ? `<a href="${escapeHtml(paymentLink.receiptUrl)}" target="_blank" rel="noopener">Abrir comprovante</a>` : "-"}</strong></div>
           <div class="pdv-payment-success-card"><span>Ultimo envio</span><strong>${escapeHtml(formatDateTimeBR(paymentLink.sentAt || ""))}</strong></div>
           <div class="pdv-payment-success-card"><span>Ultima checagem</span><strong>${escapeHtml(formatDateTimeBR(paymentLink.lastCheckedAt || ""))}</strong></div>
           <div class="pdv-payment-success-card"><span>Pago em</span><strong>${escapeHtml(formatDateTimeBR(paymentLink.paidAt || ""))}</strong></div>
@@ -5872,11 +5875,11 @@ function buildPdvSaleSuccessState(sale = null) {
       </div>
       <div class="pdv-payment-success-actions">
         <button class="primary-button" type="button" data-pdv-sale-new-session="true"${newSaleBusy ? " disabled" : ""}>${newSaleBusy ? "Abrindo..." : "Nova venda"}</button>
-        ${isPaymentLinkSale && !paymentLink.url ? `<button class="secondary-button" type="button" data-pdv-sale-generate-payment-link="${escapeHtml(sale.sale_id || "")}"${paymentLinkBusy ? " disabled" : ""}>${paymentLinkBusy ? "Gerando..." : "Gerar link de pagamento"}</button>` : ""}
+        ${isPaymentLinkSale && !paymentLink.url ? `<button class="secondary-button" type="button" data-pdv-sale-generate-payment-link="${escapeHtml(sale.sale_id || "")}"${paymentLinkBusy ? " disabled" : ""}>${paymentLinkBusy ? "Gerando..." : escapeHtml(getPdvSalePaymentLinkProviderButtonLabel(paymentLink.provider, "generate"))}</button>` : ""}
         ${isPaymentLinkSale && paymentLink.url ? `<button class="secondary-button" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(sale.sale_id || "")}"${whatsappSending ? " disabled" : ""}>${whatsappButtonLabel}</button>` : ""}
         ${isPaymentLinkSale && paymentLink.url ? `<button class="ghost-button" type="button" data-pdv-sale-copy-payment-link="${escapeHtml(sale.sale_id || "")}">${paymentLinkCopied ? "Link copiado" : "Copiar link"}</button>` : ""}
         ${isPaymentLinkSale && paymentLink.url ? `<button class="ghost-button" type="button" data-pdv-sale-open-payment-link="${escapeHtml(sale.sale_id || "")}">Abrir link</button>` : ""}
-        ${isPaymentLinkSale && paymentLink.checkoutId ? `<button class="ghost-button" type="button" data-pdv-sale-refresh-payment-link="${escapeHtml(sale.sale_id || "")}"${paymentLinkBusy ? " disabled" : ""}>${paymentLinkBusy ? "Atualizando..." : "Atualizar status do pagamento"}</button>` : ""}
+        ${isPaymentLinkSale && (paymentLink.checkoutId || paymentLink.transactionNsu) ? `<button class="ghost-button" type="button" data-pdv-sale-refresh-payment-link="${escapeHtml(sale.sale_id || "")}"${paymentLinkBusy ? " disabled" : ""}>${paymentLinkBusy ? "Atualizando..." : escapeHtml(getPdvSalePaymentLinkProviderButtonLabel(paymentLink.provider, "refresh"))}</button>` : ""}
         <button class="secondary-button" type="button" data-pdv-sale-print-coupon="${escapeHtml(sale.sale_id || "")}">${printed ? "Impresso" : "Imprimir cupom"}</button>
         ${!isPaymentLinkSale ? `<button class="secondary-button" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(sale.sale_id || "")}"${whatsappSending ? " disabled" : ""}>${whatsappButtonLabel}</button>` : ""}
         <button class="secondary-button${whatsappNeedsAttention ? " is-attention" : ""}" type="button" data-pdv-sale-copy-summary="${escapeHtml(sale.sale_id || "")}">${copied ? "Resumo copiado" : "Copiar resumo"}</button>
@@ -8991,7 +8994,8 @@ async function generatePdvSalePaymentLink(saleId = "", options = {}) {
     }
     const paymentLink = getPdvSalePaymentLinkData(sale || {});
     if (paymentLink.url) {
-      showFeedback("Link de pagamento pronto para envio.");
+      const providerLabel = getPdvSalePaymentLinkProviderLabel(paymentLink.provider);
+      showFeedback(`Link ${providerLabel} pronto para envio.`);
     } else {
       showFeedback(paymentLink.lastError || "O link ficou pendente de geração.", "warning");
     }
@@ -9020,12 +9024,13 @@ async function refreshPdvSalePaymentLink(saleId = "") {
       persistPdvSaleRecordUpdate(sale);
     }
     const paymentLinkMeta = getPdvSalePaymentLinkStatusMeta(sale || {});
+    const providerLabel = getPdvSalePaymentLinkProviderLabel(sale?.payment_link_provider || sale?.pagbank?.provider || "");
     if (paymentLinkMeta?.paymentStatus === "paid") {
       showFeedback("Pagamento confirmado. Mercadoria liberada.");
     } else if (paymentLinkMeta?.releaseStatus === "awaiting_payment") {
-      showFeedback("Status atualizado: aguardando pagamento. Nao libere a mercadoria.", "warning");
+      showFeedback(`Status atualizado: aguardando pagamento. Não libere a mercadoria até a confirmação do ${providerLabel}.`, "warning");
     } else {
-      showFeedback("Status atualizado. Verifique o PagBank antes de liberar a mercadoria.", "warning");
+      showFeedback(`Status atualizado. Verifique o ${providerLabel} antes de liberar a mercadoria.`, "warning");
     }
     return sale;
   } finally {
@@ -26338,6 +26343,8 @@ function getPdvSalePaymentLinkData(sale = null) {
   const checkoutId = normalizeText(
     sale?.payment_link_checkout_id
     || sale?.payment_link?.checkout_id
+    || sale?.payment_link_invoice_slug
+    || sale?.payment_link?.invoice_slug
     || sale?.pagbank?.checkout_id
     || ""
   );
@@ -26347,10 +26354,36 @@ function getPdvSalePaymentLinkData(sale = null) {
     || sale?.pagbank?.status
     || (url ? "generated" : "pending_generation")
   ).toLowerCase();
+  const providerRaw = normalizeText(
+    sale?.payment_link_provider
+    || sale?.payment_link?.provider
+    || sale?.pagbank?.provider
+    || ""
+  ).toLowerCase();
+  const provider = ["infinitepay", "pagbank"].includes(providerRaw) ? providerRaw : (url ? "infinitepay" : "pagbank");
   return {
-    provider: normalizeText(sale?.payment_link_provider || sale?.payment_link?.provider || "pagbank"),
+    provider,
     url,
     checkoutId,
+    invoiceSlug: checkoutId,
+    transactionNsu: normalizeText(
+      sale?.payment_link_transaction_nsu
+      || sale?.payment_link?.transaction_nsu
+      || ""
+    ),
+    receiptUrl: normalizeText(
+      sale?.payment_link_receipt_url
+      || sale?.payment_link?.receipt_url
+      || ""
+    ),
+    installments: toNumber(sale?.payment_link_installments || sale?.payment_link?.installments || 1),
+    captureMethod: normalizeText(
+      sale?.payment_link_capture_method
+      || sale?.payment_link?.capture_method
+      || ""
+    ).toLowerCase(),
+    paidAmountCents: toNumber(sale?.payment_link_paid_amount_cents || sale?.payment_link?.paid_amount_cents || 0),
+    amountCents: toNumber(sale?.payment_link_amount_cents || sale?.payment_link?.amount_cents || 0),
     status,
     paymentStatus: normalizeText(sale?.payment_link_payment_status || sale?.payment_link?.payment_status || ""),
     createdAt: normalizeText(sale?.payment_link_created_at || sale?.payment_link?.created_at || ""),
@@ -26363,6 +26396,28 @@ function getPdvSalePaymentLinkData(sale = null) {
     warnings: toArray(sale?.payment_link_warnings || sale?.payment_link?.warnings),
     requiresManualReview: Boolean(sale?.payment_link_requires_manual_review || sale?.payment_link?.requires_manual_review)
   };
+}
+
+function getPdvSalePaymentLinkProviderLabel(provider = "") {
+  const normalized = normalizeText(provider).toLowerCase();
+  if (normalized === "infinitepay") {
+    return "InfinitePay";
+  }
+  if (normalized === "pagbank") {
+    return "PagBank";
+  }
+  return "Pagamento";
+}
+
+function getPdvSalePaymentLinkProviderButtonLabel(provider = "", action = "generate") {
+  const label = getPdvSalePaymentLinkProviderLabel(provider);
+  if (action === "refresh") {
+    return `Atualizar ${label}`;
+  }
+  if (action === "status") {
+    return `Status ${label}`;
+  }
+  return `Gerar link ${label}`;
 }
 
 function getPdvSalePaymentLinkStatusMeta(sale = null) {
@@ -26584,7 +26639,7 @@ function buildPdvCashPendingPaymentInlineDetail(item = {}) {
         <div><span>Pagamento</span><strong>${escapeHtml(paymentLine)}</strong></div>
         <div><span>Criada em</span><strong>${escapeHtml(formatDateTimeBR(createdAt || ""))}</strong></div>
         <div><span>Status do link</span><strong>${escapeHtml(statusMeta?.link?.label || "-")}</strong></div>
-        <div><span>Status PagBank</span><strong class="pdv-payment-link-tone-${escapeHtml(statusMeta?.payment?.tone || "neutral")}">${escapeHtml(paymentLink.providerStatus || statusMeta?.payment?.label || "-")}</strong></div>
+        <div><span>Status ${escapeHtml(getPdvSalePaymentLinkProviderLabel(paymentLink.provider))}</span><strong class="pdv-payment-link-tone-${escapeHtml(statusMeta?.payment?.tone || "neutral")}">${escapeHtml(paymentLink.providerStatus || statusMeta?.payment?.label || "-")}</strong></div>
         <div><span>Decisão</span><strong class="pdv-payment-link-tone-${escapeHtml(statusMeta?.release?.tone || "neutral")}">${escapeHtml(statusMeta?.release?.label || "Aguardando pagamento")}</strong></div>
       </div>
     </div>
@@ -26599,7 +26654,7 @@ function buildPdvCashPendingPaymentPanel(items = []) {
       <div class="panel-header">
         <h3>Vendas aguardando pagamento <span class="pdv-cash-pending-count">${pendingCount}</span></h3>
       </div>
-      <p class="panel-helper">Vendas em Link pagamento continuam nesta fila ate o PagBank confirmar o pagamento. Link ativo nao libera mercadoria.</p>
+      <p class="panel-helper">Vendas em Link pagamento continuam nesta fila ate ${escapeHtml(getPdvSalePaymentLinkProviderLabel(items?.[0]?.payment_link_provider || "infinitepay"))} confirmar o pagamento. Link ativo nao libera mercadoria.</p>
       ${state.pdvCash.pendingPaymentLinksError ? `
         <div class="pdv-register-inline-warning warning">
           <strong>Fila com leitura parcial</strong>
@@ -26640,7 +26695,7 @@ function buildPdvCashPendingPaymentPanel(items = []) {
                     <em title="${escapeHtml(paymentLink.url || "")}">${escapeHtml(maskPdvExternalUrl(paymentLink.url || ""))}</em>
                   </span>
                   <span>
-                    <small>PagBank</small>
+                    <small>${escapeHtml(getPdvSalePaymentLinkProviderLabel(paymentLink.provider))}</small>
                     <strong>${escapeHtml(paymentLink.providerStatus || "-")}</strong>
                     <em class="pdv-payment-link-tone-${escapeHtml(statusMeta?.payment?.tone || "neutral")}">${escapeHtml(statusMeta?.payment?.label || "-")}</em>
                   </span>
@@ -27217,7 +27272,7 @@ function buildPdvSalesOrderCancelModal() {
 async function refreshSelectedPdvSalesOrdersPagBank() {
   const selectedRows = getPdvSalesOrdersSelectedRows();
   if (!selectedRows.length) {
-    showFeedback("Selecione pelo menos uma venda para atualizar o PagBank.", "error");
+    showFeedback("Selecione pelo menos uma venda para atualizar o status do link de pagamento.", "error");
     return;
   }
   const linkRows = selectedRows.filter((row) => row.uses_payment_link && (row.payment_link_checkout_id || row.payment_link_url));
@@ -27225,7 +27280,8 @@ async function refreshSelectedPdvSalesOrdersPagBank() {
     showFeedback("Nenhuma venda selecionada possui Link pagamento para atualizar.", "error");
     return;
   }
-  if (!window.confirm(`Atualizar status PagBank de ${linkRows.length} venda(s) selecionada(s)?`)) {
+  const providerLabel = getPdvSalePaymentLinkProviderLabel(linkRows[0]?.payment_link_provider || "infinitepay");
+  if (!window.confirm(`Atualizar status ${providerLabel} de ${linkRows.length} venda(s) selecionada(s)?`)) {
     return;
   }
   state.pdvSalesOrders.bulkActionBusy = "pagbank";
@@ -27274,7 +27330,7 @@ function buildPdvSalesOrdersBulkToolbar() {
         <span>${state.pdvSalesOrders.bulkActionMessage ? escapeHtml(state.pdvSalesOrders.bulkActionMessage) : `${linkCount} com Link pagamento para consultar no PagBank.`}</span>
       </div>
       <div class="pdv-orders-bulk-actions">
-        <button class="secondary-button small" type="button" data-pdv-sales-orders-bulk-pagbank${!linkCount || busy ? " disabled" : ""} title="${linkCount ? "Atualizar status PagBank das vendas com link." : "Nenhuma venda selecionada possui Link pagamento."}">${busy === "pagbank" ? "Atualizando..." : "Atualizar PagBank"}</button>
+        <button class="secondary-button small" type="button" data-pdv-sales-orders-bulk-pagbank${!linkCount || busy ? " disabled" : ""} title="${linkCount ? `Atualizar status do provedor das vendas com link.` : "Nenhuma venda selecionada possui Link pagamento."}">${busy === "pagbank" ? "Atualizando..." : "Atualizar status"}</button>
         <button class="ghost-button small" type="button" data-pdv-sales-orders-export-selected${!selectedCount || busy ? " disabled" : ""}>Exportar CSV</button>
         <button class="ghost-button small" type="button" data-pdv-sales-orders-print-selected${!selectedCount || busy ? " disabled" : ""}>Imprimir resumo</button>
         <button class="ghost-button small" type="button" data-pdv-sales-orders-select-visible${busy ? " disabled" : ""}>Selecionar pagina</button>
@@ -28928,17 +28984,18 @@ function buildPdvSalesOrderDetailDrawer() {
             <article><span>Cliente</span><strong>${escapeHtml(row.customer_name || sale.customer?.name || "Venda balcao")}</strong><small>${escapeHtml(row.customer_phone || sale.customer?.phone || "-")}</small></article>
             <article><span>Metodo principal</span><strong>${escapeHtml(paymentMethodLabel)}</strong><small>${row.uses_payment_link ? "Venda por link de pagamento" : "Venda operacional PDV"}</small></article>
             ${row.uses_payment_link ? `<article><span>Link pagamento</span><strong>${escapeHtml(paymentMeta?.link?.label || "Link gerado")}</strong><small>${escapeHtml(maskPdvExternalUrl(paymentLink.url || ""))}</small></article>` : ""}
-            ${row.uses_payment_link ? `<article><span>Ultima atualizacao PagBank</span><strong>${escapeHtml(lastPagBankUpdate ? formatDateTimeBR(lastPagBankUpdate) : "-")}</strong><small>${escapeHtml(getPdvSalesOrderProviderStatusLabel(paymentLink.providerStatus || ""))}</small></article>` : ""}
+            ${row.uses_payment_link ? `<article><span>Ultima atualizacao ${escapeHtml(getPdvSalePaymentLinkProviderLabel(paymentLink.provider))}</span><strong>${escapeHtml(lastPagBankUpdate ? formatDateTimeBR(lastPagBankUpdate) : "-")}</strong><small>${escapeHtml(getPdvSalesOrderProviderStatusLabel(paymentLink.providerStatus || ""))}</small></article>` : ""}
           </div>
           ${buildPdvSalesOrderBadges(row)}
         </section>
         ${row.uses_payment_link ? `
           <div class="pdv-orders-payment-link-panel">
-            <strong>Link pagamento / PagBank</strong>
+            <strong>Link pagamento / ${escapeHtml(getPdvSalePaymentLinkProviderLabel(paymentLink.provider))}</strong>
             <div class="pdv-orders-detail-grid">
               <article><span>Status do link</span><strong>${escapeHtml(paymentMeta?.link?.label || paymentLink.status || "-")}</strong><small>${escapeHtml(maskPdvExternalUrl(paymentLink.url || ""))}</small></article>
-              <article><span>Status PagBank</span><strong>${escapeHtml(getPdvSalesOrderProviderStatusLabel(paymentLink.providerStatus || ""))}</strong><small>${escapeHtml(paymentMeta?.payment?.label || "-")}</small></article>
+              <article><span>Status ${escapeHtml(getPdvSalePaymentLinkProviderLabel(paymentLink.provider))}</span><strong>${escapeHtml(getPdvSalesOrderProviderStatusLabel(paymentLink.providerStatus || ""))}</strong><small>${escapeHtml(paymentMeta?.payment?.label || "-")}</small></article>
               <article><span>Decisao</span><strong>${escapeHtml(paymentMeta?.release?.label || statusMeta.note)}</strong><small>${escapeHtml(paymentMeta?.note || "Link ativo nao libera mercadoria sem confirmacao de pagamento.")}</small></article>
+              ${paymentLink.receiptUrl ? `<article><span>Comprovante</span><strong><a href="${escapeHtml(paymentLink.receiptUrl)}" target="_blank" rel="noopener">Abrir comprovante</a></strong><small>${escapeHtml(paymentLink.transactionNsu || "-")}</small></article>` : ""}
             </div>
           </div>
         ` : ""}
@@ -28987,7 +29044,7 @@ function buildPdvSalesOrderDetailDrawer() {
           <button class="secondary-button" type="button" data-pdv-sale-print-coupon="${escapeHtml(saleId)}">Abrir / imprimir cupom</button>
           <button class="ghost-button" type="button" data-pdv-sale-send-whatsapp="${escapeHtml(saleId)}">Enviar WhatsApp</button>
           ${canCancelPdvSaleFrontend() && !isPdvSalesOrderCancelled(row) ? `<button class="danger-button" type="button" data-pdv-sales-order-cancel="${escapeHtml(saleId)}">Cancelar venda</button>` : ""}
-          ${row.uses_payment_link ? `<button class="ghost-button" type="button" data-pdv-sale-refresh-payment-link="${escapeHtml(saleId)}"${paymentLink.checkoutId ? "" : " disabled"}>Atualizar PagBank</button>` : ""}
+          ${row.uses_payment_link ? `<button class="ghost-button" type="button" data-pdv-sale-refresh-payment-link="${escapeHtml(saleId)}"${paymentLink.checkoutId ? "" : " disabled"}>${escapeHtml(getPdvSalePaymentLinkProviderButtonLabel(paymentLink.provider, "refresh"))}</button>` : ""}
           ${paymentLink.url ? `<button class="ghost-button" type="button" data-pdv-sale-copy-payment-link="${escapeHtml(saleId)}">Copiar link</button><button class="ghost-button" type="button" data-pdv-sale-open-payment-link="${escapeHtml(saleId)}">Abrir link</button>` : ""}
           <button class="ghost-button" type="button" data-pdv-sale-view-cash="${escapeHtml(saleId)}">Ver no caixa</button>
         </div>

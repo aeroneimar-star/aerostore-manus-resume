@@ -57,6 +57,22 @@ const {
 const { normalizeStoreKey, formatStoreLabel, storesMatch } = require("../utils/pdvStoreUtils");
 const { getStorePublicContext } = require("../../../services/storeSettingsService");
 const { PagBankError, createPagBankCheckout, getPagBankCheckout } = require("../../../services/pagbankService");
+const {
+  InfinitePayError,
+  getActivePaymentProvider,
+  getInfinitePayConfig,
+  getInfinitePayHandle,
+  createInfinitePayLink,
+  checkInfinitePayPayment,
+  normalizeInfinitePayWebhookPayload,
+  isInfinitePaidStatus,
+  isAllowedCaptureMethod,
+  isInstallmentsInRange,
+  normalizeSafeInstallments,
+  isInfinitePayReady,
+  computeInfinitePayItemsTotalCents,
+  INFINITEPAY_AMOUNT_TOLERANCE_CENTS
+} = require("../../../services/infinitepayService");
 const { get, run, all } = require("../../../db");
 const { getNotificationService, getNotificationDryRunDefault } = require("../../../src/notification/NotificationService");
 const {
@@ -1916,6 +1932,17 @@ function applyPaymentLinkSnapshotToSale(sale = {}, snapshot = {}, options = {}) 
     payment_link_release_status: normalizeText(snapshot.payment_link_release_status || releaseDecision.status),
     payment_link_can_release_goods: releaseDecision.can_release_goods,
     payment_link_reference_id: normalizeText(snapshot.payment_link_reference_id || snapshot.reference_id || sale.payment_link_reference_id || ""),
+    payment_link_transaction_nsu: normalizeText(snapshot.payment_link_transaction_nsu || sale.payment_link_transaction_nsu || ""),
+    payment_link_invoice_slug: normalizeText(snapshot.payment_link_invoice_slug || sale.payment_link_invoice_slug || sale.payment_link_checkout_id || ""),
+    payment_link_receipt_url: normalizeText(snapshot.payment_link_receipt_url || sale.payment_link_receipt_url || ""),
+    payment_link_installments: snapshot.payment_link_installments != null ? toNumber(snapshot.payment_link_installments) : toNumber(sale.payment_link_installments || 1),
+    payment_link_capture_method: normalizeText(snapshot.payment_link_capture_method || sale.payment_link_capture_method || "").toLowerCase(),
+    payment_link_paid_amount_cents: snapshot.payment_link_paid_amount_cents != null
+      ? toNumber(snapshot.payment_link_paid_amount_cents)
+      : toNumber(sale.payment_link_paid_amount_cents || 0),
+    payment_link_amount_cents: snapshot.payment_link_amount_cents != null
+      ? toNumber(snapshot.payment_link_amount_cents)
+      : toNumber(sale.payment_link_amount_cents || 0),
     payment_link_warnings: warnings.length ? warnings : (Array.isArray(sale.payment_link_warnings) ? sale.payment_link_warnings : []),
     payment_link_requires_manual_review: Boolean(
       snapshot.payment_link_requires_manual_review
@@ -1925,19 +1952,182 @@ function applyPaymentLinkSnapshotToSale(sale = {}, snapshot = {}, options = {}) 
   };
 }
 
-async function ensureSalePaymentLink(sale = {}, user = {}, options = {}) {
-  if (!saleUsesPaymentLink(sale)) {
+function isPdvSaleCanceled(sale = {}) {
+  const status = normalizeText(sale?.status || sale?.operational_status || "").toLowerCase();
+  if (["cancelled", "canceled", "cancelada"].includes(status)) {
+    return true;
+  }
+  if (sale?.cancelled_at || sale?.canceled_at || sale?.cancellation_reason || sale?.cancel_reason) {
+    return true;
+  }
+  return false;
+}
+
+function resolveSalePaymentLinkProvider(sale = {}) {
+  const explicit = normalizeText(sale?.payment_link_provider || sale?.pagbank?.provider || "").toLowerCase();
+  if (explicit === "pagbank") {
+    return "pagbank";
+  }
+  if (explicit === "infinitepay") {
+    if (!isInfinitePayReady()) {
+      const error = new InfinitePayError(
+        "Esta venda foi configurada como InfinitePay, mas o ambiente nao tem INFINITEPAY_HANDLE, INFINITEPAY_REDIRECT_URL ou INFINITEPAY_WEBHOOK_URL configurados. Verifique o .env antes de continuar.",
+        { statusCode: 503, details: { reason: "infinitepay_not_configured", sale_id: sale?.sale_id } }
+      );
+      throw error;
+    }
+    return "infinitepay";
+  }
+  const hasLegacyLinkWithoutProvider = Boolean(
+    normalizeText(sale?.payment_link_url || "") || normalizeText(sale?.payment_link_checkout_id || "")
+  ) && !explicit;
+  if (hasLegacyLinkWithoutProvider) {
+    return "pagbank";
+  }
+  return getActivePaymentProvider();
+}
+
+function getSaleExpectedPaymentLinkAmountCents(sale = {}) {
+  const total = toNumber(sale?.total_final || sale?.total || sale?.total_liquido || 0);
+  return Math.max(0, Math.round(total * 100));
+}
+
+function buildInfinitePayCheckoutInput(sale = {}, orderNsu = "") {
+  const input = buildSalePaymentLinkCheckoutInput(sale);
+  const expectedCents = getSaleExpectedPaymentLinkAmountCents(sale);
+  return {
+    ...input,
+    order_nsu: orderNsu || normalizeText(sale.sale_id || ""),
+    sale_id: normalizeText(sale.sale_id || ""),
+    expectedTotalCents: expectedCents,
+    expected_total_cents: expectedCents
+  };
+}
+
+async function ensureInfinitePayLinkForSale(sale = {}, options = {}) {
+  const orderNsu = normalizeText(options.orderNsu || sale.sale_id || "");
+  const existingSlug = normalizeText(sale.payment_link_checkout_id || "");
+  const forceRefresh = Boolean(options.forceRefresh);
+  const forceGenerate = Boolean(options.forceGenerate);
+  const existingUrl = normalizeText(sale.payment_link_url || "");
+
+  if (!isInfinitePayReady()) {
+    const blockedSale = applyPaymentLinkSnapshotToSale(sale, {
+      payment_link_provider: "infinitepay",
+      payment_link_status: existingUrl ? getSalePaymentLinkStatus(sale) : "pending_generation",
+      payment_link_url: existingUrl || "",
+      payment_link_checkout_id: existingSlug || "",
+      payment_link_last_error: "InfinitePay nao configurada. Defina INFINITEPAY_HANDLE, INFINITEPAY_REDIRECT_URL e INFINITEPAY_WEBHOOK_URL.",
+      payment_link_last_error_at: nowIso(),
+      payment_link_provider_status: "NOT_CONFIGURED"
+    });
+    return updateSaleRecord(sale.sale_id, () => blockedSale) || normalizeSalePaymentLinkState(blockedSale);
+  }
+
+  if (isPdvSaleCanceled(sale)) {
+    const blockedSale = applyPaymentLinkSnapshotToSale(sale, {
+      payment_link_provider: "infinitepay",
+      payment_link_status: existingUrl ? getSalePaymentLinkStatus(sale) : "pending_generation",
+      payment_link_url: existingUrl || "",
+      payment_link_checkout_id: existingSlug || "",
+      payment_link_last_error: "Venda cancelada nao pode gerar link de pagamento.",
+      payment_link_last_error_at: nowIso(),
+      payment_link_provider_status: "CANCELED"
+    });
+    updateSaleRecord(sale.sale_id, () => blockedSale);
+    throw new InfinitePayError("Venda cancelada. Nao e possivel gerar link de pagamento.", {
+      statusCode: 400,
+      details: { reason: "sale_canceled", sale_id: sale.sale_id }
+    });
+  }
+
+  if (!forceRefresh && !forceGenerate && existingUrl) {
     return normalizeSalePaymentLinkState(sale);
   }
 
+  try {
+    let refreshedSale = sale;
+    if (existingSlug && !forceGenerate) {
+      try {
+        const check = await checkInfinitePayPayment({
+          order_nsu: orderNsu,
+          slug: existingSlug
+        });
+        refreshedSale = applyPaymentLinkSnapshotToSale(sale, {
+          payment_link_provider: "infinitepay",
+          payment_link_url: sale.payment_link_url || "",
+          payment_link_checkout_id: existingSlug,
+          payment_link_status: sale.payment_link_sent_at ? "sent" : "generated",
+          payment_link_payment_status: check.paid ? "paid" : (check.status ? "awaiting_payment" : (sale.payment_link_payment_status || "awaiting_payment")),
+          payment_link_provider_status: check.status || "PENDING",
+          payment_link_transaction_nsu: check.transaction_nsu,
+          payment_link_invoice_slug: check.invoice_slug,
+          payment_link_receipt_url: check.receipt_url,
+          payment_link_installments: check.installments,
+          payment_link_capture_method: check.capture_method,
+          payment_link_last_checked_at: nowIso(),
+          payment_link_paid_at: check.paid ? nowIso() : (sale.payment_link_paid_at || ""),
+          payment_link_paid_amount_cents: check.paid_amount_cents,
+          payment_link_amount_cents: check.amount_cents,
+          raw: check.raw
+        });
+      } catch (checkError) {
+        if (!(checkError instanceof InfinitePayError)) {
+          throw checkError;
+        }
+      }
+    }
+
+    if (!refreshedSale.payment_link_url || forceGenerate) {
+      const checkoutInput = buildInfinitePayCheckoutInput(sale, orderNsu);
+      const link = await createInfinitePayLink(checkoutInput);
+      const expectedCents = checkoutInput.expectedTotalCents;
+      if (expectedCents > 0 && link.amount_cents > 0 && Math.abs(link.amount_cents - expectedCents) > INFINITEPAY_AMOUNT_TOLERANCE_CENTS) {
+        throw new InfinitePayError("Total devolvido pela InfinitePay diverge do total da venda. Link nao sera persistido.", {
+          statusCode: 502,
+          details: {
+            reason: "total_mismatch_after_create",
+            expected_total_cents: expectedCents,
+            provider_total_cents: link.amount_cents
+          }
+        });
+      }
+      refreshedSale = applyPaymentLinkSnapshotToSale(refreshedSale, {
+        payment_link_provider: "infinitepay",
+        payment_link_url: link.url,
+        payment_link_checkout_id: link.invoice_slug || existingSlug,
+        payment_link_status: refreshedSale.payment_link_sent_at ? "sent" : "generated",
+        payment_link_payment_status: "awaiting_payment",
+        payment_link_provider_status: "PENDING",
+        payment_link_amount_cents: link.amount_cents || expectedCents,
+        payment_link_last_checked_at: nowIso(),
+        payment_link_invoice_slug: link.invoice_slug,
+        raw: link.raw
+      });
+    }
+    return updateSaleRecord(sale.sale_id, () => refreshedSale) || normalizeSalePaymentLinkState(refreshedSale);
+  } catch (error) {
+    const friendlyError = error instanceof InfinitePayError
+      ? error.message
+      : "Nao foi possivel gerar o link InfinitePay agora.";
+    const failedSale = applyPaymentLinkSnapshotToSale(sale, {
+      payment_link_provider: "infinitepay",
+      payment_link_status: existingUrl ? getSalePaymentLinkStatus(sale) : "pending_generation",
+      payment_link_url: existingUrl || "",
+      payment_link_checkout_id: existingSlug || "",
+      payment_link_last_error: friendlyError,
+      payment_link_last_error_at: nowIso(),
+      payment_link_provider_status: normalizeText(error?.details?.providerStatus || "ERROR")
+    });
+    return updateSaleRecord(sale.sale_id, () => failedSale) || normalizeSalePaymentLinkState(failedSale);
+  }
+}
+
+async function ensurePagBankLinkForSale(sale = {}, options = {}) {
   const forceRefresh = Boolean(options.forceRefresh);
   const forceGenerate = Boolean(options.forceGenerate);
   const existingUrl = getSalePaymentLinkUrl(sale);
   const existingCheckoutId = getSalePaymentLinkCheckoutId(sale);
-
-  if (existingUrl && !forceRefresh && !forceGenerate) {
-    return normalizeSalePaymentLinkState(sale);
-  }
 
   try {
     if (existingCheckoutId && !forceGenerate) {
@@ -1989,6 +2179,32 @@ async function ensureSalePaymentLink(sale = {}, user = {}, options = {}) {
     });
     return updateSaleRecord(sale.sale_id, () => failedSale) || normalizeSalePaymentLinkState(failedSale);
   }
+}
+
+async function ensureSalePaymentLink(sale = {}, user = {}, options = {}) {
+  if (!saleUsesPaymentLink(sale)) {
+    return normalizeSalePaymentLinkState(sale);
+  }
+
+  let provider = "";
+  try {
+    provider = resolveSalePaymentLinkProvider(sale);
+  } catch (providerError) {
+    if (providerError instanceof InfinitePayError) {
+      const blockedSale = applyPaymentLinkSnapshotToSale(sale, {
+        payment_link_provider: "infinitepay",
+        payment_link_last_error: providerError.message,
+        payment_link_last_error_at: nowIso(),
+        payment_link_provider_status: "NOT_CONFIGURED"
+      });
+      updateSaleRecord(sale.sale_id, () => blockedSale);
+    }
+    throw providerError;
+  }
+  if (provider === "infinitepay") {
+    return ensureInfinitePayLinkForSale(sale, options);
+  }
+  return ensurePagBankLinkForSale(sale, options);
 }
 
 function createCommissionEntry(sale) {
@@ -3073,6 +3289,13 @@ function buildSalePaymentLinkPayload(sale = null) {
     provider: normalizeText(normalizedSale.payment_link_provider || ""),
     url: normalizeText(normalizedSale.payment_link_url || ""),
     checkout_id: normalizeText(normalizedSale.payment_link_checkout_id || ""),
+    invoice_slug: normalizeText(normalizedSale.payment_link_invoice_slug || normalizedSale.payment_link_checkout_id || ""),
+    transaction_nsu: normalizeText(normalizedSale.payment_link_transaction_nsu || ""),
+    receipt_url: normalizeText(normalizedSale.payment_link_receipt_url || ""),
+    installments: toNumber(normalizedSale.payment_link_installments || 1),
+    capture_method: normalizeText(normalizedSale.payment_link_capture_method || ""),
+    amount_cents: toNumber(normalizedSale.payment_link_amount_cents || 0),
+    paid_amount_cents: toNumber(normalizedSale.payment_link_paid_amount_cents || 0),
     status: normalizeText(normalizedSale.payment_link_status || ""),
     payment_status: normalizeText(normalizedSale.payment_link_payment_status || ""),
     created_at: normalizeText(normalizedSale.payment_link_created_at || ""),
@@ -3705,6 +3928,159 @@ function applyPagBankWebhookToSale(payload = {}, options = {}) {
   };
 }
 
+function applyInfinitePayWebhookToSale(payload = {}, options = {}) {
+  const validation = { ok: true, reason: null };
+  const normalized = normalizeInfinitePayWebhookPayload(payload || {});
+  const saleId = normalizeText(normalized.order_nsu || options.saleId || "");
+  const checkoutId = normalizeText(normalized.invoice_slug || "");
+  const transactionNsu = normalizeText(normalized.transaction_nsu || "");
+  const baseResult = {
+    matched: false,
+    sale_id: saleId,
+    invoice_slug: checkoutId,
+    transaction_nsu: transactionNsu,
+    raw: payload || {}
+  };
+  if (!saleId) {
+    return { ...baseResult, ok: false, reason: "missing_order_nsu" };
+  }
+  if (!transactionNsu) {
+    return { ...baseResult, ok: false, reason: "missing_transaction_nsu" };
+  }
+  const sale = findSaleByPaymentLinkIdentifiers({
+    saleId,
+    checkoutId,
+    referenceId: transactionNsu
+  });
+  if (!sale) {
+    return { ...baseResult, ok: false, reason: "sale_not_found" };
+  }
+
+  if (isPdvSaleCanceled(sale)) {
+    return {
+      ...baseResult,
+      ok: false,
+      reason: "sale_canceled",
+      sale
+    };
+  }
+
+  const existingProvider = normalizeText(sale.payment_link_provider || "").toLowerCase();
+  const hasLegacyLink = Boolean(normalizeText(sale.payment_link_url || "") || normalizeText(sale.payment_link_checkout_id || ""));
+  if (existingProvider === "pagbank" || (existingProvider !== "infinitepay" && hasLegacyLink)) {
+    return {
+      ...baseResult,
+      ok: false,
+      reason: "provider_mismatch",
+      sale
+    };
+  }
+
+  // Validar installments antes do valor: payload fora do range deve ser rejeitado sem marcar paid
+  const incomingInstallments = toNumber(normalized.installments || 0);
+  if (normalized.installments != null && normalized.installments !== "" && !isInstallmentsInRange(incomingInstallments)) {
+    return {
+      ...baseResult,
+      ok: false,
+      reason: "invalid_installments",
+      received_installments: incomingInstallments,
+      sale
+    };
+  }
+
+  const existingTransaction = normalizeText(sale.payment_link_transaction_nsu || "");
+  const existingPaymentStatus = normalizeText(sale.payment_link_payment_status || "");
+  const existingPaidAmountCents = toNumber(sale.payment_link_paid_amount_cents || 0);
+  const expectedAmountCents = getSaleExpectedPaymentLinkAmountCents(sale);
+
+  const statusPaid = isInfinitePaidStatus(normalized.status);
+  const normalizedPaidAmountCents = normalized.paid_amount_cents || 0;
+
+  if (statusPaid) {
+    if (normalized.amount_cents > 0 && expectedAmountCents > 0) {
+      const diff = Math.abs(normalized.amount_cents - expectedAmountCents);
+      if (diff > INFINITEPAY_AMOUNT_TOLERANCE_CENTS) {
+        return {
+          ...baseResult,
+          ok: false,
+          reason: "amount_mismatch",
+          expected_amount_cents: expectedAmountCents,
+          amount_cents: normalized.amount_cents,
+          sale
+        };
+      }
+    }
+    if (normalizedPaidAmountCents > 0 && normalizedPaidAmountCents < expectedAmountCents) {
+      return {
+        ...baseResult,
+        ok: false,
+        reason: "paid_amount_below_expected",
+        expected_amount_cents: expectedAmountCents,
+        paid_amount_cents: normalizedPaidAmountCents,
+        sale
+      };
+    }
+  }
+
+  const isDuplicate = statusPaid && existingPaymentStatus === "paid" && (
+    existingTransaction === transactionNsu || !existingTransaction
+  );
+
+  const captureMethod = normalized.capture_method
+    || normalizeText(sale.payment_link_capture_method || "").toLowerCase();
+  const installmentsIncoming = toNumber(normalized.installments || sale.payment_link_installments || 1);
+  const installmentsValid = isInstallmentsInRange(installmentsIncoming);
+  const installments = installmentsValid ? installmentsIncoming : 1;
+
+  const paidAt = statusPaid
+    ? (normalizeText(sale.payment_link_paid_at || "") || nowIso())
+    : (sale.payment_link_paid_at || "");
+
+  const paymentStatus = statusPaid
+    ? "paid"
+    : (normalized.status ? "awaiting_payment" : (sale.payment_link_payment_status || "awaiting_payment"));
+
+  if (isDuplicate) {
+    return {
+      ...baseResult,
+      matched: true,
+      duplicate: true,
+      ok: true,
+      reason: "duplicate",
+      sale,
+      payment_link: buildSalePaymentLinkPayload(sale)
+    };
+  }
+
+  const updatedSale = updateSaleRecord(sale.sale_id, (currentSale) => applyPaymentLinkSnapshotToSale(currentSale, {
+    payment_link_provider: "infinitepay",
+    payment_link_url: currentSale.payment_link_url || "",
+    payment_link_checkout_id: checkoutId || currentSale.payment_link_checkout_id || "",
+    payment_link_provider_status: normalized.status || currentSale.payment_link_provider_status || "",
+    payment_link_payment_status: paymentStatus,
+    payment_link_paid_at: paidAt,
+    payment_link_last_checked_at: nowIso(),
+    payment_link_transaction_nsu: transactionNsu || currentSale.payment_link_transaction_nsu || "",
+    payment_link_invoice_slug: checkoutId || currentSale.payment_link_invoice_slug || "",
+    payment_link_receipt_url: normalized.receipt_url || currentSale.payment_link_receipt_url || "",
+    payment_link_installments: installments,
+    payment_link_capture_method: captureMethod,
+    payment_link_paid_amount_cents: normalizedPaidAmountCents || existingPaidAmountCents || 0,
+    payment_link_amount_cents: normalized.amount_cents || currentSale.payment_link_amount_cents || 0,
+    raw: payload || {}
+  }, { ...options, status: paymentStatus })) || getSaleById(sale.sale_id);
+
+  return {
+    matched: true,
+    duplicate: false,
+    ok: true,
+    reason: validation.reason,
+    sale: updatedSale,
+    payment_link: buildSalePaymentLinkPayload(updatedSale),
+    raw: payload || {}
+  };
+}
+
 function getGiftCardByCode(code) {
   return loadGiftCards().find((item) => normalizeText(item.code).toUpperCase() === normalizeText(code).toUpperCase()) || null;
 }
@@ -4018,6 +4394,8 @@ module.exports = {
   generateSalePaymentLink,
   refreshSalePaymentLinkStatus,
   applyPagBankWebhookToSale,
+  applyInfinitePayWebhookToSale,
+  resolveSalePaymentLinkProvider,
   markSalePaymentLinkSent,
   getGiftCardByCode
 };

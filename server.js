@@ -71,6 +71,15 @@ const { pdvInsightsRouter } = require("./modules/pdv/insights/pdvInsightsRoutes"
 const { pdvSeedRouter } = require("./modules/pdv/seed/pdvSeedRoutes");
 const { createPdvWhatsappRouter } = require("./modules/pdv/routes/pdvWhatsappRoutes");
 const { applyPagBankWebhookToSale } = require("./modules/pdv/sales/pdvSalesService");
+const { applyInfinitePayWebhookToSale } = require("./modules/pdv/sales/pdvSalesService");
+const {
+  InfinitePayError,
+  getInfinitePayConfig,
+  getInfinitePayHandle,
+  getInfinitePayRedirectUrl,
+  getInfinitePayWebhookUrl,
+  checkInfinitePayPayment
+} = require("./services/infinitepayService");
 const { getActiveOperationalStoreOptions } = require("./modules/pdv/utils/pdvStoreUtils");
 const { normalizeStoreKey, formatStoreLabel, storesMatch } = require("./modules/pdv/utils/pdvStoreUtils");
 const { searchInventoryProducts, listInventoryProducts } = require("./modules/pdv/inventory/pdvInventoryService");
@@ -18946,6 +18955,374 @@ app.get("/api/payments/pagbank/checkout/:checkoutId", requireManager, async (req
       details: isKnown ? error.details || null : null
     });
   }
+});
+
+// ─── InfinitePay (provider ativo de link de pagamento) ──────────────
+
+app.get("/api/payments/infinitepay/config", requireManager, async (req, res) => {
+  const config = getInfinitePayConfig();
+  res.json({
+    provider: config.provider,
+    ready: Boolean(config.ready),
+    configured: Boolean(config.configured),
+    handle: config.handle,
+    hasHandle: Boolean(config.handle),
+    redirectUrl: config.redirectUrl,
+    webhookUrl: config.webhookUrl,
+    activeProvider: config.provider
+  });
+});
+
+app.post("/api/payments/infinitepay/check", requireManager, async (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const orderNsu = String(body.order_nsu || body.sale_id || "").trim();
+  const transactionNsu = String(body.transaction_nsu || "").trim();
+  const slug = String(body.slug || body.invoice_slug || "").trim();
+  if (!orderNsu && !transactionNsu && !slug) {
+    return res.status(400).json({ error: "Informe order_nsu, transaction_nsu ou slug para consultar pagamento na InfinitePay." });
+  }
+  try {
+    const result = await checkInfinitePayPayment({
+      order_nsu: orderNsu,
+      transaction_nsu: transactionNsu,
+      slug
+    });
+    let applied = null;
+    if (result.success && orderNsu) {
+      try {
+        const { applyInfinitePayWebhookToSale, getSaleById } = require("./modules/pdv/sales/pdvSalesService");
+        const sale = getSaleById(orderNsu);
+        if (!sale) {
+          return res.status(400).json({
+            error: "Venda PDV nao encontrada para o order_nsu informado.",
+            order_nsu: orderNsu
+          });
+        }
+        const mapped = applyInfinitePayWebhookToSale({
+          order_nsu: orderNsu,
+          transaction_nsu: result.transaction_nsu || transactionNsu,
+          invoice_slug: result.invoice_slug || slug,
+          amount_cents: result.amount_cents,
+          paid_amount_cents: result.paid_amount_cents,
+          installments: result.installments,
+          capture_method: result.capture_method,
+          receipt_url: result.receipt_url,
+          status: result.status
+        }, { source: "infinitepay_manual_check" });
+        applied = mapped;
+        if (!mapped.ok && mapped.reason === "amount_mismatch") {
+          await recordAuditEvent({
+            req,
+            module: "payments",
+            action: "infinitepay_payment_check_amount_mismatch",
+            entityType: "payment_link",
+            entityId: orderNsu,
+            entityName: mapped.sale?.sale_id || "",
+            result: "failed",
+            message: "Consulta manual InfinitePay identificou divergencia de valor.",
+            metadata: {
+              provider: "infinitepay",
+              order_nsu: orderNsu,
+              expected_amount_cents: mapped.expected_amount_cents || 0,
+              paid_amount_cents: mapped.paid_amount_cents || 0,
+              amount_cents: mapped.amount_cents || 0
+            }
+          });
+          return res.status(400).json({
+            error: "Valor do pagamento InfinitePay diverge do total esperado.",
+            reason: "amount_mismatch",
+            order_nsu: orderNsu
+          });
+        }
+      } catch (applyError) {
+        return res.status(400).json({
+          error: applyError.message || "Falha ao aplicar resultado da consulta manual na venda.",
+          order_nsu: orderNsu
+        });
+      }
+    }
+    await recordAuditEvent({
+      req,
+      module: "payments",
+      action: applied?.duplicate
+        ? "infinitepay_payment_check_duplicate"
+        : "infinitepay_payment_check",
+      entityType: "payment_link",
+      entityId: orderNsu || transactionNsu || slug || "",
+      result: "success",
+      message: "Consulta manual de pagamento InfinitePay executada.",
+      metadata: {
+        provider: "infinitepay",
+        order_nsu: orderNsu || result.order_nsu || "",
+        transaction_nsu: result.transaction_nsu || transactionNsu,
+        invoice_slug: result.invoice_slug || slug,
+        paid: Boolean(result.paid),
+        status: result.status,
+        applied: Boolean(applied?.ok),
+        duplicate: Boolean(applied?.duplicate)
+      }
+    });
+    res.json({ ...result, applied });
+  } catch (error) {
+    const isKnown = error instanceof InfinitePayError;
+    await recordAuditEvent({
+      req,
+      module: "payments",
+      action: "infinitepay_payment_check",
+      entityType: "payment_link",
+      entityId: orderNsu || transactionNsu || slug || "",
+      result: "failed",
+      message: error.message || "Falha ao consultar pagamento na InfinitePay.",
+      metadata: {
+        provider: "infinitepay",
+        providerStatus: error?.details?.providerStatus || 0
+      }
+    });
+    res.status(isKnown ? error.statusCode : 500).json({
+      error: isKnown ? error.message : "Nao foi possivel consultar o pagamento na InfinitePay.",
+      details: isKnown ? error.details || null : null
+    });
+  }
+});
+
+// Webhook público da InfinitePay — não exige auth.
+app.post("/api/pdv/payments/infinitepay/webhook", async (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const normalizedOrderNsu = String(body.order_nsu || body.data?.order_nsu || "").trim();
+  const normalizedTransactionNsu = String(body.transaction_nsu || body.data?.transaction_nsu || "").trim();
+  if (!normalizedOrderNsu) {
+    return res.status(400).json({ received: false, error: "order_nsu ausente no payload do webhook InfinitePay." });
+  }
+  if (!normalizedTransactionNsu) {
+    return res.status(400).json({ received: false, error: "transaction_nsu ausente no payload do webhook InfinitePay." });
+  }
+  try {
+    const mapped = applyInfinitePayWebhookToSale(body, { source: "infinitepay_webhook" });
+    if (!mapped.matched) {
+      const reason = mapped.reason || "unmatched";
+      const actionName = reason === "sale_not_found"
+        ? "infinitepay_webhook_sale_not_found"
+        : reason === "sale_canceled"
+          ? "infinitepay_webhook_sale_canceled"
+          : reason === "provider_mismatch"
+            ? "infinitepay_webhook_provider_mismatch"
+            : reason === "missing_transaction_nsu"
+              ? "infinitepay_webhook_missing_transaction"
+              : reason === "amount_mismatch"
+                ? "infinitepay_webhook_amount_mismatch"
+                : reason === "paid_amount_below_expected"
+                  ? "infinitepay_webhook_paid_amount_below_expected"
+                  : reason === "invalid_installments"
+                    ? "infinitepay_webhook_invalid_installments"
+                    : "infinitepay_webhook_unmatched";
+      await recordAuditEvent({
+        req,
+        module: "payments",
+        action: actionName,
+        entityType: "payment_link",
+        entityId: normalizedOrderNsu,
+        entityName: mapped.sale?.sale_id || "",
+        result: "failed",
+        message: `Webhook InfinitePay rejeitado (${reason}).`,
+        metadata: {
+          provider: "infinitepay",
+          order_nsu: normalizedOrderNsu,
+          transaction_nsu: normalizedTransactionNsu,
+          invoice_slug: mapped.invoice_slug || "",
+          reason,
+          expected_amount_cents: mapped.expected_amount_cents || 0,
+          amount_cents: mapped.amount_cents || 0,
+          paid_amount_cents: mapped.paid_amount_cents || 0,
+          received_installments: mapped.received_installments || 0
+        }
+      });
+      const errorMessages = {
+        sale_not_found: "Venda PDV nao encontrada para o order_nsu recebido.",
+        sale_canceled: "Venda cancelada; pagamento nao pode ser confirmado.",
+        provider_mismatch: "Venda nao pertence ao provider InfinitePay.",
+        missing_transaction_nsu: "transaction_nsu ausente no payload.",
+        amount_mismatch: "Valor do pagamento InfinitePay diverge do total esperado.",
+        paid_amount_below_expected: "paid_amount do pagamento InfinitePay esta abaixo do total esperado.",
+        invalid_installments: "installments fora do range permitido (1-12)."
+      };
+      return res.status(400).json({
+        received: false,
+        error: errorMessages[reason] || "Venda PDV nao encontrada para o order_nsu recebido.",
+        reason,
+        order_nsu: normalizedOrderNsu
+      });
+    }
+    if (mapped.reason === "amount_mismatch") {
+      await recordAuditEvent({
+        req,
+        module: "payments",
+        action: "infinitepay_webhook_amount_mismatch",
+        entityType: "payment_link",
+        entityId: normalizedOrderNsu,
+        entityName: mapped.sale?.sale_id || "",
+        result: "failed",
+        message: "Valor recebido do webhook InfinitePay diverge do esperado pela venda.",
+        metadata: {
+          provider: "infinitepay",
+          order_nsu: normalizedOrderNsu,
+          transaction_nsu: normalizedTransactionNsu,
+          expected_amount_cents: mapped.expected_amount_cents || 0,
+          paid_amount_cents: mapped.paid_amount_cents || 0,
+          amount_cents: mapped.amount_cents || 0
+        }
+      });
+      return res.status(400).json({
+        received: false,
+        error: "Valor do pagamento InfinitePay diverge do total esperado.",
+        reason: "amount_mismatch",
+        order_nsu: normalizedOrderNsu
+      });
+    }
+    await recordAuditEvent({
+      req,
+      module: "payments",
+      action: mapped.duplicate ? "infinitepay_webhook_duplicate" : "infinitepay_webhook_confirmed",
+      entityType: "payment_link",
+      entityId: normalizedOrderNsu,
+      entityName: mapped.sale?.sale_id || "",
+      result: "success",
+      message: mapped.duplicate
+        ? "Webhook InfinitePay duplicado; confirmacao idempotente aplicada."
+        : "Pagamento InfinitePay confirmado via webhook.",
+      metadata: {
+        provider: "infinitepay",
+        order_nsu: normalizedOrderNsu,
+        transaction_nsu: normalizedTransactionNsu,
+        invoice_slug: mapped.payment_link?.invoice_slug || mapped.payment_link?.checkoutId || "",
+        paid: mapped.payment_link?.paymentStatus === "paid",
+        duplicate: Boolean(mapped.duplicate)
+      }
+    });
+    return res.status(200).json({
+      received: true,
+      sale_id: mapped.sale?.sale_id || "",
+      duplicate: Boolean(mapped.duplicate)
+    });
+  } catch (error) {
+    await recordAuditEvent({
+      req,
+      module: "payments",
+      action: "infinitepay_webhook_error",
+      entityType: "payment_link",
+      entityId: normalizedOrderNsu,
+      result: "failed",
+      message: error.message || "Falha ao processar webhook InfinitePay.",
+      metadata: {
+        provider: "infinitepay",
+        order_nsu: normalizedOrderNsu
+      }
+    });
+    return res.status(200).json({ received: true, error: error.message || "Falha ao processar webhook." });
+  }
+});
+
+// Rota visual de retorno — chamada pelo navegador do cliente após pagamento.
+app.get("/pdv/pagamento/infinitepay/retorno", async (req, res) => {
+  const orderNsu = String(req.query.order_nsu || req.query.nsu || "").trim();
+  const slug = String(req.query.slug || req.query.invoice_slug || "").trim();
+  const transactionNsu = String(req.query.transaction_nsu || "").trim();
+  const baseTitle = "Pagamento InfinitePay — AEROSTORE";
+  let statusLabel = "Recebemos o retorno da InfinitePay.";
+  let saleIdLabel = orderNsu ? `Venda: ${orderNsu}` : "Venda não identificada.";
+  let paymentLinkSnapshot = null;
+  if (orderNsu) {
+    try {
+      const { getSaleById } = require("./modules/pdv/sales/pdvSalesService");
+      const sale = getSaleById(orderNsu);
+      if (sale) {
+        paymentLinkSnapshot = {
+          sale_id: sale.sale_id,
+          status: sale.payment_link_status,
+          payment_status: sale.payment_link_payment_status,
+          provider_status: sale.payment_link_provider_status,
+          receipt_url: sale.payment_link_receipt_url || "",
+          transaction_nsu: sale.payment_link_transaction_nsu || "",
+          installments: sale.payment_link_installments || 1,
+          capture_method: sale.payment_link_capture_method || ""
+        };
+        if (sale.payment_link_payment_status === "paid") {
+          statusLabel = "Pagamento confirmado pelo provedor. Mercadoria liberada.";
+        } else if (sale.payment_link_payment_status === "awaiting_payment" || !sale.payment_link_payment_status) {
+          statusLabel = "Aguardando confirmacao real do pagamento pela InfinitePay. Esta pagina e apenas visual.";
+        } else if (sale.payment_link_payment_status === "declined") {
+          statusLabel = "Pagamento recusado pela InfinitePay.";
+        } else if (sale.payment_link_payment_status === "canceled") {
+          statusLabel = "Pagamento cancelado na InfinitePay.";
+        }
+      } else {
+        statusLabel = "Não localizamos esta venda no PDV. Confirme com a loja.";
+      }
+    } catch (error) {
+      statusLabel = "Não foi possível consultar a venda agora. Confirme com a loja.";
+    }
+  }
+
+  const safeStatus = String(statusLabel)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const safeSaleId = String(saleIdLabel)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const safeSlug = String(slug || (paymentLinkSnapshot && paymentLinkSnapshot.invoice_slug) || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const safeTransaction = String(transactionNsu || (paymentLinkSnapshot && paymentLinkSnapshot.transaction_nsu) || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const safeProviderStatus = String(paymentLinkSnapshot?.provider_status || "—")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const safePaymentStatus = String(paymentLinkSnapshot?.payment_status || "—")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  res.set("Content-Type", "text/html; charset=utf-8");
+  res.status(200).send(`<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>${baseTitle}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0b10; color: #f5f5f7; }
+    main { max-width: 560px; margin: 64px auto; padding: 32px; border-radius: 16px; background: #15151d; box-shadow: 0 24px 64px rgba(0,0,0,0.4); }
+    h1 { font-size: 22px; margin: 0 0 12px; }
+    p { line-height: 1.55; margin: 0 0 16px; color: #d4d4dc; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
+    .grid div { background: #1f1f29; border-radius: 12px; padding: 12px 14px; }
+    .grid span { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a96; }
+    .grid strong { font-size: 14px; }
+    a.button { display: inline-block; margin-top: 18px; padding: 12px 18px; background: #f5f5f7; color: #15151d; text-decoration: none; border-radius: 999px; font-weight: 600; }
+    .muted { color: #8a8a96; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${baseTitle}</h1>
+    <p>${safeStatus}</p>
+    <div class="grid">
+      <div><span>Venda</span><strong>${safeSaleId}</strong></div>
+      <div><span>Status InfinitePay</span><strong>${safeProviderStatus}</strong></div>
+      <div><span>Status PDV</span><strong>${safePaymentStatus}</strong></div>
+      <div><span>Slug</span><strong>${safeSlug || "—"}</strong></div>
+      <div><span>Transaction NSU</span><strong>${safeTransaction || "—"}</strong></div>
+    </div>
+    <p class="muted">Se o status continuar como <em>aguardando</em>, a confirmação real chega pelo webhook InfinitePay e o PDV libera automaticamente.</p>
+    <a class="button" href="/pdv/venda">Voltar ao PDV</a>
+  </main>
+</body>
+</html>`);
 });
 
 async function handleAuthLogout(req, res) {
