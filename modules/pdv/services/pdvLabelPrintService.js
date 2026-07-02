@@ -407,14 +407,20 @@ function buildPplaCommand(product = {}, request = {}, config = {}) {
   const sizeColor = buildSizeColorLabel(product);
   const header = [
     "\x02L",
-    "D11",
+    "D",
     `H${gapDots}`,
     `Q${labelHeightDots}`,
     `q${totalWidthDots}`
   ];
 
-  const text = (x, y, value, width = 32, wx = 1, wy = 1) => `A${x},${y},0,2,${wx},${wy},N,"${sanitizeLine(value, width)}"`;
-  const barcode = (x, y, value) => `B${x},${y},0,1,2,5,90,N,"${sanitizeLine(value, 32)}"`;
+  const CRLF = "\r\n";
+  const text = (x, y, value, width = 32, wx = 1, wy = 1) =>
+    `A${x},${y},0,2,${wx},${wy},N,"${sanitizeLine(value, width)}"` + CRLF;
+  // CODE39 (tipo 0) para dados alfanumericos com hifens, espacos e letras.
+  // CODE128 (tipo 1) so funciona com subsets A/B+C — hifens causam erro na OS-214+.
+  // rotation=0 (normal), height=8 (dots), wide=2 (ratio 3:1).
+  const barcode39 = (x, y, value) =>
+    `B${x},${y},0,0,2,8,N,"${sanitizeLine(value, 32)}"` + CRLF;
   const body = [];
   for (let col = 0; col < columnsToRender; col += 1) {
     const x = 14 + col * (labelWidthDots + gapDots);
@@ -423,10 +429,11 @@ function buildPplaCommand(product = {}, request = {}, config = {}) {
       body.push(text(x, 22, brand, 24, 1, 1));
       if (request.show_name) body.push(text(x, 58, product.name || "Produto sem nome", 28, 1, 1));
       if (request.show_size_color && sizeColor) body.push(text(x, 102, sizeColor, 24, 1, 1));
-      if (request.show_sku) body.push(text(x, 140, `SKU ${product.sku || product.codigo || "-"}`, 26, 1, 1));
+      // SKU completo — nao truncar. Variacoes podem ter SKU de ate 40+ chars.
+      if (request.show_sku) body.push(text(x, 140, `SKU ${product.sku || product.codigo || "-"}`, 40, 1, 1));
       if (request.show_store && product.store_label) body.push(text(x, 174, product.store_label, 24, 1, 1));
       if (request.show_barcode && barcodeValue) {
-        body.push(barcode(x + 10, 210, barcodeValue));
+        body.push(barcode39(x + 10, 210, barcodeValue));
         body.push(text(x, 310, product.barcode ? barcodeValue : `COD ${product.sku || "-"}`, 28, 1, 1));
       }
       // The lower serrated stub is the official price area on the 40x60 clothing tag.
@@ -439,10 +446,11 @@ function buildPplaCommand(product = {}, request = {}, config = {}) {
     } else {
       const lines = buildPreviewLines(product, request).map((item, index) => ({ text: sanitizeLine(item, 30), y: 18 + index * 24 }));
       lines.forEach((line) => body.push(text(x, line.y, line.text, 30, 1, 1)));
-      if (request.show_barcode && barcodeValue) body.push(barcode(x, Math.max(120, 18 + lines.length * 24), barcodeValue));
+      if (request.show_barcode && barcodeValue) body.push(barcode39(x, Math.max(120, 18 + lines.length * 24), barcodeValue));
     }
   }
-  return [...header, ...body, `P${rows}`, "E"].join("\n") + "\n";
+  // FF (Form Feed 0x0C) apos E — avanca a etiqueta e ejeita do rolo.
+  return [...header, ...body, `P${rows}`, "E"].join("") + "\x0C";
 }
 
 function buildZplCommand(product = {}, request = {}, config = {}) {
@@ -465,7 +473,7 @@ function buildZplCommand(product = {}, request = {}, config = {}) {
       body.push(`^FO${x},${Math.max(145, 18 + lines.length * 28)}^BY2^BCN,62,Y,N,N^FD${barcodeValue}^FS`);
     }
   }
-  return ["^XA", `^PW${width}`, `^LL${height}`, ...body, `^PQ${rows}`, "^XZ"].join("\n") + "\n";
+  return ["^XA", `^PW${width}`, `^LL${height}`, ...body, `^PQ${rows}`, "^XZ"].join("\r\n") + "\r\n";
 }
 
 function buildEplCommand(product = {}, request = {}, config = {}) {
@@ -486,7 +494,7 @@ function buildEplCommand(product = {}, request = {}, config = {}) {
       body.push(`B${x},${Math.max(125, 16 + lines.length * 24)},0,1,2,4,62,B,"${barcodeValue}"`);
     }
   }
-  return ["N", ...body, `P${rows}`].join("\n") + "\n";
+  return ["N", ...body, `P${rows}`].join("\r\n") + "\r\n";
 }
 
 function buildPrinterCommand(product = {}, request = {}, config = {}) {
@@ -507,7 +515,12 @@ function writePrnFile(command = "", product = {}, request = {}, options = {}) {
   }
   filename = path.basename(filename).replace(/[^A-Za-z0-9_.-]/g, "_");
   const filePath = path.join(labelsTmpDir, filename);
-  fs.writeFileSync(filePath, command, "utf8");
+  // Argox OS-214 Plus PPLA exige CRLF como terminador de linha.
+  // Usamos Buffer para garantir que 0x02 STX e 0x0D 0x0A CRLF
+  // sejam preservados byte-a-byte, sem conversão de encoding.
+  const commandWithCRLF = command.replace(/\n/g, "\r\n");
+  const buffer = Buffer.from(commandWithCRLF, "ascii");
+  fs.writeFileSync(filePath, buffer);
   return {
     filename,
     file_path: filePath,
