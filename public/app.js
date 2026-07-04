@@ -12286,6 +12286,8 @@ function getPdvProductLabelPrintState() {
     previewMode: "technical",
     preview: null,
     printResult: null,
+    agentStatus: null,
+    agentError: "",
     loading: false,
     error: ""
   };
@@ -12300,6 +12302,57 @@ function getPdvProductLabelPrintState() {
 function getPdvProductById(productId = "") {
   const normalizedId = normalizeText(productId || "");
   return toArray(state.pdvProducts.items).find((item) => normalizeText(item.id || item.product_id || "") === normalizedId) || null;
+}
+
+function getArgoxAgentUrl(config = null) {
+  const labelState = getPdvProductLabelPrintState();
+  return normalizeText(config?.agent_url || labelState.config?.agent_url || "http://localhost:4000");
+}
+
+async function fetchArgoxAgentStatus(config = null) {
+  const labelState = getPdvProductLabelPrintState();
+  const agentUrl = getArgoxAgentUrl(config);
+  try {
+    const response = await fetch(`${agentUrl}/status`, { method: "GET" });
+    if (!response.ok) {
+      throw new Error("Agente Argox offline.");
+    }
+    const data = await response.json();
+    labelState.agentStatus = data;
+    labelState.agentError = data?.conectada
+      ? (data?.dry_run ? "" : "")
+      : "Agente online, mas nenhuma impressora Argox foi detectada no Windows.";
+    if (data?.dry_run && data?.conectada) {
+      labelState.agentError = "";
+    }
+    return data;
+  } catch (error) {
+    labelState.agentStatus = null;
+    labelState.agentError = "Agente Argox offline nesta estacao. Inicie agente-impressao-argox ou baixe o PRN.";
+    return null;
+  }
+}
+
+async function sendLabelsToArgoxAgent(agentPayload = null, agentUrl = "") {
+  const url = normalizeText(agentUrl || getArgoxAgentUrl());
+  if (!agentPayload) {
+    throw new Error("Payload do agente ausente.");
+  }
+  const response = await fetch(`${url}/imprimir`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(agentPayload)
+  });
+  let data = {};
+  try {
+    data = await response.json();
+  } catch {
+    data = {};
+  }
+  if (!response.ok) {
+    throw new Error(data.erro || data.error || "Falha ao enviar etiqueta ao agente Argox.");
+  }
+  return data;
 }
 
 function buildPdvLabelVisualBarcode(value = "") {
@@ -12338,6 +12391,7 @@ function buildPdvLabelMockupSlot(preview = {}, index = 0) {
       </div>
       ${showPrice ? `
         <div class="mockup-price-stub ${request.show_compare_price ? "is-compare" : "is-normal"}">
+          ${showSku && sku ? `<small>COD. ${escapeHtml(sku)}</small>` : ""}
           ${request.show_compare_price ? `<span class="mockup-de">DE ${escapeHtml(normalPrice || "-")}</span><b>POR ${escapeHtml(promotionalPrice || price || "Preco sob consulta")}</b>` : `<b>${escapeHtml(price || "Preco sob consulta")}</b>`}
         </div>
       ` : ""}
@@ -12347,16 +12401,23 @@ function buildPdvLabelMockupSlot(preview = {}, index = 0) {
 
 function buildPdvLabelTechnicalPriceStub(preview = {}) {
   const request = preview?.request || {};
+  const product = preview?.product || {};
+  const sku = normalizeText(product.sku || product.codigo || "");
   if (request.show_price === false) {
     return `<span class="muted">Preco oculto</span>`;
   }
+  const codLine = sku ? `<small>COD. ${escapeHtml(sku)}</small>` : "";
   if (request.show_compare_price) {
     return `
+      ${codLine}
       <small>DE ${escapeHtml(request.normal_price_label || "-")}</small>
       <strong>POR ${escapeHtml(request.promotional_price_label || request.price_label || "Preco sob consulta")}</strong>
     `;
   }
-  return `<strong>${escapeHtml(request.price_label || "Preco sob consulta")}</strong>`;
+  return `
+    ${codLine}
+    <strong>${escapeHtml(request.price_label || "Preco sob consulta")}</strong>
+  `;
 }
 
 function buildPdvLabelTechnicalPreview(preview = null, previewLines = []) {
@@ -12399,7 +12460,7 @@ function buildPdvLabelPhotoMockup(preview = null) {
       ${Array.from({ length: 4 }).map((_, index) => buildPdvLabelMockupSlot(preview, index)).join("")}
       <div class="pdv-label-photo-fallback">Foto da etiqueta indisponivel. O preview tecnico continua valido.</div>
     </div>
-    <small class="pdv-label-print-message">O mockup e apenas visual. A impressao real usa o arquivo PRN da Argox.</small>
+    <small class="pdv-label-print-message">Impressao fisica via Agente Argox local (PPLB RAW). PRN continua disponivel como fallback.</small>
   `;
 }
 
@@ -12433,6 +12494,10 @@ function buildPdvLabelPrintDrawer() {
   const config = labelState.config || {};
   const preview = labelState.preview || null;
   const printResult = labelState.printResult || null;
+  const agentStatus = labelState.agentStatus || null;
+  const agentOnline = Boolean(agentStatus?.status === "online");
+  const agentReady = Boolean(agentStatus?.conectada);
+  const agentDryRun = Boolean(agentStatus?.dry_run || agentStatus?.simulado);
   const previewMode = labelState.previewMode === "photo" ? "photo" : "technical";
   const templateOptions = templates.length
     ? templates.map((template) => `<option value="${escapeHtml(template.id)}"${labelState.templateId === template.id ? " selected" : ""}>${escapeHtml(template.name || template.id)}</option>`).join("")
@@ -12451,9 +12516,9 @@ function buildPdvLabelPrintDrawer() {
       <aside class="pdv-label-print-drawer" role="dialog" aria-modal="true" aria-label="Imprimir etiqueta Argox">
         <header class="pdv-label-print-header">
           <div>
-            <span class="pdv-label-print-kicker">Argox / PRN seguro</span>
+            <span class="pdv-label-print-kicker">Argox PPLB / Agente local</span>
             <h3>Imprimir etiqueta</h3>
-            <p>Gere preview e arquivo PRN sem alterar produto, estoque ou preco.</p>
+            <p>Envie para a Argox via agente local ou baixe o PRN se a estacao estiver offline.</p>
           </div>
           <button class="ghost-button" type="button" data-pdv-label-print-close="button">Fechar</button>
         </header>
@@ -12556,8 +12621,10 @@ function buildPdvLabelPrintDrawer() {
           </form>
           <section class="pdv-label-print-config">
             <span>Config atual</span>
-            <strong>${escapeHtml(config.label_language || "PPLA")} • ${escapeHtml(String(config.label_width_mm || 40))}x${escapeHtml(String(config.label_height_mm || 60))}mm • ${escapeHtml(String(config.label_columns || 2))} colunas • ${escapeHtml(String(config.dpi || 203))} DPI</strong>
-            <small>${escapeHtml(config.printer_name ? `Impressora: ${config.printer_name}` : `Argox ${config.printer_model || "OS-214plus"} em modo seguro: gera PRN para validar antes da impressao fisica.`)}</small>
+            <strong>${escapeHtml(config.label_language || "PPLB")} • ${escapeHtml(String(config.label_width_mm || 40))}x${escapeHtml(String(config.label_height_mm || 60))}mm • ${escapeHtml(String(config.label_columns || 2))} colunas • ${escapeHtml(String(config.dpi || 203))} DPI</strong>
+            <small>${escapeHtml(getArgoxAgentUrl(config))}${agentDryRun ? " • simulado (sem impressora)" : agentReady ? ` • ${agentStatus.impressora}` : agentOnline ? " • agente online sem impressora" : " • agente offline"}</small>
+            ${labelState.agentError ? `<small class="pdv-label-print-message">${escapeHtml(labelState.agentError)}</small>` : ""}
+            <small>${escapeHtml(config.message || "Impressao fisica via agente local.")}</small>
           </section>
           ${labelState.error ? `<div class="pdv-products-callout warning"><strong>Erro</strong><span>${escapeHtml(labelState.error)}</span></div>` : ""}
           <section class="pdv-label-preview-card">
@@ -12584,7 +12651,7 @@ function buildPdvLabelPrintDrawer() {
         </div>
         <footer class="pdv-label-print-footer">
           <button class="secondary-button" type="button" data-pdv-label-preview="true"${labelState.loading ? " disabled" : ""}>${labelState.loading ? "Gerando..." : "Gerar preview"}</button>
-          <button class="primary-button" type="button" data-pdv-label-print-submit="true"${labelState.loading ? " disabled" : ""}>${labelState.loading ? "Preparando..." : "Imprimir / gerar PRN"}</button>
+          <button class="primary-button" type="button" data-pdv-label-print-submit="true"${labelState.loading ? " disabled" : ""}>${labelState.loading ? "Imprimindo..." : "Imprimir etiqueta"}</button>
         </footer>
       </aside>
     </div>
@@ -12637,6 +12704,8 @@ async function openPdvProductLabelPrint(productId = "") {
   labelState.variationId = normalizeText(firstVariant?.variation_id || "");
   labelState.preview = null;
   labelState.printResult = null;
+  labelState.agentStatus = null;
+  labelState.agentError = "";
   labelState.error = "";
   labelState.loading = true;
   renderPdvProductsOfficialFront();
@@ -12647,6 +12716,7 @@ async function openPdvProductLabelPrint(productId = "") {
     ]);
     labelState.templates = toArray(templatesResponse?.items);
     labelState.config = configResponse || null;
+    await fetchArgoxAgentStatus(labelState.config);
     if (!labelState.templates.some((item) => item.id === labelState.templateId)) {
       labelState.templateId = normalizeText(configResponse?.default_template || labelState.templates[0]?.id || "aerostore_tag_40x60_2c");
     }
@@ -12712,7 +12782,24 @@ async function printPdvProductLabel() {
     });
     labelState.preview = result;
     labelState.printResult = result;
-    showFeedback(result.message || "Etiqueta preparada para impressao.", "success");
+    let feedbackMessage = result.message || "Etiqueta preparada.";
+    let feedbackType = "success";
+    if (result.agent_payload) {
+      try {
+        const agentResult = await sendLabelsToArgoxAgent(result.agent_payload, result.agent_url);
+        result.print_status = agentResult.dry_run ? "simulated_via_agent" : "printed_via_agent";
+        feedbackMessage = agentResult.dry_run
+          ? `Simulacao OK (${agentResult.etiquetas || 1} etiqueta(s)). Arquivo salvo no agente: ${agentResult.arquivo || "output/dry-run.prn"}`
+          : `Etiqueta enviada para ${agentResult.impressora || "Argox"} (${agentResult.etiquetas || 1} copia(s), job ${agentResult.job_id || "-"}).`;
+        feedbackType = "success";
+      } catch (agentError) {
+        result.print_status = "agent_offline";
+        feedbackMessage = `${agentError.message || "Agente Argox indisponivel."} PRN disponivel para fallback.`;
+        feedbackType = "warning";
+      }
+    }
+    labelState.printResult = result;
+    showFeedback(feedbackMessage, feedbackType);
   } catch (error) {
     labelState.error = error.message || "Falha ao preparar impressao da etiqueta.";
   } finally {

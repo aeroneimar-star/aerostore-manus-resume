@@ -1,0 +1,13 @@
+{
+  "name": "agente-impressao-argox",
+  "version": "2.0.0",
+  "description": "Agente local AEROSTORE para impressao Argox OS-214 Plus via PPLB RAW",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "start:dry": "node -e \"process.env.ARGOX_AGENT_DRY_RUN='true'; require('./server.js')\""
+  },
+  "dependencies": {
+    "@thiagoelg/node-printer": "^0.7.0"
+  }
+}

@@ -60,6 +60,8 @@ public/uploads/**
 !public/uploads/products/
 !public/uploads/products/.gitkeep
 tmp/labels/
+agente-impressao-argox/output/*
+!agente-impressao-argox/output/.gitkeep
 data/pdv/label-print-logs.json
 
 # Local editor and OS residue

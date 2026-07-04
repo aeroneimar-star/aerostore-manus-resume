@@ -5,6 +5,10 @@ const fs = require("fs");
 const path = require("path");
 const { get } = require("../../../db");
 const { normalizeStoreKey, formatStoreLabel } = require("../utils/pdvStoreUtils");
+const {
+  buildArgoxPplbCommand,
+  buildAgentPrintPayload
+} = require("./argoxPplbGenerator");
 
 const labelsTmpDir = path.join(process.cwd(), "tmp", "labels");
 const labelLogsPath = path.join(process.cwd(), "data", "pdv", "label-print-logs.json");
@@ -62,7 +66,7 @@ function writeJson(filePath, value) {
 }
 
 function getArgoxLabelConfig() {
-  const language = normalizeText(process.env.ARGOX_LABEL_LANGUAGE || "PPLA").toUpperCase();
+  const language = normalizeText(process.env.ARGOX_LABEL_LANGUAGE || "PPLB").toUpperCase();
   const width = normalizeNumber(process.env.ARGOX_LABEL_WIDTH_MM, 40);
   const height = normalizeNumber(process.env.ARGOX_LABEL_HEIGHT_MM, 60);
   const dpi = normalizeNumber(process.env.ARGOX_DPI, 203);
@@ -78,9 +82,10 @@ function getArgoxLabelConfig() {
     label_columns: Math.max(1, Math.min(4, columns || 2)),
     label_gap_mm: Math.max(0, normalizeNumber(process.env.ARGOX_LABEL_GAP_MM, 3)),
     default_template: normalizeText(process.env.ARGOX_DEFAULT_TEMPLATE || DEFAULT_TEMPLATE_ID),
-    direct_print_available: false,
-    safe_mode: true,
-    message: "Impressao direta fica desabilitada ate configurar driver local da Argox. O modo seguro gera PRN 40x60 em 2 colunas."
+    agent_url: normalizeText(process.env.ARGOX_AGENT_URL || "http://localhost:4000"),
+    direct_print_available: true,
+    safe_mode: false,
+    message: "Impressao fisica via Agente Argox local (PPLB RAW). PRN continua disponivel como fallback."
   };
 }
 
@@ -393,7 +398,66 @@ function buildPreviewLines(product = {}, request = {}) {
   return lines.filter(Boolean);
 }
 
-function buildPplaCommand(product = {}, request = {}, config = {}) {
+const TECHNICAL_TAG_PREVIEW_CSS = {
+  widthPx: 268,
+  heightPx: 402,
+  bodyPaddingTopPx: 48,
+  bodyPaddingXPx: 18,
+  bodyGapPx: 7,
+  bodyTextGapPx: 1,
+  barcodeHeightPx: 52,
+  barcodeMarginTopPx: 8,
+  barcodeMarginBottomPx: 2,
+  barcodePaddingXPx: 12,
+  stubHeightRatio: 0.25,
+  fontPx: {
+    brand: 12.16,
+    product: 13.12,
+    meta: 10.88,
+    price: 19.84,
+    comparePrice: 16.32
+  },
+  lineHeight: {
+    brand: 1,
+    product: 1.2,
+    meta: 1.1,
+    price: 1
+  }
+};
+
+function estimateMonospaceChars(widthPx = 0, fontSizePx = 10) {
+  return Math.max(1, Math.floor(widthPx / Math.max(1, fontSizePx * 0.62)));
+}
+
+function splitPreviewVisualText(value = "", maxChars = 24, maxLines = 1) {
+  const clean = sanitizeLine(value, 96);
+  if (!clean) return [];
+  const words = clean.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  words.forEach((word) => {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+      return;
+    }
+    if (current) lines.push(current);
+    current = word;
+    while (current.length > maxChars) {
+      const splitAt = Math.max(
+        current.lastIndexOf("-", maxChars),
+        current.lastIndexOf("/", maxChars),
+        maxChars
+      );
+      lines.push(current.slice(0, splitAt).replace(/[-/]+$/g, ""));
+      current = current.slice(splitAt).replace(/^[-/]+/g, "");
+    }
+  });
+  if (current) lines.push(current);
+  return lines.slice(0, maxLines);
+}
+
+function buildLabelPreviewElements(product = {}, request = {}, config = {}) {
   const template = findTemplate(request.template_id);
   const dpi = config.dpi || 203;
   const labelWidthDots = mmToDots(template.width_mm || config.label_width_mm || 40, dpi);
@@ -401,56 +465,301 @@ function buildPplaCommand(product = {}, request = {}, config = {}) {
   const gapDots = mmToDots(config.label_gap_mm || 3, dpi);
   const columns = Math.max(1, template.columns || config.label_columns || 1);
   const columnsToRender = Math.max(1, Math.min(columns, request.quantity || 1));
-  const totalWidthDots = labelWidthDots * columns + gapDots * (columns - 1);
-  const rows = Math.max(1, Math.ceil((request.quantity || 1) / columns));
-  const barcodeValue = normalizeBarcodeValue(product);
-  const sizeColor = buildSizeColorLabel(product);
-  const header = [
-    "\x02L",
-    "D",
-    `H${gapDots}`,
-    `Q${labelHeightDots}`,
-    `q${totalWidthDots}`
-  ];
+  const css = TECHNICAL_TAG_PREVIEW_CSS;
+  const scaleX = labelWidthDots / css.widthPx;
+  const scaleY = labelHeightDots / css.heightPx;
+  const bodyLeft = Math.round(css.bodyPaddingXPx * scaleX);
+  const bodyWidth = Math.round(labelWidthDots - (css.bodyPaddingXPx * 2 * scaleX));
+  const bodyWidthPx = css.widthPx - css.bodyPaddingXPx * 2;
+  const elements = [];
 
-  const CRLF = "\r\n";
-  const text = (x, y, value, width = 32, wx = 1, wy = 1) =>
-    `A${x},${y},0,2,${wx},${wy},N,"${sanitizeLine(value, width)}"` + CRLF;
-  // CODE39 (tipo 0) para dados alfanumericos com hifens, espacos e letras.
-  // CODE128 (tipo 1) so funciona com subsets A/B+C — hifens causam erro na OS-214+.
-  // rotation=0 (normal), height=8 (dots), wide=2 (ratio 3:1).
-  const barcode39 = (x, y, value) =>
-    `B${x},${y},0,0,2,8,N,"${sanitizeLine(value, 32)}"` + CRLF;
-  const body = [];
+  const addElement = (column, item) => {
+    const columnX = column * (labelWidthDots + gapDots);
+    elements.push({
+      type: item.type || "text",
+      text: sanitizeLine(item.text || "", item.maxTextLength || 96),
+      x: Math.round(columnX + bodyLeft),
+      y: Math.round(item.y),
+      width: item.width === undefined ? bodyWidth : Math.round(item.width),
+      height: item.height === undefined ? Math.round(item.fontSize * scaleY) : Math.round(item.height),
+      fontSize: Number(item.fontSize.toFixed(2)),
+      align: item.align || "center",
+      column,
+      isBarcode: Boolean(item.isBarcode),
+      role: item.role || item.type || "text",
+      maxLines: item.maxLines || 1
+    });
+  };
+
   for (let col = 0; col < columnsToRender; col += 1) {
-    const x = 14 + col * (labelWidthDots + gapDots);
-    const brand = request.show_brand ? (product.brand || "AEROSTORE") : "AEROSTORE";
-    if (template.id === "aerostore_tag_40x60_2c") {
-      body.push(text(x, 22, brand, 24, 1, 1));
-      if (request.show_name) body.push(text(x, 58, product.name || "Produto sem nome", 28, 1, 1));
-      if (request.show_size_color && sizeColor) body.push(text(x, 102, sizeColor, 24, 1, 1));
-      // SKU completo — nao truncar. Variacoes podem ter SKU de ate 40+ chars.
-      if (request.show_sku) body.push(text(x, 140, `SKU ${product.sku || product.codigo || "-"}`, 40, 1, 1));
-      if (request.show_store && product.store_label) body.push(text(x, 174, product.store_label, 24, 1, 1));
-      if (request.show_barcode && barcodeValue) {
-        body.push(barcode39(x + 10, 210, barcodeValue));
-        body.push(text(x, 310, product.barcode ? barcodeValue : `COD ${product.sku || "-"}`, 28, 1, 1));
-      }
-      // The lower serrated stub is the official price area on the 40x60 clothing tag.
+    const sizeColor = buildSizeColorLabel(product);
+    const sku = sanitizeLine(product.sku || product.codigo || "-", 64);
+    const barcodeValue = sanitizeLine(product.barcode || sku || "", 64);
+    const yStart = css.bodyPaddingTopPx * scaleY;
+    const bodyGap = css.bodyGapPx * scaleY;
+    let cursorY = yStart;
+
+    if (request.show_brand !== false) {
+      const fontSize = css.fontPx.brand;
+      addElement(col, {
+        type: "text",
+        role: "brand",
+        text: product.brand || "AEROSTORE",
+        y: cursorY,
+        fontSize,
+        maxTextLength: 32
+      });
+      cursorY += fontSize * css.lineHeight.brand * scaleY + bodyGap;
+    }
+
+    if (request.show_name !== false) {
+      const fontSize = css.fontPx.product;
+      const maxChars = estimateMonospaceChars(bodyWidthPx, fontSize);
+      const visualLines = splitPreviewVisualText(product.name || "Produto sem nome", maxChars, 2);
+      addElement(col, {
+        type: "text",
+        role: "name",
+        text: product.name || "Produto sem nome",
+        y: cursorY,
+        fontSize,
+        maxLines: 2,
+        maxTextLength: 64
+      });
+      cursorY += Math.max(1, visualLines.length) * fontSize * css.lineHeight.product * scaleY + bodyGap;
+    }
+
+    if (request.show_size_color !== false && sizeColor) {
+      const fontSize = css.fontPx.meta;
+      addElement(col, {
+        type: "text",
+        role: "size_color",
+        text: sizeColor,
+        y: cursorY,
+        fontSize,
+        maxTextLength: 40
+      });
+      cursorY += fontSize * css.lineHeight.meta * scaleY + bodyGap;
+    }
+
+    if (request.show_sku !== false) {
+      const fontSize = css.fontPx.meta;
+      addElement(col, {
+        type: "text",
+        role: "sku",
+        text: `SKU ${sku}`,
+        y: cursorY,
+        fontSize,
+        maxTextLength: 72
+      });
+      cursorY += fontSize * css.lineHeight.meta * scaleY + bodyGap;
+    }
+
+    if (request.show_barcode !== false && barcodeValue) {
+      cursorY += css.barcodeMarginTopPx * scaleY;
+      addElement(col, {
+        type: "barcode",
+        role: "barcode",
+        text: barcodeValue,
+        y: cursorY,
+        width: bodyWidth - Math.round(css.barcodePaddingXPx * 2 * scaleX),
+        height: css.barcodeHeightPx * scaleY,
+        fontSize: css.fontPx.meta,
+        isBarcode: true,
+        maxTextLength: 64
+      });
+      cursorY += css.barcodeHeightPx * scaleY + css.barcodeMarginBottomPx * scaleY + css.bodyTextGapPx * scaleY;
+      addElement(col, {
+        type: "text",
+        role: "code",
+        text: product.barcode ? barcodeValue : `COD ${sku}`,
+        y: cursorY,
+        fontSize: css.fontPx.meta,
+        maxTextLength: 72
+      });
+    }
+
+    if (request.show_price !== false) {
+      const priceY = labelHeightDots * (1 - css.stubHeightRatio) + (labelHeightDots * css.stubHeightRatio) / 2 - (css.fontPx.price * scaleY) / 2;
       if (request.show_compare_price) {
-        body.push(text(x, 388, `DE ${request.normal_price_label || "-"}`, 24, 1, 1));
-        body.push(text(x, 424, `POR ${request.promotional_price_label || "Preco sob consulta"}`, 24, 2, 2));
-      } else if (request.show_price) {
-        body.push(text(x, 414, request.price_label || "Preco sob consulta", 24, 2, 2));
+        addElement(col, {
+          type: "text",
+          role: "compare_price",
+          text: `DE ${request.normal_price_label || "-"}`,
+          y: priceY - css.fontPx.meta * scaleY,
+          fontSize: css.fontPx.meta,
+          maxTextLength: 32
+        });
+        addElement(col, {
+          type: "price",
+          role: "price",
+          text: `POR ${request.promotional_price_label || request.price_label || "Preco sob consulta"}`,
+          y: priceY,
+          fontSize: css.fontPx.comparePrice,
+          maxTextLength: 40
+        });
+      } else {
+        addElement(col, {
+          type: "price",
+          role: "price",
+          text: request.price_label || "Preco sob consulta",
+          y: priceY,
+          fontSize: css.fontPx.price,
+          maxTextLength: 32
+        });
       }
-    } else {
-      const lines = buildPreviewLines(product, request).map((item, index) => ({ text: sanitizeLine(item, 30), y: 18 + index * 24 }));
-      lines.forEach((line) => body.push(text(x, line.y, line.text, 30, 1, 1)));
-      if (request.show_barcode && barcodeValue) body.push(barcode39(x, Math.max(120, 18 + lines.length * 24), barcodeValue));
     }
   }
-  // FF (Form Feed 0x0C) apos E — avanca a etiqueta e ejeita do rolo.
-  return [...header, ...body, `P${rows}`, "E"].join("") + "\x0C";
+
+  return elements.filter((item) => item.text);
+}
+
+function buildPplaCommand(product = {}, request = {}, config = {}) {
+  return buildArgoxPplaCommand(product, request, config);
+}
+
+function padPplaNumber(value = 0, size = 3) {
+  const normalized = Math.max(0, Math.floor(normalizeNumber(value, 0)));
+  return String(normalized).padStart(size, "0").slice(-size);
+}
+
+function buildArgoxPplaStxCommand(command = "") {
+  return `\x02${sanitizeLine(command, 16)}`;
+}
+
+function buildArgoxPplaText({
+  x = 0,
+  y = 0,
+  text = "",
+  direction = 1,
+  font = 1,
+  hScale = 1,
+  vScale = 0,
+  subFont = 0,
+  maxLength = 24
+} = {}) {
+  const safeText = sanitizeLine(text, maxLength);
+  if (!safeText) return "";
+  const header = [
+    padPplaNumber(direction, 1),
+    padPplaNumber(font, 1),
+    padPplaNumber(hScale, 1),
+    padPplaNumber(vScale, 1),
+    padPplaNumber(subFont, 3),
+    padPplaNumber(y, 3),
+    padPplaNumber(x, 4)
+  ].join("");
+  return `${header}${safeText}`;
+}
+
+function buildArgoxPplaBarcode() {
+  // Barcode PPLA for OS-214 AP3.05 stays disabled until a physical barcode
+  // command is validated. The caller still prints the code as text.
+  return [];
+}
+
+function splitTextForPpla(value = "", maxLength = 18, maxLines = 2) {
+  const clean = sanitizeLine(value, 80);
+  if (!clean) return [];
+  const words = clean.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  words.forEach((word) => {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= maxLength) {
+      current = candidate;
+      return;
+    }
+    if (current) lines.push(current);
+    current = word;
+    while (current.length > maxLength) {
+      const breakpoint = Math.max(
+        current.lastIndexOf("-", maxLength),
+        current.lastIndexOf("/", maxLength)
+      );
+      const splitAt = breakpoint > 0 ? breakpoint : maxLength;
+      lines.push(current.slice(0, splitAt).replace(/[-/]+$/g, ""));
+      current = current.slice(splitAt).replace(/^[-/]+/g, "");
+    }
+  });
+  if (current) lines.push(current);
+  return lines.slice(0, maxLines);
+}
+
+function addArgoxPplaTextLines(body = [], x = 0, y = 0, value = "", options = {}) {
+  const {
+    maxLength = 18,
+    maxLines = 1,
+    lineHeight = 28,
+    font = 1,
+    hScale = 1,
+    vScale = 0
+  } = options;
+  splitTextForPpla(value, maxLength, maxLines).forEach((line, index) => {
+    body.push(buildArgoxPplaText({
+      x,
+      y: y + index * lineHeight,
+      text: line,
+      font,
+      hScale,
+      vScale,
+      maxLength
+    }));
+  });
+}
+
+function estimatePplaCharWidthDots(element = {}) {
+  const fontSize = normalizeNumber(element.fontSize, TECHNICAL_TAG_PREVIEW_CSS.fontPx.meta);
+  return Math.max(5, Math.round(fontSize * 0.72));
+}
+
+function buildArgoxPplaTextFromElement(element = {}) {
+  const text = sanitizeLine(element.text || "", 96);
+  if (!text || element.isBarcode) return [];
+  const charWidth = estimatePplaCharWidthDots(element);
+  const maxChars = Math.max(1, Math.floor(normalizeNumber(element.width, 120) / charWidth));
+  const maxLines = Math.max(1, Math.floor(normalizeNumber(element.maxLines, 1)));
+  const lines = splitPreviewVisualText(text, maxChars, maxLines);
+  const lineHeight = Math.max(12, Math.round(normalizeNumber(element.fontSize, 11) * 1.25));
+  const hScale = element.type === "price" ? 2 : 1;
+  return lines.map((line, index) => {
+    const lineWidth = line.length * charWidth * hScale;
+    const alignedX = element.align === "center"
+      ? normalizeNumber(element.x, 0) + Math.max(0, Math.round((normalizeNumber(element.width, 0) - lineWidth) / 2))
+      : normalizeNumber(element.x, 0);
+    return buildArgoxPplaText({
+      x: alignedX,
+      y: normalizeNumber(element.y, 0) + index * lineHeight,
+      text: line,
+      hScale,
+      maxLength: 48
+    });
+  });
+}
+
+function buildArgoxPplaCommand(product = {}, request = {}, config = {}) {
+  const template = findTemplate(request.template_id);
+  const columns = Math.max(1, template.columns || config.label_columns || 1);
+  const rows = Math.max(1, Math.ceil((request.quantity || 1) / columns));
+  const body = [];
+  const previewElements = buildLabelPreviewElements(product, request, config);
+
+  previewElements.forEach((element) => {
+    if (element.isBarcode) {
+      body.push(...buildArgoxPplaBarcode({ element, product, request, config }));
+      return;
+    }
+    body.push(...buildArgoxPplaTextFromElement(element));
+  });
+
+  return [
+    buildArgoxPplaStxCommand("M0480"),
+    buildArgoxPplaStxCommand("r1"),
+    buildArgoxPplaStxCommand("L"),
+    "D22",
+    ...body.filter(Boolean),
+    `Q${padPplaNumber(rows, 4)}`,
+    "E"
+  ].join("\r") + "\r";
 }
 
 function buildZplCommand(product = {}, request = {}, config = {}) {
@@ -498,10 +807,18 @@ function buildEplCommand(product = {}, request = {}, config = {}) {
 }
 
 function buildPrinterCommand(product = {}, request = {}, config = {}) {
-  const language = normalizeText(config.label_language || "PPLA").toUpperCase();
+  const language = normalizeText(config.label_language || "PPLB").toUpperCase();
+  const template = findTemplate(request.template_id);
+  if (template.id === DEFAULT_TEMPLATE_ID || language === "PPLB") {
+    return buildArgoxPplbCommand(product, request, config);
+  }
   if (language === "ZPL") return buildZplCommand(product, request, config);
-  if (language === "EPL" || language === "PPLB") return buildEplCommand(product, request, config);
+  if (language === "EPL") return buildEplCommand(product, request, config);
   return buildPplaCommand(product, request, config);
+}
+
+function isPplbCommand(command = "") {
+  return normalizeText(command).startsWith("N");
 }
 
 function writePrnFile(command = "", product = {}, request = {}, options = {}) {
@@ -515,11 +832,10 @@ function writePrnFile(command = "", product = {}, request = {}, options = {}) {
   }
   filename = path.basename(filename).replace(/[^A-Za-z0-9_.-]/g, "_");
   const filePath = path.join(labelsTmpDir, filename);
-  // Argox OS-214 Plus PPLA exige CRLF como terminador de linha.
-  // Usamos Buffer para garantir que 0x02 STX e 0x0D 0x0A CRLF
-  // sejam preservados byte-a-byte, sem conversão de encoding.
-  const commandWithCRLF = command.replace(/\n/g, "\r\n");
-  const buffer = Buffer.from(commandWithCRLF, "ascii");
+  const commandWithSafeTerminators = isPplbCommand(command)
+    ? command.replace(/\r\n/g, "\n")
+    : command.replace(/\n/g, "\r\n");
+  const buffer = Buffer.from(commandWithSafeTerminators, "ascii");
   fs.writeFileSync(filePath, buffer);
   return {
     filename,
@@ -544,6 +860,7 @@ async function buildLabelPreview(payload = {}, user = {}) {
   const request = resolveLabelRequest(payload, product);
   const config = getArgoxLabelConfig();
   const template = findTemplate(request.template_id);
+  const previewElements = buildLabelPreviewElements(product, request, config);
   const command = buildPrinterCommand(product, request, config);
   return {
     success: true,
@@ -553,8 +870,11 @@ async function buildLabelPreview(payload = {}, user = {}) {
     product,
     request,
     preview_lines: buildPreviewLines(product, request),
+    preview_elements: previewElements,
     preview_html: buildPreviewHtml(buildPreviewLines(product, request)),
     command_preview: command,
+    agent_payload: buildAgentPrintPayload(product, request, config),
+    agent_url: config.agent_url,
     warnings: product.barcode ? [] : ["Produto sem codigo de barras. A etiqueta usara SKU/codigo como texto."]
   };
 }
@@ -562,12 +882,8 @@ async function buildLabelPreview(payload = {}, user = {}) {
 async function printLabel(payload = {}, user = {}) {
   const preview = await buildLabelPreview(payload, user);
   const prn = writePrnFile(preview.command_preview, preview.product, preview.request);
-  const status = preview.config.print_enabled && preview.config.printer_name
-    ? "prn_ready_direct_print_not_configured"
-    : "prn_ready";
-  const message = preview.config.print_enabled && preview.config.printer_name
-    ? "Arquivo PRN gerado. Impressao direta ainda esta em modo seguro aguardando validacao do modelo Argox."
-    : "Impressora Argox nao configurada. Baixe o arquivo PRN ou configure ARGOX_PRINTER_NAME.";
+  const status = "agent_ready";
+  const message = "Etiqueta PPLB pronta. Envie ao Agente Argox local ou baixe o PRN como fallback.";
   appendPrintLog({
     product_id: preview.product.product_id,
     sku: preview.product.sku,
@@ -586,7 +902,9 @@ async function printLabel(payload = {}, user = {}) {
     mode: "print",
     print_status: status,
     message,
-    prn
+    prn,
+    agent_payload: preview.agent_payload,
+    agent_url: preview.agent_url
   };
 }
 
@@ -608,6 +926,7 @@ async function buildTestPrint(payload = {}, user = {}) {
     store_label: formatStoreLabel(user?.store_id || user?.store || "")
   };
   const request = resolveLabelRequest({ ...payload, template_id: payload.template_id || DEFAULT_TEMPLATE_ID, quantity: payload.quantity || 1 }, product);
+  const previewElements = buildLabelPreviewElements(product, request, config);
   const command = buildPrinterCommand(product, request, config);
   const prn = writePrnFile(command, product, request, { filename: "argox-test-label.prn" });
   appendPrintLog({
@@ -631,6 +950,7 @@ async function buildTestPrint(payload = {}, user = {}) {
     product,
     request,
     preview_lines: buildPreviewLines(product, request),
+    preview_elements: previewElements,
     preview_html: buildPreviewHtml(buildPreviewLines(product, request)),
     command_preview: command,
     print_status: "test_prn_ready",
@@ -654,6 +974,12 @@ function getPrnFile(filename = "") {
 module.exports = {
   getArgoxLabelConfig,
   getLabelTemplates,
+  buildLabelPreviewElements,
+  buildArgoxPplaText,
+  buildArgoxPplaBarcode,
+  buildArgoxPplaCommand,
+  buildArgoxPplbCommand,
+  buildAgentPrintPayload,
   buildLabelPreview,
   printLabel,
   buildTestPrint,
