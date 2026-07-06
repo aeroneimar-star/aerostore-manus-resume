@@ -1,0 +1,20 @@
+{
+  "id": "aerostore-tag-40x60",
+  "name": "AEROSTORE Tag 40x60",
+  "canvas": {
+    "width_px": 320,
+    "height_px": 480,
+    "dpi": 203
+  },
+  "shapes": [
+    { "name": "role:brand", "x": -5, "y": 76, "width": 300, "height": 34, "fontSize": 31, "fontFamily": "Arial", "bold": true },
+    { "name": "role:name", "x": -5, "y": 110, "width": 300, "height": 52, "fontSize": 24, "fontFamily": "Arial", "bold": true, "maxLines": 2 },
+    { "name": "role:size_color", "x": -5, "y": 162, "width": 300, "height": 26, "fontSize": 22, "fontFamily": "Arial", "bold": true },
+    { "name": "role:sku", "x": -5, "y": 188, "width": 300, "height": 22, "fontSize": 19, "fontFamily": "Arial", "bold": true },
+    { "name": "role:barcode", "x": 10, "y": 253, "width": 300, "height": 64, "fontSize": 10 },
+    { "name": "role:barcode_text", "x": 10, "y": 324, "width": 300, "height": 36, "fontSize": 16, "fontFamily": "Arial", "bold": true, "maxLines": 2 },
+    { "name": "role:code", "x": -5, "y": 388, "width": 300, "height": 18, "fontSize": 18, "fontFamily": "Arial", "bold": true },
+    { "name": "role:price", "x": -5, "y": 440, "width": 300, "height": 28, "fontSize": 28, "fontFamily": "Arial", "bold": true },
+    { "name": "role:perforation_guide", "x": 0, "y": 360, "width": 320, "height": 1 }
+  ]
+}

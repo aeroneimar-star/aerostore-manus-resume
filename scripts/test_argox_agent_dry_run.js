@@ -1,21 +1,26 @@
 "use strict";
 
+const assert = require("assert");
 const http = require("http");
 const { spawn } = require("child_process");
+const fs = require("fs");
 const path = require("path");
+const {
+  buildArgoxCommandFromAgentItems,
+  isPplaCommand
+} = require("../modules/pdv/services/argoxCommandBuilder");
 
 const AGENT_DIR = path.join(__dirname, "..", "agente-impressao-argox");
-const PORT = 4010;
-const BASE = `http://127.0.0.1:${PORT}`;
+const BASE_PORT = 4011;
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function request(method, route, body = null) {
+function request(port, method, route, body = null) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : null;
-    const req = http.request(`${BASE}${route}`, {
+    const req = http.request(`http://127.0.0.1:${port}${route}`, {
       method,
       headers: payload
         ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
@@ -37,94 +42,101 @@ function request(method, route, body = null) {
   });
 }
 
-async function waitForAgent(maxAttempts = 20) {
+async function waitForAgent(port, maxAttempts = 20) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
-      const result = await request("GET", "/status");
+      const result = await request(port, "GET", "/status");
       if (result.status === 200) return result.data;
     } catch {
-      // agent still booting
+      // booting
     }
     await wait(250);
   }
-  throw new Error("Agente nao respondeu a tempo.");
+  throw new Error(`Agente nao respondeu na porta ${port}.`);
 }
 
-(async () => {
+function samplePayload(language = "PPLB") {
+  const item = {
+    nome: "CALCA TECH FIVE POCKET AEROSTORE MASC.",
+    marca: "AEROSTORE",
+    tamanho: "42",
+    cor: "VERDE-MUSGO",
+    sku_variacao: "AERO-000098",
+    codigo_barras: "7891234567890",
+    preco_original: "397,00",
+    preco_venda: "167,00",
+    colunas: 2,
+    language
+  };
+  return [item, { ...item }];
+}
+
+async function runAgentCase({ language, port }) {
+  process.env.ARGOX_SAFE_TEST_MODE = "true";
   const child = spawn(process.execPath, ["server.js"], {
     cwd: AGENT_DIR,
     env: {
       ...process.env,
       ARGOX_AGENT_DRY_RUN: "true",
-      ARGOX_AGENT_PORT: String(PORT)
+      ARGOX_AGENT_PORT: String(port),
+      ARGOX_LANGUAGE: language,
+      ARGOX_SAFE_TEST_MODE: "true",
+      ARGOX_DRIVER_COLUMNS: "2"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
 
-  let stdout = "";
-  child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
-  child.stderr.on("data", (chunk) => { stdout += chunk.toString(); });
-
   try {
-    const status = await waitForAgent();
-    console.log("GET /status OK");
-    console.log(JSON.stringify(status, null, 2));
+    const status = await waitForAgent(port);
+    assert.strictEqual(status.linguagem, language, `status linguagem deve ser ${language}`);
+    assert.strictEqual(status.conectada, true, "agente simulado deve estar conectado");
+    assert.strictEqual(status.driver_columns, 2, "status deve expor driver_columns");
+    assert.strictEqual(status.raw_env_driver_columns, "2", "status deve expor raw_env_driver_columns");
+    assert(typeof status.safe_test_mode === "boolean", "status deve expor safe_test_mode booleano");
 
-    if (!status.dry_run || !status.conectada) {
-      throw new Error("Status esperado: dry_run=true e conectada=true");
+    const built = buildArgoxCommandFromAgentItems(samplePayload(language), {
+      columns: 2,
+      config: { safe_test_mode: true }
+    });
+    assert.strictEqual(built.language, language, `builder deve gerar ${language}`);
+    if (language === "PPLA") {
+      assert(isPplaCommand(built.command), "comando PPLA deve iniciar com STX");
+      assert.strictEqual(built.quantity_final, 1, "safe test mode deve forcar quantidade final 1");
+      assert(built.command.includes("P1\r"), "PPLA deve terminar envelope com P1");
+    } else {
+      assert(!isPplaCommand(built.command), "comando PPLB nao deve iniciar com STX");
+      assert(built.command.includes("\nN\n"), "comando PPLB deve conter N");
     }
 
-    const payload = [{
-      nome: "CALCA TECH FIVE POCKET AEROSTORE MASC.",
-      marca: "AEROSTORE",
-      tamanho: "42",
-      cor: "VERDE-MUSGO",
-      sku_variacao: "AERO-000098",
-      codigo_barras: "7891234567890",
-      preco_original: "397,00",
-      preco_venda: "167,00",
-      colunas: 2
-    }, {
-      nome: "CALCA TECH FIVE POCKET AEROSTORE MASC.",
-      marca: "AEROSTORE",
-      tamanho: "42",
-      cor: "VERDE-MUSGO",
-      sku_variacao: "AERO-000098",
-      codigo_barras: "7891234567890",
-      preco_original: "397,00",
-      preco_venda: "167,00",
-      colunas: 2
-    }];
+    const print = await request(port, "POST", "/imprimir", samplePayload(language));
+    assert.strictEqual(print.status, 200, `POST /imprimir ${language} deve retornar 200`);
+    assert.strictEqual(print.data.sucesso, true, `POST /imprimir ${language} deve ter sucesso`);
+    assert.strictEqual(print.data.linguagem, language, `resposta deve informar ${language}`);
+    assert(print.data.bytes > 0, "bytes deve ser maior que zero");
+    assert.strictEqual(print.data.metodo, "DRY_RUN_FILE", "dry-run deve usar DRY_RUN_FILE");
+    assert.strictEqual(print.data.quantidade_final, 1, "agente deve forcar quantidade final 1 em safe mode");
+    assert.strictEqual(print.data.safe_test_mode, true, "agente deve reportar safe test mode");
+    assert(fs.existsSync(print.data.arquivo_path), "arquivo dry-run deve existir");
 
-    const print = await request("POST", "/imprimir", payload);
-    console.log("");
-    console.log("POST /imprimir OK");
-    console.log(JSON.stringify(print.data, null, 2));
-
-    if (print.status !== 200 || !print.data.sucesso || !print.data.dry_run) {
-      throw new Error("Impressao simulada falhou.");
-    }
-    if (!print.data.arquivo_path) {
-      throw new Error("Arquivo simulado nao foi retornado.");
+    const saved = fs.readFileSync(print.data.arquivo_path);
+    if (language === "PPLA") {
+      assert.strictEqual(saved[0], 0x02, "arquivo PPLA deve iniciar com STX");
+      assert(saved.toString("ascii").includes("P1\r"), "arquivo PPLA deve conter P1");
+    } else {
+      assert(saved.toString("ascii").includes("POR: R$ 167,00"), "arquivo PPLB deve conter preco");
     }
 
-    console.log("");
-    console.log("Validacao completa: agente simulado pronto para testar com o PDV.");
-    console.log(`Arquivo gerado: ${print.data.arquivo_path}`);
-    console.log("");
-    console.log("Para usar manualmente agora:");
-    console.log(`  cd agente-impressao-argox`);
-    console.log(`  $env:ARGOX_AGENT_DRY_RUN="true"; node server.js`);
-    console.log(`  curl ${BASE.replace(String(PORT), "4000")}/status`);
+    console.log(`Argox agent dry-run ${language} passed.`);
   } finally {
     child.kill();
     await wait(300);
-    if (stdout.trim()) {
-      console.log("");
-      console.log("Log do agente:");
-      console.log(stdout.trim());
-    }
   }
+}
+
+(async () => {
+  await runAgentCase({ language: "PPLB", port: BASE_PORT });
+  await runAgentCase({ language: "PPLA", port: BASE_PORT + 1 });
+  console.log("Argox agent dry-run PPLB + PPLA passed.");
 })().catch((error) => {
   console.error("Falha:", error.message);
   process.exit(1);

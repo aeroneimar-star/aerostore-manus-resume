@@ -6,9 +6,37 @@ const path = require("path");
 const { get } = require("../../../db");
 const { normalizeStoreKey, formatStoreLabel } = require("../utils/pdvStoreUtils");
 const {
+  resolveLabelHeaderText,
+  assertCanPrintSulStoreLabel,
+  resolveLabelStoreId,
+  buildLabelStoreTrace
+} = require("./argoxLabelStorePolicy");
+const {
+  applyLabelBarcodeToProduct,
+  assertValidLabelBarcode,
+  resolveLabelBarcode
+} = require("./argoxLabelBarcode");
+const {
   buildArgoxPplbCommand,
-  buildAgentPrintPayload
+  buildAgentPrintPayload,
+  resolveArgoxLanguage
 } = require("./argoxPplbGenerator");
+const {
+  isPplaCommand,
+  serializePrinterCommand
+} = require("./argoxCommandBuilder");
+const {
+  padNumber,
+  resolveSafeTestMode,
+  resolveEffectiveQuantity,
+  summarizeCommand,
+  validatePplaCommand
+} = require("./argoxPplaEnvelope");
+const {
+  resolveLabelPrintPlan,
+  PRINT_QUANTITY_MODES,
+  normalizePrintQuantityMode
+} = require("./labelPrintPlanResolver");
 
 const labelsTmpDir = path.join(process.cwd(), "tmp", "labels");
 const labelLogsPath = path.join(process.cwd(), "data", "pdv", "label-print-logs.json");
@@ -66,7 +94,7 @@ function writeJson(filePath, value) {
 }
 
 function getArgoxLabelConfig() {
-  const language = normalizeText(process.env.ARGOX_LABEL_LANGUAGE || "PPLB").toUpperCase();
+  const labelLanguage = resolveArgoxLanguage({}, {});
   const width = normalizeNumber(process.env.ARGOX_LABEL_WIDTH_MM, 40);
   const height = normalizeNumber(process.env.ARGOX_LABEL_HEIGHT_MM, 60);
   const dpi = normalizeNumber(process.env.ARGOX_DPI, 203);
@@ -75,7 +103,9 @@ function getArgoxLabelConfig() {
     print_enabled: String(process.env.ARGOX_PRINT_ENABLED || "false").toLowerCase() === "true",
     printer_name: normalizeText(process.env.ARGOX_PRINTER_NAME || ""),
     printer_model: normalizeText(process.env.ARGOX_PRINTER_MODEL || "Argox OS-214plus"),
-    label_language: SUPPORTED_LANGUAGES.has(language) ? language : "PPLA",
+    print_transport: normalizeText(process.env.ARGOX_PRINT_TRANSPORT || "WINDOWS_DRIVER"),
+    label_language: labelLanguage,
+    language: labelLanguage,
     dpi: dpi > 0 ? dpi : 203,
     label_width_mm: width > 0 ? width : 40,
     label_height_mm: height > 0 ? height : 60,
@@ -84,8 +114,9 @@ function getArgoxLabelConfig() {
     default_template: normalizeText(process.env.ARGOX_DEFAULT_TEMPLATE || DEFAULT_TEMPLATE_ID),
     agent_url: normalizeText(process.env.ARGOX_AGENT_URL || "http://localhost:4000"),
     direct_print_available: true,
-    safe_mode: false,
-    message: "Impressao fisica via Agente Argox local (PPLB RAW). PRN continua disponivel como fallback."
+    safe_mode: resolveSafeTestMode({}, {}),
+    safe_test_mode: resolveSafeTestMode({}, {}),
+    message: "Impressao fisica via Agente Argox local (WINDOWS_DRIVER, etiqueta 40x60 bitmap). PRN RAW permanece apenas como fallback tecnico."
   };
 }
 
@@ -134,6 +165,14 @@ function getLabelTemplates() {
 function findTemplate(templateId = "") {
   const templates = getLabelTemplates();
   return templates.find((item) => item.id === normalizeText(templateId)) || templates.find((item) => item.id === DEFAULT_TEMPLATE_ID) || templates[0];
+}
+
+function sanitizeDisplayLine(value = "", maxLength = 36) {
+  const clean = normalizeText(value)
+    .replace(/[\x00-\x1F\x7F"]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clean.slice(0, Math.max(1, maxLength));
 }
 
 function sanitizeLine(value = "", maxLength = 36) {
@@ -189,15 +228,157 @@ function userCanViewStore(user = {}, storeId = "") {
   return !allowed.length || allowed.includes(normalizedStore);
 }
 
+function isLabelStoreDebugEnabled() {
+  return String(process.env.ARGOX_LABEL_DEBUG || "false").trim().toLowerCase() === "true";
+}
+
+function parsePdvParentId(productId = "") {
+  const raw = normalizeText(productId);
+  const normalizedParentMatch = raw.match(/^NORMALIZED_PARENT:(\d+)$/i);
+  if (normalizedParentMatch) {
+    return normalizedParentMatch[1];
+  }
+  if (/^\d+$/.test(raw)) {
+    return raw;
+  }
+  return "";
+}
+
+async function loadAiProductRow(aiProductId = "") {
+  const parsedId = normalizeText(aiProductId);
+  if (!parsedId) {
+    return null;
+  }
+  return get(
+    "SELECT * FROM ai_products WHERE id = ? AND COALESCE(deleted_at, '') = ''",
+    [parsedId]
+  );
+}
+
+async function loadPdvVariantRow(variationId = "", pdvParentId = "") {
+  const normalizedVariationId = normalizeText(variationId);
+  if (!normalizedVariationId) {
+    return null;
+  }
+  if (pdvParentId) {
+    return get(
+      `SELECT id AS variation_id, sku AS variant_sku, barcode AS variant_barcode,
+              status AS variant_status, attributes_json, sale_price_cents, product_id
+       FROM pdv_product_variants
+       WHERE id = ? AND product_id = ? AND status <> 'inativo'
+       LIMIT 1`,
+      [normalizedVariationId, pdvParentId]
+    );
+  }
+  return get(
+    `SELECT v.id AS variation_id, v.sku AS variant_sku, v.barcode AS variant_barcode,
+            v.status AS variant_status, v.attributes_json, v.sale_price_cents, v.product_id,
+            p.legacy_ai_product_id, p.id AS pdv_parent_id
+     FROM pdv_product_variants v
+     INNER JOIN pdv_products_v2 p ON p.id = v.product_id
+     WHERE v.id = ? AND v.status <> 'inativo'
+     LIMIT 1`,
+    [normalizedVariationId]
+  );
+}
+
+async function resolveInventoryStoreForVariant(variationId = "", preferredStoreId = "") {
+  const normalizedVariationId = normalizeText(variationId);
+  if (!normalizedVariationId) {
+    return "";
+  }
+  const preferred = normalizeStoreKey(preferredStoreId || "");
+  if (preferred) {
+    const preferredRow = await get(
+      `SELECT store_id
+       FROM pdv_inventory_balances_v2
+       WHERE variant_id = ?
+         AND store_id = ? COLLATE NOCASE
+       LIMIT 1`,
+      [normalizedVariationId, preferred]
+    );
+    if (preferredRow?.store_id) {
+      return normalizeStoreKey(preferredRow.store_id);
+    }
+  }
+  const row = await get(
+    `SELECT store_id
+     FROM pdv_inventory_balances_v2
+     WHERE variant_id = ?
+       AND COALESCE(available_qty, 0) > 0
+     ORDER BY store_id
+     LIMIT 1`,
+    [normalizedVariationId]
+  );
+  return normalizeStoreKey(row?.store_id || "");
+}
+
 async function findProductForLabel(payload = {}, user = {}) {
   const productId = normalizeText(payload.product_id || payload.productId || payload.id || "");
-  const sku = normalizeText(payload.sku || payload.codigo || payload.code || "");
   const variationId = normalizeText(payload.variation_id || payload.variationId || "");
+  const sku = normalizeText(payload.sku || payload.codigo || payload.code || "");
+  const payloadStoreId = normalizeStoreKey(payload.store_id || payload.storeId || payload.loja || "");
+  const lookupTrace = {
+    product_id_received: productId,
+    variation_id_received: variationId,
+    payload_store_id: payloadStoreId,
+    payload_loja: normalizeText(payload.loja || ""),
+    lookup_source: "",
+    pdv_parent_id: "",
+    legacy_ai_product_id: "",
+    ai_store: "",
+    inventory_store_id: ""
+  };
+
   let row = null;
-  if (productId) {
-    row = await get("SELECT * FROM ai_products WHERE id = ? AND COALESCE(deleted_at, '') = ''", [productId]);
+  let pdvParentId = "";
+  let variant = null;
+  let pdvBlocksAiLookup = false;
+
+  if (variationId) {
+    variant = await loadPdvVariantRow(variationId);
+    if (variant) {
+      pdvParentId = normalizeText(variant.pdv_parent_id || variant.product_id || "");
+      lookupTrace.lookup_source = "pdv_variant";
+      lookupTrace.pdv_parent_id = pdvParentId;
+      lookupTrace.legacy_ai_product_id = normalizeText(variant.legacy_ai_product_id || "");
+      if (variant.legacy_ai_product_id) {
+        row = await loadAiProductRow(variant.legacy_ai_product_id);
+      }
+    }
   }
+
+  if (!row) {
+    const parsedParentId = parsePdvParentId(productId);
+    if (parsedParentId) {
+      const pdvParent = await get(
+        `SELECT id, legacy_ai_product_id
+         FROM pdv_products_v2
+         WHERE id = ?
+         LIMIT 1`,
+        [parsedParentId]
+      );
+      if (pdvParent?.legacy_ai_product_id) {
+        pdvParentId = normalizeText(pdvParent.id || parsedParentId);
+        lookupTrace.lookup_source = "pdv_parent";
+        lookupTrace.pdv_parent_id = pdvParentId;
+        lookupTrace.legacy_ai_product_id = normalizeText(pdvParent.legacy_ai_product_id || "");
+        row = await loadAiProductRow(pdvParent.legacy_ai_product_id);
+      } else if (pdvParent?.id) {
+        pdvBlocksAiLookup = true;
+        lookupTrace.lookup_source = "pdv_parent_without_legacy";
+        lookupTrace.pdv_parent_id = normalizeText(pdvParent.id || parsedParentId);
+      }
+    }
+  }
+
+  if (!row && productId && !pdvBlocksAiLookup) {
+    lookupTrace.lookup_source = lookupTrace.lookup_source || "ai_product_id";
+    row = await loadAiProductRow(productId);
+  }
+
   if (!row && sku) {
+    lookupTrace.lookup_source = "sku";
     row = await get(
       `SELECT * FROM ai_products
        WHERE COALESCE(deleted_at, '') = ''
@@ -207,80 +388,116 @@ async function findProductForLabel(payload = {}, user = {}) {
       [sku.toUpperCase(), sku.toUpperCase(), sku.toUpperCase()]
     );
   }
+
   if (!row) {
     const error = new Error("Produto nao encontrado para impressao de etiqueta.");
     error.statusCode = 404;
     throw error;
   }
-  if (!userCanViewStore(user, row.store || "")) {
+
+  lookupTrace.ai_store = normalizeStoreKey(row.store || row.store_id || "");
+
+  if (!userCanViewStore(user, row.store || lookupTrace.ai_store || payloadStoreId)) {
     const error = new Error("Acesso restrito a produtos da sua loja.");
     error.statusCode = 403;
     throw error;
   }
-  const normalizedProduct = await get(
-    `SELECT id, product_type
-     FROM pdv_products_v2
-     WHERE legacy_ai_product_id = ?
-     LIMIT 1`,
-    [row.id]
-  );
-  if (!normalizedProduct) return row;
 
-  let variant = null;
-  if (variationId) {
-    variant = await get(
-      `SELECT id AS variation_id, sku AS variant_sku, barcode AS variant_barcode,
-              status AS variant_status, attributes_json, sale_price_cents
-       FROM pdv_product_variants
-       WHERE id = ? AND product_id = ? AND status <> 'inativo'
+  if (!pdvParentId && row.id) {
+    const pdvByLegacy = await get(
+      `SELECT id, legacy_ai_product_id
+       FROM pdv_products_v2
+       WHERE legacy_ai_product_id = ?
        LIMIT 1`,
-      [variationId, normalizedProduct.id]
+      [row.id]
     );
-    if (!variant) {
-      const error = new Error("A variacao selecionada nao pertence a este produto.");
-      error.statusCode = 400;
-      throw error;
+    if (pdvByLegacy?.id) {
+      pdvParentId = normalizeText(pdvByLegacy.id);
+      lookupTrace.pdv_parent_id = pdvParentId;
+      lookupTrace.legacy_ai_product_id = normalizeText(pdvByLegacy.legacy_ai_product_id || row.id);
+      if (!lookupTrace.lookup_source) {
+        lookupTrace.lookup_source = "legacy_ai_product";
+      }
     }
-  } else {
-    const variantCount = await get(
-      `SELECT COUNT(*) AS total
-       FROM pdv_product_variants
-       WHERE product_id = ? AND status <> 'inativo'`,
-      [normalizedProduct.id]
-    );
-    if (Number(variantCount?.total || 0) > 1) {
-      const error = new Error("Selecione uma variacao especifica para gerar a etiqueta.");
-      error.statusCode = 400;
-      throw error;
-    }
-    variant = await get(
-      `SELECT id AS variation_id, sku AS variant_sku, barcode AS variant_barcode,
-              status AS variant_status, attributes_json, sale_price_cents
-       FROM pdv_product_variants
-       WHERE product_id = ? AND status <> 'inativo'
-       ORDER BY is_default DESC, created_at, id
-       LIMIT 1`,
-      [normalizedProduct.id]
-    );
   }
-  if (!variant) return row;
+
+  if (pdvParentId) {
+    if (!variant && variationId) {
+      variant = await loadPdvVariantRow(variationId, pdvParentId);
+      if (!variant) {
+        const error = new Error("A variacao selecionada nao pertence a este produto.");
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+    if (!variant) {
+      const variantCount = await get(
+        `SELECT COUNT(*) AS total
+         FROM pdv_product_variants
+         WHERE product_id = ? AND status <> 'inativo'`,
+        [pdvParentId]
+      );
+      if (Number(variantCount?.total || 0) > 1) {
+        const error = new Error("Selecione uma variacao especifica para gerar a etiqueta.");
+        error.statusCode = 400;
+        throw error;
+      }
+      variant = await get(
+        `SELECT id AS variation_id, sku AS variant_sku, barcode AS variant_barcode,
+                status AS variant_status, attributes_json, sale_price_cents
+         FROM pdv_product_variants
+         WHERE product_id = ? AND status <> 'inativo'
+         ORDER BY is_default DESC, created_at, id
+         LIMIT 1`,
+        [pdvParentId]
+      );
+    }
+  }
+
+  const resolvedVariationId = normalizeText(variant?.variation_id || variationId || "");
+  lookupTrace.inventory_store_id = await resolveInventoryStoreForVariant(
+    resolvedVariationId,
+    payloadStoreId || lookupTrace.ai_store
+  );
+
+  const labelStoreId = normalizeStoreKey(resolveLabelStoreId({
+    payload_store_id: payloadStoreId,
+    payload_loja: normalizeText(payload.loja || ""),
+    inventory_store_id: lookupTrace.inventory_store_id,
+    catalog_store_id: lookupTrace.ai_store,
+    ai_store: lookupTrace.ai_store
+  }));
 
   let attributes = {};
-  try {
-    attributes = JSON.parse(variant.attributes_json || "{}") || {};
-  } catch {
-    attributes = {};
+  if (variant) {
+    try {
+      attributes = JSON.parse(variant.attributes_json || "{}") || {};
+    } catch {
+      attributes = {};
+    }
   }
+
+  const variantSku = normalizeText(variant?.variant_sku || row.sku || row.codigo || "");
+  const variantBarcode = normalizeText(variant?.variant_barcode || "");
+  const hasSelectedVariation = Boolean(variant && resolvedVariationId);
+
   return {
     ...row,
-    variation_id: variant.variation_id,
-    sku: normalizeText(variant.variant_sku || row.sku || row.codigo || ""),
-    gtin_ean: normalizeText(variant.variant_barcode || ""),
+    variation_id: resolvedVariationId,
+    sku: variantSku,
+    variant_sku: variantSku,
+    gtin_ean: variantBarcode,
+    variant_barcode: variantBarcode,
+    ean: hasSelectedVariation ? "" : normalizeText(row.ean || ""),
+    codigo_barras: hasSelectedVariation ? "" : normalizeText(row.codigo_barras || ""),
+    barcode: hasSelectedVariation ? variantBarcode : normalizeText(row.gtin_ean || row.ean || row.codigo_barras || ""),
     color: normalizeText(attributes.color || row.color || row.cor || ""),
     sizes: normalizeText(attributes.size || row.sizes || row.tamanho || ""),
-    price: variant.sale_price_cents === null || variant.sale_price_cents === undefined
-      ? row.price
-      : Number(variant.sale_price_cents) / 100
+    price: variant && variant.sale_price_cents !== null && variant.sale_price_cents !== undefined
+      ? Number(variant.sale_price_cents) / 100
+      : row.price,
+    label_store_id: labelStoreId,
+    label_store_trace: buildLabelStoreTrace(lookupTrace, labelStoreId)
   };
 }
 
@@ -290,13 +507,19 @@ function normalizeProductForLabel(row = {}) {
     ? 0
     : roundMoney(row.promotional_price);
   const hasPromotionalPrice = promotionalPrice > 0 && normalPrice > 0 && promotionalPrice < normalPrice;
-  const barcode = normalizeText(row.gtin_ean || row.ean || row.codigo_barras || "");
-  const sku = normalizeText(row.sku || row.codigo || "");
+  const variationId = normalizeText(row.variation_id || "");
+  const hasVariation = Boolean(variationId);
+  const sku = normalizeText(row.variant_sku || row.sku || row.codigo || "");
+  const barcode = hasVariation
+    ? normalizeText(row.variant_barcode || row.gtin_ean || row.barcode || "")
+    : normalizeText(row.gtin_ean || row.ean || row.codigo_barras || row.barcode || "");
   return {
     product_id: normalizeText(row.id || row.product_id || ""),
-    variation_id: normalizeText(row.variation_id || ""),
+    variation_id: variationId,
+    variant_sku: hasVariation ? sku : "",
+    variant_barcode: hasVariation ? barcode : "",
     sku,
-    codigo: normalizeText(row.codigo || ""),
+    codigo: normalizeText(row.codigo || sku || ""),
     barcode,
     barcode_source: barcode ? "barcode" : "sku_text",
     name: normalizeText(row.commercial_name || row.name || row.nome || ""),
@@ -308,8 +531,36 @@ function normalizeProductForLabel(row = {}) {
     normal_price: normalPrice,
     promotional_price: promotionalPrice > 0 ? promotionalPrice : null,
     has_promotional_price: hasPromotionalPrice,
-    store_id: normalizeStoreKey(row.store || row.store_id || ""),
-    store_label: formatStoreLabel(row.store || row.store_id || "")
+    store_id: normalizeStoreKey(row.label_store_id || row.store || row.store_id || ""),
+    store_label: formatStoreLabel(row.label_store_id || row.store || row.store_id || ""),
+    label_store_trace: row.label_store_trace || null
+  };
+}
+
+function assertValidLabelPrice(product = {}, request = {}) {
+  if (request.show_price === false) return;
+  const normalPrice = roundMoney(product.normal_price ?? product.price);
+  if (!Number.isFinite(normalPrice) || normalPrice <= 0) {
+    const error = new Error("Produto sem preço válido para etiqueta.");
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+function resolveLabelPriceMode(product = {}, payload = {}) {
+  const normalPrice = roundMoney(product.normal_price ?? product.price);
+  const promotionalPrice = product.promotional_price === null || product.promotional_price === undefined || product.promotional_price === ""
+    ? 0
+    : roundMoney(product.promotional_price);
+  const hasValidPromo = promotionalPrice > 0 && normalPrice > 0 && promotionalPrice < normalPrice;
+  const requestedPriceMode = normalizeText(payload.price_mode || payload.priceMode || "").toLowerCase();
+  const showComparePrice = requestedPriceMode === "promo_compare" && hasValidPromo;
+  return {
+    normalPrice,
+    promotionalPrice,
+    hasValidPromo,
+    showComparePrice,
+    priceMode: showComparePrice ? "promo_compare" : "normal"
   };
 }
 
@@ -330,14 +581,15 @@ function resolveLabelRequest(payload = {}, product = {}) {
   const showSizeColor = normalizeBoolean(payload.show_size_color, true);
   const showStore = normalizeBoolean(payload.show_store, false);
   const priceWithCents = normalizeBoolean(payload.price_with_cents, true);
-  const requestedPriceMode = normalizeText(payload.price_mode || payload.priceMode || "").toLowerCase();
-  const hasComparePrice = Boolean(product.has_promotional_price);
-  const priceMode = requestedPriceMode === "promo_compare" && hasComparePrice ? "promo_compare" : "normal";
-  const normalPriceLabel = formatPriceBR(product.normal_price ?? product.price, { priceWithCents });
-  const promotionalPriceLabel = formatPriceBR(product.promotional_price, { priceWithCents });
-  return {
+  const priceModeInfo = resolveLabelPriceMode(product, payload);
+  const priceMode = priceModeInfo.priceMode;
+  const hasComparePrice = priceModeInfo.showComparePrice;
+  const normalPriceLabel = formatPriceBR(priceModeInfo.normalPrice, { priceWithCents });
+  const promotionalPriceLabel = formatPriceBR(priceModeInfo.promotionalPrice, { priceWithCents });
+  const request = {
     template_id: findTemplate(payload.template_id || payload.templateId || "").id,
     quantity,
+    print_quantity_mode: normalizePrintQuantityMode(payload.print_quantity_mode || payload.printQuantityMode || ""),
     show_price: showPrice,
     show_barcode: showBarcode,
     show_sku: showSku,
@@ -352,6 +604,8 @@ function resolveLabelRequest(payload = {}, product = {}) {
     promotional_price_label: promotionalPriceLabel,
     price_label: showPrice ? (priceMode === "promo_compare" ? promotionalPriceLabel : normalPriceLabel) : ""
   };
+  assertValidLabelPrice(product, request);
+  return request;
 }
 
 function buildPricePreviewLines(request = {}) {
@@ -370,7 +624,7 @@ function buildPreviewLines(product = {}, request = {}) {
   const lines = [];
   if (template.id === "aerostore_tag_40x60_2c") {
     const sizeColor = buildSizeColorLabel(product);
-    if (request.show_brand) lines.push(product.brand || "AEROSTORE");
+    if (request.show_brand) lines.push(resolveLabelHeaderText(product.store_id));
     if (request.show_name) lines.push(product.name || "Produto sem nome");
     if (request.show_size_color && sizeColor) lines.push(sizeColor);
     lines.push(...buildPricePreviewLines(request));
@@ -386,7 +640,7 @@ function buildPreviewLines(product = {}, request = {}) {
     return lines.filter(Boolean);
   }
   if (request.show_name) lines.push(product.name || "Produto sem nome");
-  if (request.show_brand) lines.push(product.brand || "AEROSTORE");
+  if (request.show_brand) lines.push(resolveLabelHeaderText(product.store_id));
   if (request.show_size_color) {
     const sizeColor = buildSizeColorLabel(product);
     if (sizeColor) lines.push(sizeColor);
@@ -475,9 +729,12 @@ function buildLabelPreviewElements(product = {}, request = {}, config = {}) {
 
   const addElement = (column, item) => {
     const columnX = column * (labelWidthDots + gapDots);
-    elements.push({
+    const safeText = item.preserveAccents
+      ? sanitizeDisplayLine(item.text || "", item.maxTextLength || 96)
+      : sanitizeLine(item.text || "", item.maxTextLength || 96);
+    const element = {
       type: item.type || "text",
-      text: sanitizeLine(item.text || "", item.maxTextLength || 96),
+      text: safeText,
       x: Math.round(columnX + bodyLeft),
       y: Math.round(item.y),
       width: item.width === undefined ? bodyWidth : Math.round(item.width),
@@ -488,13 +745,32 @@ function buildLabelPreviewElements(product = {}, request = {}, config = {}) {
       isBarcode: Boolean(item.isBarcode),
       role: item.role || item.type || "text",
       maxLines: item.maxLines || 1
-    });
+    };
+    if (item.barcodeValue) element.barcodeValue = item.barcodeValue;
+    if (item.barcodeHumanText) element.barcodeHumanText = item.barcodeHumanText;
+    if (item.barcodeSymbology) element.barcodeSymbology = item.barcodeSymbology;
+    if (item.renderBarcodeText === false) element.renderBarcodeText = false;
+    if (Array.isArray(item.textLines) && item.textLines.length) element.textLines = item.textLines;
+    elements.push(element);
   };
 
   for (let col = 0; col < columnsToRender; col += 1) {
     const sizeColor = buildSizeColorLabel(product);
     const sku = sanitizeLine(product.sku || product.codigo || "-", 64);
-    const barcodeValue = sanitizeLine(product.barcode || sku || "", 64);
+    const barcodeResolved = product.label_barcode_value
+      ? {
+        value: product.label_barcode_value,
+        symbology: product.label_barcode_symbology || "code128"
+      }
+      : resolveLabelBarcode({
+        barcode: product.barcode,
+        gtin_ean: product.barcode,
+        codigo_barras: product.barcode,
+        sku,
+        codigo: product.codigo
+      }, { requireBarcode: request.show_barcode !== false });
+    const barcodeEncoded = product.label_barcode_value || barcodeResolved?.value || "";
+    const barcodeHuman = product.label_barcode_human_text || product.barcode_human_text || sku;
     const yStart = css.bodyPaddingTopPx * scaleY;
     const bodyGap = css.bodyGapPx * scaleY;
     let cursorY = yStart;
@@ -504,7 +780,8 @@ function buildLabelPreviewElements(product = {}, request = {}, config = {}) {
       addElement(col, {
         type: "text",
         role: "brand",
-        text: product.brand || "AEROSTORE",
+        text: resolveLabelHeaderText(product.store_id),
+        preserveAccents: true,
         y: cursorY,
         fontSize,
         maxTextLength: 32
@@ -554,24 +831,28 @@ function buildLabelPreviewElements(product = {}, request = {}, config = {}) {
       cursorY += fontSize * css.lineHeight.meta * scaleY + bodyGap;
     }
 
-    if (request.show_barcode !== false && barcodeValue) {
+    if (request.show_barcode !== false && barcodeEncoded) {
       cursorY += css.barcodeMarginTopPx * scaleY;
       addElement(col, {
         type: "barcode",
         role: "barcode",
-        text: barcodeValue,
+        text: barcodeEncoded,
+        barcodeValue: barcodeEncoded,
+        barcodeHumanText: barcodeHuman,
+        barcodeSymbology: barcodeResolved?.symbology || product.label_barcode_symbology || "code128",
         y: cursorY,
         width: bodyWidth - Math.round(css.barcodePaddingXPx * 2 * scaleX),
         height: css.barcodeHeightPx * scaleY,
         fontSize: css.fontPx.meta,
         isBarcode: true,
+        renderBarcodeText: false,
         maxTextLength: 64
       });
       cursorY += css.barcodeHeightPx * scaleY + css.barcodeMarginBottomPx * scaleY + css.bodyTextGapPx * scaleY;
       addElement(col, {
         type: "text",
         role: "code",
-        text: product.barcode ? barcodeValue : `COD ${sku}`,
+        text: product.barcode ? barcodeEncoded : `COD ${sku}`,
         y: cursorY,
         fontSize: css.fontPx.meta,
         maxTextLength: 72
@@ -736,30 +1017,70 @@ function buildArgoxPplaTextFromElement(element = {}) {
   });
 }
 
-function buildArgoxPplaCommand(product = {}, request = {}, config = {}) {
-  const template = findTemplate(request.template_id);
-  const columns = Math.max(1, template.columns || config.label_columns || 1);
-  const rows = Math.max(1, Math.ceil((request.quantity || 1) / columns));
-  const body = [];
-  const previewElements = buildLabelPreviewElements(product, request, config);
+function buildArgoxPplaBarcodeA(element = {}, product = {}) {
+  const value = sanitizeLine(element.text || product.barcode || product.sku || "", 64);
+  if (!value) return "";
+  const x = Math.max(0, Math.round(normalizeNumber(element.x, 14)));
+  const y = Math.max(0, Math.round(normalizeNumber(element.y, 210)));
+  return `B${x + 10},${y},0,0,2,8,N,"${value}"\r`;
+}
 
+function buildArgoxPplaAFromElement(element = {}) {
+  const text = sanitizeLine(element.text || "", 96);
+  if (!text || element.isBarcode) return [];
+  const x = Math.max(0, Math.round(normalizeNumber(element.x, 14)));
+  const y = Math.max(0, Math.round(normalizeNumber(element.y, 20)));
+  const hScale = element.type === "price" || element.role === "price" ? 2 : 1;
+  const vScale = element.type === "price" || element.role === "price" ? 2 : 1;
+  const maxLength = element.type === "price" ? 24 : 40;
+  return [`A${x},${y},0,2,${hScale},${vScale},N,"${sanitizeLine(text, maxLength)}"\r`];
+}
+
+function buildArgoxPplaCommand(product = {}, request = {}, config = {}, options = {}) {
+  const template = findTemplate(request.template_id);
+  const dpi = config.dpi || 203;
+  const labelWidthDots = mmToDots(template.width_mm || config.label_width_mm || 40, dpi);
+  const labelHeightDots = mmToDots(template.height_mm || config.label_height_mm || 60, dpi);
+  const gapDots = mmToDots(config.label_gap_mm || 3, dpi);
+  const columns = Math.max(1, template.columns || config.label_columns || 1);
+  const safeTestMode = resolveSafeTestMode(config, request);
+  const quantityInfo = resolveEffectiveQuantity(request.quantity || 1, { config, item: request });
+  const effectiveQuantity = quantityInfo.final;
+  const columnsToRender = safeTestMode
+    ? 1
+    : Math.max(1, Math.min(columns, effectiveQuantity));
+  const totalWidth = columnsToRender === 1
+    ? labelWidthDots
+    : labelWidthDots * columnsToRender + gapDots * (columnsToRender - 1);
+  const printCopies = safeTestMode ? 1 : 1;
+
+  const renderRequest = {
+    ...request,
+    quantity: columnsToRender
+  };
+  const previewElements = buildLabelPreviewElements(product, renderRequest, config)
+    .filter((element) => normalizeNumber(element.column, 0) < columnsToRender);
+
+  const body = [];
   previewElements.forEach((element) => {
     if (element.isBarcode) {
-      body.push(...buildArgoxPplaBarcode({ element, product, request, config }));
+      const barcodeLine = buildArgoxPplaBarcodeA(element, product);
+      if (barcodeLine) body.push(barcodeLine);
       return;
     }
-    body.push(...buildArgoxPplaTextFromElement(element));
+    body.push(...buildArgoxPplaAFromElement(element));
   });
 
   return [
-    buildArgoxPplaStxCommand("M0480"),
-    buildArgoxPplaStxCommand("r1"),
-    buildArgoxPplaStxCommand("L"),
-    "D22",
+    "\x02L\r",
+    "D\r",
+    `H${padNumber(gapDots, 3)}\r`,
+    `Q${padNumber(labelHeightDots, 4)}\r`,
+    `q${padNumber(totalWidth, 4)}\r`,
     ...body.filter(Boolean),
-    `Q${padPplaNumber(rows, 4)}`,
-    "E"
-  ].join("\r") + "\r";
+    `P${padNumber(printCopies, 1)}\r`,
+    "E\r"
+  ].join("");
 }
 
 function buildZplCommand(product = {}, request = {}, config = {}) {
@@ -807,18 +1128,16 @@ function buildEplCommand(product = {}, request = {}, config = {}) {
 }
 
 function buildPrinterCommand(product = {}, request = {}, config = {}) {
-  const language = normalizeText(config.label_language || "PPLB").toUpperCase();
-  const template = findTemplate(request.template_id);
-  if (template.id === DEFAULT_TEMPLATE_ID || language === "PPLB") {
-    return buildArgoxPplbCommand(product, request, config);
-  }
+  const language = resolveArgoxLanguage(config);
+  if (language === "PPLB") return buildArgoxPplbCommand(product, request, config);
+  if (language === "PPLA") return buildPplaCommand(product, request, config);
   if (language === "ZPL") return buildZplCommand(product, request, config);
   if (language === "EPL") return buildEplCommand(product, request, config);
-  return buildPplaCommand(product, request, config);
+  return buildArgoxPplbCommand(product, request, config);
 }
 
 function isPplbCommand(command = "") {
-  return normalizeText(command).startsWith("N");
+  return !isPplaCommand(command) && normalizeText(command).startsWith("N");
 }
 
 function writePrnFile(command = "", product = {}, request = {}, options = {}) {
@@ -832,10 +1151,9 @@ function writePrnFile(command = "", product = {}, request = {}, options = {}) {
   }
   filename = path.basename(filename).replace(/[^A-Za-z0-9_.-]/g, "_");
   const filePath = path.join(labelsTmpDir, filename);
-  const commandWithSafeTerminators = isPplbCommand(command)
-    ? command.replace(/\r\n/g, "\n")
-    : command.replace(/\n/g, "\r\n");
-  const buffer = Buffer.from(commandWithSafeTerminators, "ascii");
+  const config = options.config || getArgoxLabelConfig();
+  const language = resolveArgoxLanguage(config, request);
+  const buffer = serializePrinterCommand(command, language);
   fs.writeFileSync(filePath, buffer);
   return {
     filename,
@@ -855,13 +1173,102 @@ function appendPrintLog(entry = {}) {
   writeJson(labelLogsPath, current.slice(0, 1000));
 }
 
+async function buildAgentItemsFromPrintPlan(payload = {}, user = {}, plan = {}, visualRequest = {}, config = {}) {
+  const items = [];
+  for (const entry of toArray(plan.entries)) {
+    const entryPayload = {
+      ...payload,
+      variation_id: entry.variation_id || payload.variation_id || payload.variationId || "",
+      store_id: plan.store_id,
+      loja: plan.store_id
+    };
+    const rawProduct = normalizeProductForLabel(await findProductForLabel(entryPayload, user));
+    assertCanPrintSulStoreLabel(user, rawProduct.store_id);
+    const product = applyLabelBarcodeToProduct(rawProduct, visualRequest);
+    const built = buildAgentPrintPayload(product, {
+      ...visualRequest,
+      quantity: Math.max(1, Number(entry.quantity || 1))
+    }, config);
+    if (Array.isArray(built)) {
+      items.push(...built);
+    } else if (built) {
+      items.push(built);
+    }
+  }
+  return items;
+}
+
+function buildPrintPlanLogFields(plan = {}, agentItems = []) {
+  return {
+    print_quantity_mode: plan.print_quantity_mode,
+    print_quantity_mode_label: plan.print_quantity_mode_label,
+    quantity_requested: plan.quantity_requested,
+    quantity_final: plan.quantity_final,
+    total_labels: plan.total_labels,
+    total_labels_after_safe_mode: plan.total_labels_after_safe_mode,
+    safe_test_mode: plan.safe_test_mode,
+    store_id: plan.store_id,
+    store_label: plan.store_label,
+    variation_breakdown: toArray(plan.entries).map((entry) => ({
+      variation_id: entry.variation_id,
+      sku: entry.sku,
+      variant_label: entry.variant_label,
+      available_qty: entry.available_qty,
+      quantity: entry.quantity
+    })),
+    agent_items_count: agentItems.length
+  };
+}
+
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+async function enrichLabelPrintPayloadStore(payload = {}, user = {}) {
+  const enriched = { ...payload };
+  const storeId = normalizeStoreKey(enriched.store_id || enriched.storeId || enriched.loja || user?.store_id || user?.store || "");
+  if (storeId) {
+    enriched.store_id = storeId;
+    enriched.loja = storeId;
+    return enriched;
+  }
+  const row = await findProductForLabel(enriched, user);
+  const resolvedStoreId = normalizeStoreKey(row.label_store_id || row.store || row.store_id || "");
+  enriched.store_id = resolvedStoreId;
+  enriched.loja = resolvedStoreId;
+  return enriched;
+}
+
 async function buildLabelPreview(payload = {}, user = {}) {
-  const product = normalizeProductForLabel(await findProductForLabel(payload, user));
-  const request = resolveLabelRequest(payload, product);
+  const enrichedPayload = await enrichLabelPrintPayloadStore(payload, user);
+  const plan = await resolveLabelPrintPlan(enrichedPayload, user);
+  const previewPayload = {
+    ...enrichedPayload,
+    variation_id: plan.preview_variation_id || payload.variation_id || payload.variationId || "",
+    store_id: plan.store_id,
+    loja: plan.store_id
+  };
+  const rawProduct = normalizeProductForLabel(await findProductForLabel(previewPayload, user));
+  assertCanPrintSulStoreLabel(user, rawProduct.store_id);
+  const request = resolveLabelRequest({ ...previewPayload, quantity: 1 }, rawProduct);
+  const product = applyLabelBarcodeToProduct(rawProduct, request);
   const config = getArgoxLabelConfig();
   const template = findTemplate(request.template_id);
   const previewElements = buildLabelPreviewElements(product, request, config);
   const command = buildPrinterCommand(product, request, config);
+  const agentItems = await buildAgentItemsFromPrintPlan(enrichedPayload, user, plan, request, config);
+  const labelDebug = {
+    store_id: product.store_id,
+    loja: product.store_id,
+    label_header: resolveLabelHeaderText(product.store_id),
+    barcode_encoded_value: product.barcode_encoded_value || product.label_barcode_value || product.barcode,
+    barcode_human_text: product.barcode_human_text || product.label_barcode_human_text || product.sku,
+    agent_payload_marca: agentItems[0]?.marca,
+    agent_payload_loja: agentItems[0]?.loja,
+    agent_payload_store_id: agentItems[0]?.store_id,
+    ...(product.label_store_trace || {}),
+    ...buildPrintPlanLogFields(plan, agentItems)
+  };
   return {
     success: true,
     mode: "preview",
@@ -869,42 +1276,89 @@ async function buildLabelPreview(payload = {}, user = {}) {
     template,
     product,
     request,
+    print_plan: plan,
     preview_lines: buildPreviewLines(product, request),
     preview_elements: previewElements,
     preview_html: buildPreviewHtml(buildPreviewLines(product, request)),
     command_preview: command,
-    agent_payload: buildAgentPrintPayload(product, request, config),
+    agent_payload: agentItems.length <= 1 ? (agentItems[0] || null) : agentItems,
+    agent_items_count: agentItems.length,
     agent_url: config.agent_url,
-    warnings: product.barcode ? [] : ["Produto sem codigo de barras. A etiqueta usara SKU/codigo como texto."]
+    label_debug: labelDebug,
+    ...(isLabelStoreDebugEnabled() ? { label_store_debug: labelDebug } : {}),
+    warnings: plan.safe_test_mode && plan.total_labels > 1
+      ? ["ARGOX_SAFE_TEST_MODE ativo: o agente limitará a 1 etiqueta real."]
+      : []
   };
 }
 
 async function printLabel(payload = {}, user = {}) {
-  const preview = await buildLabelPreview(payload, user);
-  const prn = writePrnFile(preview.command_preview, preview.product, preview.request);
+  const enrichedPayload = await enrichLabelPrintPayloadStore(payload, user);
+  const plan = await resolveLabelPrintPlan(enrichedPayload, user);
+  const previewPayload = {
+    ...enrichedPayload,
+    variation_id: plan.preview_variation_id || payload.variation_id || payload.variationId || "",
+    store_id: plan.store_id,
+    loja: plan.store_id
+  };
+  const rawProduct = normalizeProductForLabel(await findProductForLabel(previewPayload, user));
+  assertCanPrintSulStoreLabel(user, rawProduct.store_id);
+  const request = resolveLabelRequest({ ...previewPayload, quantity: 1 }, rawProduct);
+  const product = applyLabelBarcodeToProduct(rawProduct, request);
+  const config = getArgoxLabelConfig();
+  const template = findTemplate(request.template_id);
+  const previewElements = buildLabelPreviewElements(product, request, config);
+  const command = buildPrinterCommand(product, request, config);
+  const agentItems = await buildAgentItemsFromPrintPlan(enrichedPayload, user, plan, request, config);
+  const prn = writePrnFile(command, product, request, { config });
+  const language = resolveArgoxLanguage(config);
   const status = "agent_ready";
-  const message = "Etiqueta PPLB pronta. Envie ao Agente Argox local ou baixe o PRN como fallback.";
+  const message = plan.total_labels > 1
+    ? `${plan.total_labels} etiquetas prontas (${plan.print_quantity_mode_label}). Envie ao Agente Argox local.`
+    : "Etiqueta pronta. Envie ao Agente Argox local ou baixe o PRN como fallback.";
+  const planLog = buildPrintPlanLogFields(plan, agentItems);
   appendPrintLog({
-    product_id: preview.product.product_id,
-    sku: preview.product.sku,
-    barcode: preview.product.barcode,
-    template_id: preview.template.id,
-    quantity: preview.request.quantity,
-    store_id: preview.product.store_id,
+    product_id: previewPayload.product_id || previewPayload.productId || product.product_id,
+    sku: product.sku,
+    barcode: product.barcode,
+    barcode_encoded_value: product.barcode_encoded_value || product.barcode,
+    barcode_human_text: product.barcode_human_text || product.label_barcode_human_text || product.sku,
+    template_id: template.id,
+    quantity: plan.quantity_requested,
+    store_id: plan.store_id,
     user_id: user?.id || user?.email || "",
-    printer_name: preview.config.printer_name,
+    printer_name: config.printer_name,
     status,
     error_message: "",
-    file_name: prn.filename
+    file_name: prn.filename,
+    ...planLog
   });
   return {
-    ...preview,
+    success: true,
     mode: "print",
+    config,
+    template,
+    product,
+    request,
+    print_plan: plan,
+    preview_lines: buildPreviewLines(product, request),
+    preview_elements: previewElements,
+    preview_html: buildPreviewHtml(buildPreviewLines(product, request)),
+    command_preview: command,
+    agent_payload: agentItems.length <= 1 ? (agentItems[0] || null) : agentItems,
+    agent_items_count: agentItems.length,
+    agent_url: config.agent_url,
+    label_debug: {
+      store_id: product.store_id,
+      label_header: resolveLabelHeaderText(product.store_id),
+      ...planLog
+    },
     print_status: status,
     message,
     prn,
-    agent_payload: preview.agent_payload,
-    agent_url: preview.agent_url
+    warnings: plan.safe_test_mode && plan.total_labels > 1
+      ? ["ARGOX_SAFE_TEST_MODE ativo: o agente limitará a 1 etiqueta real."]
+      : []
   };
 }
 
@@ -980,8 +1434,20 @@ module.exports = {
   buildArgoxPplaCommand,
   buildArgoxPplbCommand,
   buildAgentPrintPayload,
+  resolveSafeTestMode,
+  summarizeCommand,
+  validatePplaCommand,
   buildLabelPreview,
   printLabel,
+  resolveLabelPrintPlan,
+  enrichLabelPrintPayloadStore,
+  PRINT_QUANTITY_MODES,
   buildTestPrint,
-  getPrnFile
+  getPrnFile,
+  resolveLabelPriceMode,
+  assertValidLabelPrice,
+  resolveLabelHeaderText,
+  assertCanPrintSulStoreLabel,
+  resolveLabelBarcode,
+  assertValidLabelBarcode
 };

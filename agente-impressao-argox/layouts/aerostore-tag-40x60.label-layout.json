@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "id": "aerostore-tag-40x60",
+  "name": "AEROSTORE Tag 40x60 (aprovado)",
+  "source": "code-export",
+  "canvas": {
+    "width_px": 320,
+    "height_px": 480,
+    "dpi": 203,
+    "label_width_mm": 40,
+    "label_height_mm": 60,
+    "price_band_mm": 12
+  },
+  "constants": {
+    "top_block_offset_px": 60,
+    "barcode_bar_height_px": 64,
+    "barcode_bar_lift_px": 4,
+    "barcode_footer_gap_mm": 3
+  },
+  "elements": [
+    {
+      "role": "brand",
+      "x": -5,
+      "y": 76,
+      "width": 300,
+      "fontSize": 31,
+      "fontFamily": "Arial",
+      "bold": true,
+      "align": "center",
+      "maxLines": 1
+    },
+    {
+      "role": "name",
+      "x": -5,
+      "y": 110,
+      "width": 300,
+      "fontSize": 24,
+      "fontFamily": "Arial",
+      "bold": true,
+      "align": "center",
+      "maxLines": 2
+    },
+    {
+      "role": "size_color",
+      "x": -5,
+      "y": 162,
+      "width": 300,
+      "fontSize": 22,
+      "fontFamily": "Arial",
+      "bold": true,
+      "align": "center",
+      "maxLines": 1
+    },
+    {
+      "role": "sku",
+      "x": -5,
+      "y": 188,
+      "width": 300,
+      "fontSize": 19,
+      "fontFamily": "Arial",
+      "bold": true,
+      "align": "center",
+      "maxLines": 1
+    },
+    {
+      "role": "barcode",
+      "x": 10,
+      "y": 253,
+      "width": 300,
+      "height": 64,
+      "fontSize": 10,
+      "fontFamily": "Arial",
+      "bold": true,
+      "align": "center",
+      "maxLines": 1,
+      "isBarcode": true,
+      "renderBarcodeText": false
+    },
+    {
+      "role": "barcode_text",
+      "x": 10,
+      "y": 324,
+      "width": 300,
+      "height": 36,
+      "fontSize": 16,
+      "fontFamily": "Arial",
+      "bold": true,
+      "align": "center",
+      "maxLines": 2,
+      "lineHeight": 17,
+      "sampleTextLines": [
+        "AERO-000078",
+        "BEGE-GG"
+      ]
+    },
+    {
+      "role": "code",
+      "x": -5,
+      "y": 388,
+      "width": 300,
+      "fontSize": 18,
+      "fontFamily": "Arial",
+      "bold": true,
+      "align": "center",
+      "maxLines": 1
+    },
+    {
+      "role": "price",
+      "x": -5,
+      "y": 440,
+      "width": 300,
+      "fontSize": 28,
+      "fontFamily": "Arial",
+      "bold": true,
+      "align": "center",
+      "maxLines": 1
+    }
+  ],
+  "notes": [
+    "Snapshot do layout aprovado exportado do codigo atual.",
+    "Use como referencia no Penpot ou como entrada futura do agente (ARGOX_LABEL_LAYOUT_PATH).",
+    "Camadas no Penpot devem usar prefixo role: com as mesmas roles deste arquivo."
+  ]
+}

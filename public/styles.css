@@ -12344,6 +12344,7 @@ body.theme-light .pdv-payment-installments-select {
 
 .pdv-label-print-product,
 .pdv-label-print-form,
+.pdv-label-print-plan,
 .pdv-label-print-config,
 .pdv-label-preview-card {
   border: 1px solid rgba(148, 163, 184, 0.14);
@@ -12400,6 +12401,64 @@ body.theme-light .pdv-payment-installments-select {
   background: rgba(3, 7, 9, 0.88);
   color: rgba(248, 250, 252, 0.96);
   padding: 0 12px;
+}
+
+.pdv-label-print-plan {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.pdv-label-print-plan strong {
+  display: inline;
+  color: rgba(248, 250, 252, 0.96);
+  font-weight: 600;
+}
+
+.pdv-label-print-plan-lines {
+  display: grid;
+  gap: 6px;
+}
+
+.pdv-label-print-plan-lines p {
+  margin: 0;
+  color: rgba(248, 250, 252, 0.92);
+}
+
+.pdv-label-print-plan-variations {
+  display: grid;
+  gap: 6px;
+}
+
+.pdv-label-print-plan-variations ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+.pdv-label-print-plan-variations li {
+  color: rgba(226, 232, 240, 0.94);
+}
+
+.pdv-label-print-plan-warning {
+  margin: 8px 0 0;
+  color: #fbbf24;
+  font-size: 0.92rem;
+}
+
+.pdv-label-print-plan-note {
+  margin: 6px 0 0;
+  color: rgba(148, 163, 184, 0.92);
+  font-size: 0.88rem;
+}
+
+.pdv-label-print-plan small,
+.pdv-label-print-plan.muted {
+  color: rgba(148, 163, 184, 0.92);
 }
 
 .pdv-label-print-form small {

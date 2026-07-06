@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "id": "aerostore-tag-40x60",
+  "name": "AEROSTORE Tag 40x60",
+  "source": "penpot-flat-export",
+  "canvas": {
+    "width_px": 320,
+    "height_px": 480,
+    "dpi": 203,
+    "label_width_mm": 40,
+    "label_height_mm": 60,
+    "price_band_mm": 12
+  },
+  "constants": {},
+  "elements": [
+    {
+      "role": "brand",
+      "x": -5,
+      "y": 76,
+      "width": 300,
+      "height": 34,
+      "align": "center",
+      "fontFamily": "Arial",
+      "fontSize": 31,
+      "bold": true,
+      "maxLines": 1
+    },
+    {
+      "role": "name",
+      "x": -5,
+      "y": 110,
+      "width": 300,
+      "height": 52,
+      "align": "center",
+      "fontFamily": "Arial",
+      "fontSize": 24,
+      "bold": true,
+      "maxLines": 2
+    },
+    {
+      "role": "size_color",
+      "x": -5,
+      "y": 162,
+      "width": 300,
+      "height": 26,
+      "align": "center",
+      "fontFamily": "Arial",
+      "fontSize": 22,
+      "bold": true,
+      "maxLines": 1
+    },
+    {
+      "role": "sku",
+      "x": -5,
+      "y": 188,
+      "width": 300,
+      "height": 22,
+      "align": "center",
+      "fontFamily": "Arial",
+      "fontSize": 19,
+      "bold": true,
+      "maxLines": 1
+    },
+    {
+      "role": "barcode",
+      "x": 10,
+      "y": 253,
+      "width": 300,
+      "height": 64,
+      "align": "center",
+      "fontFamily": "Arial",
+      "fontSize": 10,
+      "bold": true,
+      "maxLines": 1,
+      "isBarcode": true,
+      "renderBarcodeText": false
+    },
+    {
+      "role": "barcode_text",
+      "x": 10,
+      "y": 324,
+      "width": 300,
+      "height": 36,
+      "align": "center",
+      "fontFamily": "Arial",
+      "fontSize": 16,
+      "bold": true,
+      "maxLines": 2
+    },
+    {
+      "role": "perforation_guide",
+      "x": 0,
+      "y": 360,
+      "width": 320,
+      "height": 1,
+      "align": "center",
+      "fontFamily": "Arial",
+      "fontSize": 16,
+      "bold": true,
+      "maxLines": 1,
+      "guideOnly": true
+    },
+    {
+      "role": "code",
+      "x": -5,
+      "y": 388,
+      "width": 300,
+      "height": 18,
+      "align": "center",
+      "fontFamily": "Arial",
+      "fontSize": 18,
+      "bold": true,
+      "maxLines": 1
+    },
+    {
+      "role": "price",
+      "x": -5,
+      "y": 440,
+      "width": 300,
+      "height": 28,
+      "align": "center",
+      "fontFamily": "Arial",
+      "fontSize": 28,
+      "bold": true,
+      "maxLines": 1
+    }
+  ],
+  "notes": [
+    "Importado de export flat do Penpot.",
+    "Camadas devem usar prefixo role: (ex.: role:brand, role:barcode).",
+    "Barcode e texto dinamico continuam renderizados pelo agente Argox."
+  ]
+}

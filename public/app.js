@@ -6645,11 +6645,15 @@ async function searchPdvSaleProducts({ append = false } = {}) {
     }
     const exactIdentifier = normalizeText(query).toUpperCase();
     const nextItems = toArray(response.items || response).map((item) => {
+      if (item?.skip_variation_modal && normalizeText(item.variation_id || "")) {
+        return item;
+      }
       if (!item?.normalized_product || !Array.isArray(item.variants)) return item;
       let directMatchKind = "";
       const matchedVariant = item.variants.find((variant) => {
-        const sku = normalizeText(variant.sku || "").toUpperCase();
-        const barcode = normalizeText(variant.barcode || "").toUpperCase();
+        const sku = normalizeText(variant.sku || variant.codigo || "").toUpperCase();
+        const barcode = normalizeText(variant.barcode || variant.codigo_barras || variant.ean || "").toUpperCase();
+        const variationId = normalizeText(variant.variation_id || "").toUpperCase();
         if (!exactIdentifier) return false;
         if (barcode === exactIdentifier) {
           directMatchKind = "barcode";
@@ -6657,6 +6661,10 @@ async function searchPdvSaleProducts({ append = false } = {}) {
         }
         if (sku === exactIdentifier) {
           directMatchKind = "sku";
+          return true;
+        }
+        if (variationId === exactIdentifier) {
+          directMatchKind = "variation_id";
           return true;
         }
         return false;
@@ -6718,7 +6726,10 @@ async function searchPdvSaleProducts({ append = false } = {}) {
     };
     state.pdvSale.productSearchError = "";
     const autoAddItem = !isAppending
-      ? nextItems.find((item) => item?.direct_match_kind === "barcode" && normalizeText(item.variation_id || ""))
+      ? nextItems.find((item) => (
+        ["barcode", "sku", "variation_id"].includes(item?.direct_match_kind)
+        && normalizeText(item.variation_id || "")
+      ))
       : null;
     if (autoAddItem) {
       const autoAddStatus = normalizeText(autoAddItem.status || autoAddItem.variation_status || "").toLowerCase();
@@ -12274,6 +12285,10 @@ function getPdvProductLabelPrintState() {
     config: null,
     templateId: "aerostore_tag_40x60_2c",
     quantity: 1,
+    printQuantityMode: "manual",
+    printPlan: null,
+    bulkPrintConfirmed: false,
+    manualOverStockConfirmed: false,
     showPrice: true,
     priceWithCents: true,
     priceMode: "normal",
@@ -12338,10 +12353,11 @@ async function sendLabelsToArgoxAgent(agentPayload = null, agentUrl = "") {
   if (!agentPayload) {
     throw new Error("Payload do agente ausente.");
   }
+  const bodyPayload = Array.isArray(agentPayload) ? agentPayload : agentPayload;
   const response = await fetch(`${url}/imprimir`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(agentPayload)
+    body: JSON.stringify(bodyPayload)
   });
   let data = {};
   try {
@@ -12464,6 +12480,48 @@ function buildPdvLabelPhotoMockup(preview = null) {
   `;
 }
 
+function buildPdvLabelPrintPlanSummaryHtml(printPlan = null, agentStatus = null) {
+  if (!printPlan) {
+    return "";
+  }
+  const modeLabel = normalizeText(printPlan.print_quantity_mode_label || "Quantidade manual");
+  const storeLabel = normalizeText(
+    printPlan.store_label
+    || formatStoreIdLabel(printPlan.store_id || getCurrentPdvStoreId() || "")
+  );
+  const totalLabels = Math.max(0, Number(printPlan.total_labels || 0));
+  const entries = toArray(printPlan.entries);
+  const variationItems = entries.map((entry) => {
+    const variantLabel = normalizeText(entry.variant_label || [entry.color, entry.size].filter(Boolean).join(" / "));
+    const sku = normalizeText(entry.sku || "-");
+    const qty = Math.max(0, Number(entry.quantity || 0));
+    const qtyLabel = qty === 1 ? "etiqueta" : "etiquetas";
+    return `<li>${escapeHtml(variantLabel || sku)} — ${escapeHtml(sku)} — ${qty} ${qtyLabel}</li>`;
+  }).join("");
+  const warnings = [];
+  if (printPlan.manual_over_stock_warning) {
+    warnings.push(`<p class="pdv-label-print-plan-warning">${escapeHtml(printPlan.manual_over_stock_message || "Quantidade maior que o estoque disponível. Confirme se deseja imprimir mesmo assim.")}</p>`);
+  }
+  if (parseArgoxAgentSafeTestMode(agentStatus)) {
+    warnings.push(`<p class="pdv-label-print-plan-warning">${escapeHtml(buildArgoxAgentSafeTestWarning(totalLabels))}</p>`);
+  }
+  if (printPlan.requires_confirmation) {
+    warnings.push(`<p class="pdv-label-print-plan-note">Impressões acima de 10 etiquetas pedem confirmação extra.</p>`);
+  }
+  return `
+    <section class="pdv-label-print-plan">
+      <span>Resumo da impressão</span>
+      <div class="pdv-label-print-plan-lines">
+        <p><strong>Modo:</strong> ${escapeHtml(modeLabel)}</p>
+        <p><strong>Loja:</strong> ${escapeHtml(storeLabel || "-")}</p>
+        <p><strong>Total de etiquetas:</strong> ${totalLabels}</p>
+        ${variationItems ? `<div class="pdv-label-print-plan-variations"><strong>Variações:</strong><ul>${variationItems}</ul></div>` : ""}
+      </div>
+      ${warnings.join("")}
+    </section>
+  `;
+}
+
 function buildPdvLabelPrintDrawer() {
   const labelState = getPdvProductLabelPrintState();
   if (!labelState.open) return "";
@@ -12499,6 +12557,11 @@ function buildPdvLabelPrintDrawer() {
   const agentReady = Boolean(agentStatus?.conectada);
   const agentDryRun = Boolean(agentStatus?.dry_run || agentStatus?.simulado);
   const previewMode = labelState.previewMode === "photo" ? "photo" : "technical";
+  const printPlan = labelState.printPlan || preview?.print_plan || null;
+  const isManualQuantityMode = normalizeText(labelState.printQuantityMode || "manual") === "manual";
+  const planSummaryHtml = printPlan
+    ? buildPdvLabelPrintPlanSummaryHtml(printPlan, agentStatus)
+    : (isManualQuantityMode ? "" : `<section class="pdv-label-print-plan muted"><span>Altere o modo ou aguarde o resumo da impressão.</span></section>`);
   const templateOptions = templates.length
     ? templates.map((template) => `<option value="${escapeHtml(template.id)}"${labelState.templateId === template.id ? " selected" : ""}>${escapeHtml(template.name || template.id)}</option>`).join("")
     : `<option value="aerostore_tag_40x60_2c">AEROSTORE Tag Roupa 40x60 2 colunas</option>`;
@@ -12553,16 +12616,27 @@ function buildPdvLabelPrintDrawer() {
             <input type="hidden" name="productId" value="${escapeHtml(labelState.productId || "")}" />
             ${variants.length ? `
               <label>Variacao da etiqueta
-                <select name="variationId" data-pdv-label-variation-select="true">${variationOptions}</select>
+                <select name="variationId" data-pdv-label-variation-select="true" data-pdv-label-refresh-plan="true">${variationOptions}</select>
                 <small>Cada impressao usa SKU, barcode, cor e tamanho da variacao selecionada.</small>
               </label>
             ` : ""}
             <label>Modelo da etiqueta
               <select name="templateId">${templateOptions}</select>
             </label>
-            <label>Quantidade
-              <input name="quantity" type="number" min="1" max="500" value="${escapeHtml(String(labelState.quantity || 1))}" />
+            <label>Modo de impressão
+              <select name="printQuantityMode" data-pdv-label-refresh-plan="true">
+                <option value="manual"${labelState.printQuantityMode === "manual" ? " selected" : ""}>Quantidade manual</option>
+                <option value="variant_stock"${labelState.printQuantityMode === "variant_stock" ? " selected" : ""}>Estoque da variação</option>
+                <option value="all_variants_stock"${labelState.printQuantityMode === "all_variants_stock" ? " selected" : ""}>Todas as variações</option>
+                <option value="one_per_variant"${labelState.printQuantityMode === "one_per_variant" ? " selected" : ""}>1 por variação</option>
+              </select>
+              <small>Usa estoque da loja ativa${storeLabel ? ` (${escapeHtml(storeLabel)})` : ""}.</small>
             </label>
+            ${isManualQuantityMode ? `
+            <label>Quantidade
+              <input name="quantity" type="number" min="1" max="500" value="${escapeHtml(String(labelState.quantity || 1))}" data-pdv-label-refresh-plan="true" />
+            </label>
+            ` : ""}
             <label>Preco
               <select name="showPrice">
                 <option value="1"${labelState.showPrice ? " selected" : ""}>Mostrar preco</option>
@@ -12582,25 +12656,26 @@ function buildPdvLabelPrintDrawer() {
               </select>
               ${hasPromotionalPrice ? `<small>Etiqueta promocional: DE ${currency(priceValue)} / POR ${currency(promotionalPriceValue)}</small>` : `<small>Cadastre um preco promocional valido no produto para imprimir DE/POR.</small>`}
             </label>
-            <label>Nome
+            <label>Nome do produto
               <select name="showName">
                 <option value="1"${labelState.showName ? " selected" : ""}>Mostrar nome</option>
                 <option value="0"${!labelState.showName ? " selected" : ""}>Ocultar nome</option>
               </select>
             </label>
-            <label>Marca
+            <label>Cabeçalho da loja
               <select name="showBrand">
-                <option value="1"${labelState.showBrand ? " selected" : ""}>Mostrar marca</option>
-                <option value="0"${!labelState.showBrand ? " selected" : ""}>Ocultar marca</option>
+                <option value="1"${labelState.showBrand ? " selected" : ""}>Mostrar Casa Camborê / AEROSTORE</option>
+                <option value="0"${!labelState.showBrand ? " selected" : ""}>Ocultar cabeçalho</option>
               </select>
+              <small>Controla o topo da etiqueta conforme a loja (não usa marca do produto).</small>
             </label>
-            <label>SKU/codigo
+            <label>COD no rodapé
               <select name="showSku">
-                <option value="1"${labelState.showSku ? " selected" : ""}>Mostrar SKU</option>
-                <option value="0"${!labelState.showSku ? " selected" : ""}>Ocultar SKU</option>
+                <option value="1"${labelState.showSku ? " selected" : ""}>Mostrar COD.</option>
+                <option value="0"${!labelState.showSku ? " selected" : ""}>Ocultar COD.</option>
               </select>
             </label>
-            <label>Codigo de barras
+            <label>Código de barras
               <select name="showBarcode">
                 <option value="1"${labelState.showBarcode ? " selected" : ""}>Mostrar barcode</option>
                 <option value="0"${!labelState.showBarcode ? " selected" : ""}>Ocultar barcode</option>
@@ -12612,13 +12687,8 @@ function buildPdvLabelPrintDrawer() {
                 <option value="0"${!labelState.showSizeColor ? " selected" : ""}>Ocultar tamanho/cor</option>
               </select>
             </label>
-            <label>Loja
-              <select name="showStore">
-                <option value="0"${!labelState.showStore ? " selected" : ""}>Ocultar loja</option>
-                <option value="1"${labelState.showStore ? " selected" : ""}>Mostrar loja${storeLabel ? ` (${escapeHtml(storeLabel)})` : ""}</option>
-              </select>
-            </label>
           </form>
+          ${planSummaryHtml}
           <section class="pdv-label-print-config">
             <span>Config atual</span>
             <strong>${escapeHtml(config.label_language || "PPLB")} • ${escapeHtml(String(config.label_width_mm || 40))}x${escapeHtml(String(config.label_height_mm || 60))}mm • ${escapeHtml(String(config.label_columns || 2))} colunas • ${escapeHtml(String(config.dpi || 203))} DPI</strong>
@@ -12651,7 +12721,7 @@ function buildPdvLabelPrintDrawer() {
         </div>
         <footer class="pdv-label-print-footer">
           <button class="secondary-button" type="button" data-pdv-label-preview="true"${labelState.loading ? " disabled" : ""}>${labelState.loading ? "Gerando..." : "Gerar preview"}</button>
-          <button class="primary-button" type="button" data-pdv-label-print-submit="true"${labelState.loading ? " disabled" : ""}>${labelState.loading ? "Imprimindo..." : "Imprimir etiqueta"}</button>
+          <button class="primary-button" type="button" data-pdv-label-print-submit="true"${labelState.loading ? " disabled" : ""}>${labelState.loading ? "Imprimindo..." : (printPlan?.total_labels > 1 ? `Imprimir ${printPlan.total_labels} etiquetas` : "Imprimir etiqueta")}</button>
         </footer>
       </aside>
     </div>
@@ -12666,7 +12736,8 @@ function collectPdvLabelPrintForm() {
   labelState.productId = normalizeText(formData.get("productId") || labelState.productId || "");
   labelState.variationId = normalizeText(formData.get("variationId") || labelState.variationId || "");
   labelState.templateId = normalizeText(formData.get("templateId") || labelState.templateId || "aerostore_tag_40x60_2c");
-  labelState.quantity = Math.max(1, Math.min(500, Math.floor(toNumber(formData.get("quantity") || 1))));
+  labelState.printQuantityMode = normalizeText(formData.get("printQuantityMode") || labelState.printQuantityMode || "manual");
+  labelState.quantity = Math.max(1, Math.min(500, Math.floor(toNumber(formData.get("quantity") || labelState.quantity || 1))));
   labelState.showPrice = String(formData.get("showPrice") || "1") === "1";
   labelState.priceWithCents = String(formData.get("priceWithCents") || "1") === "1";
   labelState.priceMode = normalizeText(formData.get("priceMode") || "normal") === "promo_compare" ? "promo_compare" : "normal";
@@ -12675,11 +12746,19 @@ function collectPdvLabelPrintForm() {
   labelState.showName = String(formData.get("showName") || "1") === "1";
   labelState.showBrand = String(formData.get("showBrand") || "1") === "1";
   labelState.showSizeColor = String(formData.get("showSizeColor") || "1") === "1";
-  labelState.showStore = String(formData.get("showStore") || "0") === "1";
+  labelState.showStore = false;
+  const product = getPdvProductById(labelState.productId) || {};
+  const selectedVariant = toArray(product.variants).find((item) => {
+    return normalizeText(item.variation_id) === normalizeText(labelState.variationId);
+  }) || null;
+  const resolvedStoreId = normalizeText(getCurrentPdvStoreId() || selectedVariant?.store_id || product.store_id || product.loja || "");
   return {
     product_id: labelState.productId,
     variation_id: labelState.variationId,
+    store_id: resolvedStoreId,
+    loja: resolvedStoreId,
     template_id: labelState.templateId,
+    print_quantity_mode: labelState.printQuantityMode,
     quantity: labelState.quantity,
     show_price: labelState.showPrice,
     price_with_cents: labelState.priceWithCents,
@@ -12689,8 +12768,39 @@ function collectPdvLabelPrintForm() {
     show_name: labelState.showName,
     show_brand: labelState.showBrand,
     show_size_color: labelState.showSizeColor,
-    show_store: labelState.showStore
+    show_store: false
   };
+}
+
+async function refreshPdvLabelPrintPlanSummary({ render = true } = {}) {
+  const labelState = getPdvProductLabelPrintState();
+  const payload = collectPdvLabelPrintForm();
+  if (!payload?.product_id) {
+    labelState.printPlan = null;
+    labelState.bulkPrintConfirmed = false;
+  labelState.manualOverStockConfirmed = false;
+    if (render) renderPdvProductsOfficialFront();
+    return null;
+  }
+  labelState.bulkPrintConfirmed = false;
+  labelState.manualOverStockConfirmed = false;
+  try {
+    const [, planResponse] = await Promise.all([
+      fetchArgoxAgentStatus(labelState.config),
+      api("/api/pdv/labels/resolve-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      })
+    ]);
+    labelState.printPlan = planResponse?.print_plan || null;
+    labelState.error = "";
+  } catch (error) {
+    labelState.printPlan = null;
+    labelState.error = error.message || "Falha ao calcular resumo da impressão.";
+  }
+  if (render) renderPdvProductsOfficialFront();
+  return labelState.printPlan;
 }
 
 async function openPdvProductLabelPrint(productId = "") {
@@ -12704,6 +12814,9 @@ async function openPdvProductLabelPrint(productId = "") {
   labelState.variationId = normalizeText(firstVariant?.variation_id || "");
   labelState.preview = null;
   labelState.printResult = null;
+  labelState.printPlan = null;
+  labelState.bulkPrintConfirmed = false;
+  labelState.manualOverStockConfirmed = false;
   labelState.agentStatus = null;
   labelState.agentError = "";
   labelState.error = "";
@@ -12720,6 +12833,7 @@ async function openPdvProductLabelPrint(productId = "") {
     if (!labelState.templates.some((item) => item.id === labelState.templateId)) {
       labelState.templateId = normalizeText(configResponse?.default_template || labelState.templates[0]?.id || "aerostore_tag_40x60_2c");
     }
+    await refreshPdvLabelPrintPlanSummary({ render: false });
   } catch (error) {
     labelState.error = error.message || "Falha ao carregar configuracao de etiquetas.";
   } finally {
@@ -12753,6 +12867,7 @@ async function generatePdvProductLabelPreview() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+    labelState.printPlan = labelState.preview?.print_plan || labelState.printPlan;
     labelState.printResult = null;
     showFeedback("Preview da etiqueta gerado.", "success");
   } catch (error) {
@@ -12771,6 +12886,47 @@ async function printPdvProductLabel() {
     renderPdvProductsOfficialFront();
     return;
   }
+  let plan = labelState.printPlan;
+  if (!plan) {
+    try {
+      const resolved = await api("/api/pdv/labels/resolve-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      plan = resolved?.print_plan || null;
+      labelState.printPlan = plan;
+    } catch (error) {
+      labelState.error = error.message || "Falha ao calcular plano de impressão.";
+      renderPdvProductsOfficialFront();
+      return;
+    }
+  }
+  if (plan?.manual_over_stock_warning && !labelState.manualOverStockConfirmed) {
+    const confirmed = window.confirm(plan.manual_over_stock_message || "Quantidade maior que o estoque disponível. Confirme se deseja imprimir mesmo assim.");
+    if (!confirmed) {
+      return;
+    }
+    labelState.manualOverStockConfirmed = true;
+  }
+  await fetchArgoxAgentStatus(labelState.config);
+  const agentSafeTestMode = parseArgoxAgentSafeTestMode(labelState.agentStatus);
+  if (plan?.requires_confirmation && !labelState.bulkPrintConfirmed) {
+    const safeNote = agentSafeTestMode
+      ? `\n\n${buildArgoxAgentSafeTestWarning(plan.total_labels)}`
+      : "";
+    const confirmed = window.confirm(`Você vai imprimir ${plan.total_labels} etiquetas. Confirmar?${safeNote}`);
+    if (!confirmed) {
+      return;
+    }
+    labelState.bulkPrintConfirmed = true;
+  } else if (agentSafeTestMode && plan.total_labels > 1 && !labelState.bulkPrintConfirmed) {
+    const confirmed = window.confirm(`${buildArgoxAgentSafeTestWarning(plan.total_labels)} Continuar?`);
+    if (!confirmed) {
+      return;
+    }
+    labelState.bulkPrintConfirmed = true;
+  }
   labelState.loading = true;
   labelState.error = "";
   renderPdvProductsOfficialFront();
@@ -12782,15 +12938,17 @@ async function printPdvProductLabel() {
     });
     labelState.preview = result;
     labelState.printResult = result;
+    labelState.printPlan = result.print_plan || plan;
     let feedbackMessage = result.message || "Etiqueta preparada.";
     let feedbackType = "success";
     if (result.agent_payload) {
       try {
         const agentResult = await sendLabelsToArgoxAgent(result.agent_payload, result.agent_url);
+        const labelsCount = Number(agentResult.etiquetas || agentResult.quantidade_final || result.agent_items_count || 1);
         result.print_status = agentResult.dry_run ? "simulated_via_agent" : "printed_via_agent";
         feedbackMessage = agentResult.dry_run
-          ? `Simulacao OK (${agentResult.etiquetas || 1} etiqueta(s)). Arquivo salvo no agente: ${agentResult.arquivo || "output/dry-run.prn"}`
-          : `Etiqueta enviada para ${agentResult.impressora || "Argox"} (${agentResult.etiquetas || 1} copia(s), job ${agentResult.job_id || "-"}).`;
+          ? `Simulacao OK (${labelsCount} etiqueta(s)). Arquivo salvo no agente: ${agentResult.arquivo || "output/dry-run.prn"}`
+          : `${labelsCount} etiqueta(s) enviada(s) para ${agentResult.impressora || "Argox"} (job ${agentResult.job_id || "-"}).`;
         feedbackType = "success";
       } catch (agentError) {
         result.print_status = "agent_offline";
@@ -37116,6 +37274,14 @@ function handleDocumentSubmit(event) {
 }
 
 function handleDocumentChange(event) {
+  const pdvLabelPlanRefresh = event.target.closest("[data-pdv-label-refresh-plan]");
+  if (pdvLabelPlanRefresh) {
+    refreshPdvLabelPrintPlanSummary().catch((error) => {
+      handleUiError("Erro ao atualizar resumo de impressão", error);
+    });
+    return;
+  }
+
   const pdvCashTicketCheck = event.target.closest("[data-pdv-cash-ticket-check]");
   if (pdvCashTicketCheck) {
     updatePdvCashCloseTicketCheck(pdvCashTicketCheck.dataset.pdvCashTicketCheck || "", {

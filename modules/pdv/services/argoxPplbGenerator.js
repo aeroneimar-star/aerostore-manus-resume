@@ -1,5 +1,7 @@
 "use strict";
 
+const { resolveLabelHeaderText } = require("./argoxLabelStorePolicy");
+
 const DEFAULT_TEMPLATE_ID = "aerostore_tag_40x60_2c";
 
 const DEFAULT_LAYOUT = {
@@ -30,6 +32,74 @@ function normalizeText(value = "") {
 function normalizeNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function resolveArgoxLanguage(config = {}, item = {}) {
+  const raw = normalizeText(
+    item.language
+    || item.label_language
+    || config.label_language
+    || config.language
+    || process.env.ARGOX_LANGUAGE
+    || process.env.ARGOX_LABEL_LANGUAGE
+    || "PPLB"
+  ).toUpperCase();
+  return raw === "PPLA" ? "PPLA" : "PPLB";
+}
+
+function resolvePhysicalLanguage(config = {}, item = {}) {
+  const override = normalizeText(
+    item.physical_language
+    || item.raw_language
+    || config.physical_language
+    || config.raw_language
+    || process.env.ARGOX_PHYSICAL_LANGUAGE
+    || process.env.ARGOX_RAW_LANGUAGE
+    || ""
+  ).toUpperCase();
+  if (override === "PPLA" || override === "PPLB") return override;
+  return resolveArgoxLanguage(config, item);
+}
+
+function buildArgoxPplbMinimalCommand(config = {}) {
+  const labelWidthDots = Math.max(1, Math.floor(normalizeNumber(config.label_width_dots, 320)));
+  const labelHeightDots = Math.max(1, Math.floor(normalizeNumber(config.label_height_dots, 480)));
+  const x = Math.max(0, Math.floor(normalizeNumber(config.origin_x, 30)));
+  const yTitle = Math.max(0, Math.floor(normalizeNumber(config.title_y, 120)));
+  const yCode = Math.max(0, Math.floor(normalizeNumber(config.code_y, 170)));
+
+  return [
+    "\nN\n",
+    `q${labelWidthDots}\n`,
+    `Q${labelHeightDots}\n`,
+    `A${x},${yTitle},0,2,1,1,N,"TESTE AEROSTORE"\n`,
+    `A${x},${yCode},0,2,1,1,N,"COD 123456"\n`,
+    "P1\n"
+  ].join("");
+}
+
+function validatePplbMinimalCommand(command = "", options = {}) {
+  const text = String(command || "");
+  const errors = [];
+  if (!text.includes("\nN\n") && !/^\s*N\s*$/m.test(text)) {
+    errors.push("PPLB minimo deve conter comando N.");
+  }
+  if (!/\bq320\b/.test(text) && options.requireQ320 !== false) {
+    errors.push("PPLB minimo deve conter q320.");
+  }
+  if (!/\bQ480\b/.test(text)) {
+    errors.push("PPLB minimo deve conter Q480.");
+  }
+  if (!/\bP1\b/.test(text)) {
+    errors.push("PPLB minimo deve conter P1.");
+  }
+  if (/\bP20\b/.test(text)) {
+    errors.push("PPLB minimo nao pode conter P20.");
+  }
+  if (text.charCodeAt(0) === 0x02 || text.includes("\x02L")) {
+    errors.push("PPLB minimo nao deve usar envelope PPLA (STX L).");
+  }
+  return { ok: errors.length === 0, errors };
 }
 
 function limparPPLB(texto = "") {
@@ -143,7 +213,7 @@ function mapProductToPplbInput(product = {}, request = {}) {
 
   return {
     nome: product.name || "PRODUTO",
-    marca: product.brand || "AEROSTORE",
+    marca: resolveLabelHeaderText(product.store_id),
     cor: product.color || "",
     tamanho: product.size || "",
     sku,
@@ -173,7 +243,7 @@ function mapAgentItemToPplbInput(item = {}) {
 
   return {
     nome: item.nome || "PRODUTO",
-    marca: item.marca || "AEROSTORE",
+    marca: resolveLabelHeaderText(item.loja || item.store_id || ""),
     cor: item.cor || "",
     tamanho: item.tamanho || "",
     sku,
@@ -232,9 +302,12 @@ function buildArgoxPplbSingleLabel(input = {}, xOffset = 0, layout = DEFAULT_LAY
   if (input.show_price !== false) {
     if (input.show_compare_price && input.preco_original) {
       lines.push(buildArgoxPplbText(x, layout.y.de, `DE: ${input.preco_original}`, 2, 1, 1));
+      const saleLabel = input.preco_venda || "R$ 0,00";
+      lines.push(buildArgoxPplbText(x, layout.y.por, `POR: ${saleLabel}`, 4, 1, 1));
+    } else {
+      const saleLabel = input.preco_venda || "R$ 0,00";
+      lines.push(buildArgoxPplbText(x, layout.y.por, saleLabel, 4, 1, 1));
     }
-    const saleLabel = input.preco_venda || "R$ 0,00";
-    lines.push(buildArgoxPplbText(x, layout.y.por, `POR: ${saleLabel}`, 4, 1, 1));
   }
 
   return lines.filter(Boolean);
@@ -298,11 +371,18 @@ function buildAgentPrintPayload(product = {}, request = {}, config = {}) {
 
   const base = {
     nome: product.name || "PRODUTO",
-    marca: input.marca,
+    marca: resolveLabelHeaderText(product.store_id),
+    loja: product.store_id || "",
+    store_id: product.store_id || "",
+    variation_id: product.variation_id || "",
+    variant_barcode: product.variant_barcode || product.barcode || "",
     cor: product.color || "",
     tamanho: product.size || "",
     sku_variacao: product.sku || product.codigo || "",
-    codigo_barras: product.barcode || product.sku || "",
+    codigo_barras: product.label_barcode_value || product.barcode || "",
+    barcode_encoded_value: product.barcode_encoded_value || product.label_barcode_value || product.barcode || "",
+    barcode_human_text: product.barcode_human_text || product.label_barcode_human_text || product.sku || product.codigo || "",
+    label_barcode_symbology: product.label_barcode_symbology || "",
     preco_venda: fmtPreco(saleRaw),
     preco_original: input.show_compare_price ? fmtPreco(originalRaw) : "",
     show_compare_price: input.show_compare_price,
@@ -312,7 +392,12 @@ function buildAgentPrintPayload(product = {}, request = {}, config = {}) {
     show_sku: request.show_sku !== false,
     show_barcode: request.show_barcode !== false,
     show_price: request.show_price !== false,
-    colunas: columns
+    price_with_cents: request.price_with_cents !== false,
+    print_quantity_mode: request.print_quantity_mode || "",
+    colunas: columns,
+    template_id: request.template_id || DEFAULT_TEMPLATE_ID,
+    language: resolveArgoxLanguage(config),
+    label_language: resolveArgoxLanguage(config)
   };
 
   if (quantity <= 1) return base;
@@ -328,6 +413,10 @@ module.exports = {
   buildArgoxPplbBatch,
   buildArgoxPplbFromAgentItems,
   buildAgentPrintPayload,
+  buildArgoxPplbMinimalCommand,
+  validatePplbMinimalCommand,
   mapProductToPplbInput,
-  mapAgentItemToPplbInput
+  mapAgentItemToPplbInput,
+  resolveArgoxLanguage,
+  resolvePhysicalLanguage
 };

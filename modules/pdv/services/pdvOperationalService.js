@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 const fs = require("fs");
 const path = require("path");
@@ -18,6 +18,7 @@ const {
   buildDiscountAuthorizationFingerprint,
   buildDiscountAuthorizationFingerprintPayload
 } = require("./pdvControlService");
+const { deriveShortVariationScanCode } = require("./argoxLabelBarcode");
 
 const GENERAL_DISCOUNT_ALLOWED_PAYMENT_METHODS = new Set(["pix", "dinheiro"]);
 const GENERAL_DISCOUNT_IGNORED_PAYMENT_METHODS = new Set([
@@ -1392,7 +1393,9 @@ function buildProductSearchIdentifiers(product = {}) {
       variant.sku,
       variant.codigo,
       variant.product_id,
-      variant.variation_id
+      variant.variation_id,
+      variant.label_scan_code,
+      deriveShortVariationScanCode(variant.variation_id)
     ])
   ].map((value) => normalizeCodeLookup(value)).filter(Boolean);
   return {
@@ -1459,6 +1462,80 @@ function productMatchesExactIdentifier(product = {}, query = "") {
     || (digitsQuery && identifiers.textCodeDigits.includes(digitsQuery))
     || (digitsQuery && identifiers.digitCodes.includes(digitsQuery))
   );
+}
+
+function findMatchingVariantForQuery(product = {}, query = "") {
+  const variants = Array.isArray(product.variants) ? product.variants : [];
+  if (!variants.length) {
+    return null;
+  }
+  const textQuery = normalizeCodeLookup(query);
+  const digitsQuery = normalizeDigits(query);
+  if (!textQuery && !digitsQuery) {
+    return null;
+  }
+  return variants.find((variant) => {
+    const textCodes = [
+      variant.sku,
+      variant.codigo,
+      variant.variation_id,
+      variant.product_id,
+      variant.label_scan_code,
+      deriveShortVariationScanCode(variant.variation_id)
+    ].map((value) => normalizeCodeLookup(value)).filter(Boolean);
+    const digitCodes = [
+      variant.barcode,
+      variant.codigo_barras,
+      variant.ean,
+      variant.gtin,
+      variant.gtin_ean
+    ].map((value) => normalizeDigits(value)).filter(Boolean);
+    const textCodeDigits = textCodes.map((value) => normalizeDigits(value)).filter(Boolean);
+    return Boolean(
+      (textQuery && textCodes.includes(textQuery))
+      || (digitsQuery && digitCodes.includes(digitsQuery))
+      || (digitsQuery && textCodeDigits.includes(digitsQuery))
+    );
+  }) || null;
+}
+
+function resolveDirectVariationMatchKind(variant = {}, query = "") {
+  const textQuery = normalizeCodeLookup(query);
+  const digitsQuery = normalizeDigits(query);
+  const scanCode = normalizeCodeLookup(variant.label_scan_code || deriveShortVariationScanCode(variant.variation_id || ""));
+  if (textQuery && scanCode && scanCode === textQuery) {
+    return "barcode";
+  }
+  const barcodeDigits = normalizeDigits(variant.barcode || variant.codigo_barras || variant.ean || "");
+  const barcodeText = normalizeCodeLookup(variant.barcode || variant.codigo_barras || "");
+  if ((digitsQuery && barcodeDigits && barcodeDigits === digitsQuery) || (textQuery && barcodeText && barcodeText === textQuery)) {
+    return "barcode";
+  }
+  if (textQuery && normalizeCodeLookup(variant.variation_id || "") === textQuery) {
+    return "variation_id";
+  }
+  return "sku";
+}
+
+function applyDirectVariationMatchToProduct(product = {}, query = "") {
+  if (!product?.normalized_product) {
+    return product;
+  }
+  const matchedVariant = findMatchingVariantForQuery(product, query);
+  if (!matchedVariant) {
+    return product;
+  }
+  return {
+    ...product,
+    ...matchedVariant,
+    product_id: matchedVariant.variation_id,
+    variation_id: matchedVariant.variation_id,
+    normalized_parent_product_id: product.normalized_parent_product_id || product.parent_product_id || product.product_id,
+    direct_variation_match: true,
+    direct_match_kind: resolveDirectVariationMatchKind(matchedVariant, query),
+    skip_variation_modal: true,
+    normalized_product: true
+  };
 }
 
 const PRODUCT_SOURCE_PRIORITY = {
@@ -1988,6 +2065,10 @@ function filterUnifiedProducts(items = [], { storeId = "", status = "", pendingO
 async function searchNormalizedProductParents(query = "", storeId = "", limit = 24) {
   const normalizedQuery = normalizeText(query);
   const like = `%${normalizedQuery.toLowerCase()}%`;
+  const scanCodeQuery = normalizeCodeLookup(query).toUpperCase();
+  const scanCodePrefix = scanCodeQuery && /^[A-Z0-9]{6,14}$/.test(scanCodeQuery)
+    ? `${scanCodeQuery}%`
+    : "";
   const normalizedStore = normalizeStoreKey(storeId || "");
   const rows = await all(
     `SELECT
@@ -2025,10 +2106,11 @@ async function searchNormalizedProductParents(query = "", storeId = "", limit = 
        OR lower(p.base_sku) LIKE ?
        OR lower(v.sku) LIKE ?
        OR lower(COALESCE(v.barcode, '')) LIKE ?
+       OR (? != '' AND upper(replace(replace(replace(v.id, 'VAR_', ''), '-', ''), '_', '')) LIKE ?)
        )
      ORDER BY p.updated_at DESC, p.id DESC, v.created_at, v.id
      LIMIT ?`,
-    [normalizedStore, normalizedStore, like, like, like, like, Math.max(1, Number(limit || 24)) * 20]
+    [normalizedStore, normalizedStore, like, like, like, like, scanCodePrefix, scanCodePrefix, Math.max(1, Number(limit || 24)) * 20]
   );
   const parents = new Map();
   rows.forEach((row) => {
@@ -2082,6 +2164,7 @@ async function searchNormalizedProductParents(query = "", storeId = "", limit = 
       codigo: row.sku,
       barcode: row.barcode || "",
       codigo_barras: row.barcode || "",
+      label_scan_code: deriveShortVariationScanCode(row.variation_id),
       nome: row.name,
       cor: normalizeText(attributes.color || ""),
       color: normalizeText(attributes.color || ""),
@@ -2158,6 +2241,9 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
   try {
     resultsBySource.normalized = await searchNormalizedProductParents(query, storeId, safeLimit);
   } catch (error) {
+    if (process.env.PDV_SEARCH_DEBUG === "1") {
+      console.error("[PDV_SEARCH_NORMALIZED_ERROR]", error.message);
+    }
     resultsBySource.normalized = [];
   }
   try {
@@ -2182,6 +2268,7 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
     const pricedExactNormalized = await applyCatalogPromotionalPriceOverrides(exactNormalized);
     const unified = pricedExactNormalized
       .map((item) => enrichProductOperationalAvailability(item, storeId))
+      .map((item) => applyDirectVariationMatchToProduct(item, query))
       .sort((left, right) => scoreProductSearchMatch(right, query) - scoreProductSearchMatch(left, query))
       .slice(0, safeLimit);
     return {
@@ -2386,6 +2473,7 @@ async function searchProductsDetailed(query = "", { storeId = "", page = 1, limi
   const pricedUnified = await applyCatalogPromotionalPriceOverrides(Array.from(mergedMap.values()));
   const unified = pricedUnified
     .map((item) => enrichProductOperationalAvailability(item, storeId))
+    .map((item) => applyDirectVariationMatchToProduct(item, query))
     .filter((item) => strictCodeSearch
       ? productMatchesExactIdentifier(item, query)
       : productMatchesTokenSearch(item, query, searchTokens))

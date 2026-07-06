@@ -6,6 +6,8 @@ const {
   getLabelTemplates,
   buildLabelPreview,
   printLabel,
+  resolveLabelPrintPlan,
+  enrichLabelPrintPayloadStore,
   buildTestPrint,
   getPrnFile
 } = require("../services/pdvLabelPrintService");
@@ -41,6 +43,19 @@ router.get("/config", (req, res) => {
 router.get("/templates", (req, res) => {
   if (!ensureLabelAccess(req, res)) return;
   res.json({ items: getLabelTemplates() });
+});
+
+router.post("/resolve-plan", async (req, res) => {
+  try {
+    if (!ensureLabelAccess(req, res)) return;
+    const enrichedPayload = await enrichLabelPrintPayloadStore(req.body || {}, req.user || {});
+    res.json({
+      success: true,
+      print_plan: await resolveLabelPrintPlan(enrichedPayload, req.user || {})
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ error: error.message || "Falha ao resolver plano de impressao." });
+  }
 });
 
 router.post("/preview", async (req, res) => {
