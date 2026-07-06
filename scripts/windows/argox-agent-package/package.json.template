@@ -1,0 +1,10 @@
+{
+  "name": "aerostore-argox-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bundle portatil AEROSTORE Argox agent para lojas",
+  "dependencies": {
+    "bwip-js": "^4.5.1",
+    "sqlite3": "^5.1.7"
+  }
+}

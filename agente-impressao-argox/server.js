@@ -27,6 +27,8 @@ const { FINAL_LABEL_LAYOUT } = require(path.join(__dirname, "lib", "labelGridSpe
 const { resolveLabelHeaderText } = require(path.join(__dirname, "..", "modules", "pdv", "services", "argoxLabelStorePolicy"));
 const { readEnvBooleanFromProcess, getEnvRaw } = require(path.join(__dirname, "..", "modules", "pdv", "services", "argoxEnvBoolean"));
 
+const AGENT_PACKAGE = require("./package.json");
+
 const PORT = Number(process.env.ARGOX_AGENT_PORT || 4000);
 const PRINTER_NAME = String(process.env.ARGOX_PRINTER_NAME || "").trim();
 const DEFAULT_LANGUAGE = resolvePhysicalLanguage({}, {});
@@ -46,6 +48,25 @@ const ALLOWED_ORIGIN_HINTS = String(process.env.ARGOX_AGENT_ORIGINS || "localhos
 
 let lastDryRunFile = null;
 let lastPrintLog = null;
+let lastAgentError = null;
+
+function readPackageVersion() {
+  const candidates = [
+    path.join(__dirname, "..", "package-version.txt"),
+    path.join(__dirname, "package-version.txt")
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return String(fs.readFileSync(candidate, "utf8")).trim();
+      }
+    } catch (_) {
+      // ignore read errors
+    }
+  }
+  return String(process.env.ARGOX_PACKAGE_VERSION || "").trim();
+}
+
 const RAW_TRANSPORT = isTransportAvailable() ? "WINSPOOL_RAW" : "UNAVAILABLE";
 const ACTIVE_TRANSPORT = isWindowsDriverTransport({ print_transport: PRINT_TRANSPORT })
   ? "WINDOWS_DRIVER"
@@ -56,6 +77,9 @@ function logPrintEvent(event = {}) {
     at: new Date().toISOString(),
     ...event
   };
+  if (event.sucesso === false) {
+    lastAgentError = String(event.erro || event.error || "erro desconhecido");
+  }
   lastPrintLog = entry;
   console.log(`[ARGOX IMPRIMIR] ${JSON.stringify(entry)}`);
 }
@@ -395,8 +419,11 @@ const server = http.createServer(async (req, res) => {
     const language = DEFAULT_LANGUAGE;
     return responder(res, 200, {
       status: "online",
-      versao: "2.2.0",
+      versao: AGENT_PACKAGE.version,
+      agent_version: AGENT_PACKAGE.version,
+      package_version: readPackageVersion(),
       impressora: printerName,
+      printer_name: printerName,
       conectada: Boolean(printerName),
       dry_run: DRY_RUN,
       raw_env_dry_run: RAW_ENV_DRY_RUN,
@@ -414,7 +441,8 @@ const server = http.createServer(async (req, res) => {
       print_transport: PRINT_TRANSPORT,
       transporte: ACTIVE_TRANSPORT,
       ultimo_arquivo: lastDryRunFile,
-      ultimo_log: lastPrintLog
+      ultimo_log: lastPrintLog,
+      last_error: lastAgentError
     });
   }
 

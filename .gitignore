@@ -111,4 +111,5 @@ scripts/**/reports/
 scripts/**/exports/
 scripts/**/backups/
 docs/
+dist/
 modules/pdv/services/historicalSalesImportService.js

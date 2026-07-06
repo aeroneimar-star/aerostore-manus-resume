@@ -1,6 +1,6 @@
 {
   "name": "agente-impressao-argox",
-  "version": "2.1.0",
+  "version": "2.3.0",
   "description": "Agente local AEROSTORE para impressao Argox OS-214 via PPLA/PPLB RAW (Winspool)",
   "main": "server.js",
   "scripts": {
