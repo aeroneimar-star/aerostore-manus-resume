@@ -72,13 +72,16 @@ class MetaWhatsAppCloudProvider {
       dryRun: context.dryRun === undefined && context.dry_run === undefined
         ? isDryRunEnabled() || !enabled
         : Boolean(context.dryRun ?? context.dry_run) || !enabled,
-      token: String(context.token || process.env.WHATSAPP_CLOUD_TOKEN || "").trim(),
+      token: String(context.token || base.token || "").trim(),
       phoneNumberId: String(context.phoneNumberId || base.phoneNumberId || "").trim()
     };
   }
 
   getMessagesUrl(config) {
-    return `https://graph.facebook.com/${config.apiVersion || "v20.0"}/${config.phoneNumberId}/messages`;
+    const base = String(config.baseUrl || process.env.WHATSAPP_CLOUD_BASE_URL || "https://graph.facebook.com").replace(/\/+$/g, "");
+    const apiVersion = String(config.apiVersion || process.env.WHATSAPP_CLOUD_API_VERSION || "v24.0").trim();
+    const phoneNumberId = String(config.phoneNumberId || "").trim();
+    return `${base}/${apiVersion}/${phoneNumberId}/messages`;
   }
 
   getStatus(context = {}) {

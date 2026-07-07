@@ -103,6 +103,9 @@ const {
 const {
   registerProtectedWhatsappProviderRoutes
 } = require("./src/routes/whatsappProviderRoutes");
+const {
+  registerProtectedWhatsappCloudRoutes
+} = require("./src/routes/whatsappCloudRoutes");
 
 const CONFIG_DIR = path.join(__dirname, "config");
 const INSTANCE_CONFIG_ENV_PATH = String(process.env.AEROSTORE_INSTANCE_CONFIG || "").trim();
@@ -18756,6 +18759,7 @@ app.patch("/api/auth/change-password", handleAuthChangePassword);
 app.patch("/api/auth/force-change-password", handleAuthForceChangePassword);
 registerProtectedNotificationRoutes(app, { requireAnyPermission });
 registerProtectedWhatsappProviderRoutes(app, { requireAnyPermission });
+registerProtectedWhatsappCloudRoutes(app, { requireAnyPermission });
 app.get("/api/admin/users", requirePermission("can_manage_users"), listAdminUsers);
 app.post("/api/admin/users", requirePermission("can_manage_users"), createAdminUser);
 app.patch("/api/admin/users/:id", requirePermission("can_manage_users"), updateAdminUser);

@@ -6,7 +6,18 @@ const {
   hashPhone,
   buildTextMetadata
 } = require("./whatsappLogSanitizer");
-const { readBoolean } = require("./whatsappConfigService");
+const {
+  readBoolean,
+  resolveCloudPhoneNumberId,
+  resolveCloudBusinessAccountId,
+  resolveCloudAccessToken,
+  resolveCloudVerifyToken,
+  resolveCloudAppSecret,
+  resolveCloudAppId,
+  resolveCloudBaseUrl,
+  resolveCloudApiVersion,
+  isDryRunEnabled
+} = require("./whatsappConfigService");
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -117,24 +128,38 @@ function verifyMetaWebhookChallenge({ query = {}, expectedVerifyToken = "" } = {
 }
 
 function buildMetaCredentialsStatus(options = {}) {
-  const token = String(options.token ?? process.env.WHATSAPP_CLOUD_TOKEN ?? "").trim();
-  const phoneNumberId = String(options.phoneNumberId ?? process.env.WHATSAPP_CLOUD_PHONE_NUMBER_ID ?? "").trim();
-  const businessAccountId = String(options.businessAccountId ?? process.env.WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID ?? "").trim();
-  const verifyToken = String(options.verifyToken ?? process.env.WHATSAPP_CLOUD_VERIFY_TOKEN ?? "").trim();
-  const appSecret = String(options.appSecret ?? process.env.WHATSAPP_CLOUD_APP_SECRET ?? "").trim();
+  const token = String(options.token ?? resolveCloudAccessToken() ?? "").trim();
+  const phoneNumberId = String(options.phoneNumberId ?? resolveCloudPhoneNumberId() ?? "").trim();
+  const businessAccountId = String(options.businessAccountId ?? resolveCloudBusinessAccountId() ?? "").trim();
+  const verifyToken = String(options.verifyToken ?? resolveCloudVerifyToken() ?? "").trim();
+  const appSecret = String(options.appSecret ?? resolveCloudAppSecret() ?? "").trim();
+  const appId = String(options.appId ?? resolveCloudAppId() ?? "").trim();
   const cloudEnabled = readBoolean(options.cloudEnabled ?? process.env.WHATSAPP_CLOUD_ENABLED, false);
-  const dryRun = String(options.notificationDryRun ?? process.env.NOTIFICATION_DRY_RUN ?? "true").trim().toLowerCase() !== "false";
+  const dryRun = options.dryRun !== undefined
+    ? Boolean(options.dryRun)
+    : isDryRunEnabled();
+  const apiVersion = String(options.apiVersion ?? resolveCloudApiVersion() ?? "v24.0").trim();
+  const baseUrl = String(options.baseUrl ?? resolveCloudBaseUrl() ?? "https://graph.facebook.com").trim();
   return {
     provider: "meta_cloud",
+    enabled: cloudEnabled,
+    cloudEnabled,
+    dryRun,
+    configured: Boolean(cloudEnabled && !dryRun && token && phoneNumberId),
     hasToken: Boolean(token),
     hasPhoneNumberId: Boolean(phoneNumberId),
     hasBusinessAccountId: Boolean(businessAccountId),
     hasVerifyToken: Boolean(verifyToken),
     hasAppSecret: Boolean(appSecret),
+    hasAppId: Boolean(appId),
+    phoneNumberIdPresent: Boolean(phoneNumberId),
+    accessTokenPresent: Boolean(token),
+    wabaIdPresent: Boolean(businessAccountId),
     phoneNumberIdMasked: maskIdentifier(phoneNumberId),
     businessAccountIdMasked: maskIdentifier(businessAccountId),
-    dryRun,
-    cloudEnabled,
+    apiVersion,
+    baseUrl,
+    appId,
     canSendRealMessage: Boolean(cloudEnabled && !dryRun && token && phoneNumberId),
     timestamp: new Date().toISOString()
   };
