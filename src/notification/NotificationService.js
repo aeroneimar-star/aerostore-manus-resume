@@ -6,6 +6,61 @@ const {
   hashPhone,
   isWhatsAppCloudEnabled
 } = require("./providers/WhatsAppCloudProvider");
+const { defaultRegistry } = require("../whatsapp/WhatsAppProviderRegistry");
+const { getWhatsAppStoreConfig } = require("../whatsapp/whatsappStoreConfigService");
+const { normalizeStoreKey } = require("../../modules/pdv/utils/pdvStoreUtils");
+
+// Resolve storeId a partir de um cashback row (sem query assíncrona).
+// Tenta varias fontes e normaliza para a chave canônica usada em
+// whatsapp_store_configs.store_id (ex.: "vila", "sul", "botanico").
+// Se nada bater, retorna "" e o caller cai no provider legado.
+function resolveStoreIdForCashback(cashback = {}) {
+  const candidates = [
+    cashback.store,
+    cashback.store_id,
+    cashback.store_key,
+    cashback.contact_store,
+    cashback.preferred_store,
+    process.env.STORE_ID
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeStoreKey(candidate || "");
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function buildCashbackEarnedComponents(cashback = {}) {
+  return [{
+    type: "body",
+    parameters: [
+      { type: "text", text: getFirstName(cashback.customer_name) },
+      { type: "text", text: formatCurrencyBRL(cashback.generated_value || cashback.available_balance || 0) },
+      { type: "text", text: formatDateBR(cashback.valid_from || cashback.created_at) },
+      { type: "text", text: formatDateBR(cashback.expires_at) },
+      { type: "text", text: formatCurrencyBRL(cashback.minimum_purchase || 0) }
+    ]
+  }];
+}
+
+function buildCashbackReminderComponents(cashback = {}) {
+  return [{
+    type: "body",
+    parameters: [
+      { type: "text", text: getFirstName(cashback.customer_name) },
+      { type: "text", text: formatCurrencyBRL(getCashbackBalance(cashback)) },
+      { type: "text", text: formatDateBR(cashback.expires_at) },
+      { type: "text", text: formatCurrencyBRL(cashback.minimum_purchase || 0) }
+    ]
+  }];
+}
+
+function buildTestComponents(parameters = []) {
+  return [{
+    type: "body",
+    parameters: parameters.map((text) => ({ type: "text", text: String(text ?? "") }))
+  }];
+}
 
 const REMINDER_TYPES = {
   CREDITED: "CREDITED",
@@ -95,6 +150,40 @@ class NotificationService {
     this.provider = options.provider || new WhatsAppCloudProvider();
   }
 
+  async resolveOperationalStoreConfig(storeId = "") {
+    if (!storeId) return null;
+    try {
+      const config = await getWhatsAppStoreConfig(storeId);
+      if (!config || config.status !== "active") return null;
+      return config;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async sendViaMetaCloud({ phone, storeId, storeConfig, templateName, languageCode, components, dryRun }) {
+    const config = storeConfig || (storeId ? await this.resolveOperationalStoreConfig(storeId) : null);
+    const resolvedStoreId = storeId || (config ? config.storeId : "") || "";
+    const context = {
+      storeId: resolvedStoreId,
+      storeConfig: config || undefined,
+      provider: "meta_cloud",
+      dryRun: Boolean(dryRun),
+      enabled: true
+    };
+    const payload = {
+      to: phone,
+      templateName,
+      languageCode: languageCode
+        || (config && config.templates && config.templates.language)
+        || process.env.WHATSAPP_TEMPLATE_LANG
+        || "pt_BR",
+      components: components || []
+    };
+    const provider = defaultRegistry.getProvider({ storeId: resolvedStoreId, provider: "meta_cloud" });
+    return provider.sendTemplate(context, payload);
+  }
+
   async hasNotificationLog({ cashbackId, customerId, eventType, templateName }) {
     if (!cashbackId || !eventType || !templateName) return false;
     const row = await get(
@@ -148,6 +237,7 @@ class NotificationService {
       eventType: CASHBACK_NOTIFICATION_EVENTS.EARNED,
       templateName,
       dryRun: options.dryRun ?? getNotificationDryRunDefault(),
+      components: buildCashbackEarnedComponents(cashback),
       sender: () => this.provider.sendCashbackNotification({
         phone: cashback.customer_phone,
         name: getFirstName(cashback.customer_name),
@@ -168,6 +258,7 @@ class NotificationService {
       eventType: CASHBACK_NOTIFICATION_EVENTS.EXPIRING_10_DAYS,
       templateName,
       dryRun: options.dryRun ?? getNotificationDryRunDefault(),
+      components: buildCashbackReminderComponents(cashback),
       sender: () => this.provider.sendCashbackAviso10Dias({
         phone: cashback.customer_phone,
         name: getFirstName(cashback.customer_name),
@@ -187,6 +278,7 @@ class NotificationService {
       eventType: CASHBACK_NOTIFICATION_EVENTS.EXPIRING_3_DAYS,
       templateName,
       dryRun: options.dryRun ?? getNotificationDryRunDefault(),
+      components: buildCashbackReminderComponents(cashback),
       sender: () => this.provider.sendCashbackAviso3Dias({
         phone: cashback.customer_phone,
         name: getFirstName(cashback.customer_name),
@@ -198,7 +290,39 @@ class NotificationService {
     });
   }
 
-  async sendCashbackTemplate({ cashback, reminderType, eventType, templateName, dryRun, sender }) {
+async sendCashbackTemplate({ cashback, reminderType, eventType, templateName, dryRun, sender, components }) {
+    return this._dispatchCashback({
+      cashback,
+      reminderType,
+      eventType,
+      templateName,
+      dryRun,
+      sender,
+      components
+    });
+  }
+
+  async _resolveDispatchTarget(cashback = {}, options = {}) {
+    // Primeiro: se caller passou storeConfig explícito, usa direto.
+    if (options.storeConfig && options.storeConfig.provider === "meta_cloud") {
+      return { useMetaCloud: true, storeId: options.storeConfig.storeId || options.storeConfig.store_id || "", storeConfig: options.storeConfig };
+    }
+    if (options.storeId && options.storeConfig) {
+      return { useMetaCloud: options.storeConfig.provider === "meta_cloud", storeId: options.storeId, storeConfig: options.storeConfig };
+    }
+    // Segundo: extrai storeId do cashback.
+    const storeId = resolveStoreIdForCashback(cashback);
+    if (!storeId) return { useMetaCloud: false, storeId: "", storeConfig: null };
+    const storeConfig = await this.resolveOperationalStoreConfig(storeId);
+    return {
+      useMetaCloud: Boolean(storeConfig && storeConfig.provider === "meta_cloud"),
+      storeId,
+      storeConfig: storeConfig || null
+    };
+  }
+
+  async _dispatchCashback({ cashback, reminderType, eventType, templateName, dryRun, sender, components }) {
+    // ----- Dedup e regras de pulo (inalteradas) -----
     const cashbackId = cashback?.id ? String(cashback.id) : "";
     const customerId = cashback?.contact_id ? String(cashback.contact_id) : "";
     if (!cashbackId || !customerId) {
@@ -246,7 +370,6 @@ class NotificationService {
       });
       return { success: false, status: "skipped_outside_business_hours" };
     }
-
     if (await this.hasNotificationLog({ cashbackId, customerId, eventType, templateName })) {
       await this.createLog({
         templateName,
@@ -263,7 +386,26 @@ class NotificationService {
       return { success: true, status: "skipped_duplicate" };
     }
 
-    const result = await sender();
+    // ----- Resolve provider alvo -----
+    const target = await this._resolveDispatchTarget(cashback, {});
+
+    let result;
+    if (target.useMetaCloud) {
+      // Caminho NOVO: WhatsAppProviderRegistry -> MetaWhatsAppCloudProvider
+      result = await this.sendViaMetaCloud({
+        phone: cashback?.customer_phone || "",
+        storeId: target.storeId,
+        storeConfig: target.storeConfig,
+        templateName,
+        languageCode: target.storeConfig?.templates?.language,
+        components,
+        dryRun
+      });
+    } else {
+      // Caminho LEGADO (WhatsApp Web ou Cloud legado via env)
+      result = await sender();
+    }
+
     await this.createLog({
       ...result,
       templateName,
@@ -278,14 +420,41 @@ class NotificationService {
   }
 
   async sendTemplateTest(input = {}) {
-    const dryRun = input.dryRun !== false ? true : !isWhatsAppCloudEnabled() || getNotificationDryRunDefault();
-    const result = await this.provider.sendTemplateMessage({
-      to: input.phone,
-      templateName: input.template,
-      languageCode: input.languageCode,
-      parameters: input.parameters || [],
-      dryRun
-    });
+    // Resolver provider alvo: se storeConfig pedir meta_cloud OU caller pediu meta_cloud, usa o novo.
+    const storeId = input.storeId || resolveStoreIdForCashback({ store: input.store }) || process.env.STORE_ID || "";
+    const explicitProvider = String(input.provider || "").trim().toLowerCase();
+    let storeConfig = null;
+    if (storeId) {
+      storeConfig = await this.resolveOperationalStoreConfig(storeId).catch(() => null);
+    }
+    const useMetaCloud = explicitProvider === "meta_cloud"
+      || (!explicitProvider && storeConfig && storeConfig.provider === "meta_cloud");
+
+    // dryRun: se caller passou explicitamente, respeita. Senão, default dry-run seguro.
+    const dryRun = input.dryRun !== undefined
+      ? Boolean(input.dryRun)
+      : (explicitProvider === "meta_cloud" ? true : (!isWhatsAppCloudEnabled() || getNotificationDryRunDefault()));
+
+    let result;
+    if (useMetaCloud) {
+      result = await this.sendViaMetaCloud({
+        phone: input.phone,
+        storeId,
+        storeConfig,
+        templateName: input.template,
+        languageCode: input.languageCode,
+        components: buildTestComponents(input.parameters || []),
+        dryRun
+      });
+    } else {
+      result = await this.provider.sendTemplateMessage({
+        to: input.phone,
+        templateName: input.template,
+        languageCode: input.languageCode,
+        parameters: input.parameters || [],
+        dryRun
+      });
+    }
     await this.createLog({
       ...result,
       templateName: input.template,
