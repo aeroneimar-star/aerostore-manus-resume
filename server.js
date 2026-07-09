@@ -22767,7 +22767,9 @@ app.post("/api/cashbacks", async (req, res) => {
         Number(req.body.status === "a_receber" ? 0 : availableBalance),
         0,
         0,
-        Number(settings.defaultMinimumPurchase || 0),
+        // Stage 18 - regra comercial: minimum_purchase = 2x generated_value (cashback cobre ate 50% da compra).
+        // Substitui o fallback anterior para settings.defaultMinimumPurchase, que estava em 0.
+        Number((generatedValue / 0.5).toFixed(2)),
         status,
         String(req.body.origin || "compra"),
         validFrom,
@@ -22826,7 +22828,10 @@ app.put("/api/cashbacks/:id", async (req, res) => {
         percentage,
         generatedValue,
         availableBalance,
-        Number(cashback.minimum_purchase ?? settings.defaultMinimumPurchase ?? 0),
+        // Stage 18 - regra comercial: se a row nao tem minimum_purchase (>0), calcula 2x do generated_value recalculado.
+        Number(Number(cashback.minimum_purchase || 0) > 0
+          ? cashback.minimum_purchase
+          : Number((generatedValue / 0.5).toFixed(2))),
         mapCashbackStatus(req.body.status ?? cashback.status),
         String(req.body.origin ?? cashback.origin),
         String(req.body.validFrom ?? cashback.valid_from),

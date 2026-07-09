@@ -97,7 +97,7 @@ const salesFiles = {
 };
 
 const CASHBACK_RATE = 0.12;
-const CASHBACK_VALIDITY_DAYS = 30;
+const CASHBACK_VALIDITY_DAYS = 90; // Stage 18 - regra comercial: 3 meses (90 dias)
 const CASHBACK_REDEMPTION_LIMIT_RATE = 0.5;
 const CASHBACK_TIMEZONE = process.env.AEROSTORE_CASHBACK_TIMEZONE || "America/Sao_Paulo";
 const reservationsFilePath = path.join(process.cwd(), "data", "pdv", "operational", "reservations.json");

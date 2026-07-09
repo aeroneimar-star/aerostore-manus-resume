@@ -442,6 +442,31 @@ async sendCashbackTemplate({ cashback, reminderType, eventType, templateName, dr
       return { success: true, status: "skipped_duplicate" };
     }
 
+    // Stage 18 - guard defensivo: cashback com valor gerado > 0 mas minimum_purchase invalido (<=0).
+    // Bloqueia o envio para evitar "compras acima de R$ 0,00" no {{4}} do template.
+    if (Number(cashback?.generated_value || 0) > 0 && Number(cashback?.minimum_purchase || 0) <= 0) {
+      const phone = normalizePhoneForWhatsApp(cashback?.customer_phone || "");
+      await this.createLog({
+        templateName,
+        phoneMasked: maskPhone(phone),
+        phoneHash: hashPhone(phone),
+        cashbackId,
+        customerId,
+        reminderType,
+        eventType,
+        status: "skipped_invalid_minimum_purchase",
+        dryRun,
+        errorCode: "invalid_minimum_purchase",
+        errorMessage: `cashback.generated_value=${cashback?.generated_value} mas cashback.minimum_purchase=${cashback?.minimum_purchase} (esperado 2x).`,
+        payloadSummary: {
+          reason: "minimum_purchase_missing_or_zero_with_positive_generated_value",
+          generated_value: cashback?.generated_value,
+          minimum_purchase: cashback?.minimum_purchase
+        }
+      });
+      return { success: false, status: "skipped_invalid_minimum_purchase", errorCode: "invalid_minimum_purchase" };
+    }
+
     // ----- Resolve provider alvo -----
     const target = await this._resolveDispatchTarget(cashback, {});
 
