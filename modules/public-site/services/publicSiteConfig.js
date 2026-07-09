@@ -71,11 +71,14 @@ function renderStoreCards(stores = []) {
   if (!list.length) {
     return "";
   }
-  return list.map((store) => `
+  return list.map((store, index) => `
     <article class="store-card">
-      <h3>${escapeHtml(store.name || "Loja")}</h3>
-      <p>${escapeHtml(formatStoreAddress(store))}</p>
-      <p class="store-hours">${escapeHtml(store.hours || "")}</p>
+      <span class="store-index" aria-hidden="true">${String(index + 1).padStart(2, "0")}</span>
+      <div class="store-body">
+        <h3>${escapeHtml(store.name || "Loja")}</h3>
+        <p class="store-address">${escapeHtml(formatStoreAddress(store))}</p>
+        <p class="store-hours">${escapeHtml(store.hours || "")}</p>
+      </div>
     </article>
   `).join("");
 }
@@ -98,9 +101,9 @@ function renderExtraInstagramProfiles(profiles = []) {
   }
   return `
     <section class="section section-muted" id="canais-grupo" aria-label="Outros perfis do grupo">
-      <div class="section-head">
-        <h2>Outros canais do grupo</h2>
-        <p>Perfis complementares da operação AEROSTORE e marcas parceiras do grupo.</p>
+      <div class="section-intro">
+        <h2 class="section-title">Perfis complementares</h2>
+        <p class="section-lead">Outros canais ligados à operação AEROSTORE. O perfil principal de marca e atendimento é @aerostore.oficial, nos canais oficiais acima.</p>
       </div>
       <div class="profile-links">
         ${links.join("")}

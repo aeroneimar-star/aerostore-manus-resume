@@ -15,28 +15,30 @@
   <meta property="og:image" content="{{seo.site_url}}{{seo.og_image}}">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:image" content="{{seo.site_url}}{{seo.og_image}}">
-  <link rel="icon" href="/assets/img/favicon.png" type="image/png">
-  <link rel="apple-touch-icon" href="/assets/img/logo-aerostore-icon.png">
+  <link rel="icon" href="/assets/img/icone-dourado.png" type="image/png">
+  <link rel="apple-touch-icon" href="/assets/img/icone-dourado.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400;0,6..96,500;1,6..96,400&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/assets/css/site.css">
 </head>
 <body>
   <div class="site-shell">
-    <header class="site-header">
+    <header class="site-header" data-site-header>
       <div class="site-header-inner">
         <a class="brand-lockup" href="/" aria-label="{{brand.trade_name}} — página inicial">
           <img
             class="brand-logo-name"
-            src="/assets/img/logo-aerostore-nome.png"
+            src="/assets/img/escrita-branca-aerostore.png"
             alt="{{brand.trade_name}}"
-            width="168"
-            height="28"
+            width="2000"
+            height="2000"
             decoding="async"
           >
         </a>
-        <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="site-nav">Menu</button>
+        <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="site-nav">
+          <span class="nav-toggle-label">Menu</span>
+        </button>
         <div class="header-end">
           <div class="header-actions" aria-label="Canais principais">
             <a class="header-action" href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
@@ -55,70 +57,165 @@
 
     <main class="site-main">
       <section class="hero" aria-labelledby="hero-title">
-        <div class="hero-copy">
-          <p class="hero-eyebrow">Varejo de moda premium · {{brand.region_label}}</p>
-          <div class="hero-brand">
-            <img
-              id="hero-title"
-              class="hero-logo"
-              src="/assets/img/logo-aerostore-completa.png"
-              alt="{{brand.trade_name}} — desde 2010"
-              width="320"
-              height="220"
-              decoding="async"
-            >
-          </div>
-          <p class="hero-lead">{{brand.tagline}}</p>
-          <p class="hero-description">{{brand.description}}</p>
-          <div class="cta-row">
-            <a class="button button-primary" href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>
-            <a class="button button-secondary" href="{{contact.instagram_url}}" target="_blank" rel="noopener noreferrer">Instagram @{{contact.instagram_handle}}</a>
-          </div>
+        <div class="hero-backdrop" aria-hidden="true">
+          <div class="hero-glow hero-glow--primary"></div>
         </div>
-        <div class="hero-panel" aria-label="Destaques da marca">
-          <div class="hero-stat">
-            <span>História</span>
-            <strong>Since 2010</strong>
+        <div class="hero-inner">
+          <div class="hero-main">
+            <p class="hero-kicker">Varejo de moda · {{brand.region_label}}</p>
+            <div class="hero-brand">
+              <img
+                id="hero-title"
+                class="hero-logo"
+                src="/assets/img/logo-completa-branca-icone-dourado.png"
+                alt="{{brand.trade_name}}"
+                width="1308"
+                height="467"
+                decoding="async"
+                fetchpriority="high"
+              >
+            </div>
+            <p class="hero-lead">{{brand.tagline}}</p>
+            <p class="hero-description">{{brand.description}}</p>
+            <ul class="hero-facts hero-facts--inline" aria-label="Marcos da marca">
+              <li>
+                <span class="fact-label">Região</span>
+                <span class="fact-value">{{brand.region_label}}</span>
+              </li>
+              <li>
+                <span class="fact-label">Operação</span>
+                <span class="fact-value">Lojas físicas</span>
+              </li>
+              <li>
+                <span class="fact-label">Experiência</span>
+                <span class="fact-value">Atendimento boutique</span>
+              </li>
+            </ul>
+            <div class="cta-row">
+              <a class="button button-primary" href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">
+                <span>Falar no WhatsApp</span>
+              </a>
+              <a class="button button-secondary" href="{{contact.instagram_url}}" target="_blank" rel="noopener noreferrer">
+                <span>Instagram @{{contact.instagram_handle}}</span>
+              </a>
+            </div>
           </div>
-          <div class="hero-stat">
-            <span>Operação</span>
-            <strong>Lojas físicas</strong>
-          </div>
-          <div class="hero-stat">
-            <span>Atendimento</span>
-            <strong>Personalizado</strong>
-          </div>
+          <figure class="hero-visual media-frame media-frame--hero">
+            <picture>
+              <source srcset="/assets/img/landing/loja-interior-hero.webp" type="image/webp">
+              <img
+                src="/assets/img/landing/loja-interior-hero.jpg"
+                alt="Interior da loja AEROSTORE com iluminação, sofás e vitrine de calçados"
+                width="1122"
+                height="1402"
+                decoding="async"
+                fetchpriority="high"
+              >
+            </picture>
+          </figure>
         </div>
       </section>
 
-      <section class="section" id="lojas">
-        <div class="section-head">
-          <h2>Nossas lojas</h2>
-          <p>{{brand.stores_intro}}</p>
+      <section class="section section-heritage" id="desde-2010" aria-labelledby="heritage-title">
+        <div class="heritage-layout">
+          <div class="heritage-copy">
+            <p class="section-eyebrow">Desde 2010</p>
+            <h2 class="section-title" id="heritage-title">Presença física, curadoria e atendimento próximo</h2>
+            <p class="section-lead">Desde 2010, a AEROSTORE constrói uma experiência de moda com curadoria, atendimento próximo e presença física em Ribeirão Preto.</p>
+          </div>
+          <figure class="heritage-visual media-frame">
+            <picture>
+              <source srcset="/assets/img/landing/loja-balcao-aerostore.webp" type="image/webp">
+              <img
+                src="/assets/img/landing/loja-balcao-aerostore.jpg"
+                alt="Letreiro AEROSTORE no balcão da loja física"
+                width="1131"
+                height="1391"
+                loading="lazy"
+                decoding="async"
+              >
+            </picture>
+          </figure>
         </div>
+      </section>
+
+      <section class="section section-editorial" aria-labelledby="editorial-title">
+        <div class="editorial-head">
+          <h2 class="section-title section-title--compact" id="editorial-title">Detalhes que carregam identidade, curadoria e acabamento.</h2>
+        </div>
+        <div class="editorial-grid">
+          <figure class="editorial-card editorial-card--feature media-frame">
+            <picture>
+              <source srcset="/assets/img/landing/detalhe-tag-jeans.webp" type="image/webp">
+              <img
+                src="/assets/img/landing/detalhe-tag-jeans.jpg"
+                alt="Tag AEROSTORE aplicada em jeans"
+                width="1400"
+                height="988"
+                loading="lazy"
+                decoding="async"
+              >
+            </picture>
+          </figure>
+          <figure class="editorial-card editorial-card--accent media-frame">
+            <picture>
+              <source srcset="/assets/img/landing/detalhe-calcados.webp" type="image/webp">
+              <img
+                src="/assets/img/landing/detalhe-calcados.jpg"
+                alt="Painel CALÇADOS na loja AEROSTORE"
+                width="1023"
+                height="1537"
+                loading="lazy"
+                decoding="async"
+              >
+            </picture>
+          </figure>
+        </div>
+      </section>
+
+      <section class="section section-stores" id="lojas">
+        <div class="section-intro">
+          <h2 class="section-title">Nossas lojas</h2>
+          <p class="section-lead">{{brand.stores_intro}}</p>
+        </div>
+        <figure class="stores-feature media-frame">
+          <picture>
+            <source srcset="/assets/img/landing/loja-fachada-noite.webp" type="image/webp">
+            <img
+              src="/assets/img/landing/loja-fachada-noite.jpg"
+              alt="Fachada da loja AEROSTORE à noite em Ribeirão Preto"
+              width="1169"
+              height="1346"
+              loading="lazy"
+              decoding="async"
+            >
+          </picture>
+        </figure>
         <div class="store-grid">
           {{stores.cards_html}}
         </div>
       </section>
 
-      <section class="section" id="contato">
-        <div class="section-head">
-          <h2>Canais oficiais</h2>
-          <p>Entre em contato pelos canais oficiais da marca. Não solicitamos dados sensíveis por mensagens não verificadas.</p>
-        </div>
-        <div class="channel-grid">
-          <article class="channel-card">
-            <h3>WhatsApp</h3>
-            <p><a href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">{{contact.whatsapp_display}}</a></p>
-          </article>
-          <article class="channel-card">
-            <h3>Instagram</h3>
-            <p><a href="{{contact.instagram_url}}" target="_blank" rel="noopener noreferrer">@{{contact.instagram_handle}}</a></p>
-          </article>
-          <article class="channel-card">
-            <h3>E-mail</h3>
-            <p><a href="mailto:{{contact.email}}">{{contact.email}}</a></p>
-          </article>
+      <section class="section section-contact" id="contato">
+        <div class="contact-layout">
+          <div class="contact-copy">
+            <h2 class="section-title">Canais oficiais</h2>
+            <p class="section-lead">Entre em contato pelos canais verificados da marca. Não solicitamos dados sensíveis por mensagens não oficiais.</p>
+          </div>
+          <div class="contact-panel">
+            <a class="contact-channel" href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">
+              <span class="contact-channel-label">WhatsApp</span>
+              <span class="contact-channel-value">{{contact.whatsapp_display}}</span>
+            </a>
+            <a class="contact-channel" href="{{contact.instagram_url}}" target="_blank" rel="noopener noreferrer">
+              <span class="contact-channel-label">Instagram</span>
+              <span class="contact-channel-value">@{{contact.instagram_handle}}</span>
+            </a>
+            <a class="contact-channel" href="mailto:{{contact.email}}">
+              <span class="contact-channel-label">E-mail</span>
+              <span class="contact-channel-value">{{contact.email}}</span>
+            </a>
+          </div>
         </div>
       </section>
 
@@ -127,33 +224,41 @@
 
     <footer class="site-footer">
       <div class="site-footer-inner">
-        <div class="footer-brand">
-          <img
-            class="footer-logo-icon"
-            src="/assets/img/logo-aerostore-icon.png"
-            alt=""
-            width="36"
-            height="36"
-            decoding="async"
-          >
-          <img
-            class="footer-logo-name"
-            src="/assets/img/logo-aerostore-nome.png"
-            alt="{{brand.trade_name}}"
-            width="132"
-            height="22"
-            decoding="async"
-          >
+        <div class="footer-top">
+          <div class="footer-brand">
+            <img
+              class="footer-logo-icon"
+              src="/assets/img/icone-dourado.png"
+              alt=""
+              width="2000"
+              height="2000"
+              decoding="async"
+            >
+            <img
+              class="footer-logo-name"
+              src="/assets/img/escrita-branca-aerostore.png"
+              alt="{{brand.trade_name}}"
+              width="2000"
+              height="2000"
+              decoding="async"
+            >
+          </div>
+          <nav class="footer-nav" aria-label="Rodapé">
+            <a href="/privacidade">Privacidade</a>
+            <a href="/termos">Termos</a>
+            <a href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
+            <a href="{{contact.instagram_url}}" target="_blank" rel="noopener noreferrer">Instagram</a>
+          </nav>
         </div>
-        <p class="footer-meta">{{company.legal_name}} · CNPJ {{company.cnpj_formatted}}</p>
-        <p class="footer-meta"><a href="mailto:{{contact.email}}">{{contact.email}}</a> · <a href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">{{contact.whatsapp_display}}</a></p>
-        <div class="footer-links">
-          <a href="/privacidade">Política de privacidade</a>
-          <a href="/termos">Termos de atendimento</a>
-          <a href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
-          <a href="{{contact.instagram_url}}" target="_blank" rel="noopener noreferrer">Instagram</a>
+        <div class="footer-bottom">
+          <p class="footer-meta">{{company.legal_name}} · CNPJ {{company.cnpj_formatted}}</p>
+          <p class="footer-meta">
+            <a href="mailto:{{contact.email}}">{{contact.email}}</a>
+            <span class="footer-sep" aria-hidden="true">·</span>
+            <a href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">{{contact.whatsapp_display}}</a>
+          </p>
+          <p class="footer-copy">© {{year}} {{brand.trade_name}}. Todos os direitos reservados.</p>
         </div>
-        <p class="footer-meta">© {{year}} {{brand.trade_name}}. Todos os direitos reservados.</p>
       </div>
     </footer>
   </div>

@@ -51,11 +51,8 @@ function registerPublicSiteRoutes(app) {
     }
   });
 
-  app.use((req, res, next) => {
+  app.use("/assets", (req, res, next) => {
     if (!isPublicSiteHost(req)) {
-      return next();
-    }
-    if (!req.path.startsWith("/assets/")) {
       return next();
     }
     return siteAssetsStatic(req, res, next);
