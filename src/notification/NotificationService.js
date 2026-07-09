@@ -31,12 +31,31 @@ function resolveStoreIdForCashback(cashback = {}) {
 }
 
 function buildCashbackEarnedComponents(cashback = {}) {
+  // Legado: 5 vars (incluindo data_inicio). Mantido para retro-compat
+  // com templates antigos aprovados sob o formato 5-params.
   return [{
     type: "body",
     parameters: [
       { type: "text", text: getFirstName(cashback.customer_name) },
       { type: "text", text: formatCurrencyBRL(cashback.generated_value || cashback.available_balance || 0) },
       { type: "text", text: formatDateBR(cashback.valid_from || cashback.created_at) },
+      { type: "text", text: formatDateBR(cashback.expires_at) },
+      { type: "text", text: formatCurrencyBRL(cashback.minimum_purchase || 0) }
+    ]
+  }];
+}
+
+// Variante 4-vars para templates cashback_notificacao_v7 (e variantes _v7+).
+// O template aprovado na Meta tem somente 4 placeholders:
+//   {{1}} nome, {{2}} valor, {{3}} validade (data_fim), {{4}} compra_minima.
+// O codigo legado envia 5 params (com data_inicio separada), o que faz a Meta
+// retornar "(#100) Invalid parameter" quando o template tem 4 vars.
+function buildCashbackEarnedComponentsV7(cashback = {}) {
+  return [{
+    type: "body",
+    parameters: [
+      { type: "text", text: getFirstName(cashback.customer_name) },
+      { type: "text", text: formatCurrencyBRL(cashback.generated_value || cashback.available_balance || 0) },
       { type: "text", text: formatDateBR(cashback.expires_at) },
       { type: "text", text: formatCurrencyBRL(cashback.minimum_purchase || 0) }
     ]
@@ -231,13 +250,19 @@ class NotificationService {
 
   async sendCashbackNotification(cashback = {}, options = {}) {
     const templateName = process.env.WHATSAPP_TEMPLATE_CASHBACK || "cashback_notificacao";
+    // Templates da familia *_v7 (ex.: cashback_notificacao_v7) tem 4 vars:
+    // {{1}} nome, {{2}} valor, {{3}} validade, {{4}} compra_minima.
+    // Templates legados tem 5 vars (com data_inicio separada).
+    const components = /_v7$/.test(templateName)
+      ? buildCashbackEarnedComponentsV7(cashback)
+      : buildCashbackEarnedComponents(cashback);
     return this.sendCashbackTemplate({
       cashback,
       reminderType: REMINDER_TYPES.CREDITED,
       eventType: CASHBACK_NOTIFICATION_EVENTS.EARNED,
       templateName,
       dryRun: options.dryRun ?? getNotificationDryRunDefault(),
-      components: buildCashbackEarnedComponents(cashback),
+      components,
       sender: () => this.provider.sendCashbackNotification({
         phone: cashback.customer_phone,
         name: getFirstName(cashback.customer_name),
