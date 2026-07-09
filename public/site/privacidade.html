@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Política de Privacidade — {{brand.trade_name}}</title>
+  <meta name="description" content="Política de privacidade da {{brand.trade_name}}.">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="{{seo.site_url}}/privacidade">
+  <link rel="icon" href="/assets/img/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/assets/img/logo-aerostore-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/css/site.css">
+</head>
+<body>
+  <div class="site-shell">
+    <header class="site-header">
+      <div class="site-header-inner">
+        <a class="brand-lockup" href="/" aria-label="{{brand.trade_name}} — página inicial">
+          <img class="brand-logo-name" src="/assets/img/logo-aerostore-nome.png" alt="{{brand.trade_name}}" width="168" height="28" decoding="async">
+        </a>
+        <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="site-nav">Menu</button>
+        <nav class="site-nav" id="site-nav" data-site-nav aria-label="Principal">
+          <a href="/">Início</a>
+          <a href="/privacidade" class="is-active">Privacidade</a>
+          <a href="/termos">Termos</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="site-main legal-page">
+      <h1>Política de Privacidade</h1>
+      <p class="updated">Última atualização: {{legal.privacy_updated}}</p>
+
+      <p>A {{brand.trade_name}}, inscrita no CNPJ {{company.cnpj_formatted}}, respeita a privacidade de clientes, visitantes e usuários dos seus canais oficiais.</p>
+
+      <h2>1. Dados que podemos tratar</h2>
+      <p>Podemos tratar dados fornecidos voluntariamente em atendimentos presenciais, WhatsApp, Instagram, e-mail ou formulários oficiais, como nome, telefone, e-mail e histórico de atendimento comercial.</p>
+
+      <h2>2. Finalidades</h2>
+      <ul>
+        <li>Atendimento comercial e pós-venda;</li>
+        <li>Comunicações sobre produtos, serviços, benefícios e campanhas autorizadas;</li>
+        <li>Cumprimento de obrigações legais e operacionais;</li>
+        <li>Segurança, prevenção a fraudes e melhoria da experiência.</li>
+      </ul>
+
+      <h2>3. Compartilhamento</h2>
+      <p>Não vendemos dados pessoais. O compartilhamento ocorre apenas com prestadores necessários à operação (ex.: mensageria, pagamentos, logística), sempre com controle e finalidade definida.</p>
+
+      <h2>4. Direitos do titular</h2>
+      <p>Você pode solicitar acesso, correção, atualização ou exclusão de dados, conforme a LGPD, pelos canais oficiais da marca.</p>
+
+      <h2>5. Contato</h2>
+      <p>Para assuntos de privacidade: <a href="mailto:{{contact.email}}">{{contact.email}}</a> ou WhatsApp <a href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">{{contact.whatsapp_display}}</a>.</p>
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer-inner">
+        <p class="footer-meta">{{company.legal_name}} · CNPJ {{company.cnpj_formatted}}</p>
+        <div class="footer-links">
+          <a href="/">Início</a>
+          <a href="/privacidade">Privacidade</a>
+          <a href="/termos">Termos</a>
+        </div>
+        <p class="footer-meta">© {{year}} {{brand.trade_name}}.</p>
+      </div>
+    </footer>
+  </div>
+  <script src="/assets/js/site.js" defer></script>
+</body>
+</html>

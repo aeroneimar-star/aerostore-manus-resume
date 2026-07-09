@@ -1,0 +1,64 @@
+{
+  "brand": {
+    "trade_name": "AEROSTORE",
+    "region_label": "Ribeirão Preto/SP",
+    "tagline": "Moda premium com atendimento de boutique.",
+    "description": "A AEROSTORE é uma operação de varejo de moda com lojas físicas em Ribeirão Preto, curadoria de peças selecionadas e atendimento personalizado para quem busca estilo, qualidade e confiança.",
+    "stores_intro": "Visite a AEROSTORE em Ribeirão Preto e conheça nossa curadoria de moda com atendimento de boutique."
+  },
+  "company": {
+    "legal_name": "61.080 STELA MARIA MOREIRA LINS",
+    "cnpj": "61080150000147",
+    "cnpj_formatted": "61.080.150/0001-47"
+  },
+  "contact": {
+    "whatsapp_phone": "5516981238956",
+    "whatsapp_display": "+55 16 98123-8956",
+    "instagram_handle": "aerostore.oficial",
+    "instagram_url": "https://www.instagram.com/aerostore.oficial",
+    "email": "adm@lojaaero.com.br"
+  },
+  "instagram_profiles_extra": [
+    { "handle": "closet.aero" },
+    { "handle": "aerostore.oficial2" },
+    { "handle": "aerostore.oficial3" },
+    { "handle": "aerostore.oficial4" },
+    { "handle": "aerostore.vila" },
+    { "handle": "aero.oficial" },
+    { "handle": "sapatofactory" },
+    { "handle": "sapato.factory" },
+    { "handle": "sou.trendy" },
+    { "handle": "locomokids" },
+    { "handle": "aerostore.kids" }
+  ],
+  "stores": [
+    {
+      "name": "Vila Virgínia",
+      "street": "Rua Abilio Sampaio, 448",
+      "district": "Vila Virgínia",
+      "city": "Ribeirão Preto",
+      "state": "SP",
+      "postal_code": "14030-420",
+      "hours": "Seg a Sex 9h20–19h · Sáb 9h20–18h · Dom fechado"
+    },
+    {
+      "name": "Jardim Botânico",
+      "street": "Av. Carlos Eduardo de Gasperi Consoni, 650, L2",
+      "district": "Jardim Botânico",
+      "city": "Ribeirão Preto",
+      "state": "SP",
+      "postal_code": "14021-610",
+      "hours": "Seg a Sex 9h20–19h · Sáb 9h20–18h · Dom fechado"
+    }
+  ],
+  "seo": {
+    "site_url": "https://aerostore.site",
+    "title": "AEROSTORE — Moda premium em Ribeirão Preto",
+    "description": "Conheça a AEROSTORE: moda premium, lojas físicas em Ribeirão Preto/SP, atendimento personalizado e canais oficiais de contato.",
+    "og_image": "/assets/img/og-aerostore.png"
+  },
+  "legal": {
+    "privacy_updated": "2026-07-09",
+    "terms_updated": "2026-07-09"
+  }
+}

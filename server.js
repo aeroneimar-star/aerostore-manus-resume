@@ -33,6 +33,8 @@ const {
   STORE_TYPES
 } = require("./services/storeSettingsService");
 const { PDV_WEB_ROUTES } = require("./modules/pdv/routes/pdvRoutes");
+const { registerPublicSiteRoutes } = require("./modules/public-site/routes/publicSiteRoutes");
+const { isPublicSiteHost } = require("./modules/public-site/utils/publicSiteHost");
 const { getPdvFoundationManifest } = require("./modules/pdv/services/pdvFoundationService");
 const { pdvImportRouter } = require("./modules/pdv/routes/pdvImportRoutes");
 const { pdvConsolidationRouter } = require("./modules/pdv/consolidation/routes/pdvConsolidationRoutes");
@@ -1292,7 +1294,12 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "4mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-app.get("/", (req, res) => {
+registerPublicSiteRoutes(app);
+
+app.get("/", (req, res, next) => {
+  if (isPublicSiteHost(req)) {
+    return next();
+  }
   res.redirect(302, "/pdv");
 });
 
@@ -23526,7 +23533,10 @@ app.post("/api/ai/variation", (req, res) => {
   res.json({ variation });
 });
 
-app.get("/", (req, res) => {
+app.get("/", (req, res, next) => {
+  if (isPublicSiteHost(req)) {
+    return next();
+  }
   res.redirect(302, "/pdv");
 });
 

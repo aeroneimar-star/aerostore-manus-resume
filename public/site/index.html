@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{seo.title}}</title>
+  <meta name="description" content="{{seo.description}}">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="{{seo.site_url}}/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{{brand.trade_name}}">
+  <meta property="og:title" content="{{seo.title}}">
+  <meta property="og:description" content="{{seo.description}}">
+  <meta property="og:url" content="{{seo.site_url}}/">
+  <meta property="og:image" content="{{seo.site_url}}{{seo.og_image}}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="{{seo.site_url}}{{seo.og_image}}">
+  <link rel="icon" href="/assets/img/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/assets/img/logo-aerostore-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/css/site.css">
+</head>
+<body>
+  <div class="site-shell">
+    <header class="site-header">
+      <div class="site-header-inner">
+        <a class="brand-lockup" href="/" aria-label="{{brand.trade_name}} — página inicial">
+          <img
+            class="brand-logo-name"
+            src="/assets/img/logo-aerostore-nome.png"
+            alt="{{brand.trade_name}}"
+            width="168"
+            height="28"
+            decoding="async"
+          >
+        </a>
+        <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="site-nav">Menu</button>
+        <div class="header-end">
+          <div class="header-actions" aria-label="Canais principais">
+            <a class="header-action" href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
+            <a class="header-action" href="{{contact.instagram_url}}" target="_blank" rel="noopener noreferrer">@{{contact.instagram_handle}}</a>
+          </div>
+          <nav class="site-nav" id="site-nav" data-site-nav aria-label="Principal">
+            <a href="/" class="is-active">Início</a>
+            <a href="#lojas">Lojas</a>
+            <a href="#contato">Contato</a>
+            <a href="/privacidade">Privacidade</a>
+            <a href="/termos">Termos</a>
+          </nav>
+        </div>
+      </div>
+    </header>
+
+    <main class="site-main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="hero-eyebrow">Varejo de moda premium · {{brand.region_label}}</p>
+          <div class="hero-brand">
+            <img
+              id="hero-title"
+              class="hero-logo"
+              src="/assets/img/logo-aerostore-completa.png"
+              alt="{{brand.trade_name}} — desde 2010"
+              width="320"
+              height="220"
+              decoding="async"
+            >
+          </div>
+          <p class="hero-lead">{{brand.tagline}}</p>
+          <p class="hero-description">{{brand.description}}</p>
+          <div class="cta-row">
+            <a class="button button-primary" href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>
+            <a class="button button-secondary" href="{{contact.instagram_url}}" target="_blank" rel="noopener noreferrer">Instagram @{{contact.instagram_handle}}</a>
+          </div>
+        </div>
+        <div class="hero-panel" aria-label="Destaques da marca">
+          <div class="hero-stat">
+            <span>História</span>
+            <strong>Since 2010</strong>
+          </div>
+          <div class="hero-stat">
+            <span>Operação</span>
+            <strong>Lojas físicas</strong>
+          </div>
+          <div class="hero-stat">
+            <span>Atendimento</span>
+            <strong>Personalizado</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="lojas">
+        <div class="section-head">
+          <h2>Nossas lojas</h2>
+          <p>{{brand.stores_intro}}</p>
+        </div>
+        <div class="store-grid">
+          {{stores.cards_html}}
+        </div>
+      </section>
+
+      <section class="section" id="contato">
+        <div class="section-head">
+          <h2>Canais oficiais</h2>
+          <p>Entre em contato pelos canais oficiais da marca. Não solicitamos dados sensíveis por mensagens não verificadas.</p>
+        </div>
+        <div class="channel-grid">
+          <article class="channel-card">
+            <h3>WhatsApp</h3>
+            <p><a href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">{{contact.whatsapp_display}}</a></p>
+          </article>
+          <article class="channel-card">
+            <h3>Instagram</h3>
+            <p><a href="{{contact.instagram_url}}" target="_blank" rel="noopener noreferrer">@{{contact.instagram_handle}}</a></p>
+          </article>
+          <article class="channel-card">
+            <h3>E-mail</h3>
+            <p><a href="mailto:{{contact.email}}">{{contact.email}}</a></p>
+          </article>
+        </div>
+      </section>
+
+      {{instagram.extra_profiles_html}}
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-footer-inner">
+        <div class="footer-brand">
+          <img
+            class="footer-logo-icon"
+            src="/assets/img/logo-aerostore-icon.png"
+            alt=""
+            width="36"
+            height="36"
+            decoding="async"
+          >
+          <img
+            class="footer-logo-name"
+            src="/assets/img/logo-aerostore-nome.png"
+            alt="{{brand.trade_name}}"
+            width="132"
+            height="22"
+            decoding="async"
+          >
+        </div>
+        <p class="footer-meta">{{company.legal_name}} · CNPJ {{company.cnpj_formatted}}</p>
+        <p class="footer-meta"><a href="mailto:{{contact.email}}">{{contact.email}}</a> · <a href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">{{contact.whatsapp_display}}</a></p>
+        <div class="footer-links">
+          <a href="/privacidade">Política de privacidade</a>
+          <a href="/termos">Termos de atendimento</a>
+          <a href="{{contact.whatsapp_url}}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
+          <a href="{{contact.instagram_url}}" target="_blank" rel="noopener noreferrer">Instagram</a>
+        </div>
+        <p class="footer-meta">© {{year}} {{brand.trade_name}}. Todos os direitos reservados.</p>
+      </div>
+    </footer>
+  </div>
+  <script src="/assets/js/site.js" defer></script>
+</body>
+</html>
