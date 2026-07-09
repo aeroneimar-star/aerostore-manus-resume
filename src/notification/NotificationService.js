@@ -248,8 +248,29 @@ class NotificationService {
     return { id: result.lastID, status };
   }
 
+  async resolveStoreConfigTemplate(cashback, key, envVarName, fallback) {
+    // Stage 17 — helper generico para resolver o nome do template por contexto de loja.
+    // Prioridade: whatsapp_store_configs.<storeId>.templates_json[key] > process.env[envVarName] > fallback literal.
+    // Usado por sendCashbackNotification, sendCashbackAviso10Dias e sendCashbackAviso3Dias para garantir
+    // override consistente por loja, com fallback seguro para .env ja configurado e para o default legado.
+    try {
+      const storeIdForTemplate = resolveStoreIdForCashback(cashback);
+      if (storeIdForTemplate) {
+        const cfg = await this.resolveOperationalStoreConfig(storeIdForTemplate);
+        const t = cfg && cfg.templates && cfg.templates[key];
+        if (typeof t === "string" && t.trim()) return t.trim();
+      }
+    } catch (_) { /* mantem empty e cai nos fallbacks */ }
+    return process.env[envVarName] || fallback;
+  }
+
   async sendCashbackNotification(cashback = {}, options = {}) {
-    const templateName = process.env.WHATSAPP_TEMPLATE_CASHBACK || "cashback_notificacao";
+    const templateName = await this.resolveStoreConfigTemplate(
+      cashback,
+      "cashback",
+      "WHATSAPP_TEMPLATE_CASHBACK",
+      "cashback_notificacao"
+    );
     // Templates da familia *_v7 (ex.: cashback_notificacao_v7) tem 4 vars:
     // {{1}} nome, {{2}} valor, {{3}} validade, {{4}} compra_minima.
     // Templates legados tem 5 vars (com data_inicio separada).
@@ -276,7 +297,12 @@ class NotificationService {
   }
 
   async sendCashbackAviso10Dias(cashback = {}, options = {}) {
-    const templateName = process.env.WHATSAPP_TEMPLATE_AVISO_10 || "cashback_aviso_10dias";
+    const templateName = await this.resolveStoreConfigTemplate(
+      cashback,
+      "aviso10",
+      "WHATSAPP_TEMPLATE_AVISO_10",
+      "cashback_aviso_10dias"
+    );
     return this.sendCashbackTemplate({
       cashback,
       reminderType: REMINDER_TYPES.D10,
@@ -296,7 +322,12 @@ class NotificationService {
   }
 
   async sendCashbackAviso3Dias(cashback = {}, options = {}) {
-    const templateName = process.env.WHATSAPP_TEMPLATE_AVISO_3 || "cashback_aviso_3dias";
+    const templateName = await this.resolveStoreConfigTemplate(
+      cashback,
+      "aviso3",
+      "WHATSAPP_TEMPLATE_AVISO_3",
+      "cashback_aviso_3dias"
+    );
     return this.sendCashbackTemplate({
       cashback,
       reminderType: REMINDER_TYPES.D3,
