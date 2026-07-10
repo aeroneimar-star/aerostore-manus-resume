@@ -1,6 +1,18 @@
-# Protótipo visual — Catálogo AEROSTORE (Fase 2.3)
+# Protótipo visual — Catálogo AEROSTORE (Fase 2.4)
 
 **Status:** protótipo local / piloto — **não é produção definitiva**
+
+## Fase 2.4 — preparação produtos reais
+
+| Item | Estado |
+|------|--------|
+| Guia de fotos para packshots reais | ✅ `shop-product-photo-guide.md` |
+| Blueprint vitrine real (10–16 peças) | ✅ `shop-real-catalog-blueprint.md` |
+| Contrato JSON v4 (campos futuros) | ✅ `pilot-publication-schema.v4.json` |
+| DTO público aceita campos v4 | ✅ API `/public-api/products/:slug` |
+| Visual catálogo/produto | ✅ mantido da Fase 2.3 (sem redesign) |
+| Fotos reais no repo | ⏳ aguarda sessão de fotos |
+| Render cuidados/medidas/descrição longa | ⏳ Fase 2.5 |
 
 ## Fase 2.3 — vitrine piloto ampliada
 

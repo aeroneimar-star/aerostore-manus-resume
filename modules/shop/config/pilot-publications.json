@@ -1,8 +1,10 @@
 {
-  "version": 3,
-  "phase": "2.3",
-  "description": "Vitrine piloto Fase 2.3 — curadoria AEROSTORE ampliada (10 peças). Fotos provisórias premium locais; substituir por shop_product_publications (SQL) após aprovação.",
-  "image_policy": "Fotos piloto geradas/editoriais — não são fotos oficiais de estoque. Landing possui apenas imagens de loja (fachada, interior, detalhes); não há packshots reais de produto no repositório.",
+  "version": 4,
+  "phase": "2.4",
+  "schema_reference": "modules/shop/config/pilot-publication-schema.v4.json",
+  "description": "Vitrine piloto Fase 2.4 — mesma curadoria de 10 peças (2.3), com contrato JSON estendido para produtos reais. Fotos provisórias premium locais; substituir por fotos reais + shop_product_publications (SQL) após aprovação.",
+  "image_policy": "Fotos piloto geradas/editoriais — não são fotos oficiais de estoque. Ver docs/architecture/shop-product-photo-guide.md para padrão de fotos reais.",
+  "field_notes": "Campos opcionais v4 (public_short_description, public_description_full, care_instructions, size_guide, composition, badge_label, cta_label, image.role, image.color_slug) aceitos pelo DTO; render HTML na Fase 2.5+.",
   "publications": [
     {
       "public_slug": "polo-pima-marinho",

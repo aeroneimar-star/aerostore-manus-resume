@@ -1,0 +1,150 @@
+{
+  "$schema_note": "Referência de campos Fase 2.4 — não é validador JSON Schema formal. Usar como contrato até migration SQL.",
+  "version": 4,
+  "phase": "2.4",
+  "description": "Estrutura estendida do JSON piloto para produtos reais AEROSTORE. Campos novos são opcionais; protótipo 2.3 permanece compatível.",
+  "publication_fields": {
+    "public_slug": { "type": "string", "required": true, "example": "polo-pima-marinho" },
+    "status": { "type": "enum", "values": ["draft", "published", "archived"], "required": true },
+    "public_title": { "type": "string", "required": true },
+    "public_short_description": { "type": "string", "required": false, "max_chars": 160, "note": "Card e meta; se ausente, usa truncamento de public_description" },
+    "public_description": { "type": "string", "required": true, "note": "Descrição principal na página (até Fase 2.5 pode ser a única)" },
+    "public_description_full": { "type": "string", "required": false, "note": "Texto longo; render futuro abaixo da descrição curta" },
+    "public_category_slug": { "type": "string", "required": true },
+    "public_category_label": { "type": "string", "required": true },
+    "featured": { "type": "boolean", "required": false, "default": false },
+    "badge_label": { "type": "string", "required": false, "example": "Destaque", "note": "Selo no card; default 'Destaque' quando featured=true" },
+    "sort_order": { "type": "integer", "required": true },
+    "price_cents": { "type": "integer", "required": true },
+    "compare_at_price_cents": { "type": "integer|null", "required": false, "note": "Preço promocional de referência (de/por)" },
+    "availability": { "type": "enum", "values": ["in_stock", "low_stock", "out_of_stock"], "required": true },
+    "cta_label": { "type": "string", "required": false, "default": "Consultar disponibilidade", "note": "Sempre desabilitado no protótipo" },
+    "primary_image": {
+      "type": "object",
+      "required": true,
+      "fields": {
+        "url": "string",
+        "alt": "string",
+        "role": "primary",
+        "color_slug": "string|null"
+      }
+    },
+    "images": {
+      "type": "array",
+      "required": false,
+      "item_fields": {
+        "url": "string",
+        "alt": "string",
+        "sort_order": "integer",
+        "role": "primary|gallery|detail|lifestyle",
+        "color_slug": "string|null"
+      }
+    },
+    "variants": {
+      "type": "array",
+      "required": true,
+      "item_fields": {
+        "public_variant_slug": "string",
+        "color": "string",
+        "color_slug": "string",
+        "size": "string",
+        "size_slug": "string",
+        "price_cents": "integer",
+        "compare_at_price_cents": "integer|null",
+        "availability": "in_stock|low_stock|out_of_stock"
+      }
+    },
+    "care_instructions": {
+      "type": "array|string",
+      "required": false,
+      "example": ["Lavar à mão", "Não usar alvejante"],
+      "note": "Render futuro na página de produto"
+    },
+    "size_guide": {
+      "type": "object",
+      "required": false,
+      "example": {
+        "title": "Medidas da peça (cm)",
+        "rows": [
+          { "size": "M", "chest_cm": 52, "length_cm": 72 }
+        ]
+      }
+    },
+    "composition": {
+      "type": "string",
+      "required": false,
+      "example": "100% algodão Pima"
+    },
+    "seo": {
+      "type": "object",
+      "fields": { "title": "string", "description": "string" }
+    }
+  },
+  "forbidden_in_public_json": [
+    "product_id", "variant_id", "sku", "barcode", "tiny_id",
+    "cost_price_cents", "store_id", "available_qty", "reserved_qty", "margin"
+  ],
+  "example_publication": {
+    "public_slug": "polo-pima-marinho",
+    "status": "published",
+    "public_title": "Polo Pima Marinho",
+    "public_short_description": "Polo em algodão Pima com acabamento premium.",
+    "public_description": "Polo em algodão Pima com toque macio e caimento alinhado.",
+    "public_description_full": "Gola estruturada, acabamento premium e tecido selecionado para o dia a dia com elegância. Ideal com chino ou jeans escuro.",
+    "public_category_slug": "polos",
+    "public_category_label": "Polos",
+    "featured": true,
+    "badge_label": "Destaque",
+    "sort_order": 1,
+    "price_cents": 19990,
+    "compare_at_price_cents": null,
+    "availability": "in_stock",
+    "cta_label": "Consultar disponibilidade",
+    "composition": "100% algodão Pima",
+    "care_instructions": ["Lavar à máquina ciclo delicado", "Passar em temperatura baixa"],
+    "size_guide": {
+      "title": "Medidas (cm)",
+      "rows": [
+        { "size": "M", "chest_cm": 52, "length_cm": 72 },
+        { "size": "G", "chest_cm": 54, "length_cm": 74 }
+      ]
+    },
+    "primary_image": {
+      "url": "/shop/assets/products/polos/polo-pima-marinho--marinho--primary--01.webp",
+      "alt": "Polo Pima Marinho — AEROSTORE",
+      "role": "primary",
+      "color_slug": "marinho"
+    },
+    "images": [
+      {
+        "url": "/shop/assets/products/polos/polo-pima-marinho--marinho--primary--01.webp",
+        "alt": "Polo Pima Marinho — vista principal",
+        "sort_order": 0,
+        "role": "primary",
+        "color_slug": "marinho"
+      },
+      {
+        "url": "/shop/assets/products/polos/polo-pima-marinho--marinho--detail--01.webp",
+        "alt": "Detalhe da gola — Polo Pima Marinho",
+        "sort_order": 1,
+        "role": "detail",
+        "color_slug": "marinho"
+      }
+    ],
+    "variants": [
+      {
+        "public_variant_slug": "polo-pima-marinho-marinho-m",
+        "color": "Marinho",
+        "color_slug": "marinho",
+        "size": "M",
+        "size_slug": "m",
+        "price_cents": 19990,
+        "availability": "in_stock"
+      }
+    ],
+    "seo": {
+      "title": "Polo Pima Marinho | AEROSTORE",
+      "description": "Polo em algodão Pima. Moda masculina AEROSTORE."
+    }
+  }
+}
