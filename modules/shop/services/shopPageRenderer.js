@@ -282,6 +282,124 @@ function renderVariantRows(variants = []) {
   `).join("");
 }
 
+const SIZE_GUIDE_COLUMN_LABELS = {
+  size: "Tamanho",
+  tamanho: "Tamanho",
+  chest_cm: "Peito (cm)",
+  peito_cm: "Peito (cm)",
+  length_cm: "Comprimento (cm)",
+  comprimento_cm: "Comprimento (cm)",
+  waist_cm: "Cintura (cm)",
+  cintura_cm: "Cintura (cm)",
+  hip_cm: "Quadril (cm)",
+  quadril_cm: "Quadril (cm)",
+  inseam_cm: "Entrepernas (cm)",
+  entrepernas_cm: "Entrepernas (cm)"
+};
+
+function humanizeSizeGuideKey(key = "") {
+  const normalized = String(key || "").trim();
+  if (!normalized) return "";
+  if (SIZE_GUIDE_COLUMN_LABELS[normalized]) {
+    return SIZE_GUIDE_COLUMN_LABELS[normalized];
+  }
+  return normalized
+    .replace(/_/g, " ")
+    .replace(/\bcm\b/i, "(cm)")
+    .replace(/^\w/, (char) => char.toUpperCase());
+}
+
+function renderSizeGuideTable(sizeGuide = null) {
+  if (!sizeGuide || typeof sizeGuide !== "object") {
+    return "";
+  }
+  const rows = Array.isArray(sizeGuide.rows) ? sizeGuide.rows.filter((row) => row && typeof row === "object") : [];
+  if (!rows.length) {
+    return "";
+  }
+  const columns = Object.keys(rows[0]).filter((key) => rows.some((row) => row[key] !== undefined && row[key] !== null && row[key] !== ""));
+  if (!columns.length) {
+    return "";
+  }
+  const title = escapeHtml(sizeGuide.title || "Medidas");
+  return `
+    <section class="shop-product-detail-block" aria-labelledby="size-guide-heading">
+      <h2 id="size-guide-heading" class="shop-product-detail-title">${title}</h2>
+      <div class="shop-size-guide-scroll">
+        <table class="shop-size-guide-table">
+          <thead>
+            <tr>
+              ${columns.map((column) => `<th scope="col">${escapeHtml(humanizeSizeGuideKey(column))}</th>`).join("")}
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                ${columns.map((column) => `<td>${escapeHtml(row[column] ?? "—")}</td>`).join("")}
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderProductDetailsSections(product = {}) {
+  const blocks = [];
+  const descriptionFull = String(product.description_full || "").trim();
+  const shortDescription = String(product.short_description || product.description || "").trim();
+  const showDescriptionFull = descriptionFull && descriptionFull !== shortDescription;
+
+  if (showDescriptionFull) {
+    blocks.push(`
+      <section class="shop-product-detail-block" aria-labelledby="about-product-heading">
+        <h2 id="about-product-heading" class="shop-product-detail-title">Sobre a peça</h2>
+        <p class="shop-product-detail-copy">${escapeHtml(descriptionFull)}</p>
+      </section>
+    `);
+  }
+
+  const composition = String(product.composition || "").trim();
+  if (composition) {
+    blocks.push(`
+      <section class="shop-product-detail-block" aria-labelledby="composition-heading">
+        <h2 id="composition-heading" class="shop-product-detail-title">Composição</h2>
+        <p class="shop-product-detail-copy">${escapeHtml(composition)}</p>
+      </section>
+    `);
+  }
+
+  const careInstructions = Array.isArray(product.care_instructions)
+    ? product.care_instructions.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (careInstructions.length) {
+    blocks.push(`
+      <section class="shop-product-detail-block" aria-labelledby="care-heading">
+        <h2 id="care-heading" class="shop-product-detail-title">Cuidados</h2>
+        <ul class="shop-product-care-list">
+          ${careInstructions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+        </ul>
+      </section>
+    `);
+  }
+
+  const sizeGuideHtml = renderSizeGuideTable(product.size_guide);
+  if (sizeGuideHtml) {
+    blocks.push(sizeGuideHtml);
+  }
+
+  if (!blocks.length) {
+    return "";
+  }
+
+  return `
+    <section class="shop-product-details" aria-label="Detalhes do produto">
+      ${blocks.join("")}
+    </section>
+  `;
+}
+
 function renderProductPage(slug = "") {
   const payload = getProductBySlug(slug);
   if (!payload?.product) {
@@ -293,6 +411,9 @@ function renderProductPage(slug = "") {
   const compareHtml = product.compare_at_price_cents
     ? `<span class="shop-price-compare">${escapeHtml(formatPriceBrl(product.compare_at_price_cents))}</span>`
     : "";
+  const leadDescription = String(product.short_description || product.description || "").trim();
+  const ctaLabel = String(product.cta_label || "Consultar disponibilidade").trim() || "Consultar disponibilidade";
+  const detailsHtml = renderProductDetailsSections(product);
 
   const body = `
     <main class="site-main shop-main shop-product-main">
@@ -312,11 +433,11 @@ function renderProductPage(slug = "") {
             <span class="shop-price shop-price--large">${escapeHtml(formatPriceBrl(product.price_cents))}</span>
             ${compareHtml}
           </div>
-          <p class="shop-product-description">${escapeHtml(product.description)}</p>
+          <p class="shop-product-description">${escapeHtml(leadDescription)}</p>
           ${renderProductColorBlock(product.variants)}
           ${renderProductSizeBlock(product.variants)}
           <p class="shop-product-status">${escapeHtml(resolveStatusCopy(product.availability))}</p>
-          <button type="button" class="shop-card-cta shop-product-cta shop-product-cta--primary" disabled aria-disabled="true">Consultar disponibilidade</button>
+          <button type="button" class="shop-card-cta shop-product-cta shop-product-cta--primary" disabled aria-disabled="true">${escapeHtml(ctaLabel)}</button>
           <p class="shop-product-note">Compra online em fase de preparação. Atendimento pelo WhatsApp em breve.</p>
           <a class="shop-product-back" href="/catalogo">← Voltar ao catálogo</a>
         </div>
@@ -341,6 +462,7 @@ function renderProductPage(slug = "") {
           </div>
         </section>
       ` : ""}
+      ${detailsHtml}
     </main>
   `;
 

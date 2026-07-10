@@ -282,6 +282,80 @@
   color: var(--champagne-light);
 }
 
+.shop-product-details {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding-top: 32px;
+  border-top: 1px solid var(--line);
+}
+
+.shop-product-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.shop-product-detail-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  letter-spacing: 0.02em;
+}
+
+.shop-product-detail-copy {
+  margin: 0;
+  max-width: 68ch;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
+.shop-product-care-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  max-width: 52ch;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.shop-product-care-list li + li {
+  margin-top: 6px;
+}
+
+.shop-size-guide-scroll {
+  overflow-x: auto;
+}
+
+.shop-size-guide-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 320px;
+}
+
+.shop-size-guide-table th,
+.shop-size-guide-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-size: 0.86rem;
+}
+
+.shop-size-guide-table th {
+  color: var(--champagne-deep);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.shop-size-guide-table td {
+  color: var(--ink-soft);
+}
+
 @media (max-width: 900px) {
   .shop-product {
     grid-template-columns: 1fr;

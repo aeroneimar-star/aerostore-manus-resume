@@ -2,18 +2,21 @@
 
 Módulo de e-commerce público integrado ao CRM/PDV.
 
-## Escopo atual (Fase 2)
+## Escopo atual (Fase 2.5)
 
 - Catálogo read-only em `/catalogo` (host `aerostore.site`)
 - API pública sanitizada em `/public-api/catalog`
-- 3 produtos piloto via `config/pilot-publications.json`
+- 10 produtos piloto via `config/pilot-publications.json`
+- Template vitrine real: `config/real-catalog-intake.template.json` (não publicado)
+- Fotos reais: `public/shop/assets/img/products/` (vazio, aguarda upload)
 - Sem carrinho, pedido, pagamento ou migrations SQL
 
 ## Estrutura
 
 ```
 modules/shop/
-  config/           shop-settings.json, pilot-publications.json
+  config/           shop-settings.json, pilot-publications.json,
+                    real-catalog-intake.template.json, pilot-publication-schema.v4.json
   dto/              publicProductDto.js
   middleware/       rate-limit, CORS, cache headers
   routes/           shopPublicRoutes, shopPublicApiRoutes, shopAdminRoutes (stub)
@@ -27,6 +30,10 @@ modules/shop/
 - [docs/architecture/public-api-contracts.md](../../docs/architecture/public-api-contracts.md)
 - [docs/architecture/shop-schema-design.md](../../docs/architecture/shop-schema-design.md)
 - [docs/architecture/shop-prototype-visual.md](../../docs/architecture/shop-prototype-visual.md) — **protótipo visual atual**
+
+- [docs/architecture/shop-product-photo-guide.md](../../docs/architecture/shop-product-photo-guide.md)
+- [docs/architecture/shop-real-catalog-blueprint.md](../../docs/architecture/shop-real-catalog-blueprint.md)
+- [docs/architecture/shop-phase-2.5-delivery.md](../../docs/architecture/shop-phase-2.5-delivery.md)
 
 ## Testes locais
 

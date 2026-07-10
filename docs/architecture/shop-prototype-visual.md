@@ -1,6 +1,16 @@
-# Protótipo visual — Catálogo AEROSTORE (Fase 2.4)
+# Protótipo visual — Catálogo AEROSTORE (Fase 2.5)
 
 **Status:** protótipo local / piloto — **não é produção definitiva**
+
+## Fase 2.5 — preparação vitrine real
+
+| Item | Estado |
+|------|--------|
+| Template 10 produtos (preenchimento) | ✅ `real-catalog-intake.template.json` |
+| Pasta fotos reais por categoria | ✅ `public/shop/assets/img/products/` |
+| Render condicional descrição/cuidados/medidas | ✅ página produto |
+| Catálogo piloto 10 peças | ✅ inalterado (fotos piloto) |
+| Dados reais no catálogo | ⏳ aguarda preenchimento + aprovação |
 
 ## Fase 2.4 — preparação produtos reais
 
