@@ -37,7 +37,32 @@ function sendSiteFile(res, relativePath, contentType) {
   res.sendFile(filePath);
 }
 
+const CRM_STATIC_BLOCK = new Set(["/app.js", "/styles.css"]);
+
+function canServePublicSiteAssets(req) {
+  if (isPublicSiteHost(req)) {
+    return true;
+  }
+  try {
+    const { isShopHostAllowed } = require("../../shop/utils/shopHost");
+    return isShopHostAllowed(req);
+  } catch (error) {
+    return false;
+  }
+}
+
 function registerPublicSiteRoutes(app) {
+  app.use((req, res, next) => {
+    if (!isPublicSiteHost(req)) {
+      return next();
+    }
+    if (CRM_STATIC_BLOCK.has(req.path)) {
+      applyPublicSiteSecurityHeaders(res);
+      return res.status(404).type("text/plain").send("Not found");
+    }
+    return next();
+  });
+
   const siteAssetsStatic = express.static(SITE_ASSETS_ROOT, {
     fallthrough: true,
     setHeaders(res, filePath) {
@@ -52,7 +77,7 @@ function registerPublicSiteRoutes(app) {
   });
 
   app.use("/assets", (req, res, next) => {
-    if (!isPublicSiteHost(req)) {
+    if (!canServePublicSiteAssets(req)) {
       return next();
     }
     return siteAssetsStatic(req, res, next);

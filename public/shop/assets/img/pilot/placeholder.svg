@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 480" role="img" aria-label="Produto">
+  <rect width="400" height="480" fill="#101012"/>
+  <rect x="100" y="120" width="200" height="240" rx="8" fill="#1a1a1e" stroke="#c9b896" stroke-width="1"/>
+  <text x="200" y="400" fill="#9e9789" font-family="system-ui,sans-serif" font-size="14" text-anchor="middle">AEROSTORE</text>
+</svg>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 480" role="img" aria-label="T�nis Casual Couro">
+  <rect width="400" height="480" fill="#101012"/>
+  <ellipse cx="200" cy="300" rx="120" ry="60" fill="#1a1a1e" stroke="#c9b896" stroke-width="2"/>
+  <path d="M110 280 Q200 220 290 280" fill="none" stroke="#c9b896" stroke-width="2"/>
+  <text x="200" y="420" fill="#9e9789" font-family="system-ui,sans-serif" font-size="14" text-anchor="middle">T�nis Casual</text>
+</svg>

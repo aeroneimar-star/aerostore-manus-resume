@@ -1,0 +1,187 @@
+{
+  "version": 2,
+  "phase": "2.2",
+  "description": "Vitrine piloto Fase 2.2 — produtos e fotos provisórias premium. Substituir por shop_product_publications (SQL) após aprovação.",
+  "publications": [
+    {
+      "public_slug": "polo-pima-marinho",
+      "status": "published",
+      "public_title": "Polo Pima Marinho",
+      "public_description": "Polo em algodão Pima com toque macio e caimento alinhado. Gola estruturada e acabamento premium — peça-base para looks casuais e semi-formais da AEROSTORE.",
+      "public_category_slug": "polos-camisetas",
+      "public_category_label": "Polos & Camisetas",
+      "featured": true,
+      "sort_order": 1,
+      "price_cents": 19990,
+      "compare_at_price_cents": null,
+      "availability": "in_stock",
+      "primary_image": {
+        "url": "/shop/assets/img/pilot/polo-pima-marinho.png",
+        "alt": "Polo Pima Marinho — AEROSTORE"
+      },
+      "images": [
+        {
+          "url": "/shop/assets/img/pilot/polo-pima-marinho.png",
+          "alt": "Polo Pima Marinho — vista principal",
+          "sort_order": 0
+        }
+      ],
+      "variants": [
+        {
+          "public_variant_slug": "polo-pima-marinho-marinho-m",
+          "color": "Marinho",
+          "color_slug": "marinho",
+          "size": "M",
+          "size_slug": "m",
+          "price_cents": 19990,
+          "availability": "in_stock"
+        },
+        {
+          "public_variant_slug": "polo-pima-marinho-marinho-g",
+          "color": "Marinho",
+          "color_slug": "marinho",
+          "size": "G",
+          "size_slug": "g",
+          "price_cents": 19990,
+          "availability": "in_stock"
+        },
+        {
+          "public_variant_slug": "polo-pima-marinho-marinho-gg",
+          "color": "Marinho",
+          "color_slug": "marinho",
+          "size": "GG",
+          "size_slug": "gg",
+          "price_cents": 19990,
+          "availability": "in_stock"
+        },
+        {
+          "public_variant_slug": "polo-pima-marinho-branco-m",
+          "color": "Branco",
+          "color_slug": "branco",
+          "size": "M",
+          "size_slug": "m",
+          "price_cents": 19990,
+          "availability": "low_stock"
+        }
+      ],
+      "seo": {
+        "title": "Polo Pima Marinho | AEROSTORE",
+        "description": "Polo em algodão Pima com acabamento premium. Moda masculina AEROSTORE."
+      }
+    },
+    {
+      "public_slug": "calca-chino-slim-petroleo",
+      "status": "published",
+      "public_title": "Calça Chino Slim Azul Petróleo",
+      "public_description": "Chino slim com cintura média e barra limpa. Tecido com estrutura leve, ideal para compor looks de escritório descontraído ou fim de semana com camisa e polo.",
+      "public_category_slug": "calcas",
+      "public_category_label": "Calças",
+      "featured": false,
+      "sort_order": 2,
+      "price_cents": 28990,
+      "compare_at_price_cents": 31990,
+      "availability": "in_stock",
+      "primary_image": {
+        "url": "/shop/assets/img/pilot/calca-chino-petroleo.png",
+        "alt": "Calça Chino Slim Azul Petróleo — AEROSTORE"
+      },
+      "images": [
+        {
+          "url": "/shop/assets/img/pilot/calca-chino-petroleo.png",
+          "alt": "Calça Chino Slim Azul Petróleo — vista principal",
+          "sort_order": 0
+        }
+      ],
+      "variants": [
+        {
+          "public_variant_slug": "calca-chino-petroleo-42",
+          "color": "Azul Petróleo",
+          "color_slug": "petroleo",
+          "size": "42",
+          "size_slug": "42",
+          "price_cents": 28990,
+          "availability": "in_stock"
+        },
+        {
+          "public_variant_slug": "calca-chino-petroleo-44",
+          "color": "Azul Petróleo",
+          "color_slug": "petroleo",
+          "size": "44",
+          "size_slug": "44",
+          "price_cents": 28990,
+          "availability": "in_stock"
+        },
+        {
+          "public_variant_slug": "calca-chino-areia-42",
+          "color": "Areia",
+          "color_slug": "areia",
+          "size": "42",
+          "size_slug": "42",
+          "price_cents": 28990,
+          "availability": "in_stock"
+        }
+      ],
+      "seo": {
+        "title": "Calça Chino Slim Azul Petróleo | AEROSTORE",
+        "description": "Chino slim masculino com caimento moderno. AEROSTORE Ribeirão Preto."
+      }
+    },
+    {
+      "public_slug": "tenis-nobuck-cognac",
+      "status": "published",
+      "public_title": "Tênis Nobuck Cognac",
+      "public_description": "Tênis casual em nobuck cognac com solado contrastante e perfil baixo. Conforto para o dia a dia sem abrir mão de um visual refinado.",
+      "public_category_slug": "calcados",
+      "public_category_label": "Calçados",
+      "featured": true,
+      "sort_order": 3,
+      "price_cents": 36990,
+      "compare_at_price_cents": null,
+      "availability": "in_stock",
+      "primary_image": {
+        "url": "/shop/assets/img/pilot/tenis-nobuck-cognac.png",
+        "alt": "Tênis Nobuck Cognac — AEROSTORE"
+      },
+      "images": [
+        {
+          "url": "/shop/assets/img/pilot/tenis-nobuck-cognac.png",
+          "alt": "Tênis Nobuck Cognac — vista lateral",
+          "sort_order": 0
+        }
+      ],
+      "variants": [
+        {
+          "public_variant_slug": "tenis-nobuck-cognac-40",
+          "color": "Cognac",
+          "color_slug": "cognac",
+          "size": "40",
+          "size_slug": "40",
+          "price_cents": 36990,
+          "availability": "in_stock"
+        },
+        {
+          "public_variant_slug": "tenis-nobuck-cognac-41",
+          "color": "Cognac",
+          "color_slug": "cognac",
+          "size": "41",
+          "size_slug": "41",
+          "price_cents": 36990,
+          "availability": "in_stock"
+        },
+        {
+          "public_variant_slug": "tenis-nobuck-preto-42",
+          "color": "Preto",
+          "color_slug": "preto",
+          "size": "42",
+          "size_slug": "42",
+          "price_cents": 36990,
+          "availability": "out_of_stock"
+        }
+      ],
+      "seo": {
+        "title": "Tênis Nobuck Cognac | AEROSTORE",
+        "description": "Tênis casual em nobuck cognac. Calçados masculinos AEROSTORE."
+      }
+    }
+  ]
+}

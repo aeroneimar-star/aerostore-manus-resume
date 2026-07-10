@@ -35,6 +35,7 @@ const {
 const { PDV_WEB_ROUTES } = require("./modules/pdv/routes/pdvRoutes");
 const { registerPublicSiteRoutes } = require("./modules/public-site/routes/publicSiteRoutes");
 const { isPublicSiteHost } = require("./modules/public-site/utils/publicSiteHost");
+const { registerShopModule } = require("./modules/shop");
 const { getPdvFoundationManifest } = require("./modules/pdv/services/pdvFoundationService");
 const { pdvImportRouter } = require("./modules/pdv/routes/pdvImportRoutes");
 const { pdvConsolidationRouter } = require("./modules/pdv/consolidation/routes/pdvConsolidationRoutes");
@@ -1295,6 +1296,7 @@ app.use(express.json({ limit: "4mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 registerPublicSiteRoutes(app);
+registerShopModule(app);
 
 app.get("/", (req, res, next) => {
   if (isPublicSiteHost(req)) {

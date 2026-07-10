@@ -78,6 +78,14 @@ function isPublicSitePath(pathname = "") {
   if (path.startsWith("/assets/")) {
     return true;
   }
+  try {
+    const { shouldBypassPublicSite404 } = require("../../shop/utils/shopHost");
+    if (shouldBypassPublicSite404(path)) {
+      return true;
+    }
+  } catch (error) {
+    // shop module optional during bootstrap
+  }
   return false;
 }
 

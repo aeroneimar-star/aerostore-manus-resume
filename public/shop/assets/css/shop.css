@@ -1,0 +1,41 @@
+/* AEROSTORE Shop — shared tokens and shell */
+
+.shop-body {
+  background: var(--bg-deep);
+}
+
+.shop-shell {
+  min-height: 100vh;
+}
+
+.shop-main {
+  padding-top: calc(var(--header-height) + 24px);
+  padding-bottom: 72px;
+}
+
+.shop-footer {
+  margin-top: auto;
+}
+
+.shop-footer-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 28px 0 36px;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.shop-footer-note {
+  margin: 0;
+  color: var(--champagne-deep);
+  font-size: 0.78rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shop-card,
+  .shop-filter-chip,
+  .shop-card-cta {
+    transition: none;
+  }
+}

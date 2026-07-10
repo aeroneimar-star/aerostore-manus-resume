@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 480" role="img" aria-label="Cal�a Sarja Slim">
+  <rect width="400" height="480" fill="#101012"/>
+  <path d="M150 60 L250 60 L270 420 L130 420 Z" fill="#1a1a1e" stroke="#c9b896" stroke-width="2"/>
+  <line x1="200" y1="60" x2="200" y2="420" stroke="#c9b896" stroke-width="1" opacity="0.4"/>
+  <text x="200" y="450" fill="#9e9789" font-family="system-ui,sans-serif" font-size="14" text-anchor="middle">Cal�a Sarja</text>
+</svg>

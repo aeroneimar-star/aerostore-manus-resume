@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 480" role="img" aria-label="Camiseta Premium Algod�o">
+  <rect width="400" height="480" fill="#101012"/>
+  <rect x="80" y="60" width="240" height="320" rx="12" fill="#1a1a1e" stroke="#c9b896" stroke-width="2"/>
+  <path d="M140 60 L200 120 L260 60" fill="none" stroke="#c9b896" stroke-width="2"/>
+  <text x="200" y="420" fill="#9e9789" font-family="system-ui,sans-serif" font-size="14" text-anchor="middle">Camiseta Premium</text>
+</svg>

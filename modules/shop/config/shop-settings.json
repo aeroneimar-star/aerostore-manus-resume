@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "phase": 2,
+  "use_pilot_json": true,
+  "fulfillment": {
+    "store_ids": ["vila_masc", "botanico", "sul"],
+    "stock_policy": "min_across_stores",
+    "low_stock_threshold": 2,
+    "reservation_ttl_minutes": 30,
+    "notes": "Pool inicial: três lojas físicas ativas. Disponível online = min(available - reserved) entre lojas do pool. Loja dedicada ecommerce pode ser configurada quando existir store type ecommerce em store-settings."
+  },
+  "catalog": {
+    "default_page_limit": 24,
+    "max_page_limit": 48,
+    "cache_max_age_seconds": 120
+  },
+  "api": {
+    "rate_limit_catalog_per_minute": 60,
+    "rate_limit_orders_per_minute": 10,
+    "cors_origins": [
+      "https://aerostore.site",
+      "https://www.aerostore.site"
+    ]
+  },
+  "decisions": {
+    "approved_at": "2026-07-09",
+    "approved_by": "architecture-plan",
+    "rationale": "Usar lojas físicas existentes como pool de fulfillment evita criar depósito virtual na Fase 2. Política min_across_stores reduz risco de overselling. Reserva online (Fase 7) usará mesma infra de movimentos com reference_type shop_order."
+  }
+}
