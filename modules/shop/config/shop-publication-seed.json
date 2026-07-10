@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "phase": "2.7",
+  "status": "not_applied",
+  "description": "Seed vazio da camada de publicação shop. NÃO aplicado ao banco — usar após DDL aprovado e backup.",
+  "apply_notes": [
+    "Executar modules/shop/database/shop-publication-ddl.sql manualmente",
+    "Inserir shop_catalog_settings id=1 a partir de catalog_settings abaixo",
+    "Publicações reais entram via UI admin (Fase 2.9+) — não migrar pilot-publications.json automaticamente"
+  ],
+  "catalog_settings": {
+    "fulfillment_store_ids": ["vila_masc", "botanico", "sul"],
+    "stock_policy": "min_across_stores",
+    "low_stock_threshold": 2,
+    "reservation_ttl_minutes": 30,
+    "use_pilot_json_fallback": true
+  },
+  "publications": [],
+  "variant_publications": [],
+  "images": []
+}
