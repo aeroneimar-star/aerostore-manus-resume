@@ -80,8 +80,8 @@ async function main() {
     if (!catalogPage.body.includes("Seleção AEROSTORE")) {
       throw new Error("Catalog page missing hero title");
     }
-    if (!catalogPage.body.includes("Polo Pima Marinho")) {
-      throw new Error("Catalog page missing pilot product");
+    if (!catalogPage.body.includes("Camiseta Premium Algodão Branca")) {
+      throw new Error("Catalog page missing expanded pilot product");
     }
 
     const catalogApi = await request(port, "aerostore.site", "/public-api/catalog");
@@ -89,7 +89,7 @@ async function main() {
       throw new Error(`Public /public-api/catalog expected 200, got ${catalogApi.status}`);
     }
     const catalogJson = JSON.parse(catalogApi.body);
-    if (!catalogJson.success || !Array.isArray(catalogJson.items) || catalogJson.items.length < 3) {
+    if (!catalogJson.success || !Array.isArray(catalogJson.items) || catalogJson.items.length < 6) {
       throw new Error("Catalog API missing pilot products");
     }
     const forbiddenInCatalog = collectForbiddenKeys(catalogJson);

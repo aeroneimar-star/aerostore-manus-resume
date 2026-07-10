@@ -10,7 +10,10 @@ const COLOR_SWATCH_MAP = {
   azul: "#2c4a62",
   marrom: "#6b4e3d",
   verde: "#2f4a3a",
-  cinza: "#6b6760"
+  grafite: "#4a4f57",
+  caramelo: "#a67c52",
+  indigo: "#1a2438",
+  jeans: "#2c3548",
 };
 
 function uniqueValues(values = []) {

@@ -1,6 +1,16 @@
-# Protótipo visual — Catálogo AEROSTORE (Fase 2.2)
+# Protótipo visual — Catálogo AEROSTORE (Fase 2.3)
 
 **Status:** protótipo local / piloto — **não é produção definitiva**
+
+## Fase 2.3 — vitrine piloto ampliada
+
+| Item | Estado |
+|------|--------|
+| Produtos piloto | ✅ 10 peças (camisetas, polos, calças, bermudas, calçados, acessórios) |
+| Categorias realistas | ✅ 6 categorias |
+| Fotos piloto premium locais | ✅ provisórias — sem packshots reais no repo |
+| Microcopy e CTA | ✅ mantidos |
+| Visual premium Fase 2.2 | ✅ mantido |
 
 ## Fase 2.2 — vitrine piloto realista
 

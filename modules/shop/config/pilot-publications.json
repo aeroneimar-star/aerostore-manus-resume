@@ -1,15 +1,16 @@
 {
-  "version": 2,
-  "phase": "2.2",
-  "description": "Vitrine piloto Fase 2.2 — produtos e fotos provisórias premium. Substituir por shop_product_publications (SQL) após aprovação.",
+  "version": 3,
+  "phase": "2.3",
+  "description": "Vitrine piloto Fase 2.3 — curadoria AEROSTORE ampliada (10 peças). Fotos provisórias premium locais; substituir por shop_product_publications (SQL) após aprovação.",
+  "image_policy": "Fotos piloto geradas/editoriais — não são fotos oficiais de estoque. Landing possui apenas imagens de loja (fachada, interior, detalhes); não há packshots reais de produto no repositório.",
   "publications": [
     {
       "public_slug": "polo-pima-marinho",
       "status": "published",
       "public_title": "Polo Pima Marinho",
       "public_description": "Polo em algodão Pima com toque macio e caimento alinhado. Gola estruturada e acabamento premium — peça-base para looks casuais e semi-formais da AEROSTORE.",
-      "public_category_slug": "polos-camisetas",
-      "public_category_label": "Polos & Camisetas",
+      "public_category_slug": "polos",
+      "public_category_label": "Polos",
       "featured": true,
       "sort_order": 1,
       "price_cents": 19990,
@@ -17,7 +18,7 @@
       "availability": "in_stock",
       "primary_image": {
         "url": "/shop/assets/img/pilot/polo-pima-marinho.png",
-        "alt": "Polo Pima Marinho — AEROSTORE"
+        "alt": "Polo Pima Marinho — AEROSTORE (foto piloto provisória)"
       },
       "images": [
         {
@@ -27,46 +28,48 @@
         }
       ],
       "variants": [
-        {
-          "public_variant_slug": "polo-pima-marinho-marinho-m",
-          "color": "Marinho",
-          "color_slug": "marinho",
-          "size": "M",
-          "size_slug": "m",
-          "price_cents": 19990,
-          "availability": "in_stock"
-        },
-        {
-          "public_variant_slug": "polo-pima-marinho-marinho-g",
-          "color": "Marinho",
-          "color_slug": "marinho",
-          "size": "G",
-          "size_slug": "g",
-          "price_cents": 19990,
-          "availability": "in_stock"
-        },
-        {
-          "public_variant_slug": "polo-pima-marinho-marinho-gg",
-          "color": "Marinho",
-          "color_slug": "marinho",
-          "size": "GG",
-          "size_slug": "gg",
-          "price_cents": 19990,
-          "availability": "in_stock"
-        },
-        {
-          "public_variant_slug": "polo-pima-marinho-branco-m",
-          "color": "Branco",
-          "color_slug": "branco",
-          "size": "M",
-          "size_slug": "m",
-          "price_cents": 19990,
-          "availability": "low_stock"
-        }
+        { "public_variant_slug": "polo-pima-marinho-marinho-m", "color": "Marinho", "color_slug": "marinho", "size": "M", "size_slug": "m", "price_cents": 19990, "availability": "in_stock" },
+        { "public_variant_slug": "polo-pima-marinho-marinho-g", "color": "Marinho", "color_slug": "marinho", "size": "G", "size_slug": "g", "price_cents": 19990, "availability": "in_stock" },
+        { "public_variant_slug": "polo-pima-marinho-marinho-gg", "color": "Marinho", "color_slug": "marinho", "size": "GG", "size_slug": "gg", "price_cents": 19990, "availability": "in_stock" },
+        { "public_variant_slug": "polo-pima-marinho-branco-m", "color": "Branco", "color_slug": "branco", "size": "M", "size_slug": "m", "price_cents": 19990, "availability": "low_stock" }
       ],
       "seo": {
         "title": "Polo Pima Marinho | AEROSTORE",
         "description": "Polo em algodão Pima com acabamento premium. Moda masculina AEROSTORE."
+      }
+    },
+    {
+      "public_slug": "camiseta-premium-branca",
+      "status": "published",
+      "public_title": "Camiseta Premium Algodão Branca",
+      "public_description": "Camiseta em algodão penteado com caimento reto e gola reforçada. Peça essencial para compor looks clean com calça chino, bermuda ou sobreposição com camisa.",
+      "public_category_slug": "camisetas",
+      "public_category_label": "Camisetas",
+      "featured": true,
+      "sort_order": 2,
+      "price_cents": 14990,
+      "compare_at_price_cents": null,
+      "availability": "in_stock",
+      "primary_image": {
+        "url": "/shop/assets/img/pilot/camiseta-premium-branca.png",
+        "alt": "Camiseta Premium Algodão Branca — AEROSTORE (foto piloto provisória)"
+      },
+      "images": [
+        {
+          "url": "/shop/assets/img/pilot/camiseta-premium-branca.png",
+          "alt": "Camiseta Premium Branca — vista principal",
+          "sort_order": 0
+        }
+      ],
+      "variants": [
+        { "public_variant_slug": "camiseta-branca-m", "color": "Branco", "color_slug": "branco", "size": "M", "size_slug": "m", "price_cents": 14990, "availability": "in_stock" },
+        { "public_variant_slug": "camiseta-branca-g", "color": "Branco", "color_slug": "branco", "size": "G", "size_slug": "g", "price_cents": 14990, "availability": "in_stock" },
+        { "public_variant_slug": "camiseta-branca-gg", "color": "Branco", "color_slug": "branco", "size": "GG", "size_slug": "gg", "price_cents": 14990, "availability": "in_stock" },
+        { "public_variant_slug": "camiseta-branca-preto-m", "color": "Preto", "color_slug": "preto", "size": "M", "size_slug": "m", "price_cents": 14990, "availability": "in_stock" }
+      ],
+      "seo": {
+        "title": "Camiseta Premium Algodão Branca | AEROSTORE",
+        "description": "Camiseta premium masculina em algodão. Básico sofisticado AEROSTORE."
       }
     },
     {
@@ -77,13 +80,13 @@
       "public_category_slug": "calcas",
       "public_category_label": "Calças",
       "featured": false,
-      "sort_order": 2,
+      "sort_order": 3,
       "price_cents": 28990,
       "compare_at_price_cents": 31990,
       "availability": "in_stock",
       "primary_image": {
         "url": "/shop/assets/img/pilot/calca-chino-petroleo.png",
-        "alt": "Calça Chino Slim Azul Petróleo — AEROSTORE"
+        "alt": "Calça Chino Slim Azul Petróleo — AEROSTORE (foto piloto provisória)"
       },
       "images": [
         {
@@ -93,33 +96,9 @@
         }
       ],
       "variants": [
-        {
-          "public_variant_slug": "calca-chino-petroleo-42",
-          "color": "Azul Petróleo",
-          "color_slug": "petroleo",
-          "size": "42",
-          "size_slug": "42",
-          "price_cents": 28990,
-          "availability": "in_stock"
-        },
-        {
-          "public_variant_slug": "calca-chino-petroleo-44",
-          "color": "Azul Petróleo",
-          "color_slug": "petroleo",
-          "size": "44",
-          "size_slug": "44",
-          "price_cents": 28990,
-          "availability": "in_stock"
-        },
-        {
-          "public_variant_slug": "calca-chino-areia-42",
-          "color": "Areia",
-          "color_slug": "areia",
-          "size": "42",
-          "size_slug": "42",
-          "price_cents": 28990,
-          "availability": "in_stock"
-        }
+        { "public_variant_slug": "calca-chino-petroleo-42", "color": "Azul Petróleo", "color_slug": "petroleo", "size": "42", "size_slug": "42", "price_cents": 28990, "availability": "in_stock" },
+        { "public_variant_slug": "calca-chino-petroleo-44", "color": "Azul Petróleo", "color_slug": "petroleo", "size": "44", "size_slug": "44", "price_cents": 28990, "availability": "in_stock" },
+        { "public_variant_slug": "calca-chino-areia-42", "color": "Areia", "color_slug": "areia", "size": "42", "size_slug": "42", "price_cents": 28990, "availability": "in_stock" }
       ],
       "seo": {
         "title": "Calça Chino Slim Azul Petróleo | AEROSTORE",
@@ -134,13 +113,13 @@
       "public_category_slug": "calcados",
       "public_category_label": "Calçados",
       "featured": true,
-      "sort_order": 3,
+      "sort_order": 4,
       "price_cents": 36990,
       "compare_at_price_cents": null,
       "availability": "in_stock",
       "primary_image": {
         "url": "/shop/assets/img/pilot/tenis-nobuck-cognac.png",
-        "alt": "Tênis Nobuck Cognac — AEROSTORE"
+        "alt": "Tênis Nobuck Cognac — AEROSTORE (foto piloto provisória)"
       },
       "images": [
         {
@@ -150,37 +129,211 @@
         }
       ],
       "variants": [
-        {
-          "public_variant_slug": "tenis-nobuck-cognac-40",
-          "color": "Cognac",
-          "color_slug": "cognac",
-          "size": "40",
-          "size_slug": "40",
-          "price_cents": 36990,
-          "availability": "in_stock"
-        },
-        {
-          "public_variant_slug": "tenis-nobuck-cognac-41",
-          "color": "Cognac",
-          "color_slug": "cognac",
-          "size": "41",
-          "size_slug": "41",
-          "price_cents": 36990,
-          "availability": "in_stock"
-        },
-        {
-          "public_variant_slug": "tenis-nobuck-preto-42",
-          "color": "Preto",
-          "color_slug": "preto",
-          "size": "42",
-          "size_slug": "42",
-          "price_cents": 36990,
-          "availability": "out_of_stock"
-        }
+        { "public_variant_slug": "tenis-nobuck-cognac-40", "color": "Cognac", "color_slug": "cognac", "size": "40", "size_slug": "40", "price_cents": 36990, "availability": "in_stock" },
+        { "public_variant_slug": "tenis-nobuck-cognac-41", "color": "Cognac", "color_slug": "cognac", "size": "41", "size_slug": "41", "price_cents": 36990, "availability": "in_stock" },
+        { "public_variant_slug": "tenis-nobuck-preto-42", "color": "Preto", "color_slug": "preto", "size": "42", "size_slug": "42", "price_cents": 36990, "availability": "out_of_stock" }
       ],
       "seo": {
         "title": "Tênis Nobuck Cognac | AEROSTORE",
         "description": "Tênis casual em nobuck cognac. Calçados masculinos AEROSTORE."
+      }
+    },
+    {
+      "public_slug": "camiseta-premium-grafite",
+      "status": "published",
+      "public_title": "Camiseta Premium Grafite",
+      "public_description": "Camiseta em malha premium na cor grafite, versátil para looks urbanos e casual-chic. Toque macio e cor neutra que combina com jeans, chino e sobreposições.",
+      "public_category_slug": "camisetas",
+      "public_category_label": "Camisetas",
+      "featured": false,
+      "sort_order": 5,
+      "price_cents": 14990,
+      "compare_at_price_cents": null,
+      "availability": "in_stock",
+      "primary_image": {
+        "url": "/shop/assets/img/pilot/camiseta-premium-grafite.png",
+        "alt": "Camiseta Premium Grafite — AEROSTORE (foto piloto provisória)"
+      },
+      "images": [
+        {
+          "url": "/shop/assets/img/pilot/camiseta-premium-grafite.png",
+          "alt": "Camiseta Premium Grafite — vista principal",
+          "sort_order": 0
+        }
+      ],
+      "variants": [
+        { "public_variant_slug": "camiseta-grafite-m", "color": "Grafite", "color_slug": "grafite", "size": "M", "size_slug": "m", "price_cents": 14990, "availability": "in_stock" },
+        { "public_variant_slug": "camiseta-grafite-g", "color": "Grafite", "color_slug": "grafite", "size": "G", "size_slug": "g", "price_cents": 14990, "availability": "in_stock" },
+        { "public_variant_slug": "camiseta-grafite-gg", "color": "Grafite", "color_slug": "grafite", "size": "GG", "size_slug": "gg", "price_cents": 14990, "availability": "low_stock" }
+      ],
+      "seo": {
+        "title": "Camiseta Premium Grafite | AEROSTORE",
+        "description": "Camiseta premium masculina grafite. AEROSTORE Ribeirão Preto."
+      }
+    },
+    {
+      "public_slug": "polo-pima-branco",
+      "status": "published",
+      "public_title": "Polo Pima Branco",
+      "public_description": "Polo branco em algodão Pima com acabamento impecável. Clássico atemporal para compor com calça chino, bermuda ou blazer desestruturado.",
+      "public_category_slug": "polos",
+      "public_category_label": "Polos",
+      "featured": false,
+      "sort_order": 6,
+      "price_cents": 19990,
+      "compare_at_price_cents": null,
+      "availability": "in_stock",
+      "primary_image": {
+        "url": "/shop/assets/img/pilot/polo-pima-branco.png",
+        "alt": "Polo Pima Branco — AEROSTORE (foto piloto provisória)"
+      },
+      "images": [
+        {
+          "url": "/shop/assets/img/pilot/polo-pima-branco.png",
+          "alt": "Polo Pima Branco — vista principal",
+          "sort_order": 0
+        }
+      ],
+      "variants": [
+        { "public_variant_slug": "polo-branco-m", "color": "Branco", "color_slug": "branco", "size": "M", "size_slug": "m", "price_cents": 19990, "availability": "in_stock" },
+        { "public_variant_slug": "polo-branco-g", "color": "Branco", "color_slug": "branco", "size": "G", "size_slug": "g", "price_cents": 19990, "availability": "in_stock" },
+        { "public_variant_slug": "polo-branco-marinho-m", "color": "Marinho", "color_slug": "marinho", "size": "M", "size_slug": "m", "price_cents": 19990, "availability": "in_stock" }
+      ],
+      "seo": {
+        "title": "Polo Pima Branco | AEROSTORE",
+        "description": "Polo branco premium em algodão Pima. Moda masculina AEROSTORE."
+      }
+    },
+    {
+      "public_slug": "bermuda-chino-sarja-areia",
+      "status": "published",
+      "public_title": "Bermuda Chino Sarja Areia",
+      "public_description": "Bermuda chino em sarja leve na cor areia, caimento reto e cós confortável. Peça-chave para o verão com camiseta premium ou polo.",
+      "public_category_slug": "bermudas",
+      "public_category_label": "Bermudas",
+      "featured": false,
+      "sort_order": 7,
+      "price_cents": 21990,
+      "compare_at_price_cents": null,
+      "availability": "in_stock",
+      "primary_image": {
+        "url": "/shop/assets/img/pilot/bermuda-chino-areia.png",
+        "alt": "Bermuda Chino Sarja Areia — AEROSTORE (foto piloto provisória)"
+      },
+      "images": [
+        {
+          "url": "/shop/assets/img/pilot/bermuda-chino-areia.png",
+          "alt": "Bermuda Chino Sarja Areia — vista principal",
+          "sort_order": 0
+        }
+      ],
+      "variants": [
+        { "public_variant_slug": "bermuda-areia-42", "color": "Areia", "color_slug": "areia", "size": "42", "size_slug": "42", "price_cents": 21990, "availability": "in_stock" },
+        { "public_variant_slug": "bermuda-areia-44", "color": "Areia", "color_slug": "areia", "size": "44", "size_slug": "44", "price_cents": 21990, "availability": "in_stock" },
+        { "public_variant_slug": "bermuda-petroleo-42", "color": "Azul Petróleo", "color_slug": "petroleo", "size": "42", "size_slug": "42", "price_cents": 21990, "availability": "low_stock" }
+      ],
+      "seo": {
+        "title": "Bermuda Chino Sarja Areia | AEROSTORE",
+        "description": "Bermuda chino masculina areia. Verão premium AEROSTORE."
+      }
+    },
+    {
+      "public_slug": "calca-jeans-slim-escura",
+      "status": "published",
+      "public_title": "Calça Jeans Slim Escura",
+      "public_description": "Jeans slim em indigo escuro com lavagem uniforme e caimento moderno. Versátil do casual ao smart casual com camisa, polo ou blazer.",
+      "public_category_slug": "calcas",
+      "public_category_label": "Calças",
+      "featured": false,
+      "sort_order": 8,
+      "price_cents": 26990,
+      "compare_at_price_cents": 29990,
+      "availability": "in_stock",
+      "primary_image": {
+        "url": "/shop/assets/img/pilot/calca-jeans-slim-escura.png",
+        "alt": "Calça Jeans Slim Escura — AEROSTORE (foto piloto provisória)"
+      },
+      "images": [
+        {
+          "url": "/shop/assets/img/pilot/calca-jeans-slim-escura.png",
+          "alt": "Calça Jeans Slim Escura — vista principal",
+          "sort_order": 0
+        }
+      ],
+      "variants": [
+        { "public_variant_slug": "jeans-escura-42", "color": "Indigo Escuro", "color_slug": "indigo", "size": "42", "size_slug": "42", "price_cents": 26990, "availability": "in_stock" },
+        { "public_variant_slug": "jeans-escura-44", "color": "Indigo Escuro", "color_slug": "indigo", "size": "44", "size_slug": "44", "price_cents": 26990, "availability": "in_stock" },
+        { "public_variant_slug": "jeans-escura-46", "color": "Indigo Escuro", "color_slug": "indigo", "size": "46", "size_slug": "46", "price_cents": 26990, "availability": "in_stock" }
+      ],
+      "seo": {
+        "title": "Calça Jeans Slim Escura | AEROSTORE",
+        "description": "Jeans slim masculino indigo escuro. AEROSTORE Ribeirão Preto."
+      }
+    },
+    {
+      "public_slug": "mocassim-camurca-caramelo",
+      "status": "published",
+      "public_title": "Mocassim Camurça Caramelo",
+      "public_description": "Mocassim em camurça caramelo com solado de borracha e acabamento artesanal. Elegância despretensiosa para looks de fim de semana e eventos informais.",
+      "public_category_slug": "calcados",
+      "public_category_label": "Calçados",
+      "featured": true,
+      "sort_order": 9,
+      "price_cents": 39990,
+      "compare_at_price_cents": null,
+      "availability": "in_stock",
+      "primary_image": {
+        "url": "/shop/assets/img/pilot/mocassim-camurca-caramelo.png",
+        "alt": "Mocassim Camurça Caramelo — AEROSTORE (foto piloto provisória)"
+      },
+      "images": [
+        {
+          "url": "/shop/assets/img/pilot/mocassim-camurca-caramelo.png",
+          "alt": "Mocassim Camurça Caramelo — vista lateral",
+          "sort_order": 0
+        }
+      ],
+      "variants": [
+        { "public_variant_slug": "mocassim-caramelo-40", "color": "Caramelo", "color_slug": "caramelo", "size": "40", "size_slug": "40", "price_cents": 39990, "availability": "in_stock" },
+        { "public_variant_slug": "mocassim-caramelo-41", "color": "Caramelo", "color_slug": "caramelo", "size": "41", "size_slug": "41", "price_cents": 39990, "availability": "in_stock" },
+        { "public_variant_slug": "mocassim-caramelo-42", "color": "Caramelo", "color_slug": "caramelo", "size": "42", "size_slug": "42", "price_cents": 39990, "availability": "low_stock" }
+      ],
+      "seo": {
+        "title": "Mocassim Camurça Caramelo | AEROSTORE",
+        "description": "Mocassim camurça caramelo masculino. Calçados premium AEROSTORE."
+      }
+    },
+    {
+      "public_slug": "cinto-couro-cognac",
+      "status": "published",
+      "public_title": "Cinto Couro Cognac",
+      "public_description": "Cinto em couro legítimo na cor cognac com fivela discreta em metal escovado. Acessório essencial para fechar looks com calça chino, jeans ou bermuda.",
+      "public_category_slug": "acessorios",
+      "public_category_label": "Acessórios",
+      "featured": false,
+      "sort_order": 10,
+      "price_cents": 12990,
+      "compare_at_price_cents": null,
+      "availability": "in_stock",
+      "primary_image": {
+        "url": "/shop/assets/img/pilot/cinto-couro-cognac.png",
+        "alt": "Cinto Couro Cognac — AEROSTORE (foto piloto provisória)"
+      },
+      "images": [
+        {
+          "url": "/shop/assets/img/pilot/cinto-couro-cognac.png",
+          "alt": "Cinto Couro Cognac — vista principal",
+          "sort_order": 0
+        }
+      ],
+      "variants": [
+        { "public_variant_slug": "cinto-cognac-95", "color": "Cognac", "color_slug": "cognac", "size": "95", "size_slug": "95", "price_cents": 12990, "availability": "in_stock" },
+        { "public_variant_slug": "cinto-cognac-100", "color": "Cognac", "color_slug": "cognac", "size": "100", "size_slug": "100", "price_cents": 12990, "availability": "in_stock" },
+        { "public_variant_slug": "cinto-preto-100", "color": "Preto", "color_slug": "preto", "size": "100", "size_slug": "100", "price_cents": 12990, "availability": "in_stock" }
+      ],
+      "seo": {
+        "title": "Cinto Couro Cognac | AEROSTORE",
+        "description": "Cinto masculino couro cognac. Acessórios premium AEROSTORE."
       }
     }
   ]
