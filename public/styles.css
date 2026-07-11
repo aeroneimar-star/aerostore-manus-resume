@@ -28391,11 +28391,43 @@ body[data-route-section="shop-publication"] .shop-pub-shell {
   letter-spacing: -0.02em;
 }
 
+.shop-pub-kpis--extended {
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+}
+
+.shop-pub-kpis--extended article.is-highlight {
+  border-color: rgba(52, 211, 153, 0.28);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.shop-pub-kpis--extended article.is-highlight strong {
+  color: #6ee7b7;
+}
+
 .shop-pub-toolbar {
   display: grid;
   grid-template-columns: minmax(180px, 1.4fr) repeat(4, minmax(120px, 0.8fr)) auto auto auto;
   gap: 0.65rem;
   align-items: center;
+}
+
+.shop-pub-toolbar--extended {
+  grid-template-columns: minmax(180px, 1.2fr) repeat(3, minmax(120px, 0.75fr)) minmax(150px, auto) auto auto auto;
+}
+
+.shop-pub-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.5rem;
+  padding: 0 0.35rem;
+  color: #cbd5e1;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.shop-pub-toggle input {
+  accent-color: #60a5fa;
 }
 
 .shop-pub-toolbar input,
@@ -28421,7 +28453,7 @@ body[data-route-section="shop-publication"] .shop-pub-shell {
 
 .shop-pub-table {
   width: 100%;
-  min-width: 1000px;
+  min-width: 1120px;
   border-collapse: collapse;
 }
 
@@ -28455,6 +28487,29 @@ body[data-route-section="shop-publication"] .shop-pub-shell {
 .shop-pub-row:hover,
 .shop-pub-row.is-selected {
   background: rgba(59, 130, 246, 0.08);
+}
+
+.shop-pub-row.is-test {
+  background: rgba(251, 191, 36, 0.04);
+}
+
+.shop-pub-inline-flag {
+  display: inline-flex;
+  margin-left: 0.35rem;
+  padding: 0.08rem 0.35rem;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.12);
+  color: #fcd34d;
+  font-size: 0.68rem;
+  vertical-align: middle;
+}
+
+.shop-pub-reason-cell,
+.shop-pub-reason-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
 }
 
 .shop-pub-chip-row {
@@ -28514,6 +28569,18 @@ body[data-route-section="shop-publication"] .shop-pub-shell {
   color: #cbd5e1;
   border-color: rgba(148, 163, 184, 0.22);
   background: rgba(51, 65, 85, 0.35);
+}
+
+.shop-pub-badge--test {
+  color: #fcd34d;
+  border-color: rgba(251, 191, 36, 0.28);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.shop-pub-badge--warn {
+  color: #fdba74;
+  border-color: rgba(251, 146, 60, 0.28);
+  background: rgba(251, 146, 60, 0.1);
 }
 
 .shop-pub-pagination {
@@ -28594,7 +28661,8 @@ body[data-route-section="shop-publication"] .shop-pub-shell {
     grid-template-columns: 1fr;
   }
 
-  .shop-pub-toolbar {
+  .shop-pub-toolbar,
+  .shop-pub-toolbar--extended {
     grid-template-columns: 1fr 1fr;
   }
 

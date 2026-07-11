@@ -56,6 +56,12 @@ async function main() {
   if (!candidates.pilot_json_active) {
     throw new Error("pilot_json_active deveria ser true");
   }
+  if (!candidates.stats || typeof candidates.stats.total_raw !== "number") {
+    throw new Error("stats de curadoria ausente na resposta (Fase 2.8.2)");
+  }
+  if (candidates.include_test_candidates !== false) {
+    throw new Error("include_test_candidates default deveria ser false");
+  }
 
   const adminForbidden = collectForbiddenKeys(candidates, FORBIDDEN_ADMIN_KEYS);
   if (adminForbidden.size) {
@@ -73,6 +79,20 @@ async function main() {
     if (typeof sample.available_qty !== "undefined" || typeof sample.reserved_qty !== "undefined") {
       throw new Error("quantidade exata não deveria aparecer no candidato");
     }
+    if (!Array.isArray(sample.block_reasons) || !sample.block_reason_primary) {
+      throw new Error("block_reasons/block_reason_primary ausentes (Fase 2.8.2)");
+    }
+    if (typeof sample.is_test_candidate !== "boolean") {
+      throw new Error("is_test_candidate ausente (Fase 2.8.2)");
+    }
+  }
+
+  const withTests = await listPdvPublicationCandidates({ limit: 200, include_test_candidates: true });
+  if (withTests.stats.clean_total !== withTests.stats.total_raw) {
+    // when all are test, clean could be 0 - that's ok
+  }
+  if (withTests.total > withTests.stats.total_raw) {
+    throw new Error("include_test_candidates não deveria inflar total bruto");
   }
 
   assertNoForbiddenAdminKeys(candidates);
@@ -81,7 +101,8 @@ async function main() {
     schema_ready: schema.ready,
     pilot_items: catalog.items.length,
     candidate_total: candidates.total,
-    candidate_sample: candidates.items.length
+    candidate_sample: candidates.items.length,
+    stats: candidates.stats
   });
 }
 

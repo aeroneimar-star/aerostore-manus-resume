@@ -3,6 +3,16 @@
 (function initShopPublicationAdmin(global) {
   const stateKey = "shopPublication";
 
+  const CURATION_FILTERS = [
+    { value: "all", label: "Todos" },
+    { value: "sellable", label: "Somente vendáveis" },
+    { value: "in_stock", label: "Somente em estoque" },
+    { value: "low_stock", label: "Estoque baixo" },
+    { value: "blocked", label: "Bloqueados" },
+    { value: "test", label: "Suspeitos QA/teste" },
+    { value: "potentially_publishable", label: "Publicáveis potenciais" }
+  ];
+
   function ensureState(rootState) {
     if (!rootState[stateKey]) {
       rootState[stateKey] = {
@@ -12,16 +22,28 @@
         pilotJsonActive: true,
         items: [],
         total: 0,
+        stats: null,
         page: 1,
         limit: 24,
         selectedKey: "",
+        includeTestCandidates: false,
         filters: {
           q: "",
           product_type: "",
-          sellable: "",
-          availability: "",
+          curation: "all",
           publication_status: ""
         }
+      };
+    }
+    if (typeof rootState[stateKey].includeTestCandidates !== "boolean") {
+      rootState[stateKey].includeTestCandidates = false;
+    }
+    if (!rootState[stateKey].filters) {
+      rootState[stateKey].filters = {
+        q: "",
+        product_type: "",
+        curation: "all",
+        publication_status: ""
       };
     }
     return rootState[stateKey];
@@ -65,6 +87,34 @@
     return map[String(item.publication_status || "none").trim()] || "Não publicado";
   }
 
+  function reasonBadgeClass(reason = "") {
+    const normalized = String(reason || "").toLowerCase();
+    if (normalized.includes("vendável")) return "ok";
+    if (normalized.includes("estoque baixo")) return "low_stock";
+    if (normalized.includes("suspeito")) return "test";
+    if (normalized.includes("incompletos")) return "warn";
+    return "muted";
+  }
+
+  function matchesCurationFilter(item = {}, curation = "all") {
+    switch (curation) {
+      case "sellable":
+        return Boolean(item.sellable);
+      case "in_stock":
+        return item.availability === "in_stock";
+      case "low_stock":
+        return item.availability === "low_stock";
+      case "blocked":
+        return !item.sellable;
+      case "test":
+        return Boolean(item.is_test_candidate);
+      case "potentially_publishable":
+        return Boolean(item.is_potentially_publishable);
+      default:
+        return true;
+    }
+  }
+
   function getFilteredItems(pubState, ctx) {
     const filters = pubState.filters || {};
     return ctx.toArray(pubState.items).filter((item) => {
@@ -75,12 +125,10 @@
       if (filters.product_type && ctx.normalizeText(item.product_type) !== ctx.normalizeText(filters.product_type)) {
         return false;
       }
-      if (filters.sellable === "true" && !item.sellable) return false;
-      if (filters.sellable === "false" && item.sellable) return false;
-      if (filters.availability && ctx.normalizeText(item.availability) !== ctx.normalizeText(filters.availability)) {
+      if (filters.publication_status && ctx.normalizeText(item.publication_status) !== ctx.normalizeText(filters.publication_status)) {
         return false;
       }
-      if (filters.publication_status && ctx.normalizeText(item.publication_status) !== ctx.normalizeText(filters.publication_status)) {
+      if (!matchesCurationFilter(item, filters.curation || "all")) {
         return false;
       }
       return true;
@@ -113,25 +161,48 @@
     return String(item.pdv_product_ref || item.name || "");
   }
 
+  function buildReasonCell(item = {}, ctx) {
+    const reasons = ctx.toArray(item.block_reasons);
+    const primary = ctx.escapeHtml(item.block_reason_primary || reasons[0] || "—");
+    const badgeClass = reasonBadgeClass(item.block_reason_primary || reasons[0] || "");
+    const testBadge = item.is_test_candidate
+      ? `<span class="shop-pub-badge shop-pub-badge--test">Suspeito teste/QA</span>`
+      : "";
+    const publishableBadge = item.is_potentially_publishable
+      ? `<span class="shop-pub-badge shop-pub-badge--ok">Publicável potencial</span>`
+      : "";
+    return `
+      <div class="shop-pub-reason-cell">
+        <span class="shop-pub-badge shop-pub-badge--${badgeClass}">${primary}</span>
+        ${testBadge}
+        ${publishableBadge}
+      </div>`;
+  }
+
   function buildTableRows(rows = [], pubState, ctx) {
     if (!rows.length) {
       return `
-        <tr><td colspan="8">
-          <div class="empty-state compact"><strong>Nenhum candidato nesta página.</strong><span>Ajuste os filtros ou atualize a lista.</span></div>
+        <tr><td colspan="9">
+          <div class="empty-state compact"><strong>Nenhum candidato nesta página.</strong><span>Ajuste os filtros ou inclua QA/teste se necessário.</span></div>
         </td></tr>`;
     }
     return rows.map((item) => {
       const key = rowKey(item);
       const selected = ctx.normalizeText(pubState.selectedKey) === ctx.normalizeText(key);
       return `
-        <tr class="shop-pub-row${selected ? " is-selected" : ""}" data-shop-pub-select="${ctx.escapeHtml(key)}">
-          <td><strong>${ctx.escapeHtml(item.name || "-")}</strong><small>${item.product_type === "variable" ? "Grade" : "Simples"}</small></td>
+        <tr class="shop-pub-row${selected ? " is-selected" : ""}${item.is_test_candidate ? " is-test" : ""}" data-shop-pub-select="${ctx.escapeHtml(key)}">
+          <td>
+            <strong>${ctx.escapeHtml(item.name || "-")}</strong>
+            <small>${item.product_type === "variable" ? "Grade" : "Simples"}</small>
+            ${item.is_test_candidate ? `<span class="shop-pub-inline-flag">QA/teste</span>` : ""}
+          </td>
           <td>${formatMoney(ctx, item.price_cents)}</td>
           <td>${ctx.escapeHtml(String(item.variant_count || 0))}</td>
           <td><div class="shop-pub-chip-row">${buildChips(item.colors, ctx)}</div></td>
           <td><div class="shop-pub-chip-row">${buildChips(item.sizes, ctx)}</div></td>
           <td><span class="shop-pub-badge shop-pub-badge--${item.sellable ? "ok" : "muted"}">${item.sellable ? "Vendável" : "Bloqueado"}</span></td>
           <td><span class="shop-pub-badge shop-pub-badge--${ctx.escapeHtml(item.availability || "out_of_stock")}">${ctx.escapeHtml(availabilityLabel(item.availability))}</span></td>
+          <td>${buildReasonCell(item, ctx)}</td>
           <td><span class="shop-pub-badge shop-pub-badge--pub">${ctx.escapeHtml(publicationStatusLabel(item, pubState.schemaReady))}</span></td>
         </tr>`;
     }).join("");
@@ -143,22 +214,31 @@
         <aside class="shop-pub-detail shop-pub-detail--empty">
           <p class="eyebrow">Detalhe editorial</p>
           <h4>Selecione um produto</h4>
-          <p>Visualize variações, preço público e disponibilidade agregada.</p>
+          <p>Visualize variações, motivo de bloqueio e disponibilidade agregada.</p>
         </aside>`;
     }
     const variants = ctx.toArray(item.variants);
+    const reasons = ctx.toArray(item.block_reasons);
     return `
       <aside class="shop-pub-detail">
         <div class="shop-pub-detail-head">
           <p class="eyebrow">Candidato PDV</p>
           <h4>${ctx.escapeHtml(item.name || "-")}</h4>
           <p>${item.product_type === "variable" ? "Produto com grade" : "Produto simples"} · ${ctx.escapeHtml(String(item.variant_count || 0))} variações</p>
+          ${item.is_test_candidate ? `<span class="shop-pub-badge shop-pub-badge--test">Suspeito teste/QA</span>` : ""}
         </div>
         <div class="shop-pub-detail-kpis">
           <div><span>Preço base</span><strong>${formatMoney(ctx, item.price_cents)}</strong></div>
           <div><span>Disponibilidade</span><strong>${ctx.escapeHtml(availabilityLabel(item.availability))}</strong></div>
-          <div><span>Publicação</span><strong>${ctx.escapeHtml(publicationStatusLabel(item, pubState.schemaReady))}</strong></div>
+          <div><span>Motivo principal</span><strong>${ctx.escapeHtml(item.block_reason_primary || "—")}</strong></div>
         </div>
+        ${reasons.length ? `
+          <div class="shop-pub-detail-section">
+            <h5>Motivos</h5>
+            <div class="shop-pub-reason-list">
+              ${reasons.map((reason) => `<span class="shop-pub-badge shop-pub-badge--${reasonBadgeClass(reason)}">${ctx.escapeHtml(reason)}</span>`).join("")}
+            </div>
+          </div>` : ""}
         <div class="shop-pub-detail-section">
           <h5>Variações</h5>
           <div class="shop-pub-variant-list">
@@ -184,6 +264,22 @@
       </aside>`;
   }
 
+  function buildKpiCards(stats = {}, paged = {}, pubState = {}) {
+    const safeStats = stats || {};
+    return `
+      <div class="shop-pub-kpis shop-pub-kpis--extended">
+        <article><span>Total bruto PDV</span><strong>${Number(safeStats.total_raw || pubState.total || 0)}</strong></article>
+        <article><span>Ocultos QA/teste</span><strong>${Number(safeStats.hidden_test_count || 0)}</strong></article>
+        <article><span>Candidatos limpos</span><strong>${Number(safeStats.clean_total || 0)}</strong></article>
+        <article><span>Vendáveis</span><strong>${Number(safeStats.sellable || 0)}</strong></article>
+        <article><span>Em estoque</span><strong>${Number(safeStats.in_stock || 0)}</strong></article>
+        <article><span>Estoque baixo</span><strong>${Number(safeStats.low_stock || 0)}</strong></article>
+        <article><span>Bloqueados</span><strong>${Number(safeStats.blocked || 0)}</strong></article>
+        <article class="is-highlight"><span>Publicáveis potenciais</span><strong>${Number(safeStats.potentially_publishable || 0)}</strong></article>
+        <article><span>Filtrados na tela</span><strong>${Number(paged.total || 0)}</strong></article>
+      </div>`;
+  }
+
   function renderFront(ctx) {
     const container = document.getElementById("shop-publication-content");
     if (!container) return;
@@ -201,45 +297,30 @@
     const filters = pubState.filters || {};
     const paged = getPagedItems(pubState, ctx);
     const selected = ctx.toArray(pubState.items).find((item) => ctx.normalizeText(rowKey(item)) === ctx.normalizeText(pubState.selectedKey)) || null;
-    const sellableCount = paged.filtered.filter((item) => item.sellable).length;
-    const inStockCount = paged.filtered.filter((item) => item.availability === "in_stock").length;
 
     container.innerHTML = `
       <section class="shop-pub-shell">
         <header class="shop-pub-hero">
           <div>
-            <p class="eyebrow">E-commerce AEROSTORE · Fase 2.8</p>
+            <p class="eyebrow">E-commerce AEROSTORE · Fase 2.8.2</p>
             <h3>Candidatos PDV para publicação</h3>
-            <p>Produtos reais do PDV prontos para virar vitrine online. Camada editorial ainda não grava alterações.</p>
+            <p>Curadoria read-only dos produtos reais do PDV. QA/teste ficam ocultos por padrão; nada é gravado nesta fase.</p>
           </div>
           <div class="shop-pub-hero-badges">
             <span class="shop-pub-status-pill${pubState.schemaReady ? " is-ready" : ""}">${pubState.schemaReady ? "Schema shop pronto" : "schema_ready=false"}</span>
             <span class="shop-pub-status-pill${pubState.pilotJsonActive ? " is-live" : ""}">${pubState.pilotJsonActive ? "Catálogo live: pilot JSON" : "Pilot JSON inativo"}</span>
           </div>
         </header>
-        <div class="shop-pub-kpis">
-          <article><span>Total PDV</span><strong>${ctx.escapeHtml(String(pubState.total || 0))}</strong></article>
-          <article><span>Filtrados</span><strong>${ctx.escapeHtml(String(paged.total))}</strong></article>
-          <article><span>Vendáveis</span><strong>${ctx.escapeHtml(String(sellableCount))}</strong></article>
-          <article><span>Em estoque</span><strong>${ctx.escapeHtml(String(inStockCount))}</strong></article>
-        </div>
-        <form class="shop-pub-toolbar" data-shop-pub-filters>
+        ${buildKpiCards(pubState.stats, paged, pubState)}
+        <form class="shop-pub-toolbar shop-pub-toolbar--extended" data-shop-pub-filters>
           <input name="q" value="${ctx.escapeHtml(filters.q || "")}" placeholder="Buscar por nome" />
           <select name="product_type">
             <option value="">Tipo</option>
             <option value="simple"${filters.product_type === "simple" ? " selected" : ""}>Simples</option>
             <option value="variable"${filters.product_type === "variable" ? " selected" : ""}>Grade</option>
           </select>
-          <select name="sellable">
-            <option value="">Vendável</option>
-            <option value="true"${filters.sellable === "true" ? " selected" : ""}>Sim</option>
-            <option value="false"${filters.sellable === "false" ? " selected" : ""}>Não</option>
-          </select>
-          <select name="availability">
-            <option value="">Disponibilidade</option>
-            <option value="in_stock"${filters.availability === "in_stock" ? " selected" : ""}>Em estoque</option>
-            <option value="low_stock"${filters.availability === "low_stock" ? " selected" : ""}>Estoque baixo</option>
-            <option value="out_of_stock"${filters.availability === "out_of_stock" ? " selected" : ""}>Indisponível</option>
+          <select name="curation">
+            ${CURATION_FILTERS.map((option) => `<option value="${option.value}"${filters.curation === option.value ? " selected" : ""}>${option.label}</option>`).join("")}
           </select>
           <select name="publication_status">
             <option value="">Publicação</option>
@@ -247,6 +328,10 @@
             <option value="draft"${filters.publication_status === "draft" ? " selected" : ""}>Rascunho</option>
             <option value="published"${filters.publication_status === "published" ? " selected" : ""}>Publicado</option>
           </select>
+          <label class="shop-pub-toggle">
+            <input type="checkbox" name="include_test_candidates"${pubState.includeTestCandidates ? " checked" : ""} />
+            <span>Incluir QA/teste</span>
+          </label>
           <button class="secondary-button" type="submit"${pubState.loading ? " disabled" : ""}>Filtrar</button>
           <button class="ghost-button" type="button" data-shop-pub-reset${pubState.loading ? " disabled" : ""}>Limpar</button>
           <button class="ghost-button" type="button" data-shop-pub-refresh${pubState.loading ? " disabled" : ""}>${pubState.loading ? "Atualizando..." : "Atualizar PDV"}</button>
@@ -257,12 +342,12 @@
             <table class="shop-pub-table">
               <thead>
                 <tr>
-                  <th>Produto</th><th>Preço</th><th>Var.</th><th>Cores</th><th>Tamanhos</th><th>Vendável</th><th>Disponibilidade</th><th>Publicação</th>
+                  <th>Produto</th><th>Preço</th><th>Var.</th><th>Cores</th><th>Tamanhos</th><th>Vendável</th><th>Disponibilidade</th><th>Motivo</th><th>Publicação</th>
                 </tr>
               </thead>
               <tbody>
                 ${pubState.loading
-      ? `<tr><td colspan="8"><div class="empty-state compact"><strong>Carregando candidatos...</strong><span>Lendo produtos reais do PDV.</span></div></td></tr>`
+      ? `<tr><td colspan="9"><div class="empty-state compact"><strong>Carregando candidatos...</strong><span>Lendo produtos reais do PDV.</span></div></td></tr>`
       : buildTableRows(paged.rows, pubState, ctx)}
               </tbody>
             </table>
@@ -277,6 +362,19 @@
       </section>`;
   }
 
+  function buildCandidatesQuery(pubState = {}) {
+    const params = new URLSearchParams();
+    params.set("limit", "200");
+    if (pubState.includeTestCandidates) {
+      params.set("include_test_candidates", "true");
+    }
+    const q = String(pubState.filters?.q || "").trim();
+    if (q) {
+      params.set("q", q);
+    }
+    return `/api/shop/publication/candidates?${params.toString()}`;
+  }
+
   async function loadCandidates(ctx) {
     if (!canViewPanel(ctx)) {
       renderFront(ctx);
@@ -287,19 +385,26 @@
     pubState.error = "";
     renderFront(ctx);
     try {
-      const response = await ctx.api("/api/shop/publication/candidates?limit=200");
+      const response = await ctx.api(buildCandidatesQuery(pubState));
       pubState.items = ctx.toArray(response.items);
       pubState.total = Number(response.total || pubState.items.length || 0);
+      pubState.stats = response.stats || null;
       pubState.schemaReady = Boolean(response.schema_ready);
       pubState.pilotJsonActive = Boolean(response.pilot_json_active);
       pubState.page = 1;
       if (!pubState.selectedKey && pubState.items.length) {
         pubState.selectedKey = rowKey(pubState.items[0]);
+      } else if (pubState.selectedKey) {
+        const stillVisible = pubState.items.some((item) => ctx.normalizeText(rowKey(item)) === ctx.normalizeText(pubState.selectedKey));
+        if (!stillVisible) {
+          pubState.selectedKey = pubState.items.length ? rowKey(pubState.items[0]) : "";
+        }
       }
     } catch (error) {
       pubState.error = error.message || "Falha ao carregar candidatos PDV.";
       pubState.items = [];
       pubState.total = 0;
+      pubState.stats = null;
     } finally {
       pubState.loading = false;
       renderFront(ctx);
@@ -319,9 +424,10 @@
     }
     if (event.target.closest("[data-shop-pub-reset]")) {
       const pubState = ensureState(ctx.state);
-      pubState.filters = { q: "", product_type: "", sellable: "", availability: "", publication_status: "" };
+      pubState.filters = { q: "", product_type: "", curation: "all", publication_status: "" };
+      pubState.includeTestCandidates = false;
       pubState.page = 1;
-      renderFront(ctx);
+      loadCandidates(ctx).catch((error) => ctx.handleUiError("Erro ao limpar filtros shop", error));
       return true;
     }
     const pageBtn = event.target.closest("[data-shop-pub-page]");
@@ -341,14 +447,19 @@
     event.preventDefault();
     const pubState = ensureState(ctx.state);
     const data = new FormData(form);
+    const previousInclude = pubState.includeTestCandidates;
     pubState.filters = {
       q: ctx.normalizeText(data.get("q") || ""),
       product_type: ctx.normalizeText(data.get("product_type") || ""),
-      sellable: ctx.normalizeText(data.get("sellable") || ""),
-      availability: ctx.normalizeText(data.get("availability") || ""),
+      curation: ctx.normalizeText(data.get("curation") || "all") || "all",
       publication_status: ctx.normalizeText(data.get("publication_status") || "")
     };
+    pubState.includeTestCandidates = Boolean(form.querySelector('input[name="include_test_candidates"]')?.checked);
     pubState.page = 1;
+    if (previousInclude !== pubState.includeTestCandidates || pubState.filters.q) {
+      loadCandidates(ctx).catch((error) => ctx.handleUiError("Erro ao filtrar candidatos shop", error));
+      return true;
+    }
     renderFront(ctx);
     return true;
   }

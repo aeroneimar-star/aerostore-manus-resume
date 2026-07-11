@@ -17,8 +17,134 @@ const SHOP_PUBLICATION_TABLES = [
   "shop_catalog_settings"
 ];
 
+const TEST_NAME_PATTERNS = [
+  /\bqa\b/i,
+  /\bteste\b/i,
+  /\btest\b/i,
+  /manual normalizado/i,
+  /grade api/i,
+  /ciclo 2 api/i,
+  /ciclo 3/i,
+  /ciclo 4/i,
+  /smoke/i,
+  /sandbox/i,
+  /\bmassa\b/i,
+  /dummy/i,
+  /fake/i
+];
+
+const BLOCK_REASON = {
+  TEST: "Suspeito teste/QA",
+  INACTIVE: "Produto inativo",
+  NO_VARIANTS: "Sem variações",
+  NO_ACTIVE_VARIANT: "Sem variação ativa",
+  NO_POOL_STOCK: "Sem estoque no pool",
+  LOW_STOCK: "Estoque baixo",
+  SELLABLE: "Vendável",
+  INCOMPLETE: "Dados incompletos para publicação"
+};
+
 function normalizeText(value = "") {
   return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function parseIncludeTestCandidates(query = {}) {
+  const raw = query.include_test_candidates;
+  if (raw === undefined || raw === null || raw === "") {
+    return false;
+  }
+  return ["1", "true", "yes", "on"].includes(String(raw).trim().toLowerCase());
+}
+
+function isTestCandidate(product = {}) {
+  const name = normalizeText(product.name || product.product_name);
+  if (!name) {
+    return false;
+  }
+  return TEST_NAME_PATTERNS.some((pattern) => pattern.test(name));
+}
+
+function hasValidPrice(priceCents = 0) {
+  return Number(priceCents) > 0;
+}
+
+function resolveBestAvailability(variants = []) {
+  return variants.reduce((best, variant) => {
+    const order = { in_stock: 3, low_stock: 2, out_of_stock: 1 };
+    return (order[variant.availability] || 0) > (order[best] || 0)
+      ? variant.availability
+      : best;
+  }, "out_of_stock");
+}
+
+function buildCandidateDiagnostics({
+  productRow = {},
+  variants = [],
+  sellable = false,
+  availability = "out_of_stock"
+} = {}) {
+  const reasons = [];
+  const productActive = normalizeText(productRow.product_status) === "ativo";
+  const testCandidate = isTestCandidate(productRow);
+  const activeVariants = variants.filter((variant) => normalizeText(variant.variation_status) === "ativo");
+  const priceValid = hasValidPrice(productRow.sale_price_cents);
+
+  if (testCandidate) {
+    reasons.push(BLOCK_REASON.TEST);
+  }
+  if (!productActive) {
+    reasons.push(BLOCK_REASON.INACTIVE);
+  }
+  if (!variants.length) {
+    reasons.push(BLOCK_REASON.NO_VARIANTS);
+  } else if (!activeVariants.length) {
+    reasons.push(BLOCK_REASON.NO_ACTIVE_VARIANT);
+  }
+  if (productActive && activeVariants.length && !sellable) {
+    reasons.push(BLOCK_REASON.NO_POOL_STOCK);
+  }
+  if (!priceValid) {
+    reasons.push(BLOCK_REASON.INCOMPLETE);
+  }
+  if (sellable && availability === "low_stock") {
+    reasons.push(BLOCK_REASON.LOW_STOCK);
+  }
+  if (sellable) {
+    reasons.push(BLOCK_REASON.SELLABLE);
+  }
+
+  const uniqueReasons = Array.from(new Set(reasons));
+  const primary = uniqueReasons.find((reason) => reason !== BLOCK_REASON.SELLABLE)
+    || uniqueReasons[0]
+    || BLOCK_REASON.INCOMPLETE;
+
+  const isPotentiallyPublishable = !testCandidate
+    && productActive
+    && activeVariants.length > 0
+    && sellable
+    && (availability === "in_stock" || availability === "low_stock")
+    && priceValid;
+
+  return {
+    is_test_candidate: testCandidate,
+    block_reasons: uniqueReasons,
+    block_reason_primary: primary,
+    is_potentially_publishable: isPotentiallyPublishable
+  };
+}
+
+function computeCandidateStats(items = []) {
+  const cleanItems = items.filter((item) => !item.is_test_candidate);
+  return {
+    total_raw: items.length,
+    hidden_test_count: items.filter((item) => item.is_test_candidate).length,
+    clean_total: cleanItems.length,
+    sellable: cleanItems.filter((item) => item.sellable).length,
+    in_stock: cleanItems.filter((item) => item.availability === "in_stock").length,
+    low_stock: cleanItems.filter((item) => item.availability === "low_stock").length,
+    blocked: cleanItems.filter((item) => !item.sellable).length,
+    potentially_publishable: cleanItems.filter((item) => item.is_potentially_publishable).length
+  };
 }
 
 async function isTableReady(tableName = "") {
@@ -95,7 +221,7 @@ async function loadPublicationMapByProductIds(productIds = []) {
   return map;
 }
 
-async function fetchPdvProductRows({ query = "", limit = 24, offset = 0 } = {}) {
+function buildProductSearchClause(query = "") {
   const normalizedQuery = normalizeText(query).toLowerCase();
   const like = normalizedQuery ? `%${normalizedQuery}%` : null;
   const params = [];
@@ -104,8 +230,11 @@ async function fetchPdvProductRows({ query = "", limit = 24, offset = 0 } = {}) 
     whereClause += " AND (LOWER(p.name) LIKE ? OR CAST(p.id AS TEXT) = ?)";
     params.push(like, normalizedQuery);
   }
-  params.push(Math.max(1, Number(limit || 24)), Math.max(0, Number(offset || 0)));
+  return { whereClause, params };
+}
 
+async function fetchAllPdvProductRows(query = "") {
+  const { whereClause, params } = buildProductSearchClause(query);
   return all(
     `SELECT
        p.id AS product_id,
@@ -115,21 +244,13 @@ async function fetchPdvProductRows({ query = "", limit = 24, offset = 0 } = {}) 
        p.sale_price_cents
      FROM pdv_products_v2 p
      WHERE ${whereClause}
-     ORDER BY p.updated_at DESC, p.id DESC
-     LIMIT ? OFFSET ?`,
+     ORDER BY p.updated_at DESC, p.id DESC`,
     params
   );
 }
 
 async function countPdvProductRows(query = "") {
-  const normalizedQuery = normalizeText(query).toLowerCase();
-  const like = normalizedQuery ? `%${normalizedQuery}%` : null;
-  const params = [];
-  let whereClause = "1=1";
-  if (like) {
-    whereClause += " AND (LOWER(p.name) LIKE ? OR CAST(p.id AS TEXT) = ?)";
-    params.push(like, normalizedQuery);
-  }
+  const { whereClause, params } = buildProductSearchClause(query);
   const row = await get(
     `SELECT COUNT(*) AS total FROM pdv_products_v2 p WHERE ${whereClause}`,
     params
@@ -219,60 +340,73 @@ function buildVariantCandidates(rawRows = [], productRow = {}, fulfillment = {})
   });
 }
 
+function buildPublicationCandidateItem(productRow, variants, publication, fulfillment) {
+  const productActive = normalizeText(productRow.product_status) === "ativo";
+  const anySellable = variants.some((variant) => variant.sellable);
+  const sellable = productActive && anySellable;
+  const availability = resolveBestAvailability(variants);
+  const diagnostics = buildCandidateDiagnostics({
+    productRow,
+    variants,
+    sellable,
+    availability
+  });
+
+  return toPublicationCandidate({
+    ...productRow,
+    id: productRow.product_id,
+    status: productRow.product_status,
+    sellable,
+    availability,
+    publication,
+    publication_status: publication?.status || "none",
+    variants,
+    ...diagnostics
+  }, variants, { threshold: fulfillment.low_stock_threshold });
+}
+
 async function listPdvPublicationCandidates(query = {}) {
   const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
-  const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit, 10) || 24));
+  const limit = Math.min(200, Math.max(1, Number.parseInt(query.limit, 10) || 24));
   const offset = (page - 1) * limit;
   const search = normalizeText(query.q || query.query || "");
+  const includeTestCandidates = parseIncludeTestCandidates(query);
   const schemaStatus = await getShopPublicationSchemaStatus();
   const fulfillment = getFulfillmentConfig();
 
-  const [total, productRows] = await Promise.all([
-    countPdvProductRows(search),
-    fetchPdvProductRows({ query: search, limit, offset })
-  ]);
-  const publicationMap = await loadPublicationMapByProductIds(
-    productRows.map((row) => row.product_id)
+  const productRows = await fetchAllPdvProductRows(search);
+  const publicationMap = await loadPublicationMapByProductIds(productRows.map((row) => row.product_id));
+  const variantsByProduct = await fetchVariantsWithBalances(
+    productRows.map((row) => row.product_id),
+    fulfillment.store_ids
   );
 
-  const productIds = productRows.map((row) => row.product_id);
-  const variantsByProduct = await fetchVariantsWithBalances(productIds, fulfillment.store_ids);
-
-  const items = productRows.map((productRow) => {
-    const variants = buildVariantCandidates(
+  const allItems = productRows.map((productRow) => buildPublicationCandidateItem(
+    productRow,
+    buildVariantCandidates(
       variantsByProduct.get(Number(productRow.product_id)) || [],
       productRow,
       fulfillment
-    );
-    const publication = publicationMap.get(Number(productRow.product_id)) || null;
-    const productActive = normalizeText(productRow.product_status) === "ativo";
-    const anySellable = variants.some((v) => v.sellable);
-    const bestAvailability = variants.reduce((best, variant) => {
-      const order = { in_stock: 3, low_stock: 2, out_of_stock: 1 };
-      return (order[variant.availability] || 0) > (order[best] || 0)
-        ? variant.availability
-        : best;
-    }, "out_of_stock");
+    ),
+    publicationMap.get(Number(productRow.product_id)) || null,
+    fulfillment
+  ));
 
-    return toPublicationCandidate({
-      ...productRow,
-      id: productRow.product_id,
-      status: productRow.product_status,
-      sellable: productActive && anySellable,
-      availability: bestAvailability,
-      publication,
-      publication_status: publication?.status || "none",
-      variants
-    }, variants, { threshold: fulfillment.low_stock_threshold });
-  });
+  const stats = computeCandidateStats(allItems);
+  const visibleItems = includeTestCandidates
+    ? allItems
+    : allItems.filter((item) => !item.is_test_candidate);
+  const paginatedItems = visibleItems.slice(offset, offset + limit);
 
   const payload = toPublicationCandidateList({
     schema_ready: schemaStatus.ready,
     pilot_json_active: isPilotJsonEnabled(),
     page,
     limit,
-    total,
-    items
+    total: visibleItems.length,
+    include_test_candidates: includeTestCandidates,
+    stats,
+    items: paginatedItems
   });
   assertNoForbiddenAdminKeys(payload);
   return payload;
@@ -299,26 +433,12 @@ async function getPdvPublicationCandidate(productRef = "") {
     productRow,
     fulfillment
   );
-  const publication = publicationMap.get(productId) || null;
-  const productActive = normalizeText(productRow.product_status) === "ativo";
-  const anySellable = variants.some((v) => v.sellable);
-  const bestAvailability = variants.reduce((best, variant) => {
-    const order = { in_stock: 3, low_stock: 2, out_of_stock: 1 };
-    return (order[variant.availability] || 0) > (order[best] || 0)
-      ? variant.availability
-      : best;
-  }, "out_of_stock");
-
-  const item = toPublicationCandidate({
-    ...productRow,
-    id: productRow.product_id,
-    status: productRow.product_status,
-    sellable: productActive && anySellable,
-    availability: bestAvailability,
-    publication,
-    publication_status: publication?.status || "none",
-    variants
-  }, variants, { threshold: fulfillment.low_stock_threshold });
+  const item = buildPublicationCandidateItem(
+    productRow,
+    variants,
+    publicationMap.get(productId) || null,
+    fulfillment
+  );
 
   return {
     success: true,
@@ -371,11 +491,17 @@ async function listPublicationRecords(query = {}) {
 
 module.exports = {
   SHOP_PUBLICATION_TABLES,
+  BLOCK_REASON,
+  TEST_NAME_PATTERNS,
   getShopPublicationSchemaStatus,
   listPdvPublicationCandidates,
   getPdvPublicationCandidate,
   listPublicationRecords,
   aggregateSellableQty,
   resolveAvailabilityLabel,
-  parseAttributes
+  parseAttributes,
+  isTestCandidate,
+  buildCandidateDiagnostics,
+  computeCandidateStats,
+  parseIncludeTestCandidates
 };

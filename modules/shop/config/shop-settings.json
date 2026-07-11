@@ -3,7 +3,7 @@
   "phase": 2,
   "use_pilot_json": true,
   "fulfillment": {
-    "store_ids": ["vila_masc", "botanico", "sul"],
+    "store_ids": ["vila", "botanico", "sul"],
     "stock_policy": "min_across_stores",
     "low_stock_threshold": 2,
     "reservation_ttl_minutes": 30,
@@ -25,6 +25,7 @@
   "decisions": {
     "approved_at": "2026-07-09",
     "approved_by": "architecture-plan",
-    "rationale": "Usar lojas físicas existentes como pool de fulfillment evita criar depósito virtual na Fase 2. Política min_across_stores reduz risco de overselling. Reserva online (Fase 7) usará mesma infra de movimentos com reference_type shop_order."
+    "rationale": "Usar lojas físicas existentes como pool de fulfillment evita criar depósito virtual na Fase 2. Política min_across_stores reduz risco de overselling. Reserva online (Fase 7) usará mesma infra de movimentos com reference_type shop_order.",
+    "phase_2_8_2_store_id_fix": "2026-07-11: vila_masc substituído por vila — pdv_inventory_balances_v2 usa vila/botanico/sul. Impacto: cálculo read-only Shop + futuro catálogo; PDV operacional inalterado."
   }
 }

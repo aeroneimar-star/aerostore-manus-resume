@@ -91,6 +91,10 @@ function toPublicationCandidate(product = {}, variants = [], options = {}) {
   const sizes = Array.from(new Set(mappedVariants.map((v) => v.size).filter(Boolean)));
   const anySellable = mappedVariants.some((v) => v.sellable);
   const availability = normalizeText(product.availability || "out_of_stock") || "out_of_stock";
+  const blockReasons = Array.isArray(product.block_reasons)
+    ? product.block_reasons.map((reason) => normalizeText(reason)).filter(Boolean)
+    : [];
+  const blockReasonPrimary = normalizeText(product.block_reason_primary || blockReasons[0] || "");
 
   const item = {
     pdv_product_ref: Number(product.product_id || product.id || 0),
@@ -104,6 +108,10 @@ function toPublicationCandidate(product = {}, variants = [], options = {}) {
     colors,
     sizes,
     variants: mappedVariants,
+    is_test_candidate: Boolean(product.is_test_candidate),
+    block_reasons: blockReasons,
+    block_reason_primary: blockReasonPrimary,
+    is_potentially_publishable: Boolean(product.is_potentially_publishable),
     publication: product.publication ? {
       id: Number(product.publication.id || 0),
       public_slug: normalizeText(product.publication.public_slug),
@@ -119,6 +127,21 @@ function toPublicationCandidate(product = {}, variants = [], options = {}) {
   return item;
 }
 
+function toPublicationCandidateStats(stats = {}) {
+  const result = {
+    total_raw: Number(stats.total_raw || 0),
+    hidden_test_count: Number(stats.hidden_test_count || 0),
+    clean_total: Number(stats.clean_total || 0),
+    sellable: Number(stats.sellable || 0),
+    in_stock: Number(stats.in_stock || 0),
+    low_stock: Number(stats.low_stock || 0),
+    blocked: Number(stats.blocked || 0),
+    potentially_publishable: Number(stats.potentially_publishable || 0)
+  };
+  assertNoForbiddenAdminKeys(result);
+  return result;
+}
+
 function toPublicationCandidateList(payload = {}) {
   const result = {
     success: true,
@@ -127,6 +150,8 @@ function toPublicationCandidateList(payload = {}) {
     page: Number(payload.page || 1),
     limit: Number(payload.limit || 24),
     total: Number(payload.total || 0),
+    include_test_candidates: Boolean(payload.include_test_candidates),
+    stats: payload.stats ? toPublicationCandidateStats(payload.stats) : undefined,
     items: Array.isArray(payload.items) ? payload.items : []
   };
   assertNoForbiddenAdminKeys(result);
@@ -140,5 +165,6 @@ module.exports = {
   slugifyColor,
   toPublicationCandidate,
   toPublicationCandidateVariant,
+  toPublicationCandidateStats,
   toPublicationCandidateList
 };
