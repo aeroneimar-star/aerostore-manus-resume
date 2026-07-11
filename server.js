@@ -1295,8 +1295,8 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "4mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-registerPublicSiteRoutes(app);
 registerShopModule(app);
+registerPublicSiteRoutes(app);
 
 app.get("/", (req, res, next) => {
   if (isPublicSiteHost(req)) {

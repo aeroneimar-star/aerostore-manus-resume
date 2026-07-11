@@ -1,5 +1,7 @@
 "use strict";
 
+process.env.SHOP_PUBLIC_CATALOG_ENABLED = "true";
+
 const http = require("http");
 const express = require("express");
 const { registerPublicSiteRoutes } = require("../modules/public-site/routes/publicSiteRoutes");
@@ -50,8 +52,8 @@ function collectForbiddenKeys(obj, found = new Set(), path = "") {
 
 async function main() {
   const app = express();
-  registerPublicSiteRoutes(app);
   registerShopModule(app);
+  registerPublicSiteRoutes(app);
   app.get("/", (req, res, next) => {
     if (isPublicSiteHost(req)) {
       return next();

@@ -5,6 +5,7 @@ const {
   isLocalDevHost,
   getRequestHost
 } = require("../../public-site/utils/publicSiteHost");
+const { isShopPublicCatalogEnabled } = require("../services/shopSettingsService");
 
 function normalizeText(value = "") {
   return String(value || "").trim();
@@ -33,6 +34,9 @@ function isShopPublicApiPath(pathname = "") {
 }
 
 function shouldBypassPublicSite404(pathname = "") {
+  if (!isShopPublicCatalogEnabled()) {
+    return false;
+  }
   return isShopPublicPagePath(pathname) || isShopPublicApiPath(pathname);
 }
 

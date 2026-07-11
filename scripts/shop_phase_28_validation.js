@@ -45,7 +45,10 @@ async function main() {
   const catalogRes = await fetch(`${BASE}/public-api/catalog?limit=3`, {
     headers: { Accept: "application/json", Host: "aerostore.site" }
   });
-  const catalog = await catalogRes.json().catch(() => ({}));
+  const catalog = catalogRes.ok ? await catalogRes.json().catch(() => ({})) : {};
+  const { listCatalog } = require("../modules/shop/services/shopCatalogService");
+  const pilotCatalog = listCatalog({ limit: 3 });
+  const catalogHttpEnabled = catalogRes.status === 200 && catalog.success !== false;
 
   const report = {
     captured_at: new Date().toISOString(),
@@ -53,8 +56,14 @@ async function main() {
     candidates_loaded: Array.isArray(candidates.items) ? candidates.items.length : 0,
     schema_ready: candidates.schema_ready,
     pilot_json_active: candidates.pilot_json_active,
-    public_catalog_items: Number(catalog.total || 0),
-    public_catalog_page_items: Array.isArray(catalog.items) ? catalog.items.length : 0,
+    public_catalog_http_enabled: catalogHttpEnabled,
+    public_catalog_http_status: catalogRes.status,
+    public_catalog_items: catalogHttpEnabled
+      ? Number(catalog.total || 0)
+      : Number(pilotCatalog.total || 0),
+    public_catalog_page_items: catalogHttpEnabled
+      ? (Array.isArray(catalog.items) ? catalog.items.length : 0)
+      : 0,
     sample_fields: candidates.items?.[0] ? Object.keys(candidates.items[0]) : []
   };
 
