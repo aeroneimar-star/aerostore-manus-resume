@@ -28413,12 +28413,15 @@ body[data-route-section="shop-publication"] .shop-pub-shell {
 .shop-pub-table-wrap {
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 0.95rem;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
   background: rgba(15, 23, 42, 0.45);
 }
 
 .shop-pub-table {
   width: 100%;
+  min-width: 1000px;
   border-collapse: collapse;
 }
 

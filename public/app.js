@@ -31371,7 +31371,7 @@ function renderDashboard(data) {
 }
 
 function renderContacts() {
-  document.getElementById("contacts-table").innerHTML = state.contacts
+  document.getElementById("contacts-table").innerHTML = toArray(state.contacts)
     .map(
       (contact) => `
         <tr>
@@ -31457,10 +31457,18 @@ async function renderContactOptions(searchTerm = "") {
 
 function updateCashbackCustomerGender() {
   const contactId = Number(document.getElementById("cashback-contact-id")?.value || 0);
-  const contact = state.contacts.find((item) => item.id === contactId) || state.cashbackContact;
+  const contact = toArray(state.contacts).find((item) => item.id === contactId) || state.cashbackContact;
   const target = document.getElementById("cashback-customer-gender");
   if (target) {
     target.value = contact?.gender || "";
+  }
+}
+
+function safeUpdateCashbackCustomerGender() {
+  try {
+    updateCashbackCustomerGender();
+  } catch (error) {
+    console.warn("[AEROSTORE CRM] Falha ao sincronizar genero do cliente no cashback", error);
   }
 }
 
@@ -31539,7 +31547,7 @@ function renderCampaignContactsTable() {
   document.getElementById("campaign-selected-count").textContent = `${state.selectedCampaignContactIds.size} clientes selecionados`;
   document.getElementById("campaign-selected-customers").innerHTML = getSelectedCampaignContactIds()
     .map((contactId) => {
-      const contact = state.contacts.find((item) => item.id === Number(contactId))
+      const contact = toArray(state.contacts).find((item) => item.id === Number(contactId))
         || state.filteredCampaignContacts.find((item) => item.id === Number(contactId));
       if (!contact) {
         return "";
@@ -33016,7 +33024,7 @@ async function updateCashbackPreview() {
 
 function getCashbackWizardPayload() {
   const contactId = Number(document.getElementById("cashback-contact-id").value || 0);
-  const selectedContact = state.contacts.find((item) => item.id === contactId) || state.cashbackContact || null;
+  const selectedContact = toArray(state.contacts).find((item) => item.id === contactId) || state.cashbackContact || null;
   return {
     contactId: contactId || null,
     phone: normalizePhone(document.getElementById("cashback-wizard-phone")?.value || selectedContact?.phone || ""),
@@ -33069,7 +33077,7 @@ function getSelectedCampaignContactIds() {
 
 function syncSelectedContactsState() {
   const selectedMap = new Map(
-    [...state.selectedCampaignContacts, ...state.filteredCampaignContacts, ...state.contacts]
+    [...state.selectedCampaignContacts, ...state.filteredCampaignContacts, ...toArray(state.contacts)]
       .filter(Boolean)
       .map((contact) => [Number(contact.id), contact])
   );
@@ -33457,7 +33465,7 @@ async function loadContacts(filters = {}) {
       query.set(key, value);
     }
   });
-  state.contacts = await api(`/api/contatos${query.toString() ? `?${query.toString()}` : ""}`);
+  state.contacts = toArray(await api(`/api/contatos${query.toString() ? `?${query.toString()}` : ""}`));
   state.filteredCampaignContacts = [];
   renderContacts();
 }
@@ -35181,7 +35189,7 @@ function handleDocumentClick(event) {
 
   const cashbackSuggestion = event.target.closest("[data-select-cashback-contact]");
   if (cashbackSuggestion) {
-    const contact = state.contacts.find((item) => item.id === Number(cashbackSuggestion.dataset.selectCashbackContact));
+    const contact = toArray(state.contacts).find((item) => item.id === Number(cashbackSuggestion.dataset.selectCashbackContact));
     selectCashbackConsultContact(contact);
     showFeedback("Cliente selecionado para consulta.");
     return;
@@ -36806,7 +36814,7 @@ function handleDocumentClick(event) {
 
   const editContact = event.target.closest("[data-edit-contact]");
   if (editContact) {
-    const contact = state.contacts.find((item) => item.id === Number(editContact.dataset.editContact));
+    const contact = toArray(state.contacts).find((item) => item.id === Number(editContact.dataset.editContact));
     if (contact) {
       fillContactForm(contact);
       setActiveSection("contacts");
@@ -36817,7 +36825,7 @@ function handleDocumentClick(event) {
 
   const contactWhatsapp = event.target.closest("[data-contact-whatsapp]");
   if (contactWhatsapp) {
-    const contact = state.contacts.find((item) => item.id === Number(contactWhatsapp.dataset.contactWhatsapp));
+    const contact = toArray(state.contacts).find((item) => item.id === Number(contactWhatsapp.dataset.contactWhatsapp));
     if (contact) {
       openIndividualSendModal(contact);
     }
@@ -36826,7 +36834,7 @@ function handleDocumentClick(event) {
 
   const deleteContact = event.target.closest("[data-delete-contact]");
   if (deleteContact) {
-    const contact = state.contacts.find((item) => item.id === Number(deleteContact.dataset.deleteContact));
+    const contact = toArray(state.contacts).find((item) => item.id === Number(deleteContact.dataset.deleteContact));
     if (!window.confirm(`Deseja excluir o contato ${contact?.name || ""}?`)) {
       return;
     }
@@ -38103,7 +38111,7 @@ async function bootstrap() {
     .map((result, index) => ({ result, label: bootstrapTasks[index][0] }))
     .filter(({ result }) => result.status === "rejected");
   document.getElementById("cashback-expires-at").value = formatDateBR(addDays(today(), state.settings.defaultValidityDays));
-  updateCashbackCustomerGender();
+  safeUpdateCashbackCustomerGender();
   renderCashbackSummary();
   renderCashbackCustomerCard();
   renderCashbackAssistantCard();
@@ -38158,7 +38166,7 @@ async function bootstrapBackgroundWork(settingsPromise = null, { renderActiveRou
   if (expiresAtField) {
     expiresAtField.value = formatDateBR(addDays(today(), state.settings.defaultValidityDays));
   }
-  updateCashbackCustomerGender();
+  safeUpdateCashbackCustomerGender();
   renderCashbackSummary();
   renderCashbackCustomerCard();
   renderCashbackAssistantCard();
