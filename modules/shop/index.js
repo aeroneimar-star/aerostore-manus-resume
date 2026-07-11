@@ -7,7 +7,7 @@ const { registerShopAdminRoutes } = require("./routes/shopAdminRoutes");
 function registerShopModule(app) {
   registerShopPublicApiRoutes(app);
   registerShopPublicRoutes(app);
-  registerShopAdminRoutes(app);
+  // Rotas /api/shop/* registradas em server.js após authMiddleware.
 }
 
 module.exports = {

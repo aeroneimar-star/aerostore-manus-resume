@@ -1517,6 +1517,13 @@ function canViewAerointelConversationRead() {
   return isCurrentUserManagerProfile();
 }
 
+function canViewShopPublicationPanel() {
+  if (getCurrentRole() === "admin") {
+    return true;
+  }
+  return hasPermission("can_manage_global_settings");
+}
+
 const PATHNAME_SECTION_MAP = {
   "/login": "login",
   "/painel": "dashboard",
@@ -1553,7 +1560,8 @@ const PATHNAME_SECTION_MAP = {
   "/pdv/gestao": "pdv-gestao",
   "/pdv/testes": "pdv-dashboard",
   "/pdv/consumo": "pdv-dashboard",
-  "/pdv/eventos": "pdv-dashboard"
+  "/pdv/eventos": "pdv-dashboard",
+  "/shop/publicacao": "shop-publication"
 };
 
 const PATHNAME_SECTION_META = {
@@ -1576,7 +1584,8 @@ const PATHNAME_SECTION_META = {
   "pdv-exchanges": { displaySection: "pdv-exchanges", title: "Trocas" },
   "pdv-quotes": { displaySection: "pdv-quotes", title: "Orçamentos" },
   "pdv-imports": { displaySection: "pdv-imports", title: "Importações" },
-  "pdv-gestao": { displaySection: "pdv-gestao", get title() { return getCommercialSectionLabel(); } }
+  "pdv-gestao": { displaySection: "pdv-gestao", get title() { return getCommercialSectionLabel(); } },
+  "shop-publication": { displaySection: "shop-publication", title: "Shop — candidatos" }
 };
 
 function normalizePathname(pathname = "") {
@@ -1621,7 +1630,8 @@ const OFFICIAL_ROUTE_SECTIONS = new Set([
   "aerointel",
   "settings",
   "users-admin",
-  "audit-logs"
+  "audit-logs",
+  "shop-publication"
 ]);
 
 const PDV_ROUTE_ITEMS = [
@@ -1670,6 +1680,9 @@ function canAccessOfficialSection(sectionId = "") {
   }
   if (sectionId === "audit-logs") {
     return canViewAuditLogsPanel();
+  }
+  if (sectionId === "shop-publication") {
+    return canViewShopPublicationPanel();
   }
   if (sectionId === "whatsapp-crm") {
     return isCurrentUserManagerProfile() || hasPermission("can_use_whatsapp") || hasPermission("can_view_whatsapp_status");
@@ -26095,6 +26108,13 @@ function renderOfficialRouteSection(sectionId = "") {
     });
     return;
   }
+  if (sectionId === "shop-publication") {
+    window.AeroStoreShopPublication?.renderFront?.();
+    window.AeroStoreShopPublication?.loadCandidates?.().catch((error) => {
+      handleUiError("Erro ao carregar candidatos shop", error);
+    });
+    return;
+  }
   if (sectionId === "ai") {
     renderAiStrategicProductsPanel();
     if (canManageAiStrategicImport() && !state.aiStrategicProducts.length) {
@@ -26290,6 +26310,7 @@ function getSidebarMenuIcon(label = "") {
     ["usuario", "US"],
     ["auditoria", "AU"],
     ["config", "CF"],
+    ["shop", "SH"],
     ["import", "IM"],
     ["automatico", "AT"],
     ["execucao", "EX"]
@@ -26485,6 +26506,14 @@ function getSidebarMenuGroups() {
       title: "Seguranca",
       items: [
         { label: "Auditoria operacional", route: "/auditoria" }
+      ]
+    });
+  }
+  if (canViewShopPublicationPanel()) {
+    groups.push({
+      title: "E-commerce",
+      items: [
+        { label: "Shop — publicação", route: "/shop/publicacao" }
       ]
     });
   }
@@ -30724,7 +30753,8 @@ function setActiveSection(sectionId) {
     "pdv-reservations": "Reservas",
     "pdv-exchanges": "Trocas",
     "pdv-quotes": "Orçamentos",
-    "pdv-imports": "Importações"
+    "pdv-imports": "Importações",
+    "shop-publication": "Shop — candidatos"
   };
   if (!pathnameSection) {
     localStorage.setItem(SECTION_STORAGE_KEY, targetSection);
@@ -35335,6 +35365,10 @@ function handleDocumentClick(event) {
     return;
   }
 
+  if (window.AeroStoreShopPublication?.handleClick?.(event)) {
+    return;
+  }
+
   const auditLogsReset = event.target.closest("[data-audit-logs-reset]");
   if (auditLogsReset) {
     state.auditLogs.filters = { user: "", module: "", action: "", result: "", sale_id: "" };
@@ -37196,6 +37230,10 @@ function handleDocumentSubmit(event) {
     return;
   }
 
+  if (window.AeroStoreShopPublication?.handleSubmit?.(event)) {
+    return;
+  }
+
   const pdvSalesOrderCancelForm = event.target.closest("[data-pdv-sales-order-cancel-form]");
   if (pdvSalesOrderCancelForm) {
     event.preventDefault();
@@ -38707,6 +38745,17 @@ function initSidebarToggle() {
 }
 
 function initApp() {
+  window.__aerostoreCtx = {
+    state,
+    api,
+    toArray,
+    escapeHtml,
+    normalizeText,
+    getCurrentRole,
+    hasPermission,
+    handleUiError,
+    brlFormatter
+  };
   sectionTitle = document.getElementById("section-title");
   feedback = document.getElementById("feedback");
   loadSavedTheme();

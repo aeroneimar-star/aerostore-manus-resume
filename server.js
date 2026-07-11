@@ -35,7 +35,7 @@ const {
 const { PDV_WEB_ROUTES } = require("./modules/pdv/routes/pdvRoutes");
 const { registerPublicSiteRoutes } = require("./modules/public-site/routes/publicSiteRoutes");
 const { isPublicSiteHost } = require("./modules/public-site/utils/publicSiteHost");
-const { registerShopModule } = require("./modules/shop");
+const { registerShopModule, registerShopAdminRoutes } = require("./modules/shop");
 const { getPdvFoundationManifest } = require("./modules/pdv/services/pdvFoundationService");
 const { pdvImportRouter } = require("./modules/pdv/routes/pdvImportRoutes");
 const { pdvConsolidationRouter } = require("./modules/pdv/consolidation/routes/pdvConsolidationRoutes");
@@ -18912,6 +18912,7 @@ app.use("/api/pdv/labels", pdvLabelRouter);
 app.use("/api/pdv/reports", requirePermission("can_view_store_reports"), pdvReportsRouter);
 app.use("/api/pdv/insights", requirePermission("can_view_store_reports"), pdvInsightsRouter);
 app.use("/api/pdv/seed", pdvSeedRouter);
+registerShopAdminRoutes(app, { requireAnyPermission });
 
 app.get("/api/payments/pagbank/config", requireManager, async (req, res) => {
   try {
@@ -23574,7 +23575,8 @@ app.get(
     "/configuracoes",
     "/auditoria",
     "/usuarios",
-    "/users"
+    "/users",
+    "/shop/publicacao"
   ],
   (req, res) => {
     servePublicIndex(res);
