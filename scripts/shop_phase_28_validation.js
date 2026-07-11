@@ -53,7 +53,8 @@ async function main() {
     candidates_loaded: Array.isArray(candidates.items) ? candidates.items.length : 0,
     schema_ready: candidates.schema_ready,
     pilot_json_active: candidates.pilot_json_active,
-    public_catalog_items: Array.isArray(catalog.items) ? catalog.items.length : 0,
+    public_catalog_items: Number(catalog.total || 0),
+    public_catalog_page_items: Array.isArray(catalog.items) ? catalog.items.length : 0,
     sample_fields: candidates.items?.[0] ? Object.keys(candidates.items[0]) : []
   };
 
