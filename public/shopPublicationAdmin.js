@@ -191,7 +191,7 @@
       const selected = ctx.normalizeText(pubState.selectedKey) === ctx.normalizeText(key);
       return `
         <tr class="shop-pub-row${selected ? " is-selected" : ""}${item.is_test_candidate ? " is-test" : ""}" data-shop-pub-select="${ctx.escapeHtml(key)}">
-          <td class="shop-pub-col-product">
+          <td>
             <strong>${ctx.escapeHtml(item.name || "-")}</strong>
             <small>${item.product_type === "variable" ? "Grade" : "Simples"}</small>
             ${item.is_test_candidate ? `<span class="shop-pub-inline-flag">QA/teste</span>` : ""}
@@ -262,61 +262,6 @@
         </div>
         <p class="shop-pub-readonly-note">Somente leitura — nenhuma alteração é gravada nesta fase.</p>
       </aside>`;
-  }
-
-  function bindTableHorizontalScroll(container) {
-    const stack = container.querySelector("[data-shop-pub-scroll-stack]");
-    if (!stack) {
-      return;
-    }
-    const top = stack.querySelector("[data-shop-pub-scroll-top]");
-    const body = stack.querySelector("[data-shop-pub-scroll-body]");
-    const track = stack.querySelector("[data-shop-pub-scroll-top-track]");
-    const table = stack.querySelector(".shop-pub-table");
-    if (!top || !body || !track || !table) {
-      return;
-    }
-
-    let syncing = false;
-    const syncScroll = (source, target) => {
-      if (syncing) {
-        return;
-      }
-      syncing = true;
-      target.scrollLeft = source.scrollLeft;
-      syncing = false;
-    };
-
-    top.onscroll = () => syncScroll(top, body);
-    body.onscroll = () => syncScroll(body, top);
-
-    const updateScrollChrome = () => {
-      const scrollWidth = Math.max(table.scrollWidth, body.scrollWidth);
-      track.style.width = `${scrollWidth}px`;
-      const overflow = scrollWidth > body.clientWidth + 1;
-      stack.classList.toggle("has-horizontal-scroll", overflow);
-      top.hidden = !overflow;
-      if (!overflow) {
-        top.scrollLeft = 0;
-        body.scrollLeft = 0;
-      }
-    };
-
-    updateScrollChrome();
-
-    if (container.__shopPubScrollObserver) {
-      container.__shopPubScrollObserver.disconnect();
-      container.__shopPubScrollObserver = null;
-    }
-
-    if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(updateScrollChrome);
-      observer.observe(body);
-      observer.observe(table);
-      container.__shopPubScrollObserver = observer;
-    } else {
-      global.addEventListener("resize", updateScrollChrome);
-    }
   }
 
   function buildKpiCards(stats = {}, paged = {}, pubState = {}) {
@@ -394,25 +339,18 @@
         ${pubState.error ? `<div class="login-error">${ctx.escapeHtml(pubState.error)}</div>` : ""}
         <div class="shop-pub-grid">
           <div class="shop-pub-table-wrap">
-            <div class="shop-pub-table-scroll-stack" data-shop-pub-scroll-stack>
-              <div class="shop-pub-table-scroll-top" data-shop-pub-scroll-top hidden aria-hidden="true">
-                <div class="shop-pub-table-scroll-top-track" data-shop-pub-scroll-top-track></div>
-              </div>
-              <div class="shop-pub-table-scroll-body" data-shop-pub-scroll-body tabindex="0" aria-label="Tabela de candidatos — rolagem horizontal">
-                <table class="shop-pub-table">
-                  <thead>
-                    <tr>
-                      <th class="shop-pub-col-product">Produto</th><th>Preço</th><th>Var.</th><th>Cores</th><th>Tamanhos</th><th>Vendável</th><th>Disponibilidade</th><th>Motivo</th><th>Publicação</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${pubState.loading
+            <table class="shop-pub-table">
+              <thead>
+                <tr>
+                  <th>Produto</th><th>Preço</th><th>Var.</th><th>Cores</th><th>Tamanhos</th><th>Vendável</th><th>Disponibilidade</th><th>Motivo</th><th>Publicação</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${pubState.loading
       ? `<tr><td colspan="9"><div class="empty-state compact"><strong>Carregando candidatos...</strong><span>Lendo produtos reais do PDV.</span></div></td></tr>`
       : buildTableRows(paged.rows, pubState, ctx)}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+              </tbody>
+            </table>
             <div class="shop-pub-pagination">
               <button class="ghost-button" type="button" data-shop-pub-page="prev"${paged.page <= 1 ? " disabled" : ""}>Anterior</button>
               <span>Página ${paged.page} de ${paged.totalPages}</span>
@@ -422,8 +360,6 @@
           ${buildDetailPanel(selected, pubState, ctx)}
         </div>
       </section>`;
-
-    bindTableHorizontalScroll(container);
   }
 
   function buildCandidatesQuery(pubState = {}) {
