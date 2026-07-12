@@ -28445,16 +28445,74 @@ body[data-route-section="shop-publication"] .shop-pub-shell {
 .shop-pub-table-wrap {
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 0.95rem;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.shop-pub-table-scroll-stack {
+  display: flex;
+  flex-direction: column;
+}
+
+.shop-pub-table-scroll-top {
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex: 0 0 auto;
+  max-height: 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.55) rgba(15, 23, 42, 0.65);
+}
+
+.shop-pub-table-scroll-top[hidden] {
+  display: none;
+}
+
+.shop-pub-table-scroll-top-track {
+  height: 1px;
+  pointer-events: none;
+}
+
+.shop-pub-table-scroll-body {
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
-  background: rgba(15, 23, 42, 0.45);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.55) rgba(15, 23, 42, 0.65);
+}
+
+.shop-pub-table-scroll-stack.has-horizontal-scroll .shop-pub-table-scroll-top {
+  margin-bottom: 0.15rem;
 }
 
 .shop-pub-table {
   width: 100%;
   min-width: 1120px;
   border-collapse: collapse;
+}
+
+.shop-pub-table .shop-pub-col-product {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 11.5rem;
+  max-width: 16rem;
+  background: rgba(15, 23, 42, 0.98);
+  box-shadow: 4px 0 14px rgba(2, 6, 23, 0.38);
+}
+
+.shop-pub-table thead .shop-pub-col-product {
+  z-index: 3;
+  background: rgba(2, 6, 23, 0.94);
+}
+
+.shop-pub-row:hover .shop-pub-col-product,
+.shop-pub-row.is-selected .shop-pub-col-product {
+  background: rgba(30, 41, 59, 0.98);
+}
+
+.shop-pub-row.is-test .shop-pub-col-product {
+  background: rgba(28, 25, 18, 0.98);
 }
 
 .shop-pub-table th,
