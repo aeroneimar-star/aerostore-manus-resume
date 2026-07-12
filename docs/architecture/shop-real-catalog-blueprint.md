@@ -1,10 +1,29 @@
 # Blueprint — Primeira vitrine real AEROSTORE
 
-**Fase 2.4** · Planejamento · **sem estoque, SKU ou banco**
+**Fase 2.4** · Planejamento · **sem estoque, SKU ou banco**  
+**Revisão:** 2026-07-11 — alinhado à publication layer espelho (pré-Fase 2.9)
 
 Objetivo: definir quais produtos reais entram na primeira vitrine online read-only, em que ordem e com quais dados você precisa providenciar.
 
+**Seleção piloto curada (8 produtos Grupo A):** ver [shop-phase-2.8.3-pilot-selection.md](./shop-phase-2.8.3-pilot-selection.md).
+
 ---
+
+## Publication layer — o que vai para SQL vs o que fica no PDV
+
+Na Fase 2.9, cada peça da vitrine gera **somente** metadados editoriais em `shop_*`. Cadastro operacional permanece no PDV.
+
+| Você providencia (editorial) | PDV já tem (não duplicar em shop) |
+|------------------------------|-----------------------------------|
+| Nome comercial / editorial | Nome interno PDV |
+| Slug público | `product_id`, `variant_id` (FK) |
+| Categoria web | SKU, barcode |
+| Descrição curta/completa | Custo, margem |
+| Fotos / galeria | Estoque numérico por loja |
+| Preço web (se override) | Preço base PDV (default na projeção) |
+| Destaque, ordem, SEO | Tiny ID, notas internas |
+
+Disponibilidade pública (`in_stock` / `low_stock` / `out_of_stock`) é **calculada** na projeção — nunca persistida como saldo na tabela de publicação.
 
 ## Prioridade de categorias (lançamento)
 
@@ -148,21 +167,26 @@ Para cada peça real que entrar na vitrine, providenciar:
 
 ---
 
-## Mapeamento para SQL futuro
+## Mapeamento para SQL futuro (Fase 2.9)
 
-Quando houver migration, cada item deste blueprint vira:
+Quando houver migration, cada item deste blueprint (ou do Grupo A da 2.8.3) vira **espelho editorial**:
 
-- `shop_product_publications` — produto publicado
-- `shop_variant_publications` — cor/tamanho
-- `shop_product_images` — galeria (proposta no schema design)
+- `shop_product_publications` — `product_id` + slug, título/descrição editorial, categoria web, SEO, ordem, featured
+- `shop_variant_publications` — `variant_id` + slug variante, override de preço web opcional
+- `shop_product_images` — galeria editorial
 
-Até lá, o JSON piloto v4 espelha essa estrutura.
+**Não criar colunas** para SKU, barcode, estoque ou custo na publicação — join/consulta PDV na projeção.
+
+Até lá, JSON piloto / intake editorial espelha essa separação.
+
+Schema completo: [shop-schema-design.md](./shop-schema-design.md).
 
 ---
 
-## Próxima fase sugerida (2.5)
+## Próxima fase sugerida (2.8.4 → 2.9)
 
-1. Trocar fotos piloto por fotos reais (lote mínimo 10)
-2. Atualizar `pilot-publications.json` com dados reais validados
-3. Renderizar blocos de cuidados/medidas na página de produto (se campos preenchidos)
-4. Ainda sem carrinho, checkout ou banco
+1. Intake editorial dos **8 produtos Grupo A** (2.8.3)
+2. Fotos reais no padrão do guia
+3. Slug, categoria, descrição, nome comercial aprovados
+4. **Fase 2.9:** migration da publication layer (espelho) — ver checklist em [shop-schema-design.md](./shop-schema-design.md)
+5. Ainda sem carrinho, checkout, reserva de estoque ou pagamento (Fases 5–8)

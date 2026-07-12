@@ -206,6 +206,13 @@ Política `min_across_stores` + limiar **2** permanece **adequada** para piloto 
 
 Somente após intake + fotos + copy aprovados.
 
+**Pré-requisitos arquiteturais documentados (2026-07-11):**
+
+- Publication layer como **espelho relacional** (sem duplicar PDV) — [shop-schema-design.md](./shop-schema-design.md)
+- DTO público **allow-list** — [public-api-contracts.md](./public-api-contracts.md)
+- State machine de pedido, reserva de estoque e dedup cliente — design only, impl. futura
+- Decisão dono pendente: modelo de reserva A vs B — [ecommerce-architecture.md](./ecommerce-architecture.md)
+
 **Sequência:** **2.8.4 → 2.9 → liberar catálogo público**.
 
 ---
@@ -234,3 +241,16 @@ Somente após intake + fotos + copy aprovados.
 ```
 
 Taxa limpo → potencial: **59%**. Primeira vitrine: **8/17** potenciais (**47%** do pool curado) — seleção intencionalmente restrita para qualidade de marca.
+
+---
+
+## 14. Referências arquiteturais (pré-2.9)
+
+Documentação atualizada em 2026-07-11 para incorporar feedback antes de DDL:
+
+| Documento | Conteúdo relevante ao piloto |
+|-----------|------------------------------|
+| [shop-schema-design.md](./shop-schema-design.md) | Tabelas `shop_*` espelho; campos editoriais only |
+| [ecommerce-architecture.md](./ecommerce-architecture.md) | ADR publication layer + order domain |
+| [public-api-contracts.md](./public-api-contracts.md) | Allow-list DTO; host-gate nginx |
+| [shop-real-catalog-blueprint.md](./shop-real-catalog-blueprint.md) | Checklist editorial vs PDV |

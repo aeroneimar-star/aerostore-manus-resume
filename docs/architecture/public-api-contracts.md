@@ -1,9 +1,42 @@
 # Contratos — API Pública E-commerce AEROSTORE
 
+**Atualizado:** 2026-07-11 — allow-list explícita, host-gate (pré-Fase 2.9).
+
 Namespace: `/public-api/*`  
 Autenticação: nenhuma (sessão CRM não aplicável)  
 Host: `aerostore.site`, `www.aerostore.site`  
 Content-Type: `application/json; charset=utf-8`
+
+## Princípio — DTO público por allow-list
+
+A API pública **nunca** retorna objetos internos do CRM/PDV serializados com block-list.
+
+| Abordagem | Status |
+|-----------|--------|
+| **Allow-list** (campos explicitamente mapeados para DTO público) | **Obrigatório** |
+| Block-list (retornar objeto interno e remover campos sensíveis) | **Proibido** |
+
+Novos campos adicionados ao CRM/PDV **não vazam** por padrão — só entram na API pública após revisão explícita do contrato e atualização do mapper/DTO.
+
+Implementação: serviços em `modules/shop/dto/` montam resposta campo a campo; testes de contrato devem falhar se chave desconhecida aparecer na resposta.
+
+## Host-gate e exposição
+
+| Host | Permitido | Bloqueado (nginx + app) |
+|------|-----------|-------------------------|
+| `aerostore.site` / `www` | Landing, assets shop, `GET/POST /public-api/*` autorizados | `/api/*`, `/pdv/*`, painéis CRM, sessão admin |
+| `crm.aerostore.site` | CRM, PDV, APIs internas autenticadas | Catálogo público completo (se separação desejada) |
+
+O host-gate no Node (`modules/public-site/`, env) é **camada adicional** para dev/staging. **Produção real** deve reforçar no **nginx/reverse proxy** — não depender só do header `Host` dentro do Express.
+
+Exemplo de intenção nginx (documentação, não deploy):
+
+```nginx
+# aerostore.site — bloquear API interna
+location ^~ /api/ { return 404; }
+location ^~ /pdv/ { return 404; }
+# permitir /public-api/ e assets estáticos shop
+```
 
 ## Convenções
 
@@ -27,6 +60,25 @@ Lista paginada de produtos publicados (Fase 2).
 | `limit` | integer | 24 | Itens por página (max 48) |
 | `category` | string | — | Filtrar por `category_slug` |
 | `featured` | boolean | — | Apenas destaques |
+
+### Allow-list — CatalogListItem (Fase 2)
+
+Campos **permitidos** em cada item de `items[]`:
+
+| Campo | Tipo | Origem na projeção |
+|-------|------|-------------------|
+| `slug` | string | `shop_product_publications.public_slug` |
+| `title` | string | `public_title` (editorial) |
+| `category_slug` | string | `public_category_slug` |
+| `category_label` | string | taxonomia shop |
+| `price_cents` | integer | override web ou preço PDV |
+| `compare_at_price_cents` | integer \| null | promo editorial |
+| `featured` | boolean | `featured` |
+| `availability` | enum | calculado (estoque − reservas; Fase 7+) |
+| `primary_image` | object | `{ url, alt }` |
+| `variant_count` | integer | variações publicadas |
+
+Campos internos (`product_id`, `variant_id`, `sku`, `barcode`, `cost_*`, `store_id`, quantidades exatas) **não fazem parte do contrato**.
 
 ### Response 200
 
@@ -62,11 +114,7 @@ Lista paginada de produtos publicados (Fase 2).
 }
 ```
 
-### Campos excluídos (nunca retornar)
-
-`cost_price_cents`, `legacy_ai_product_id`, `tiny_id`, `product_id`, `variant_id`, `sku`, `barcode`, `store_id`, `available_qty`, `reserved_qty`, `margin`, `notes`, `source`.
-
-### Headers
+### Headers (catálogo)
 
 ```
 Cache-Control: public, max-age=120
@@ -103,6 +151,12 @@ Facetas disponíveis no catálogo publicado (Fase 2).
 ## GET /public-api/products/:slug
 
 Detalhe de produto publicado (Fase 3; contrato definido antecipadamente).
+
+### Allow-list — ProductDetail (Fase 3)
+
+Campos permitidos em `product`: `slug`, `title`, `description`, `category_slug`, `category_label`, `price_cents`, `compare_at_price_cents`, `featured`, `availability`, `images[]`, `variants[]` (cada variant: `slug`, `color`, `color_slug`, `size`, `size_slug`, `price_cents`, `availability`), `seo` (`title`, `description`).
+
+**Proibido** na resposta pública: IDs numéricos PDV, SKU, barcode, estoque numérico, loja de fulfillment, custo.
 
 ### Path params
 
