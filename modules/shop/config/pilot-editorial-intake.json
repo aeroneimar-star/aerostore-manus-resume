@@ -1,0 +1,430 @@
+{
+  "version": 1,
+  "phase": "2.8.5",
+  "status": "draft",
+  "catalog_public_enabled": false,
+  "description": "Intake editorial estruturado da vitrine piloto AEROSTORE (8 produtos Grupo A). NÃO publicado — sem migration, sem FK inventada, sem SHOP_PUBLIC_CATALOG_ENABLED.",
+  "source_docs": [
+    "docs/architecture/shop-phase-2.8.3-pilot-selection.md",
+    "docs/architecture/shop-phase-2.8.4-editorial-pilot.md"
+  ],
+  "rules": {
+    "no_invented_fks": true,
+    "product_id_default": null,
+    "variant_id_default": null,
+    "do_not_publish": true,
+    "do_not_migrate_until_approved": true
+  },
+  "summary": {
+    "product_count": 8,
+    "featured_count": 3,
+    "categories": {
+      "camisetas": 7,
+      "calcas": 1
+    },
+    "all_status": "draft"
+  },
+  "products": [
+    {
+      "slot": 1,
+      "sort_order": 1,
+      "status": "draft",
+      "product_id": null,
+      "variant_id": null,
+      "source_product_name": "CAMISETA AEROSTORE SERIES BASIC",
+      "editorial_name": "Camiseta Series Basic AEROSTORE",
+      "slug": "camiseta-series-basic-aerostore",
+      "category": "camisetas",
+      "category_label": "Camisetas",
+      "price_label": "R$ 129,90",
+      "price_cents_ref": 12990,
+      "featured": true,
+      "short_description": "Camiseta AEROSTORE Series Basic — corte limpo, caimento regular e acabamento de dia a dia premium.",
+      "full_description": "A Series Basic é a peça-base da AEROSTORE para quem quer visual limpo sem abrir mão de qualidade. Modelagem regular, gola confortável e tecido pensado para uso contínuo — do casual diário ao look de fim de semana. Ideal para combinar com calças e bermudas da casa.",
+      "tags": [
+        "linha:series-basic",
+        "marca:aerostore",
+        "genero:masculino",
+        "uso:casual",
+        "ticket:medio",
+        "featured:true"
+      ],
+      "photo_requirements": [
+        {
+          "role": "front",
+          "priority": "required",
+          "suggested_file": "camiseta-series-basic-aerostore--unico--front--01.webp"
+        },
+        {
+          "role": "back",
+          "priority": "recommended",
+          "suggested_file": "camiseta-series-basic-aerostore--unico--back--01.webp"
+        },
+        {
+          "role": "detail",
+          "priority": "recommended",
+          "suggested_file": "camiseta-series-basic-aerostore--unico--detail--01.webp"
+        },
+        {
+          "role": "look",
+          "priority": "optional",
+          "suggested_file": "camiseta-series-basic-aerostore--unico--look--01.webp"
+        }
+      ],
+      "stock_notes": "Confirmar cores e tamanhos ativos no pool vila/botanico/sul. Revisar low_stock vs in_stock por variação antes de publicar.",
+      "publication_pending_checks": [
+        "Foto principal 4:5 aprovada",
+        "Grade/tamanhos confirmados",
+        "Composição / cuidados",
+        "Aprovação do nome + copy",
+        "product_id PDV vinculado"
+      ],
+      "needs_photo": true,
+      "needs_copy_review": true,
+      "needs_stock_review": true,
+      "needs_pdv_fk_mapping": true
+    },
+    {
+      "slot": 2,
+      "sort_order": 4,
+      "status": "draft",
+      "product_id": null,
+      "variant_id": null,
+      "source_product_name": "CAMISETA AEROSTORE BASIC CORES PRETO",
+      "editorial_name": "Camiseta Basic AEROSTORE — Preta",
+      "slug": "camiseta-basic-aerostore-preta",
+      "category": "camisetas",
+      "category_label": "Camisetas",
+      "price_label": "R$ 79,90",
+      "price_cents_ref": 7990,
+      "featured": false,
+      "color_editorial": "Preto",
+      "short_description": "Camiseta Basic preta AEROSTORE — essencial do guarda-roupa, ticket de entrada da marca.",
+      "full_description": "A Basic Preta é a peça coringa da coleção AEROSTORE: visual limpo, preço acessível e presença forte na vitrine. Pensada para combinar com jeans, calças tech e looks monocromáticos. Parte da linha Basic — mesma linguagem de produto nas cores Off White, Branco, Bege e Brasil.",
+      "tags": [
+        "linha:basic",
+        "cor:preto",
+        "marca:aerostore",
+        "uso:casual",
+        "ticket:entrada",
+        "familia:basic-cores"
+      ],
+      "photo_requirements": [
+        {
+          "role": "front",
+          "priority": "required",
+          "suggested_file": "camiseta-basic-aerostore-preta--preto--front--01.webp"
+        },
+        {
+          "role": "back_or_detail",
+          "priority": "recommended",
+          "suggested_file": "camiseta-basic-aerostore-preta--preto--back--01.webp"
+        }
+      ],
+      "stock_notes": "Confirmar tamanhos disponíveis. Atenção a estoque baixo na cor preta (alta demanda típica).",
+      "publication_pending_checks": [
+        "Foto 4:5",
+        "Grade",
+        "Composição",
+        "Aprovação copy",
+        "FK PDV"
+      ],
+      "needs_photo": true,
+      "needs_copy_review": true,
+      "needs_stock_review": true,
+      "needs_pdv_fk_mapping": true
+    },
+    {
+      "slot": 3,
+      "sort_order": 5,
+      "status": "draft",
+      "product_id": null,
+      "variant_id": null,
+      "source_product_name": "CAMISETA AEROSTORE BASIC CORES OFF WHITE",
+      "editorial_name": "Camiseta Basic AEROSTORE — Off White",
+      "slug": "camiseta-basic-aerostore-off-white",
+      "category": "camisetas",
+      "category_label": "Camisetas",
+      "price_label": "R$ 79,90",
+      "price_cents_ref": 7990,
+      "featured": false,
+      "color_editorial": "Off white",
+      "short_description": "Camiseta Basic off white AEROSTORE — tom claro sofisticado para looks clean.",
+      "full_description": "Off white traz leveza sem o contraste extremo do branco puro. Peça versátil da linha Basic AEROSTORE, fácil de combinar com calças escuras, bege e denim. Mesmo DNA da Basic Preta: corte limpo, dia a dia e preço de entrada.",
+      "tags": [
+        "linha:basic",
+        "cor:off-white",
+        "marca:aerostore",
+        "ticket:entrada",
+        "familia:basic-cores"
+      ],
+      "photo_requirements": [
+        {
+          "role": "front",
+          "priority": "required",
+          "suggested_file": "camiseta-basic-aerostore-off-white--off-white--front--01.webp"
+        }
+      ],
+      "stock_notes": "Confirmar tamanhos e status no pool. Validar se Off White no PDV corresponde ao tom real fotografado.",
+      "publication_pending_checks": [
+        "Foto",
+        "Grade",
+        "Composição",
+        "Aprovação",
+        "FK PDV"
+      ],
+      "needs_photo": true,
+      "needs_copy_review": true,
+      "needs_stock_review": true,
+      "needs_pdv_fk_mapping": true
+    },
+    {
+      "slot": 4,
+      "sort_order": 6,
+      "status": "draft",
+      "product_id": null,
+      "variant_id": null,
+      "source_product_name": "CAMISETA AEROSTORE BASIC CORES BRANCO",
+      "editorial_name": "Camiseta Basic AEROSTORE — Branco",
+      "slug": "camiseta-basic-aerostore-branco",
+      "category": "camisetas",
+      "category_label": "Camisetas",
+      "price_label": "R$ 79,90",
+      "price_cents_ref": 7990,
+      "featured": false,
+      "color_editorial": "Branco",
+      "short_description": "Camiseta Basic branca AEROSTORE — clássico limpo para qualquer estação.",
+      "full_description": "A Basic Branco é o branco essencial da casa: visual limpo, fácil de vestir e forte em combinação com calças e bermudas. Completa a família Basic ao lado das cores Preta, Off White, Bege e Brasil.",
+      "tags": [
+        "linha:basic",
+        "cor:branco",
+        "marca:aerostore",
+        "ticket:entrada",
+        "familia:basic-cores"
+      ],
+      "photo_requirements": [
+        {
+          "role": "front",
+          "priority": "required",
+          "suggested_file": "camiseta-basic-aerostore-branco--branco--front--01.webp"
+        }
+      ],
+      "stock_notes": "Confirmar grade. Cuidado fotográfico fundo vs tecido branco.",
+      "publication_pending_checks": [
+        "Foto",
+        "Grade",
+        "Composição",
+        "Aprovação",
+        "FK PDV"
+      ],
+      "needs_photo": true,
+      "needs_copy_review": true,
+      "needs_stock_review": true,
+      "needs_pdv_fk_mapping": true
+    },
+    {
+      "slot": 5,
+      "sort_order": 7,
+      "status": "draft",
+      "product_id": null,
+      "variant_id": null,
+      "source_product_name": "CAMISETA AEROSTORE BASIC CORES BEGE",
+      "editorial_name": "Camiseta Basic AEROSTORE — Bege",
+      "slug": "camiseta-basic-aerostore-bege",
+      "category": "camisetas",
+      "category_label": "Camisetas",
+      "price_label": "R$ 79,90",
+      "price_cents_ref": 7990,
+      "featured": false,
+      "color_editorial": "Bege",
+      "short_description": "Camiseta Basic bege AEROSTORE — tom neutro quente para looks contemporâneos.",
+      "full_description": "Bege é o neutro quente da linha Basic: combina com jeans, preto e looks earth-tone. Mantém o caimento e a proposta acessível da Basic AEROSTORE, com personalidade própria na vitrine.",
+      "tags": [
+        "linha:basic",
+        "cor:bege",
+        "marca:aerostore",
+        "ticket:entrada",
+        "familia:basic-cores"
+      ],
+      "photo_requirements": [
+        {
+          "role": "front",
+          "priority": "required",
+          "suggested_file": "camiseta-basic-aerostore-bege--bege--front--01.webp"
+        }
+      ],
+      "stock_notes": "Validar tom real (bege vs areia) na aprovação da foto.",
+      "publication_pending_checks": [
+        "Foto",
+        "Grade",
+        "Composição",
+        "Aprovação",
+        "FK PDV"
+      ],
+      "needs_photo": true,
+      "needs_copy_review": true,
+      "needs_stock_review": true,
+      "needs_pdv_fk_mapping": true
+    },
+    {
+      "slot": 6,
+      "sort_order": 8,
+      "status": "draft",
+      "product_id": null,
+      "variant_id": null,
+      "source_product_name": "CAMISETA AEROSTORE BASIC CORES BRASIL",
+      "editorial_name": "Camiseta Basic AEROSTORE — Brasil",
+      "slug": "camiseta-basic-aerostore-brasil",
+      "category": "camisetas",
+      "category_label": "Camisetas",
+      "price_label": "R$ 79,90",
+      "price_cents_ref": 7990,
+      "featured": false,
+      "color_editorial": "Brasil",
+      "short_description": "Camiseta Basic AEROSTORE na cor Brasil — destaque de personalidade na linha de entrada.",
+      "full_description": "A Basic Brasil traz identidade à família Basic sem sair do ticket de entrada. Usar o nome editorial Brasil apenas se a cor/estampa real corresponder; alinhar copy e foto para não gerar expectativa errada no site.",
+      "tags": [
+        "linha:basic",
+        "cor:brasil",
+        "marca:aerostore",
+        "ticket:entrada",
+        "familia:basic-cores",
+        "nota:validar-cor-real"
+      ],
+      "photo_requirements": [
+        {
+          "role": "front",
+          "priority": "required",
+          "suggested_file": "camiseta-basic-aerostore-brasil--brasil--front--01.webp"
+        }
+      ],
+      "stock_notes": "Validar tom/estampa Brasil com produto físico. Cor especial pode ter grade mais curta.",
+      "publication_pending_checks": [
+        "Validar tom/estampa Brasil",
+        "Foto",
+        "Grade",
+        "Composição",
+        "Aprovação",
+        "FK PDV"
+      ],
+      "needs_photo": true,
+      "needs_copy_review": true,
+      "needs_stock_review": true,
+      "needs_pdv_fk_mapping": true
+    },
+    {
+      "slot": 7,
+      "sort_order": 2,
+      "status": "draft",
+      "product_id": null,
+      "variant_id": null,
+      "source_product_name": "CAMISETA PIMA AEROSTORE CORES",
+      "editorial_name": "Camiseta Pima AEROSTORE",
+      "slug": "camiseta-pima-aerostore",
+      "category": "camisetas",
+      "category_label": "Camisetas",
+      "price_label": "R$ 199,90",
+      "price_cents_ref": 19990,
+      "featured": true,
+      "short_description": "Camiseta Pima AEROSTORE — toque premium, caimento elevado e presença de vitrine.",
+      "full_description": "A Pima é o degrau acima na linha de camisetas AEROSTORE: algodão Pima (ou blend com toque Pima — confirmar composição na loja), acabamento cuidado e preço alinhado a peça de desejo. Ideal como destaque ao lado da Series Basic e da Calça Tech, formando o trio âncora da primeira vitrine.",
+      "tags": [
+        "linha:pima",
+        "marca:aerostore",
+        "material:pima",
+        "ticket:premium",
+        "featured:true"
+      ],
+      "photo_requirements": [
+        {
+          "role": "front",
+          "priority": "required",
+          "suggested_file": "camiseta-pima-aerostore--cor--front--01.webp"
+        },
+        {
+          "role": "detail",
+          "priority": "required",
+          "suggested_file": "camiseta-pima-aerostore--cor--detail--01.webp"
+        },
+        {
+          "role": "back_or_look",
+          "priority": "recommended",
+          "suggested_file": "camiseta-pima-aerostore--cor--look--01.webp"
+        }
+      ],
+      "stock_notes": "Listar cores reais (PDV diz CORES). Piloto mantém 1 card por produto PDV.",
+      "publication_pending_checks": [
+        "Composição Pima confirmada",
+        "Cores reais listadas",
+        "Fotos frente + detalhe",
+        "Grade",
+        "Aprovação",
+        "FK PDV"
+      ],
+      "needs_photo": true,
+      "needs_copy_review": true,
+      "needs_stock_review": true,
+      "needs_pdv_fk_mapping": true
+    },
+    {
+      "slot": 8,
+      "sort_order": 3,
+      "status": "draft",
+      "product_id": null,
+      "variant_id": null,
+      "source_product_name": "CALÇA TECH AEROSTORE TECNOLÓGICA 5 FIVE POCKET",
+      "editorial_name": "Calça Tech AEROSTORE 5 Pockets",
+      "slug": "calca-tech-aerostore-5-pockets",
+      "category": "calcas",
+      "category_label": "Calças",
+      "price_label": "R$ 397,00",
+      "price_cents_ref": 39700,
+      "featured": true,
+      "short_description": "Calça Tech AEROSTORE com 5 bolsos — modelagem contemporânea e ticket âncora da vitrine.",
+      "full_description": "A Calça Tech é o bottom de destaque do piloto: linguagem tech da casa, cinco bolsos e presença de preço que equilibra a vitrine de camisetas. Combinar copy com benefício real (conforto, caimento, tecido) — evitar jargão vazio. Ideal em look com Series Basic ou Pima.",
+      "tags": [
+        "linha:tech",
+        "categoria:calcas",
+        "marca:aerostore",
+        "atributo:5-pockets",
+        "ticket:ancora",
+        "featured:true"
+      ],
+      "photo_requirements": [
+        {
+          "role": "front",
+          "priority": "required",
+          "suggested_file": "calca-tech-aerostore-5-pockets--cor--front--01.webp"
+        },
+        {
+          "role": "back",
+          "priority": "required",
+          "suggested_file": "calca-tech-aerostore-5-pockets--cor--back--01.webp"
+        },
+        {
+          "role": "detail",
+          "priority": "recommended",
+          "suggested_file": "calca-tech-aerostore-5-pockets--cor--detail--01.webp"
+        },
+        {
+          "role": "look",
+          "priority": "recommended",
+          "suggested_file": "calca-tech-aerostore-5-pockets--cor--look--01.webp"
+        }
+      ],
+      "stock_notes": "Confirmar numeração e cores. Ticket alto: só publicar com grade mínima vendável no pool.",
+      "publication_pending_checks": [
+        "Cor(es) e numeração",
+        "Fotos frente + costas",
+        "Copy de benefício real",
+        "Composição / cuidados",
+        "Aprovação",
+        "FK PDV"
+      ],
+      "needs_photo": true,
+      "needs_copy_review": true,
+      "needs_stock_review": true,
+      "needs_pdv_fk_mapping": true
+    }
+  ]
+}
