@@ -1,19 +1,23 @@
 {
   "version": 1,
-  "phase": "2.8.5",
+  "phase": "2.8.7",
   "status": "draft",
   "catalog_public_enabled": false,
-  "description": "Intake editorial estruturado da vitrine piloto AEROSTORE (8 produtos Grupo A). NÃO publicado — sem migration, sem FK inventada, sem SHOP_PUBLIC_CATALOG_ENABLED.",
+  "description": "Intake editorial da vitrine piloto AEROSTORE (8 produtos). product_id mapeados via VPS read-only 2.8.6. NÃO publicado — catalog_public_enabled=false, variant_id=null, sem migration.",
   "source_docs": [
     "docs/architecture/shop-phase-2.8.3-pilot-selection.md",
-    "docs/architecture/shop-phase-2.8.4-editorial-pilot.md"
+    "docs/architecture/shop-phase-2.8.4-editorial-pilot.md",
+    "docs/architecture/shop-phase-2.8.5-editorial-intake.md",
+    "docs/architecture/shop-phase-2.8.6-pdv-mapping-readonly.md",
+    "docs/architecture/shop-phase-2.8.7-pilot-fk-mapping.md"
   ],
   "rules": {
     "no_invented_fks": true,
     "product_id_default": null,
     "variant_id_default": null,
     "do_not_publish": true,
-    "do_not_migrate_until_approved": true
+    "do_not_migrate_until_approved": true,
+    "product_ids_from_vps_readonly": true
   },
   "summary": {
     "product_count": 8,
@@ -22,14 +26,18 @@
       "camisetas": 7,
       "calcas": 1
     },
-    "all_status": "draft"
+    "all_status": "draft",
+    "mapped_product_ids": 8,
+    "mapped_variant_ids": 0,
+    "mapping_phase": "2.8.7",
+    "mapping_source": "vps-readonly-2.8.6"
   },
   "products": [
     {
       "slot": 1,
       "sort_order": 1,
       "status": "draft",
-      "product_id": null,
+      "product_id": 72,
       "variant_id": null,
       "source_product_name": "CAMISETA AEROSTORE SERIES BASIC",
       "editorial_name": "Camiseta Series Basic AEROSTORE",
@@ -76,19 +84,25 @@
         "Foto principal 4:5 aprovada",
         "Grade/tamanhos confirmados",
         "Composição / cuidados",
-        "Aprovação do nome + copy",
-        "product_id PDV vinculado"
+        "Aprovação do nome + copy"
       ],
       "needs_photo": true,
       "needs_copy_review": true,
       "needs_stock_review": true,
-      "needs_pdv_fk_mapping": true
+      "needs_pdv_fk_mapping": false,
+      "pdv_product_name": "CAMISETA AEROSTORE SERIEs BASIC",
+      "mapping_confidence": "high",
+      "mapped_from_environment": "vps-readonly",
+      "mapped_from_phase": "2.8.6",
+      "availability_ref": "in_stock",
+      "variants_count_ref": 32,
+      "mapping_review_required": false
     },
     {
       "slot": 2,
       "sort_order": 4,
       "status": "draft",
-      "product_id": null,
+      "product_id": 63,
       "variant_id": null,
       "source_product_name": "CAMISETA AEROSTORE BASIC CORES PRETO",
       "editorial_name": "Camiseta Basic AEROSTORE — Preta",
@@ -126,19 +140,25 @@
         "Foto 4:5",
         "Grade",
         "Composição",
-        "Aprovação copy",
-        "FK PDV"
+        "Aprovação copy"
       ],
       "needs_photo": true,
       "needs_copy_review": true,
       "needs_stock_review": true,
-      "needs_pdv_fk_mapping": true
+      "needs_pdv_fk_mapping": false,
+      "pdv_product_name": "CAMISETA AEROSTORE BASIC CORES PRETO",
+      "mapping_confidence": "high",
+      "mapped_from_environment": "vps-readonly",
+      "mapped_from_phase": "2.8.6",
+      "availability_ref": "in_stock",
+      "variants_count_ref": 5,
+      "mapping_review_required": false
     },
     {
       "slot": 3,
       "sort_order": 5,
       "status": "draft",
-      "product_id": null,
+      "product_id": 65,
       "variant_id": null,
       "source_product_name": "CAMISETA AEROSTORE BASIC CORES OFF WHITE",
       "editorial_name": "Camiseta Basic AEROSTORE — Off White",
@@ -170,19 +190,25 @@
         "Foto",
         "Grade",
         "Composição",
-        "Aprovação",
-        "FK PDV"
+        "Aprovação"
       ],
       "needs_photo": true,
       "needs_copy_review": true,
       "needs_stock_review": true,
-      "needs_pdv_fk_mapping": true
+      "needs_pdv_fk_mapping": false,
+      "pdv_product_name": "CAMISETA AEROSTORE BASIC CORES OFF WHITE",
+      "mapping_confidence": "high",
+      "mapped_from_environment": "vps-readonly",
+      "mapped_from_phase": "2.8.6",
+      "availability_ref": "in_stock",
+      "variants_count_ref": 5,
+      "mapping_review_required": false
     },
     {
       "slot": 4,
       "sort_order": 6,
       "status": "draft",
-      "product_id": null,
+      "product_id": 66,
       "variant_id": null,
       "source_product_name": "CAMISETA AEROSTORE BASIC CORES BRANCO",
       "editorial_name": "Camiseta Basic AEROSTORE — Branco",
@@ -214,19 +240,25 @@
         "Foto",
         "Grade",
         "Composição",
-        "Aprovação",
-        "FK PDV"
+        "Aprovação"
       ],
       "needs_photo": true,
       "needs_copy_review": true,
       "needs_stock_review": true,
-      "needs_pdv_fk_mapping": true
+      "needs_pdv_fk_mapping": false,
+      "pdv_product_name": "CAMISETA AEROSTORE BASIC CORES BRANCO",
+      "mapping_confidence": "high",
+      "mapped_from_environment": "vps-readonly",
+      "mapped_from_phase": "2.8.6",
+      "availability_ref": "in_stock",
+      "variants_count_ref": 5,
+      "mapping_review_required": false
     },
     {
       "slot": 5,
       "sort_order": 7,
       "status": "draft",
-      "product_id": null,
+      "product_id": 62,
       "variant_id": null,
       "source_product_name": "CAMISETA AEROSTORE BASIC CORES BEGE",
       "editorial_name": "Camiseta Basic AEROSTORE — Bege",
@@ -258,19 +290,25 @@
         "Foto",
         "Grade",
         "Composição",
-        "Aprovação",
-        "FK PDV"
+        "Aprovação"
       ],
       "needs_photo": true,
       "needs_copy_review": true,
       "needs_stock_review": true,
-      "needs_pdv_fk_mapping": true
+      "needs_pdv_fk_mapping": false,
+      "pdv_product_name": "CAMISETA AEROSTORE BASIC CORES BEGE",
+      "mapping_confidence": "high",
+      "mapped_from_environment": "vps-readonly",
+      "mapped_from_phase": "2.8.6",
+      "availability_ref": "in_stock",
+      "variants_count_ref": 5,
+      "mapping_review_required": false
     },
     {
       "slot": 6,
       "sort_order": 8,
       "status": "draft",
-      "product_id": null,
+      "product_id": 68,
       "variant_id": null,
       "source_product_name": "CAMISETA AEROSTORE BASIC CORES BRASIL",
       "editorial_name": "Camiseta Basic AEROSTORE — Brasil",
@@ -304,19 +342,25 @@
         "Foto",
         "Grade",
         "Composição",
-        "Aprovação",
-        "FK PDV"
+        "Aprovação"
       ],
       "needs_photo": true,
       "needs_copy_review": true,
       "needs_stock_review": true,
-      "needs_pdv_fk_mapping": true
+      "needs_pdv_fk_mapping": false,
+      "pdv_product_name": "CAMISETA AEROSTORE BASIC CORES BRASIL",
+      "mapping_confidence": "high",
+      "mapped_from_environment": "vps-readonly",
+      "mapped_from_phase": "2.8.6",
+      "availability_ref": "in_stock",
+      "variants_count_ref": 8,
+      "mapping_review_required": false
     },
     {
       "slot": 7,
       "sort_order": 2,
       "status": "draft",
-      "product_id": null,
+      "product_id": 74,
       "variant_id": null,
       "source_product_name": "CAMISETA PIMA AEROSTORE CORES",
       "editorial_name": "Camiseta Pima AEROSTORE",
@@ -358,19 +402,25 @@
         "Cores reais listadas",
         "Fotos frente + detalhe",
         "Grade",
-        "Aprovação",
-        "FK PDV"
+        "Aprovação"
       ],
       "needs_photo": true,
       "needs_copy_review": true,
       "needs_stock_review": true,
-      "needs_pdv_fk_mapping": true
+      "needs_pdv_fk_mapping": false,
+      "pdv_product_name": "CAMISETA PIMA AEROSTORE CORES",
+      "mapping_confidence": "high",
+      "mapped_from_environment": "vps-readonly",
+      "mapped_from_phase": "2.8.6",
+      "availability_ref": "low_stock",
+      "variants_count_ref": 4,
+      "mapping_review_required": false
     },
     {
       "slot": 8,
       "sort_order": 3,
       "status": "draft",
-      "product_id": null,
+      "product_id": 75,
       "variant_id": null,
       "source_product_name": "CALÇA TECH AEROSTORE TECNOLÓGICA 5 FIVE POCKET",
       "editorial_name": "Calça Tech AEROSTORE 5 Pockets",
@@ -418,13 +468,19 @@
         "Fotos frente + costas",
         "Copy de benefício real",
         "Composição / cuidados",
-        "Aprovação",
-        "FK PDV"
+        "Aprovação"
       ],
       "needs_photo": true,
       "needs_copy_review": true,
       "needs_stock_review": true,
-      "needs_pdv_fk_mapping": true
+      "needs_pdv_fk_mapping": false,
+      "pdv_product_name": "CALÇA TECH AEROSTORE TECNOLOGICA 5 FIVE POCKET",
+      "mapping_confidence": "high",
+      "mapped_from_environment": "vps-readonly",
+      "mapped_from_phase": "2.8.6",
+      "availability_ref": "in_stock",
+      "variants_count_ref": 19,
+      "mapping_review_required": false
     }
   ]
 }
