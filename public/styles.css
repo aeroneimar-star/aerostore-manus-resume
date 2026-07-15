@@ -6504,6 +6504,26 @@ body.theme-dark .ai-import-history-item {
   flex-shrink: 0;
 }
 
+.fiscal-admin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.fiscal-panel {
+  display: none;
+}
+
+.fiscal-panel.active {
+  display: block;
+}
+
+.fiscal-table {
+  width: 100%;
+  min-width: 720px;
+}
+
 .settings-store-form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

@@ -1529,6 +1529,7 @@ const PATHNAME_SECTION_MAP = {
   "/painel": "dashboard",
   "/settings": "settings",
   "/configuracoes": "settings",
+  "/fiscal": "fiscal",
   "/usuarios": "users-admin",
   "/users": "users-admin",
   "/auditoria": "audit-logs",
@@ -1569,6 +1570,7 @@ const PATHNAME_SECTION_META = {
   "users-admin": { displaySection: "users-admin", title: "Usuarios e permissoes" },
   "audit-logs": { displaySection: "audit-logs", title: "Auditoria operacional" },
   settings: { displaySection: "settings", title: "Configurações" },
+  fiscal: { displaySection: "fiscal", title: "Fiscal" },
   "whatsapp-crm": { displaySection: "whatsapp-crm", title: "WhatsApp CRM" },
   aerointel: { displaySection: "aerointel", title: "AEROINTEL" },
   "pdv-dashboard": { displaySection: "pdv-dashboard", title: "PDV AEROSTORE" },
@@ -1629,6 +1631,7 @@ const OFFICIAL_ROUTE_SECTIONS = new Set([
   "whatsapp-crm",
   "aerointel",
   "settings",
+  "fiscal",
   "users-admin",
   "audit-logs",
   "shop-publication"
@@ -1674,6 +1677,13 @@ function canAccessOfficialSection(sectionId = "") {
   }
   if (sectionId === "settings") {
     return canManageSettings() || hasPermission("can_manage_store_settings") || hasPermission("can_view_store_settings");
+  }
+  if (sectionId === "fiscal") {
+    return Boolean(window.AerostoreFiscalAdmin?.canViewFiscal?.(hasPermission, getCurrentRole()))
+      || hasPermission("can_view_fiscal")
+      || hasPermission("can_manage_fiscal")
+      || hasPermission("can_view_audit")
+      || getCurrentRole() === "admin";
   }
   if (sectionId === "users-admin") {
     return canManageUsersPanel();
@@ -26428,7 +26438,8 @@ function getSidebarMenuGroups() {
       {
         title: "Admin / Configurações",
         items: [
-          { label: "Configurações operacionais", section: "settings" }
+          { label: "Configurações operacionais", section: "settings" },
+          { label: "Fiscal", section: "fiscal", route: "/fiscal", visible: () => hasPermission("can_view_fiscal") || hasPermission("can_manage_fiscal") || hasPermission("can_view_audit") }
         ]
       }
     );
@@ -26464,7 +26475,8 @@ function getSidebarMenuGroups() {
           { label: "Importações", route: "/pdv/importacoes", visible: canImportPdvTinyFrontend() || canImportCrmContactsFrontend() },
           { label: "Importar clientes", route: "/pdv/importacoes/clientes", visible: canImportCrmContactsFrontend() },
           { label: "AEROINTEL", route: "/aerointel", visible: canViewAerointelMenu() },
-          { label: "Loja / terminal", section: "settings", visible: hasPermission("can_manage_store_settings") || hasPermission("can_view_store_settings") }
+          { label: "Loja / terminal", section: "settings", visible: hasPermission("can_manage_store_settings") || hasPermission("can_view_store_settings") },
+          { label: "Fiscal", section: "fiscal", route: "/fiscal", visible: hasPermission("can_view_fiscal") || hasPermission("can_manage_fiscal") || hasPermission("can_view_audit") }
         ]
       }
     );
@@ -30719,6 +30731,20 @@ function setActiveSection(sectionId) {
     renderAccessDeniedState(accessDeniedDetail || undefined);
   }
 
+  if (targetSection === "fiscal" && window.AerostoreFiscalAdmin?.mount) {
+    const root = document.getElementById("fiscal-admin-root");
+    if (root && !root.dataset.mounted) {
+      window.AerostoreFiscalAdmin.mount(root, {
+        hasPermission,
+        role: getCurrentRole()
+      }).then(() => {
+        root.dataset.mounted = "1";
+      }).catch((error) => {
+        root.innerHTML = `<p class="settings-panel-note">${String(error.message || "Falha ao carregar fiscal.")}</p>`;
+      });
+    }
+  }
+
   // Parar polling do WhatsApp se sair das frentes que mostram o motor
   if (targetSection !== "settings" && targetSection !== "whatsapp-crm") {
     stopWhatsAppPolling();
@@ -30736,6 +30762,7 @@ function setActiveSection(sectionId) {
     "cashback-reports": "Relatórios de Cashback",
     ai: "IA de Mensagens",
     settings: "Configurações",
+    fiscal: "Fiscal",
     "access-denied": "Acesso restrito",
     "audit-logs": "Auditoria operacional",
     login: "Entrar",

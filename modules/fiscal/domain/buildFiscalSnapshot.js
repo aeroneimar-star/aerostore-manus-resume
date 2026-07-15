@@ -163,36 +163,59 @@ function buildItemFiscalGaps(itemSnapshot) {
   if (!itemSnapshot.origin && itemSnapshot.origin !== 0) gaps.push("origin_missing");
   if (!itemSnapshot.unit) gaps.push("unit_missing");
   if (!itemSnapshot.cfop) gaps.push("cfop_missing");
-  if (!itemSnapshot.csosn && !itemSnapshot.cst) gaps.push("csosn_or_cst_missing");
+  if (!itemSnapshot.csosn && !itemSnapshot.cst && !itemSnapshot.cst_icms) gaps.push("csosn_or_cst_missing");
   if (!itemSnapshot.gtin_ean) gaps.push("gtin_optional_missing");
   return gaps;
 }
 
-async function buildItemSnapshot(item = {}) {
+async function buildItemSnapshot(item = {}, context = {}) {
   const hints = await lookupProductFiscalHints(item);
   const description = normalizeText(
     item.nome || item.name || item.product_name || hints.catalog_name || ""
   ) || null;
   const sku = normalizeText(item.sku || item.codigo || hints.catalog_sku || hints.catalog_codigo || "") || null;
-  const ncm = normalizeText(item.ncm || item.classificacao_fiscal || hints.catalog_ncm || "") || null;
-  const cest = normalizeText(item.cest || "") || null;
-  const originRaw = pickFirst(item.origem_fiscal, item.origem, item.origin);
-  const origin = originRaw === null || originRaw === undefined || originRaw === ""
-    ? null
-    : (Number.isFinite(Number(originRaw)) ? Number(originRaw) : normalizeText(originRaw));
-  const unit = normalizeText(item.unidade || item.unit || "") || null;
-  const gtin = normalizeDigits(
-    item.gtin_ean || item.gtin || item.ean || item.barcode || item.codigo_barras || hints.catalog_gtin_ean || ""
-  ) || null;
   const quantity = toNumberOrNull(item.quantidade ?? item.quantity ?? item.qty) ?? 1;
   const unitPrice = toNumberOrNull(item.preco_unitario ?? item.unit_price ?? item.price ?? item.valor_unitario);
   const lineDiscount = toNumberOrNull(item.desconto ?? item.discount_amount ?? item.line_discount_amount) ?? 0;
   const lineTotal = toNumberOrNull(item.total ?? item.total_amount ?? item.line_total)
     ?? (unitPrice === null ? null : Number(((unitPrice * quantity) - lineDiscount).toFixed(2)));
 
+  let resolved = null;
+  try {
+    const { resolveForSaleItem } = require("../application/FiscalTaxResolver");
+    resolved = await resolveForSaleItem({
+      establishment: context.establishment || null,
+      storeId: context.storeId || "",
+      productId: item.normalized_product_id || hints.catalog_product_id || null,
+      variantId: item.variation_id || item.variant_id || "",
+      legacyAiProductId: item.product_id || item.selected_product_id || hints.catalog_product_id || null,
+      sku,
+      saleItem: item,
+      operationType: context.operationType || "sale_internal",
+      originUf: context.originUf || "",
+      destinationUf: context.destinationUf || ""
+    });
+  } catch (_error) {
+    resolved = null;
+  }
+
+  const ncm = resolved?.product?.ncm
+    || normalizeText(item.ncm || item.classificacao_fiscal || hints.catalog_ncm || "")
+    || null;
+  const cest = resolved?.product?.cest || normalizeText(item.cest || "") || null;
+  const originRaw = resolved?.product?.origin ?? pickFirst(item.origem_fiscal, item.origem, item.origin);
+  const origin = originRaw === null || originRaw === undefined || originRaw === ""
+    ? null
+    : (Number.isFinite(Number(originRaw)) ? Number(originRaw) : normalizeText(String(originRaw)));
+  const unit = resolved?.product?.unit || normalizeText(item.unidade || item.unit || "") || null;
+  const gtin = resolved?.product?.gtin_ean || normalizeDigits(
+    item.gtin_ean || item.gtin || item.ean || item.barcode || item.codigo_barras || hints.catalog_gtin_ean || ""
+  ) || null;
+
   const itemSnapshot = {
     item_id: item.item_id || null,
     product_id: item.product_id || item.selected_product_id || hints.catalog_product_id || null,
+    variant_id: item.variation_id || item.variant_id || resolved?.variant_id || null,
     sku,
     description,
     quantity,
@@ -204,18 +227,43 @@ async function buildItemSnapshot(item = {}) {
     origin,
     unit,
     gtin_ean: gtin,
-    // Campos fiscais ainda ausentes no cadastro — nunca inventar
-    cfop: absent(),
-    cst: absent(),
-    csosn: absent(),
-    icms: absent(),
-    pis: absent(),
-    cofins: absent(),
-    ipi: absent(),
-    fiscal_benefit: absent(),
-    additional_info: absent()
+    // Tributação resolvida do perfil — nunca inventada
+    cfop: resolved?.tax?.cfop ?? absent(),
+    cst: resolved?.tax?.cst_icms ?? absent(),
+    cst_icms: resolved?.tax?.cst_icms ?? absent(),
+    csosn: resolved?.tax?.csosn ?? absent(),
+    pis_cst: resolved?.tax?.pis_cst ?? absent(),
+    cofins_cst: resolved?.tax?.cofins_cst ?? absent(),
+    ipi_cst: resolved?.tax?.ipi_cst ?? absent(),
+    icms_rate: resolved?.tax?.icms_rate ?? absent(),
+    pis_rate: resolved?.tax?.pis_rate ?? absent(),
+    cofins_rate: resolved?.tax?.cofins_rate ?? absent(),
+    ipi_rate: resolved?.tax?.ipi_rate ?? absent(),
+    base_reduction_rate: resolved?.tax?.base_reduction_rate ?? absent(),
+    fiscal_benefit: resolved?.tax?.benefit_code ?? absent(),
+    additional_info: resolved?.tax?.additional_info ?? absent(),
+    profile_id: resolved?.profile_id ?? null,
+    profile_code: resolved?.profile_code ?? null,
+    field_origins: {
+      product: resolved?.product_field_origins || null,
+      tax: resolved?.tax_field_origins || null,
+      profile_source: resolved?.profile_source || null
+    },
+    tax_resolution: resolved
+      ? {
+        completeness: resolved.completeness,
+        gaps: resolved.gaps,
+        warnings: resolved.warnings || [],
+        blocking_errors: resolved.blocking_errors || [],
+        tax_correctness: resolved.tax_correctness || "unverified",
+        invented_tax_fields: false
+      }
+      : null
   };
-  itemSnapshot.fiscal_gaps = buildItemFiscalGaps(itemSnapshot);
+  itemSnapshot.fiscal_gaps = Array.from(new Set([
+    ...buildItemFiscalGaps(itemSnapshot),
+    ...(resolved?.gaps || [])
+  ]));
   return itemSnapshot;
 }
 
@@ -227,15 +275,14 @@ function buildPaymentsSnapshot(sale = {}) {
     method: normalizeText(payment.method || payment.payment_method || "") || null,
     amount: toNumberOrNull(payment.amount ?? payment.valor) ?? 0,
     installments: toNumberOrNull(payment.installments) ?? 1,
-    // Mapeamento NFC-e (tPag) ainda não definido nesta etapa
     nfce_tpag: absent(),
-    nfce_tpag_mapping_status: "not_mapped_stage1"
+    nfce_tpag_mapping_status: "not_mapped_stage2"
   }));
 }
 
 /**
  * Gera snapshot fiscal imutável a partir da venda já concluída.
- * Não inventa CFOP/CSOSN/CST/alíquotas.
+ * Usa FiscalTaxResolver; não inventa CFOP/CSOSN/CST/alíquotas.
  */
 async function buildFiscalSnapshot({
   sale = {},
@@ -249,8 +296,15 @@ async function buildFiscalSnapshot({
   );
   const items = Array.isArray(sale.items) ? sale.items : [];
   const itemSnapshots = [];
+  const resolveContext = {
+    establishment,
+    storeId,
+    operationType: "sale_internal",
+    originUf: establishment?.uf || "",
+    destinationUf: establishment?.uf || ""
+  };
   for (const item of items) {
-    itemSnapshots.push(await buildItemSnapshot(item));
+    itemSnapshots.push(await buildItemSnapshot(item, resolveContext));
   }
 
   const customer = buildCustomerSnapshot(sale.customer || null);
@@ -263,7 +317,7 @@ async function buildFiscalSnapshot({
   ];
 
   return {
-    version: 1,
+    version: 2,
     generated_at: new Date().toISOString(),
     model: String(model || "65"),
     purpose: String(purpose || "sale_emit"),
@@ -293,9 +347,10 @@ async function buildFiscalSnapshot({
     },
     fiscal_gaps: Array.from(new Set(globalGaps)),
     notes: {
-      stage: 1,
+      stage: 2,
       transmission: "disabled",
-      invented_tax_fields: false
+      invented_tax_fields: false,
+      tax_resolver: "FiscalTaxResolver.resolveForSaleItem"
     }
   };
 }

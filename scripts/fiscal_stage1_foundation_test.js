@@ -124,7 +124,7 @@ async function seedEstablishments() {
   const sul = await establishmentRepository.create({
     legal_name: "AEROSTORE SUL COMERCIO LTDA",
     trade_name: "AEROSTORE Sul",
-    cnpj: "22333444000166",
+    cnpj: "04252011000110",
     ie: "987654321",
     tax_regime: "simples_nacional",
     uf: "SC",
@@ -239,7 +239,7 @@ async function main() {
     skipFeatureFlag: true
   });
   assert.strictEqual(createdSul.document.establishment_id, sul.id);
-  assert.strictEqual(createdSul.document.snapshot.emitter.cnpj, "22333444000166");
+  assert.strictEqual(createdSul.document.snapshot.emitter.cnpj, "04252011000110");
   assert.notStrictEqual(createdSul.document.establishment_id, ribeirao.id);
 
   // 8) Erro fiscal nao quebra finalizacao (hook isolado)
@@ -382,7 +382,7 @@ async function main() {
   const linkCountBefore = (await dbAll(`SELECT id FROM fiscal_establishment_stores`)).length;
   const snapBeforeBoot = (await documentRepository.findById(created.document.id)).snapshot_json;
   for (let i = 0; i < 3; i += 1) {
-    const result = await ensureFiscalSchema({ run: dbRun, get: dbGet });
+    const result = await ensureFiscalSchema({ run: dbRun, get: dbGet, all: dbAll });
     assert.strictEqual(result.ready, true);
   }
   assert.strictEqual((await dbAll(`SELECT id FROM fiscal_documents`)).length, docCountBefore);

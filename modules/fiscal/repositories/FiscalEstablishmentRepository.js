@@ -2,17 +2,16 @@
 
 const { run, get, all } = require("../../../db");
 const { normalizeStoreKey } = require("../../pdv/utils/pdvStoreUtils");
+const {
+  normalizeText,
+  normalizeDigits,
+  normalizeUf,
+  isValidCnpj,
+  isValidUf
+} = require("../utils/fiscalValidators");
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-function normalizeText(value = "") {
-  return String(value || "").replace(/\s+/g, " ").trim();
-}
-
-function normalizeDigits(value = "") {
-  return String(value || "").replace(/\D/g, "");
 }
 
 function normalizeEnvironment(value = "") {
@@ -23,44 +22,174 @@ function normalizeEnvironment(value = "") {
   return "homologacao";
 }
 
+function toBoolInt(value, fallback = true) {
+  if (value === false || value === 0 || value === "0") return 0;
+  if (value === true || value === 1 || value === "1") return 1;
+  return fallback ? 1 : 0;
+}
+
 function mapEstablishment(row = null) {
   if (!row) return null;
   return {
     id: Number(row.id),
+    code: row.code || "",
     legal_name: row.legal_name || "",
     trade_name: row.trade_name || "",
     cnpj: row.cnpj || "",
     ie: row.ie || "",
+    im: row.im || "",
+    crt: row.crt || "",
     tax_regime: row.tax_regime || "",
+    cnae_principal: row.cnae_principal || "",
+    street: row.street || "",
+    number: row.number || "",
+    complement: row.complement || "",
+    district: row.district || "",
+    city: row.city || "",
+    city_ibge_code: row.city_ibge_code || "",
     uf: row.uf || "",
+    zip: row.zip || "",
+    phone: row.phone || "",
     environment: row.environment || "homologacao",
     active: Number(row.active) === 1,
+    certificate_configured: Number(row.certificate_configured || 0) === 1,
+    csc_configured: Number(row.csc_configured || 0) === 1,
+    provider_configured: Number(row.provider_configured || 0) === 1,
     created_at: row.created_at || "",
     updated_at: row.updated_at || ""
   };
 }
 
+function validateEstablishmentPayload(payload = {}, { partial = false } = {}) {
+  const errors = [];
+  const cnpj = normalizeDigits(payload.cnpj || "");
+  const uf = normalizeUf(payload.uf || "");
+  if (!partial || Object.prototype.hasOwnProperty.call(payload, "cnpj")) {
+    if (!cnpj) errors.push("cnpj_required");
+    else if (!isValidCnpj(cnpj)) errors.push("cnpj_invalid");
+  }
+  if (!partial || Object.prototype.hasOwnProperty.call(payload, "legal_name")) {
+    if (!normalizeText(payload.legal_name || "")) errors.push("legal_name_required");
+  }
+  if (!partial || Object.prototype.hasOwnProperty.call(payload, "uf")) {
+    if (!uf) errors.push("uf_required");
+    else if (!isValidUf(uf)) errors.push("uf_invalid");
+  }
+  // UF do endereço deve coincidir com UF fiscal quando ambas informadas
+  if (uf && payload.address_uf) {
+    const addressUf = normalizeUf(payload.address_uf);
+    if (addressUf && addressUf !== uf) {
+      errors.push("uf_address_mismatch");
+    }
+  }
+  // CEP: se informado, exige 8 dígitos (não bloqueia homologação se vazio)
+  if (Object.prototype.hasOwnProperty.call(payload, "zip") && payload.zip) {
+    const zip = normalizeDigits(payload.zip);
+    if (zip.length !== 8) errors.push("zip_invalid");
+  }
+  // IBGE: se informado, 7 dígitos
+  if (Object.prototype.hasOwnProperty.call(payload, "city_ibge_code") && payload.city_ibge_code) {
+    const ibge = normalizeDigits(payload.city_ibge_code);
+    if (ibge.length !== 7) errors.push("city_ibge_code_invalid");
+  }
+  return errors;
+}
+
+function buildEstablishmentWriteValues(payload = {}) {
+  return {
+    code: normalizeText(payload.code || ""),
+    legal_name: normalizeText(payload.legal_name || ""),
+    trade_name: normalizeText(payload.trade_name || ""),
+    cnpj: normalizeDigits(payload.cnpj || ""),
+    ie: normalizeText(payload.ie || ""),
+    im: normalizeText(payload.im || ""),
+    crt: normalizeText(payload.crt || ""),
+    tax_regime: normalizeText(payload.tax_regime || ""),
+    cnae_principal: normalizeText(payload.cnae_principal || ""),
+    street: normalizeText(payload.street || ""),
+    number: normalizeText(payload.number || ""),
+    complement: normalizeText(payload.complement || ""),
+    district: normalizeText(payload.district || ""),
+    city: normalizeText(payload.city || ""),
+    city_ibge_code: normalizeDigits(payload.city_ibge_code || ""),
+    uf: normalizeUf(payload.uf || ""),
+    zip: normalizeDigits(payload.zip || ""),
+    phone: normalizeText(payload.phone || ""),
+    environment: normalizeEnvironment(payload.environment),
+    active: toBoolInt(payload.active, true),
+    certificate_configured: toBoolInt(payload.certificate_configured, false),
+    csc_configured: toBoolInt(payload.csc_configured, false),
+    provider_configured: toBoolInt(payload.provider_configured, false)
+  };
+}
+
 class FiscalEstablishmentRepository {
   async create(payload = {}) {
+    const errors = validateEstablishmentPayload(payload);
+    if (errors.length) {
+      const error = new Error(`Estabelecimento fiscal invalido: ${errors.join(", ")}`);
+      error.code = "FISCAL_ESTABLISHMENT_INVALID";
+      error.statusCode = 400;
+      error.errors = errors;
+      throw error;
+    }
+    const values = buildEstablishmentWriteValues(payload);
     const createdAt = nowIso();
     const result = await run(
       `INSERT INTO fiscal_establishments (
-        legal_name, trade_name, cnpj, ie, tax_regime, uf, environment, active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        code, legal_name, trade_name, cnpj, ie, im, crt, tax_regime, cnae_principal,
+        street, number, complement, district, city, city_ibge_code, uf, zip, phone,
+        environment, active, certificate_configured, csc_configured, provider_configured,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        normalizeText(payload.legal_name || ""),
-        normalizeText(payload.trade_name || ""),
-        normalizeDigits(payload.cnpj || ""),
-        normalizeText(payload.ie || ""),
-        normalizeText(payload.tax_regime || ""),
-        normalizeText(payload.uf || "").toUpperCase(),
-        normalizeEnvironment(payload.environment),
-        payload.active === false || payload.active === 0 ? 0 : 1,
-        createdAt,
-        createdAt
+        values.code, values.legal_name, values.trade_name, values.cnpj, values.ie, values.im,
+        values.crt, values.tax_regime, values.cnae_principal, values.street, values.number,
+        values.complement, values.district, values.city, values.city_ibge_code, values.uf,
+        values.zip, values.phone, values.environment, values.active,
+        values.certificate_configured, values.csc_configured, values.provider_configured,
+        createdAt, createdAt
       ]
     );
     return this.findById(result.lastID);
+  }
+
+  async update(id, payload = {}) {
+    const current = await this.findById(id);
+    if (!current) {
+      const error = new Error("Estabelecimento fiscal nao encontrado.");
+      error.code = "FISCAL_ESTABLISHMENT_NOT_FOUND";
+      error.statusCode = 404;
+      throw error;
+    }
+    const merged = { ...current, ...payload, cnpj: payload.cnpj ?? current.cnpj };
+    const errors = validateEstablishmentPayload(merged);
+    if (errors.length) {
+      const error = new Error(`Estabelecimento fiscal invalido: ${errors.join(", ")}`);
+      error.code = "FISCAL_ESTABLISHMENT_INVALID";
+      error.statusCode = 400;
+      error.errors = errors;
+      throw error;
+    }
+    const values = buildEstablishmentWriteValues(merged);
+    await run(
+      `UPDATE fiscal_establishments SET
+        code = ?, legal_name = ?, trade_name = ?, cnpj = ?, ie = ?, im = ?, crt = ?,
+        tax_regime = ?, cnae_principal = ?, street = ?, number = ?, complement = ?,
+        district = ?, city = ?, city_ibge_code = ?, uf = ?, zip = ?, phone = ?,
+        environment = ?, active = ?, certificate_configured = ?, csc_configured = ?,
+        provider_configured = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        values.code, values.legal_name, values.trade_name, values.cnpj, values.ie, values.im,
+        values.crt, values.tax_regime, values.cnae_principal, values.street, values.number,
+        values.complement, values.district, values.city, values.city_ibge_code, values.uf,
+        values.zip, values.phone, values.environment, values.active,
+        values.certificate_configured, values.csc_configured, values.provider_configured,
+        nowIso(), Number(id) || 0
+      ]
+    );
+    return this.findById(id);
   }
 
   async findById(id) {
@@ -95,7 +224,6 @@ class FiscalEstablishmentRepository {
       error.statusCode = 400;
       throw error;
     }
-    // store_id nao e CNPJ: uma loja so pode ter um vinculo ativo por vez.
     if (active) {
       const conflict = await get(
         `SELECT * FROM fiscal_establishment_stores
@@ -179,10 +307,23 @@ class FiscalEstablishmentRepository {
     return rows.map((row) => row.store_id);
   }
 
-  /**
-   * Resolve estabelecimento ativo para uma loja operacional.
-   * store_id != CNPJ: o vínculo é via fiscal_establishment_stores.
-   */
+  async listStoreLinks(establishmentId) {
+    const rows = await all(
+      `SELECT * FROM fiscal_establishment_stores
+       WHERE establishment_id = ?
+       ORDER BY store_id ASC`,
+      [Number(establishmentId) || 0]
+    );
+    return rows.map((row) => ({
+      id: Number(row.id),
+      establishment_id: Number(row.establishment_id),
+      store_id: row.store_id,
+      active: Number(row.active) === 1,
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    }));
+  }
+
   async findActiveByStoreId(storeId, { environment = "" } = {}) {
     const store = normalizeStoreKey(storeId);
     if (!store) return null;
@@ -206,8 +347,29 @@ class FiscalEstablishmentRepository {
     );
     return mapEstablishment(row);
   }
+
+  completenessGaps(establishment = null) {
+    if (!establishment) {
+      return ["establishment_missing"];
+    }
+    const gaps = [];
+    if (!establishment.legal_name) gaps.push("emitter_legal_name_missing");
+    if (!establishment.cnpj || !isValidCnpj(establishment.cnpj)) gaps.push("emitter_cnpj_missing");
+    if (!establishment.uf) gaps.push("emitter_uf_missing");
+    if (!establishment.ie) gaps.push("emitter_ie_missing");
+    if (!establishment.tax_regime && !establishment.crt) gaps.push("emitter_regime_missing");
+    if (!establishment.city) gaps.push("emitter_city_missing");
+    if (!establishment.street) gaps.push("emitter_street_missing");
+    // Marcadores booleanos apenas — NÃO comprovam certificado/CSC/provedor reais.
+    if (!establishment.certificate_configured) gaps.push("certificate_marker_unset");
+    if (!establishment.csc_configured) gaps.push("csc_marker_unset");
+    if (!establishment.provider_configured) gaps.push("provider_marker_unset");
+    return gaps;
+  }
 }
 
 module.exports = {
-  FiscalEstablishmentRepository
+  FiscalEstablishmentRepository,
+  validateEstablishmentPayload,
+  mapEstablishment
 };

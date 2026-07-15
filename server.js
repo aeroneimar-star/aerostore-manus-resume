@@ -12172,6 +12172,8 @@ function buildDefaultPermissions(role = "seller") {
     can_view_campaigns: false,
     can_manage_campaigns: false,
     can_view_store_settings: false,
+    can_view_fiscal: false,
+    can_manage_fiscal: false,
     can_view_orders: false,
     can_release_orders: false,
     can_view_exchanges: false,
@@ -12225,6 +12227,8 @@ function buildDefaultPermissions(role = "seller") {
       can_manage_campaigns: true,
       can_manage_store_settings: true,
       can_view_store_settings: true,
+      can_view_fiscal: true,
+      can_manage_fiscal: false,
       can_view_orders: true,
       can_release_orders: true,
       can_view_exchanges: true,
@@ -12368,6 +12372,8 @@ const USER_PERMISSION_CATALOG = [
       ["can_manage_store_settings", "Configurar loja"],
       ["can_manage_global_settings", "Configuracoes globais"],
       ["can_view_store_settings", "Ver configuracoes da loja"],
+      ["can_view_fiscal", "Ver modulo fiscal"],
+      ["can_manage_fiscal", "Gerenciar cadastro fiscal"],
       ["can_view_all_stores", "Ver todas as lojas"],
       ["can_export_data", "Exportar dados"],
       ["can_view_aerointel", "Acessar AEROINTEL"],
@@ -23555,6 +23561,10 @@ app.get("/settings", (req, res) => {
 });
 
 app.get("/login", (req, res) => {
+  servePublicIndex(res);
+});
+
+app.get("/fiscal", (req, res) => {
   servePublicIndex(res);
 });
 
