@@ -73,6 +73,7 @@ const { pdvReportsRouter } = require("./modules/pdv/reports/pdvReportsRoutes");
 const { pdvInsightsRouter } = require("./modules/pdv/insights/pdvInsightsRoutes");
 const { pdvSeedRouter } = require("./modules/pdv/seed/pdvSeedRoutes");
 const { createPdvWhatsappRouter } = require("./modules/pdv/routes/pdvWhatsappRoutes");
+const { fiscalRouter } = require("./modules/fiscal");
 const { applyPagBankWebhookToSale } = require("./modules/pdv/sales/pdvSalesService");
 const { applyInfinitePayWebhookToSale } = require("./modules/pdv/sales/pdvSalesService");
 const {
@@ -18912,6 +18913,7 @@ app.use("/api/pdv/labels", pdvLabelRouter);
 app.use("/api/pdv/reports", requirePermission("can_view_store_reports"), pdvReportsRouter);
 app.use("/api/pdv/insights", requirePermission("can_view_store_reports"), pdvInsightsRouter);
 app.use("/api/pdv/seed", pdvSeedRouter);
+app.use("/api/fiscal", fiscalRouter);
 registerShopAdminRoutes(app, { requireAnyPermission });
 
 app.get("/api/payments/pagbank/config", requireManager, async (req, res) => {

@@ -2439,6 +2439,10 @@ async function initializeDatabase() {
   await run(`CREATE INDEX IF NOT EXISTS idx_commercial_goal_snapshot_goal ON commercial_goal_progress_snapshot(goal_id)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_commercial_goal_snapshot_date ON commercial_goal_progress_snapshot(snapshot_date)`);
 
+  // Fundação fiscal Stage 1 — DDL aditiva, sem provedor/certificado/SEFAZ.
+  const { ensureFiscalSchema } = require("./modules/fiscal/persistence/ensureFiscalSchema");
+  await ensureFiscalSchema({ run, get });
+
   await ensureSeedData();
   await ensureAiCatalogSeed();
   await migrateLegacyCashbacks();

@@ -3095,8 +3095,40 @@ async function finalizeSaleFromSession(sessionId, payload = {}, user = {}) {
 
   completeSession(session.session_id, { saleId: sale.sale_id });
 
+  // Hook fiscal Stage 1: fora de estoque/caixa/cashback. Erro nunca falha a venda.
+  // Fonte de verdade fiscal = tabelas fiscais por sale_id (nao sales.json).
+  // fiscal_request abaixo e apenas metadado da resposta em memoria.
+  let fiscalRequestMeta = null;
+  try {
+    const { tryCreateFiscalRequestAfterCompletedSale } = require("../../fiscal");
+    const fiscalResult = await tryCreateFiscalRequestAfterCompletedSale(sale, user);
+    if (fiscalResult && !fiscalResult.skipped) {
+      fiscalRequestMeta = {
+        created: Boolean(fiscalResult.created),
+        duplicated: Boolean(fiscalResult.duplicated),
+        failed: Boolean(fiscalResult.failed),
+        reason: fiscalResult.reason || "",
+        document_id: fiscalResult.document?.id || null,
+        status: fiscalResult.document?.status || null
+      };
+    }
+  } catch (_fiscalHookError) {
+    fiscalRequestMeta = {
+      created: false,
+      failed: true,
+      reason: "fiscal_hook_isolated_error",
+      document_id: null,
+      status: null
+    };
+  }
+
   if (saleUsesPaymentLink(sale)) {
     sale = await ensureSalePaymentLink(sale, user);
+  }
+
+  // Anexa so na resposta (apos qualquer saveSales do link). Nao regrava sales.json.
+  if (fiscalRequestMeta) {
+    sale = { ...sale, fiscal_request: fiscalRequestMeta };
   }
 
   return sale;
