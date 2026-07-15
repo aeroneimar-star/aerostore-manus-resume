@@ -1,7 +1,13 @@
 "use strict";
 
 const { run, get, all } = require("../../../db");
-const { normalizeText, normalizeDigits } = require("../utils/fiscalValidators");
+const {
+  normalizeText,
+  normalizeDigits,
+  isValidNcm,
+  isValidFiscalOrigin,
+  isValidGtin
+} = require("../utils/fiscalValidators");
 
 function nowIso() {
   return new Date().toISOString();
@@ -44,6 +50,8 @@ function mapProductTax(row = null) {
     fiscal_description: row.fiscal_description == null ? null : String(row.fiscal_description),
     profile_id: row.profile_id == null ? null : Number(row.profile_id),
     cest_required: Number(row.cest_required || 0) === 1,
+    cest_status: row.cest_status || "cest_required_unknown",
+    cest_na_justification: row.cest_na_justification || "",
     inherit_from_parent: Number(row.inherit_from_parent ?? 1) === 1,
     active: Number(row.active) === 1,
     updated_by: row.updated_by || "",
@@ -69,13 +77,29 @@ class FiscalProductTaxRepository {
     const existing = await this.findByProductRef(productRef);
     const stamp = nowIso();
     const actor = normalizeText(user.name || user.email || payload.updated_by || "sistema");
+
+    let productId = payload.product_id == null || payload.product_id === ""
+      ? null
+      : Number(payload.product_id);
+    let variantId = toNullableText(payload.variant_id);
+    let legacyId = payload.legacy_ai_product_id == null || payload.legacy_ai_product_id === ""
+      ? null
+      : Number(payload.legacy_ai_product_id);
+    if (productId == null && /^product:\d+$/i.test(productRef)) {
+      productId = Number(productRef.slice("product:".length)) || null;
+    }
+    if (!variantId && /^variant:/i.test(productRef)) {
+      variantId = productRef.slice("variant:".length) || null;
+    }
+    if (legacyId == null && /^legacy:\d+$/i.test(productRef)) {
+      legacyId = Number(productRef.slice("legacy:".length)) || null;
+    }
+
     const values = {
       product_ref: productRef,
-      product_id: payload.product_id == null || payload.product_id === "" ? null : Number(payload.product_id),
-      variant_id: toNullableText(payload.variant_id),
-      legacy_ai_product_id: payload.legacy_ai_product_id == null || payload.legacy_ai_product_id === ""
-        ? null
-        : Number(payload.legacy_ai_product_id),
+      product_id: productId,
+      variant_id: variantId,
+      legacy_ai_product_id: legacyId,
       ncm: toNullableText(normalizeDigits(payload.ncm || "") || payload.ncm),
       cest: toNullableText(normalizeDigits(payload.cest || "") || payload.cest),
       origin: payload.origin === 0 || payload.origin === "0"
@@ -88,22 +112,66 @@ class FiscalProductTaxRepository {
         ? null
         : Number(payload.profile_id),
       cest_required: payload.cest_required ? 1 : 0,
+      cest_status: normalizeText(payload.cest_status || existing?.cest_status || "cest_required_unknown")
+        || "cest_required_unknown",
+      cest_na_justification: normalizeText(
+        payload.cest_na_justification ?? existing?.cest_na_justification ?? ""
+      ),
       inherit_from_parent: payload.inherit_from_parent === false || payload.inherit_from_parent === 0 ? 0 : 1,
       active: payload.active === false || payload.active === 0 ? 0 : 1,
       updated_by: actor
     };
+
+    if (/sem\s*gtin/i.test(String(payload.gtin_ean || ""))) {
+      const error = new Error("Nao grave 'SEM GTIN' automaticamente no Stage 3. Deixe GTIN nulo ou informe um valido.");
+      error.code = "FISCAL_PRODUCT_TAX_INVALID";
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (values.ncm && !isValidNcm(values.ncm)) {
+      const error = new Error("NCM invalido. Informe 8 digitos.");
+      error.code = "FISCAL_PRODUCT_TAX_INVALID";
+      error.statusCode = 400;
+      throw error;
+    }
+    if (values.origin != null && values.origin !== "" && !isValidFiscalOrigin(values.origin)) {
+      const error = new Error("Origem fiscal invalida.");
+      error.code = "FISCAL_PRODUCT_TAX_INVALID";
+      error.statusCode = 400;
+      throw error;
+    }
+    if (values.gtin_ean && !isValidGtin(values.gtin_ean)) {
+      const error = new Error("GTIN/EAN invalido.");
+      error.code = "FISCAL_PRODUCT_TAX_INVALID";
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (values.cest) {
+      values.cest_status = "cest_present";
+    } else if (values.cest_status === "cest_not_applicable" && !values.cest_na_justification) {
+      const error = new Error("Justificativa obrigatoria para marcar CEST como nao aplicavel.");
+      error.code = "FISCAL_PRODUCT_TAX_INVALID";
+      error.statusCode = 400;
+      throw error;
+    } else if (values.cest_required && !values.cest && values.cest_status !== "cest_not_applicable") {
+      values.cest_status = "cest_required_missing";
+    }
 
     if (existing) {
       await run(
         `UPDATE fiscal_product_tax SET
           product_id = ?, variant_id = ?, legacy_ai_product_id = ?, ncm = ?, cest = ?,
           origin = ?, unit = ?, gtin_ean = ?, fiscal_description = ?, profile_id = ?,
-          cest_required = ?, inherit_from_parent = ?, active = ?, updated_by = ?, updated_at = ?
+          cest_required = ?, cest_status = ?, cest_na_justification = ?,
+          inherit_from_parent = ?, active = ?, updated_by = ?, updated_at = ?
          WHERE id = ?`,
         [
           values.product_id, values.variant_id, values.legacy_ai_product_id, values.ncm, values.cest,
           values.origin, values.unit, values.gtin_ean, values.fiscal_description, values.profile_id,
-          values.cest_required, values.inherit_from_parent, values.active, values.updated_by, stamp,
+          values.cest_required, values.cest_status, values.cest_na_justification,
+          values.inherit_from_parent, values.active, values.updated_by, stamp,
           existing.id
         ]
       );
@@ -113,13 +181,14 @@ class FiscalProductTaxRepository {
     const result = await run(
       `INSERT INTO fiscal_product_tax (
         product_ref, product_id, variant_id, legacy_ai_product_id, ncm, cest, origin, unit,
-        gtin_ean, fiscal_description, profile_id, cest_required, inherit_from_parent, active,
-        updated_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        gtin_ean, fiscal_description, profile_id, cest_required, cest_status, cest_na_justification,
+        inherit_from_parent, active, updated_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         values.product_ref, values.product_id, values.variant_id, values.legacy_ai_product_id,
         values.ncm, values.cest, values.origin, values.unit, values.gtin_ean,
         values.fiscal_description, values.profile_id, values.cest_required,
+        values.cest_status, values.cest_na_justification,
         values.inherit_from_parent, values.active, values.updated_by, stamp, stamp
       ]
     );

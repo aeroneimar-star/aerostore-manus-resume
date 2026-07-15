@@ -156,7 +156,7 @@ async function main() {
   // Admin: consulta + escrita
   const adminStatus = await call("admin", "GET", "/api/fiscal/status");
   assert.strictEqual(adminStatus.status, 200);
-  assert.strictEqual(adminStatus.data.stage, 2);
+  assert.ok(Number(adminStatus.data.stage) >= 2);
 
   const adminCreate = await call("admin", "POST", "/api/fiscal/establishments", {
     code: "QA_PERM",
@@ -179,6 +179,18 @@ async function main() {
   const adminGaps = await call("admin", "GET", "/api/fiscal/gaps");
   assert.strictEqual(adminGaps.status, 200);
 
+  const adminCoverage = await call("admin", "GET", "/api/fiscal/coverage");
+  assert.strictEqual(adminCoverage.status, 200);
+
+  const adminRules = await call("admin", "GET", "/api/fiscal/readiness/rules");
+  assert.strictEqual(adminRules.status, 200);
+
+  const adminPayments = await call("admin", "GET", "/api/fiscal/payments/mapping");
+  assert.strictEqual(adminPayments.status, 200);
+
+  const adminExport = await call("admin", "GET", "/api/fiscal/sanitation/export.csv");
+  assert.strictEqual(adminExport.status, 200);
+
   // Gestor: consulta OK, escrita 403
   const mgrStatus = await call("manager", "GET", "/api/fiscal/status");
   assert.strictEqual(mgrStatus.status, 200);
@@ -188,6 +200,12 @@ async function main() {
 
   const mgrGaps = await call("manager", "GET", "/api/fiscal/gaps");
   assert.strictEqual(mgrGaps.status, 200);
+
+  const mgrCoverage = await call("manager", "GET", "/api/fiscal/coverage");
+  assert.strictEqual(mgrCoverage.status, 200);
+
+  const mgrExport = await call("manager", "GET", "/api/fiscal/sanitation/export.csv");
+  assert.strictEqual(mgrExport.status, 200);
 
   const mgrCreate = await call("manager", "POST", "/api/fiscal/establishments", {
     legal_name: "Nao deve",
@@ -208,10 +226,36 @@ async function main() {
   });
   assert.strictEqual(mgrProfile.status, 403);
 
+  const mgrBatch = await call("manager", "POST", "/api/fiscal/sanitation/batch-apply", {
+    product_refs: ["product:1"],
+    profile_code: "X",
+    confirm: true
+  });
+  assert.strictEqual(mgrBatch.status, 403);
+
+  const mgrImport = await call("manager", "POST", "/api/fiscal/sanitation/import-apply", {
+    csv: "product_ref,ncm\nproduct:1,61091000\n",
+    confirm: true
+  });
+  assert.strictEqual(mgrImport.status, 403);
+
+  const mgrRuleWrite = await call("manager", "PUT", "/api/fiscal/readiness/rules/GTIN_MISSING", {
+    severity: "blocking"
+  });
+  assert.strictEqual(mgrRuleWrite.status, 403);
+
+  const mgrPayWrite = await call("manager", "PUT", "/api/fiscal/payments/mapping/pix", {
+    mapping_status: "confirmed",
+    nfce_tpag: "17"
+  });
+  assert.strictEqual(mgrPayWrite.status, 403);
+
   // Vendedor / Caixa / Consulta: sem acesso
   for (const role of ["seller", "cashier", "consult"]) {
     const denied = await call(role, "GET", "/api/fiscal/status");
     assert.strictEqual(denied.status, 403, `${role} should be 403`);
+    const deniedCoverage = await call(role, "GET", "/api/fiscal/coverage");
+    assert.strictEqual(deniedCoverage.status, 403, `${role} coverage should be 403`);
     const deniedWrite = await call(role, "POST", "/api/fiscal/establishments", {
       legal_name: "X",
       cnpj: "11444777000161",
@@ -227,9 +271,9 @@ async function main() {
   console.log(JSON.stringify({
     ok: true,
     checks: [
-      "admin_read_write_link_gaps",
-      "manager_read_only",
-      "manager_write_forbidden",
+      "admin_read_write_link_gaps_coverage_export",
+      "manager_read_export_only",
+      "manager_write_batch_import_rules_payments_forbidden",
       "seller_cashier_consult_forbidden"
     ]
   }, null, 2));

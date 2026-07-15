@@ -9,7 +9,9 @@ const FISCAL_TABLES = [
   "fiscal_documents",
   "fiscal_document_events",
   "fiscal_tax_profiles",
-  "fiscal_product_tax"
+  "fiscal_product_tax",
+  "fiscal_readiness_rules",
+  "fiscal_payment_mapping"
 ];
 
 const ESTABLISHMENT_STAGE2_COLUMNS = [
@@ -30,12 +32,21 @@ const ESTABLISHMENT_STAGE2_COLUMNS = [
   ["provider_configured", "INTEGER NOT NULL DEFAULT 0"]
 ];
 
+const PRODUCT_TAX_STAGE3_COLUMNS = [
+  ["cest_status", "TEXT NOT NULL DEFAULT 'cest_required_unknown'"],
+  ["cest_na_justification", "TEXT NOT NULL DEFAULT ''"]
+];
+
 function getDdlPath() {
   return path.join(__dirname, "fiscal-schema.sql");
 }
 
 function getStage2DdlPath() {
   return path.join(__dirname, "fiscal-schema-stage2.sql");
+}
+
+function getStage3DdlPath() {
+  return path.join(__dirname, "fiscal-schema-stage3.sql");
 }
 
 function splitSqlStatements(sqlText = "") {
@@ -96,7 +107,7 @@ async function applySqlFile(dbApi, ddlPath) {
 }
 
 /**
- * Aplica DDL aditiva do módulo fiscal (Stage 1 + Stage 2). Idempotente.
+ * Aplica DDL aditiva do módulo fiscal (Stage 1 + 2 + 3). Idempotente.
  * @param {{ run: Function, get: Function, all?: Function }} dbApi
  */
 async function ensureFiscalSchema(dbApi) {
@@ -105,9 +116,8 @@ async function ensureFiscalSchema(dbApi) {
   }
   const allFn = typeof dbApi.all === "function"
     ? dbApi.all.bind(dbApi)
-    : async (sql, params = []) => {
-      // fallback mínimo: PRAGMA via get não lista; exige all
-      throw new Error("dbApi.all e obrigatorio para ensureFiscalSchema Stage 2");
+    : async () => {
+      throw new Error("dbApi.all e obrigatorio para ensureFiscalSchema Stage 2+");
     };
 
   const api = { run: dbApi.run, get: dbApi.get, all: allFn };
@@ -115,12 +125,18 @@ async function ensureFiscalSchema(dbApi) {
 
   const executed = [
     ...(await applySqlFile(api, getDdlPath())),
-    ...(await applySqlFile(api, getStage2DdlPath()))
+    ...(await applySqlFile(api, getStage2DdlPath())),
+    ...(await applySqlFile(api, getStage3DdlPath()))
   ];
 
   if (await tableExists(api.get, "fiscal_establishments")) {
     for (const [columnName, definition] of ESTABLISHMENT_STAGE2_COLUMNS) {
       await ensureColumn(api, "fiscal_establishments", columnName, definition);
+    }
+  }
+  if (await tableExists(api.get, "fiscal_product_tax")) {
+    for (const [columnName, definition] of PRODUCT_TAX_STAGE3_COLUMNS) {
+      await ensureColumn(api, "fiscal_product_tax", columnName, definition);
     }
   }
 
@@ -137,6 +153,7 @@ module.exports = {
   FISCAL_TABLES,
   getDdlPath,
   getStage2DdlPath,
+  getStage3DdlPath,
   getFiscalSchemaStatus,
   ensureFiscalSchema
 };

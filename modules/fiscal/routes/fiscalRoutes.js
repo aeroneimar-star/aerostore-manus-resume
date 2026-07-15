@@ -12,14 +12,31 @@ const { FiscalTaxProfileRepository } = require("../repositories/FiscalTaxProfile
 const { FiscalProductTaxRepository } = require("../repositories/FiscalProductTaxRepository");
 const { resolveForSaleItem } = require("../application/FiscalTaxResolver");
 const { buildFiscalGapsReport } = require("../application/FiscalGapsService");
+const {
+  evaluateSale,
+  evaluateSaleItem,
+  evaluateEstablishment
+} = require("../application/FiscalReadinessService");
+const { buildFiscalCoverageReport } = require("../application/FiscalCoverageService");
+const {
+  previewBatchProfileApply,
+  applyBatchProfile,
+  importProductTaxCsv,
+  exportPendingCsv
+} = require("../application/FiscalSanitationService");
+const { FiscalReadinessRulesRepository } = require("../repositories/FiscalReadinessRulesRepository");
+const { FiscalPaymentMappingRepository } = require("../repositories/FiscalPaymentMappingRepository");
 const { recordFiscalAudit } = require("../application/fiscalAudit");
 const { isFiscalModuleEnabled, getFiscalDefaultEnvironment } = require("../utils/fiscalConfig");
 const { FISCAL_STATUSES } = require("../domain/fiscalStatuses");
 const { FISCAL_OPERATION_TYPES, FISCAL_OPERATION_TYPES_ACTIVE } = require("../domain/fiscalOperations");
+const { FISCAL_READINESS_STATUSES } = require("../domain/fiscalReadinessStatuses");
 
 const router = express.Router();
 const profileRepository = new FiscalTaxProfileRepository();
 const productTaxRepository = new FiscalProductTaxRepository();
+const readinessRulesRepository = new FiscalReadinessRulesRepository();
+const paymentMappingRepository = new FiscalPaymentMappingRepository();
 
 function hasPermission(user = {}, permission = "") {
   return Boolean(user?.permissions?.[permission]);
@@ -78,17 +95,19 @@ router.use(requireFiscalRead);
 router.get("/status", async (_req, res) => {
   res.json({
     module: "fiscal",
-    stage: 2,
+    stage: 3,
     enabled: isFiscalModuleEnabled(),
     transmission: "disabled",
     default_environment: getFiscalDefaultEnvironment(),
     statuses: Object.values(FISCAL_STATUSES),
+    readiness_statuses: Object.values(FISCAL_READINESS_STATUSES),
     operation_types: Object.values(FISCAL_OPERATION_TYPES),
     operation_types_active: FISCAL_OPERATION_TYPES_ACTIVE,
     runtime_document_mutations: allowFiscalTestOnlyMutations() ? "test_only" : "disabled",
     configuration_markers_are_not_operational_proof: true,
     category_filter_supported: false,
-    tax_correctness_policy: "unverified_until_accounting_approval"
+    tax_correctness_policy: "unverified_until_accounting_approval",
+    emission: "not_in_stage3"
   });
 });
 
@@ -351,8 +370,31 @@ router.put("/product-tax", requireFiscalWrite, async (req, res) => {
       user: req.user || {},
       metadata: {
         product_ref: item.product_ref,
-        before: before ? { ncm: before.ncm, profile_id: before.profile_id } : null,
-        after: { ncm: item.ncm, profile_id: item.profile_id }
+        before: before
+          ? {
+            ncm: before.ncm,
+            cest: before.cest,
+            cest_status: before.cest_status,
+            origin: before.origin,
+            unit: before.unit,
+            gtin_ean: before.gtin_ean,
+            profile_id: before.profile_id,
+            inherit_from_parent: before.inherit_from_parent
+          }
+          : null,
+        after: {
+          ncm: item.ncm,
+          cest: item.cest,
+          cest_status: item.cest_status,
+          origin: item.origin,
+          unit: item.unit,
+          gtin_ean: item.gtin_ean,
+          profile_id: item.profile_id,
+          inherit_from_parent: item.inherit_from_parent,
+          cest_na_justification: item.cest_status === "cest_not_applicable"
+            ? item.cest_na_justification
+            : null
+        }
       }
     });
     res.json({ item });
@@ -376,6 +418,214 @@ router.get("/gaps", async (req, res) => {
     res.json(report);
   } catch (error) {
     res.status(500).json({ error: error.message || "Falha ao gerar relatorio de pendencias fiscais." });
+  }
+});
+
+router.get("/coverage", async (req, res) => {
+  try {
+    const report = await buildFiscalCoverageReport(req.query || {});
+    res.json(report);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao gerar cobertura fiscal." });
+  }
+});
+
+router.get("/readiness/sale/:saleId", async (req, res) => {
+  try {
+    const result = await evaluateSale(req.params.saleId, {
+      user: req.user || {},
+      environment: req.query.environment || "",
+      sale: req.body?.sale
+    });
+    res.json({ readiness: result });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      error: error.message || "Falha ao avaliar prontidao da venda.",
+      code: error.code || "FISCAL_ERROR"
+    });
+  }
+});
+
+router.post("/readiness/evaluate-sale", async (req, res) => {
+  try {
+    const saleId = req.body?.sale_id || req.body?.saleId || req.body?.sale?.sale_id;
+    const result = await evaluateSale(saleId, {
+      user: req.user || {},
+      sale: req.body?.sale || null,
+      environment: req.body?.environment || "",
+      audit: req.body?.audit !== false
+    });
+    res.json({ readiness: result });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      error: error.message || "Falha ao avaliar prontidao da venda.",
+      code: error.code || "FISCAL_ERROR"
+    });
+  }
+});
+
+router.post("/readiness/evaluate-item", async (req, res) => {
+  try {
+    const result = await evaluateSaleItem(req.body || {});
+    res.json({ readiness: result });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao avaliar item." });
+  }
+});
+
+router.get("/readiness/establishments/:id", async (req, res) => {
+  try {
+    const result = await evaluateEstablishment(req.params.id, {
+      storeId: req.query.store_id || ""
+    });
+    res.json({ readiness: result });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Falha ao avaliar estabelecimento." });
+  }
+});
+
+router.get("/readiness/rules", async (_req, res) => {
+  try {
+    const rules = await readinessRulesRepository.list();
+    res.json({ rules });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao listar regras." });
+  }
+});
+
+router.put("/readiness/rules/:code", requireFiscalWrite, async (req, res) => {
+  try {
+    const before = await readinessRulesRepository.findByCode(req.params.code);
+    const updated = await readinessRulesRepository.updateSeverity(
+      req.params.code,
+      req.body?.severity,
+      req.user || {}
+    );
+    await recordFiscalAudit({
+      action: "FISCAL_READINESS_RULE_SEVERITY_CHANGED",
+      entityId: updated.code,
+      user: req.user || {},
+      metadata: { before: before?.severity, after: updated.severity }
+    });
+    res.json({ rule: updated });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ error: error.message, code: error.code || "FISCAL_ERROR" });
+  }
+});
+
+router.get("/payments/mapping", async (_req, res) => {
+  try {
+    const mappings = await paymentMappingRepository.list();
+    res.json({ mappings });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao listar mapeamentos de pagamento." });
+  }
+});
+
+router.put("/payments/mapping/:method", requireFiscalWrite, async (req, res) => {
+  try {
+    const before = await paymentMappingRepository.findByMethod(req.params.method);
+    const updated = await paymentMappingRepository.update(req.params.method, req.body || {}, req.user || {});
+    await recordFiscalAudit({
+      action: "FISCAL_PAYMENT_MAPPING_UPDATED",
+      entityId: updated.method,
+      user: req.user || {},
+      metadata: {
+        before: { mapping_status: before?.mapping_status, nfce_tpag: before?.nfce_tpag },
+        after: { mapping_status: updated.mapping_status, nfce_tpag: updated.nfce_tpag }
+      }
+    });
+    res.json({ mapping: updated });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ error: error.message, code: error.code || "FISCAL_ERROR" });
+  }
+});
+
+router.post("/sanitation/batch-preview", requireFiscalWrite, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const preview = await previewBatchProfileApply({
+      productRefs: body.productRefs || body.product_refs || [],
+      profileId: body.profileId || body.profile_id || null,
+      profileCode: body.profileCode || body.profile_code || "",
+      overwriteVariantOverrides: Boolean(
+        body.overwriteVariantOverrides ?? body.overwrite_variant_overrides
+      )
+    });
+    res.json(preview);
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ error: error.message, code: error.code || "FISCAL_ERROR" });
+  }
+});
+
+router.post("/sanitation/batch-apply", requireFiscalWrite, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await applyBatchProfile({
+      productRefs: body.productRefs || body.product_refs || [],
+      profileId: body.profileId || body.profile_id || null,
+      profileCode: body.profileCode || body.profile_code || "",
+      overwriteVariantOverrides: Boolean(
+        body.overwriteVariantOverrides ?? body.overwrite_variant_overrides
+      ),
+      confirm: Boolean(body.confirm),
+      user: req.user || {}
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ error: error.message, code: error.code || "FISCAL_ERROR" });
+  }
+});
+
+router.get("/sanitation/export.csv", async (req, res) => {
+  try {
+    const report = await buildFiscalCoverageReport({
+      ...(req.query || {}),
+      status: req.query.status || "BLOCKED",
+      limit: Math.min(Number(req.query.limit) || 200, 500)
+    });
+    const csv = exportPendingCsv(report.products?.items || []);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", "attachment; filename=\"fiscal-pendencias.csv\"");
+    res.send(csv);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Falha ao exportar CSV." });
+  }
+});
+
+router.post("/sanitation/import-dry-run", requireFiscalWrite, async (req, res) => {
+  try {
+    const result = await importProductTaxCsv({
+      csvText: req.body?.csv || req.body?.csvText || "",
+      dryRun: true,
+      confirm: false,
+      user: req.user || {}
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      error: error.message,
+      code: error.code || "FISCAL_ERROR",
+      details: error.details || null
+    });
+  }
+});
+
+router.post("/sanitation/import-apply", requireFiscalWrite, async (req, res) => {
+  try {
+    const result = await importProductTaxCsv({
+      csvText: req.body?.csv || req.body?.csvText || "",
+      dryRun: false,
+      confirm: Boolean(req.body?.confirm),
+      user: req.user || {}
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      error: error.message,
+      code: error.code || "FISCAL_ERROR",
+      details: error.details || null
+    });
   }
 });
 

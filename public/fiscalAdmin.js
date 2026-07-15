@@ -47,9 +47,9 @@
       <div class="fiscal-admin">
         <header class="panel-header settings-panel-header">
           <div>
-            <p class="eyebrow">Módulo fiscal · Stage 2</p>
-            <h3>Cadastro fiscal</h3>
-            <p class="settings-panel-note">Sem emissão, sem certificado e sem CSC nesta etapa. Apenas configuração e pendências.</p>
+            <p class="eyebrow">Módulo fiscal · Stage 3</p>
+            <h3>Cadastro e prontidão fiscal</h3>
+            <p class="settings-panel-note">Sem emissão, sem certificado e sem CSC. Avalia prontidão READY/WARNING/BLOCKED e permite saneamento controlado.</p>
           </div>
         </header>
         <div class="fiscal-admin-tabs" role="tablist">
@@ -57,6 +57,7 @@
           <button type="button" class="secondary-button fiscal-tab" data-fiscal-tab="profiles">Perfis tributários</button>
           <button type="button" class="secondary-button fiscal-tab" data-fiscal-tab="products">Produtos fiscais</button>
           <button type="button" class="secondary-button fiscal-tab" data-fiscal-tab="gaps">Pendências</button>
+          <button type="button" class="secondary-button fiscal-tab" data-fiscal-tab="readiness">Prontidão</button>
         </div>
         <div class="fiscal-admin-panels">
           <section class="fiscal-panel active" data-fiscal-panel="establishments">
@@ -182,11 +183,60 @@
               <label>Tipo de gap<input id="fiscal-gaps-type" placeholder="ex.: ncm_missing" /></label>
               <button type="button" class="primary-button" data-fiscal-action="reload-gaps">Atualizar pendências</button>
             </div>
-            <p class="settings-panel-note">Filtro por categoria de produto ainda não é confiável no Stage 2 e não está exposto aqui. Marcadores de certificado/CSC/provedor não comprovam configuração operacional.</p>
+            <p class="settings-panel-note">Filtro por categoria de produto ainda não é confiável no Stage 3 e não está exposto aqui. Marcadores de certificado/CSC/provedor não comprovam configuração operacional.</p>
             <pre id="fiscal-gaps-summary" class="settings-panel-note" style="white-space:pre-wrap;"></pre>
             <div class="table-wrap"><table class="fiscal-table"><thead><tr>
               <th>Tipo</th><th>Label</th><th>Gaps</th>
             </tr></thead><tbody id="fiscal-gaps-body"><tr><td colspan="3">Carregue o relatório.</td></tr></tbody></table></div>
+          </section>
+
+          <section class="fiscal-panel" data-fiscal-panel="readiness">
+            <div class="action-row">
+              <label>Loja
+                <select id="fiscal-coverage-store">
+                  <option value="">Todas</option>
+                  <option value="vila">vila</option>
+                  <option value="botanico">botanico</option>
+                  <option value="sul">sul</option>
+                </select>
+              </label>
+              <label>Status
+                <select id="fiscal-coverage-status">
+                  <option value="">Todos</option>
+                  <option value="READY">READY</option>
+                  <option value="WARNING">WARNING</option>
+                  <option value="BLOCKED">BLOCKED</option>
+                </select>
+              </label>
+              <button type="button" class="primary-button" data-fiscal-action="reload-coverage">Atualizar cobertura</button>
+              <a class="secondary-button" href="/api/fiscal/sanitation/export.csv?status=BLOCKED" target="_blank" rel="noopener">Exportar CSV bloqueados</a>
+            </div>
+            <pre id="fiscal-coverage-summary" class="settings-panel-note" style="white-space:pre-wrap;">Carregue a cobertura fiscal.</pre>
+            <div class="table-wrap"><table class="fiscal-table"><thead><tr>
+              <th>Status</th><th>Tipo</th><th>Label</th><th>Bloqueios</th><th>Avisos</th>
+            </tr></thead><tbody id="fiscal-coverage-body"><tr><td colspan="5">Sem dados.</td></tr></tbody></table></div>
+            ${canWrite ? `
+            <form id="fiscal-batch-form" class="settings-store-form-grid" style="margin-top:16px;">
+              <label>product_refs (um por linha)<textarea name="product_refs" rows="4" placeholder="product:100&#10;variant:VAR_X"></textarea></label>
+              <label>profile_code<input name="profile_code" placeholder="MODA_PADRAO_TEST" /></label>
+              <label>Sobrescrever override de variação?
+                <select name="overwrite_variant_overrides"><option value="0">Não</option><option value="1">Sim</option></select>
+              </label>
+              <div class="action-row">
+                <button type="button" class="secondary-button" data-fiscal-action="batch-preview">Prévia do lote</button>
+                <button type="button" class="primary-button" data-fiscal-action="batch-apply">Confirmar lote</button>
+              </div>
+            </form>
+            <pre id="fiscal-batch-preview" class="settings-panel-note" style="white-space:pre-wrap;"></pre>
+            <form id="fiscal-import-form" class="settings-store-form-grid" style="margin-top:16px;">
+              <label>CSV de saneamento<textarea name="csv" rows="6" placeholder="product_ref,ncm,origem,unidade,profile_code"></textarea></label>
+              <div class="action-row">
+                <button type="button" class="secondary-button" data-fiscal-action="import-dry-run">Dry-run importação</button>
+                <button type="button" class="primary-button" data-fiscal-action="import-apply">Aplicar importação</button>
+              </div>
+            </form>
+            <pre id="fiscal-import-preview" class="settings-panel-note" style="white-space:pre-wrap;"></pre>
+            ` : "<p class='settings-panel-note'>Gestor: consulta e exportação apenas. Sem lote/importação aplicada.</p>"}
           </section>
         </div>
         <p id="fiscal-admin-feedback" class="settings-panel-note" role="status"></p>
@@ -292,6 +342,56 @@
     }
   }
 
+  async function loadCoverage() {
+    const store = document.getElementById("fiscal-coverage-store")?.value || "";
+    const status = document.getElementById("fiscal-coverage-status")?.value || "";
+    const qs = new URLSearchParams();
+    if (store) qs.set("store_id", store);
+    if (status) qs.set("status", status);
+    qs.set("limit", "100");
+    const data = await api(`/api/fiscal/coverage?${qs.toString()}`);
+    const summary = document.getElementById("fiscal-coverage-summary");
+    const body = document.getElementById("fiscal-coverage-body");
+    if (summary) {
+      summary.textContent = JSON.stringify({
+        summary: data.summary,
+        payments: {
+          confirmed: data.payments?.confirmed,
+          pending: data.payments?.pending,
+          ambiguous: data.payments?.ambiguous
+        },
+        notes: data.notes
+      }, null, 2);
+    }
+    if (body) {
+      const items = data.products?.items || [];
+      body.innerHTML = items.length
+        ? items.map((item) => `
+          <tr>
+            <td>${esc(item.status)}</td>
+            <td>${esc(item.kind)}</td>
+            <td>${esc(item.label)}</td>
+            <td>${esc((item.blocking_errors || []).map((f) => f.code).join(", ") || "—")}</td>
+            <td>${esc((item.warnings || []).map((f) => f.code).join(", ") || "—")}</td>
+          </tr>`).join("")
+        : '<tr><td colspan="5">Nenhum item para o filtro.</td></tr>';
+    }
+  }
+
+  function readBatchPayload() {
+    const form = document.getElementById("fiscal-batch-form");
+    if (!form) return null;
+    const refs = String(form.product_refs.value || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return {
+      product_refs: refs,
+      profile_code: form.profile_code.value || "",
+      overwrite_variant_overrides: form.overwrite_variant_overrides.value === "1"
+    };
+  }
+
   function fillForm(form, data) {
     if (!form || !data) return;
     Array.from(form.elements).forEach((el) => {
@@ -346,6 +446,53 @@
         if (action === "reload-profiles") await loadProfiles();
         if (action === "reload-products") await loadProducts();
         if (action === "reload-gaps") await loadGaps();
+        if (action === "reload-coverage") await loadCoverage();
+        if (action === "batch-preview") {
+          const payload = readBatchPayload();
+          const preview = await api("/api/fiscal/sanitation/batch-preview", {
+            method: "POST",
+            body: JSON.stringify(payload)
+          });
+          const box = document.getElementById("fiscal-batch-preview");
+          if (box) box.textContent = JSON.stringify(preview, null, 2);
+          setFeedback(`Prévia: ${preview.planned_count} itens, ${preview.skipped_count} ignorados.`);
+        }
+        if (action === "batch-apply") {
+          const payload = readBatchPayload();
+          if (!window.confirm(`Confirmar aplicação de perfil em ${payload.product_refs.length} refs?`)) return;
+          const result = await api("/api/fiscal/sanitation/batch-apply", {
+            method: "POST",
+            body: JSON.stringify({ ...payload, confirm: true })
+          });
+          const box = document.getElementById("fiscal-batch-preview");
+          if (box) box.textContent = JSON.stringify(result, null, 2);
+          setFeedback(`Lote aplicado: ${result.applied_count} itens.`);
+          await loadProducts();
+          await loadCoverage();
+        }
+        if (action === "import-dry-run") {
+          const form = document.getElementById("fiscal-import-form");
+          const result = await api("/api/fiscal/sanitation/import-dry-run", {
+            method: "POST",
+            body: JSON.stringify({ csv: form?.csv?.value || "" })
+          });
+          const box = document.getElementById("fiscal-import-preview");
+          if (box) box.textContent = JSON.stringify(result, null, 2);
+          setFeedback(`Dry-run: ${result.planned_count} ok, ${result.error_count} erros.`);
+        }
+        if (action === "import-apply") {
+          const form = document.getElementById("fiscal-import-form");
+          if (!window.confirm("Aplicar importação CSV? Linhas com erro impedem qualquer alteração.")) return;
+          const result = await api("/api/fiscal/sanitation/import-apply", {
+            method: "POST",
+            body: JSON.stringify({ csv: form?.csv?.value || "", confirm: true })
+          });
+          const box = document.getElementById("fiscal-import-preview");
+          if (box) box.textContent = JSON.stringify(result, null, 2);
+          setFeedback(`Importação aplicada: ${result.applied_count} linhas.`);
+          await loadProducts();
+          await loadCoverage();
+        }
         if (action === "new-establishment") {
           const form = document.getElementById("fiscal-establishment-form");
           form.reset();
@@ -492,7 +639,7 @@
     });
 
     try {
-      await Promise.all([loadEstablishments(), loadProfiles(), loadProducts()]);
+      await Promise.all([loadEstablishments(), loadProfiles(), loadProducts(), loadCoverage()]);
       setFeedback("Módulo fiscal carregado.");
     } catch (error) {
       setFeedback(error.message, true);
