@@ -28676,6 +28676,69 @@ body[data-route-section="shop-publication"] .shop-pub-shell {
   font-size: 0.78rem;
 }
 
+.shop-pub-draft-strip {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.72), rgba(2, 6, 23, 0.55));
+}
+
+.shop-pub-draft-strip--empty {
+  color: #94a3b8;
+  font-size: 0.86rem;
+}
+
+.shop-pub-draft-strip-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.shop-pub-draft-strip-head strong {
+  color: #e2e8f0;
+}
+
+.shop-pub-draft-strip-head span,
+.shop-pub-draft-strip--empty span {
+  color: #94a3b8;
+}
+
+.shop-pub-draft-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.shop-pub-draft-chip {
+  appearance: none;
+  border: 1px solid rgba(110, 231, 183, 0.22);
+  background: rgba(16, 185, 129, 0.08);
+  color: #d1fae5;
+  border-radius: 999px;
+  padding: 0.45rem 0.8rem;
+  display: grid;
+  gap: 0.1rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shop-pub-draft-chip strong {
+  font-size: 0.82rem;
+}
+
+.shop-pub-draft-chip small {
+  color: #86efac;
+  font-size: 0.72rem;
+}
+
+.shop-pub-draft-chip:hover {
+  border-color: rgba(110, 231, 183, 0.45);
+  background: rgba(16, 185, 129, 0.14);
+}
+
 @media (max-width: 1100px) {
   .shop-pub-grid {
     grid-template-columns: 1fr;

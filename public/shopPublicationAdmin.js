@@ -5,6 +5,7 @@
 
   const CURATION_FILTERS = [
     { value: "all", label: "Todos" },
+    { value: "shop_drafts", label: "Rascunhos Shop (SQL)" },
     { value: "sellable", label: "Somente vendáveis" },
     { value: "in_stock", label: "Somente em estoque" },
     { value: "low_stock", label: "Estoque baixo" },
@@ -20,13 +21,17 @@
         error: "",
         schemaReady: false,
         pilotJsonActive: true,
+        publicCatalogEnabled: false,
         items: [],
+        publications: [],
+        publicationLayer: null,
         total: 0,
         stats: null,
         page: 1,
         limit: 24,
         selectedKey: "",
         includeTestCandidates: false,
+        draftFilterBootstrapped: false,
         filters: {
           q: "",
           product_type: "",
@@ -37,6 +42,12 @@
     }
     if (typeof rootState[stateKey].includeTestCandidates !== "boolean") {
       rootState[stateKey].includeTestCandidates = false;
+    }
+    if (typeof rootState[stateKey].publicCatalogEnabled !== "boolean") {
+      rootState[stateKey].publicCatalogEnabled = false;
+    }
+    if (!Array.isArray(rootState[stateKey].publications)) {
+      rootState[stateKey].publications = [];
     }
     if (!rootState[stateKey].filters) {
       rootState[stateKey].filters = {
@@ -98,6 +109,8 @@
 
   function matchesCurationFilter(item = {}, curation = "all") {
     switch (curation) {
+      case "shop_drafts":
+        return String(item.publication_status || "").trim() === "draft";
       case "sellable":
         return Boolean(item.sellable);
       case "in_stock":
@@ -183,7 +196,7 @@
     if (!rows.length) {
       return `
         <tr><td colspan="9">
-          <div class="empty-state compact"><strong>Nenhum candidato nesta página.</strong><span>Ajuste os filtros ou inclua QA/teste se necessário.</span></div>
+          <div class="empty-state compact"><strong>Nenhum candidato nesta página.</strong><span>Use o filtro “Rascunhos Shop (SQL)” ou ajuste a busca. Catálogo público permanece OFF.</span></div>
         </td></tr>`;
     }
     return rows.map((item) => {
@@ -214,15 +227,16 @@
         <aside class="shop-pub-detail shop-pub-detail--empty">
           <p class="eyebrow">Detalhe editorial</p>
           <h4>Selecione um produto</h4>
-          <p>Visualize variações, motivo de bloqueio e disponibilidade agregada.</p>
+          <p>Visualize variações, rascunho Shop e disponibilidade agregada.</p>
         </aside>`;
     }
     const variants = ctx.toArray(item.variants);
     const reasons = ctx.toArray(item.block_reasons);
+    const publication = item.publication || null;
     return `
       <aside class="shop-pub-detail">
         <div class="shop-pub-detail-head">
-          <p class="eyebrow">Candidato PDV</p>
+          <p class="eyebrow">Candidato PDV${publication ? " · espelho Shop" : ""}</p>
           <h4>${ctx.escapeHtml(item.name || "-")}</h4>
           <p>${item.product_type === "variable" ? "Produto com grade" : "Produto simples"} · ${ctx.escapeHtml(String(item.variant_count || 0))} variações</p>
           ${item.is_test_candidate ? `<span class="shop-pub-badge shop-pub-badge--test">Suspeito teste/QA</span>` : ""}
@@ -232,6 +246,24 @@
           <div><span>Disponibilidade</span><strong>${ctx.escapeHtml(availabilityLabel(item.availability))}</strong></div>
           <div><span>Motivo principal</span><strong>${ctx.escapeHtml(item.block_reason_primary || "—")}</strong></div>
         </div>
+        ${publication ? `
+          <div class="shop-pub-detail-section">
+            <h5>Publicação Shop (SQL)</h5>
+            <div class="shop-pub-detail-kpis">
+              <div><span>Status</span><strong>${ctx.escapeHtml(publicationStatusLabel(item, true))}</strong></div>
+              <div><span>Slug</span><strong>${ctx.escapeHtml(publication.public_slug || "—")}</strong></div>
+              <div><span>Categoria</span><strong>${ctx.escapeHtml(publication.public_category_label || publication.public_category_slug || "—")}</strong></div>
+              <div><span>Featured</span><strong>${publication.featured ? "Sim" : "Não"}</strong></div>
+              <div><span>Fotos</span><strong>${Number(publication.image_count || 0)}</strong></div>
+              <div><span>Foto</span><strong>${publication.needs_photo ? "Pendente" : "OK"}</strong></div>
+            </div>
+            <p><strong>${ctx.escapeHtml(publication.public_title || "—")}</strong></p>
+            <p>${ctx.escapeHtml(publication.public_short_description || "Sem descrição curta.")}</p>
+          </div>` : `
+          <div class="shop-pub-detail-section">
+            <h5>Publicação Shop</h5>
+            <p>Sem registro em <code>shop_product_publications</code> para este produto.</p>
+          </div>`}
         ${reasons.length ? `
           <div class="shop-pub-detail-section">
             <h5>Motivos</h5>
@@ -257,26 +289,60 @@
           </div>
         </div>
         <div class="shop-pub-detail-actions">
-          <button class="primary-button" type="button" disabled title="Disponível na Fase 2.9">Publicar</button>
-          <button class="secondary-button" type="button" disabled title="Disponível após DDL + UI de escrita">Editar publicação</button>
+          <button class="primary-button" type="button" disabled title="Escrita/publish fora do 2.9D.1">Publicar</button>
+          <button class="secondary-button" type="button" disabled title="Escrita editorial fora do 2.9D.1">Editar publicação</button>
         </div>
-        <p class="shop-pub-readonly-note">Somente leitura — nenhuma alteração é gravada nesta fase.</p>
+        <p class="shop-pub-readonly-note">Somente leitura — catálogo público permanece OFF. Nenhuma publicação é gravada nesta fase.</p>
       </aside>`;
   }
 
   function buildKpiCards(stats = {}, paged = {}, pubState = {}) {
     const safeStats = stats || {};
+    const layer = pubState.publicationLayer || {};
     return `
       <div class="shop-pub-kpis shop-pub-kpis--extended">
+        <article class="is-highlight"><span>Drafts Shop (SQL)</span><strong>${Number(layer.draft || 0)}</strong></article>
+        <article><span>Featured</span><strong>${Number(layer.featured || 0)}</strong></article>
+        <article><span>Sem foto</span><strong>${Number(layer.needs_photo || 0)}</strong></article>
+        <article><span>Publicados SQL</span><strong>${Number(layer.published || 0)}</strong></article>
         <article><span>Total bruto PDV</span><strong>${Number(safeStats.total_raw || pubState.total || 0)}</strong></article>
-        <article><span>Ocultos QA/teste</span><strong>${Number(safeStats.hidden_test_count || 0)}</strong></article>
-        <article><span>Candidatos limpos</span><strong>${Number(safeStats.clean_total || 0)}</strong></article>
         <article><span>Vendáveis</span><strong>${Number(safeStats.sellable || 0)}</strong></article>
         <article><span>Em estoque</span><strong>${Number(safeStats.in_stock || 0)}</strong></article>
-        <article><span>Estoque baixo</span><strong>${Number(safeStats.low_stock || 0)}</strong></article>
         <article><span>Bloqueados</span><strong>${Number(safeStats.blocked || 0)}</strong></article>
-        <article class="is-highlight"><span>Publicáveis potenciais</span><strong>${Number(safeStats.potentially_publishable || 0)}</strong></article>
         <article><span>Filtrados na tela</span><strong>${Number(paged.total || 0)}</strong></article>
+      </div>`;
+  }
+
+  function buildDraftStrip(pubState, ctx) {
+    const drafts = ctx.toArray(pubState.publications).filter((item) => item.status === "draft");
+    if (!pubState.schemaReady) {
+      return `
+        <div class="shop-pub-draft-strip shop-pub-draft-strip--empty">
+          <strong>Schema shop_* ausente neste banco.</strong>
+          <span>Os drafts SQL só aparecem depois da migration/seed (já aplicados na VPS 2.9C).</span>
+        </div>`;
+    }
+    if (!drafts.length) {
+      return `
+        <div class="shop-pub-draft-strip shop-pub-draft-strip--empty">
+          <strong>Nenhum draft em shop_product_publications.</strong>
+          <span>Catálogo público continua OFF.</span>
+        </div>`;
+    }
+    return `
+      <div class="shop-pub-draft-strip">
+        <div class="shop-pub-draft-strip-head">
+          <strong>${drafts.length} rascunhos Shop (SQL)</strong>
+          <span>Fonte: shop_product_publications · catálogo público OFF</span>
+        </div>
+        <div class="shop-pub-draft-chips">
+          ${drafts.map((item) => `
+            <button type="button" class="shop-pub-draft-chip" data-shop-pub-select="${ctx.escapeHtml(String(item.pdv_product_ref || ""))}">
+              <strong>${ctx.escapeHtml(item.public_title || item.pdv_name || item.public_slug || "Draft")}</strong>
+              <small>#${ctx.escapeHtml(String(item.pdv_product_ref || ""))}${item.needs_photo ? " · foto pendente" : ""}</small>
+            </button>
+          `).join("")}
+        </div>
       </div>`;
   }
 
@@ -302,16 +368,18 @@
       <section class="shop-pub-shell">
         <header class="shop-pub-hero">
           <div>
-            <p class="eyebrow">E-commerce AEROSTORE · Fase 2.8.2</p>
-            <h3>Candidatos PDV para publicação</h3>
-            <p>Curadoria read-only dos produtos reais do PDV. QA/teste ficam ocultos por padrão; nada é gravado nesta fase.</p>
+            <p class="eyebrow">E-commerce AEROSTORE · Fase 2.9D.1</p>
+            <h3>Publicação Shop — drafts SQL + candidatos PDV</h3>
+            <p>Curadoria read-only. Os rascunhos vêm de <code>shop_product_publications</code>. Catálogo público permanece OFF.</p>
           </div>
           <div class="shop-pub-hero-badges">
             <span class="shop-pub-status-pill${pubState.schemaReady ? " is-ready" : ""}">${pubState.schemaReady ? "Schema shop pronto" : "schema_ready=false"}</span>
-            <span class="shop-pub-status-pill${pubState.pilotJsonActive ? " is-live" : ""}">${pubState.pilotJsonActive ? "Catálogo live: pilot JSON" : "Pilot JSON inativo"}</span>
+            <span class="shop-pub-status-pill">${pubState.publicCatalogEnabled ? "Catálogo público ON" : "Catálogo público OFF"}</span>
+            <span class="shop-pub-status-pill${pubState.pilotJsonActive ? " is-live" : ""}">${pubState.pilotJsonActive ? "Fallback pilot JSON ativo" : "Pilot JSON inativo"}</span>
           </div>
         </header>
         ${buildKpiCards(pubState.stats, paged, pubState)}
+        ${buildDraftStrip(pubState, ctx)}
         <form class="shop-pub-toolbar shop-pub-toolbar--extended" data-shop-pub-filters>
           <input name="q" value="${ctx.escapeHtml(filters.q || "")}" placeholder="Buscar por nome" />
           <select name="product_type">
@@ -334,7 +402,7 @@
           </label>
           <button class="secondary-button" type="submit"${pubState.loading ? " disabled" : ""}>Filtrar</button>
           <button class="ghost-button" type="button" data-shop-pub-reset${pubState.loading ? " disabled" : ""}>Limpar</button>
-          <button class="ghost-button" type="button" data-shop-pub-refresh${pubState.loading ? " disabled" : ""}>${pubState.loading ? "Atualizando..." : "Atualizar PDV"}</button>
+          <button class="ghost-button" type="button" data-shop-pub-refresh${pubState.loading ? " disabled" : ""}>${pubState.loading ? "Atualizando..." : "Atualizar"}</button>
         </form>
         ${pubState.error ? `<div class="login-error">${ctx.escapeHtml(pubState.error)}</div>` : ""}
         <div class="shop-pub-grid">
@@ -347,7 +415,7 @@
               </thead>
               <tbody>
                 ${pubState.loading
-      ? `<tr><td colspan="9"><div class="empty-state compact"><strong>Carregando candidatos...</strong><span>Lendo produtos reais do PDV.</span></div></td></tr>`
+      ? `<tr><td colspan="9"><div class="empty-state compact"><strong>Carregando...</strong><span>Lendo PDV + shop_product_publications.</span></div></td></tr>`
       : buildTableRows(paged.rows, pubState, ctx)}
               </tbody>
             </table>
@@ -375,6 +443,18 @@
     return `/api/shop/publication/candidates?${params.toString()}`;
   }
 
+  function bootstrapDraftFocus(pubState) {
+    if (pubState.draftFilterBootstrapped) {
+      return;
+    }
+    const draftCount = Number(pubState.publicationLayer?.draft || 0);
+    if (pubState.schemaReady && draftCount > 0) {
+      pubState.filters.curation = "shop_drafts";
+      pubState.filters.publication_status = "draft";
+    }
+    pubState.draftFilterBootstrapped = true;
+  }
+
   async function loadCandidates(ctx) {
     if (!canViewPanel(ctx)) {
       renderFront(ctx);
@@ -385,15 +465,25 @@
     pubState.error = "";
     renderFront(ctx);
     try {
-      const response = await ctx.api(buildCandidatesQuery(pubState));
-      pubState.items = ctx.toArray(response.items);
-      pubState.total = Number(response.total || pubState.items.length || 0);
-      pubState.stats = response.stats || null;
-      pubState.schemaReady = Boolean(response.schema_ready);
-      pubState.pilotJsonActive = Boolean(response.pilot_json_active);
+      const [candidatesResponse, publicationsResponse] = await Promise.all([
+        ctx.api(buildCandidatesQuery(pubState)),
+        ctx.api("/api/shop/publications?status=draft&limit=50").catch(() => null)
+      ]);
+      pubState.items = ctx.toArray(candidatesResponse.items);
+      pubState.total = Number(candidatesResponse.total || pubState.items.length || 0);
+      pubState.stats = candidatesResponse.stats || null;
+      pubState.publicationLayer = candidatesResponse.publication_layer
+        || publicationsResponse?.publication_layer
+        || null;
+      pubState.schemaReady = Boolean(candidatesResponse.schema_ready);
+      pubState.pilotJsonActive = Boolean(candidatesResponse.pilot_json_active);
+      pubState.publicCatalogEnabled = Boolean(candidatesResponse.public_catalog_enabled);
+      pubState.publications = ctx.toArray(publicationsResponse?.items);
+      bootstrapDraftFocus(pubState);
       pubState.page = 1;
       if (!pubState.selectedKey && pubState.items.length) {
-        pubState.selectedKey = rowKey(pubState.items[0]);
+        const draftItem = pubState.items.find((item) => item.publication_status === "draft");
+        pubState.selectedKey = rowKey(draftItem || pubState.items[0]);
       } else if (pubState.selectedKey) {
         const stillVisible = pubState.items.some((item) => ctx.normalizeText(rowKey(item)) === ctx.normalizeText(pubState.selectedKey));
         if (!stillVisible) {
@@ -401,10 +491,12 @@
         }
       }
     } catch (error) {
-      pubState.error = error.message || "Falha ao carregar candidatos PDV.";
+      pubState.error = error.message || "Falha ao carregar candidatos/publicações shop.";
       pubState.items = [];
+      pubState.publications = [];
       pubState.total = 0;
       pubState.stats = null;
+      pubState.publicationLayer = null;
     } finally {
       pubState.loading = false;
       renderFront(ctx);
@@ -426,6 +518,7 @@
       const pubState = ensureState(ctx.state);
       pubState.filters = { q: "", product_type: "", curation: "all", publication_status: "" };
       pubState.includeTestCandidates = false;
+      pubState.draftFilterBootstrapped = true;
       pubState.page = 1;
       loadCandidates(ctx).catch((error) => ctx.handleUiError("Erro ao limpar filtros shop", error));
       return true;

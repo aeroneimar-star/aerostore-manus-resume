@@ -117,8 +117,13 @@ function toPublicationCandidate(product = {}, variants = [], options = {}) {
       public_slug: normalizeText(product.publication.public_slug),
       status: normalizeText(product.publication.status),
       public_title: normalizeText(product.publication.public_title),
+      public_short_description: normalizeText(product.publication.public_short_description || ""),
+      public_category_slug: normalizeText(product.publication.public_category_slug || ""),
+      public_category_label: normalizeText(product.publication.public_category_label || ""),
       featured: Boolean(product.publication.featured),
-      sort_order: Number(product.publication.sort_order || 0)
+      sort_order: Number(product.publication.sort_order || 0),
+      needs_photo: Boolean(product.publication.needs_photo),
+      image_count: Number(product.publication.image_count || 0)
     } : null,
     publication_status: normalizeText(product.publication_status || (product.publication ? product.publication.status : "none")) || "none"
   };
@@ -142,20 +147,60 @@ function toPublicationCandidateStats(stats = {}) {
   return result;
 }
 
+function toPublicationLayerStats(stats = {}) {
+  const result = {
+    total: Number(stats.total || 0),
+    draft: Number(stats.draft || 0),
+    published: Number(stats.published || 0),
+    archived: Number(stats.archived || 0),
+    featured: Number(stats.featured || 0),
+    needs_photo: Number(stats.needs_photo || 0),
+    with_images: Number(stats.with_images || 0)
+  };
+  assertNoForbiddenAdminKeys(result);
+  return result;
+}
+
 function toPublicationCandidateList(payload = {}) {
   const result = {
     success: true,
     schema_ready: Boolean(payload.schema_ready),
     pilot_json_active: Boolean(payload.pilot_json_active),
+    public_catalog_enabled: Boolean(payload.public_catalog_enabled),
     page: Number(payload.page || 1),
     limit: Number(payload.limit || 24),
     total: Number(payload.total || 0),
     include_test_candidates: Boolean(payload.include_test_candidates),
     stats: payload.stats ? toPublicationCandidateStats(payload.stats) : undefined,
+    publication_layer: payload.publication_layer
+      ? toPublicationLayerStats(payload.publication_layer)
+      : undefined,
     items: Array.isArray(payload.items) ? payload.items : []
   };
   assertNoForbiddenAdminKeys(result);
   return result;
+}
+
+function toPublicationRecord(row = {}) {
+  const item = {
+    publication_id: Number(row.publication_id || row.id || 0),
+    pdv_product_ref: Number(row.pdv_product_ref || row.product_id || 0),
+    pdv_name: normalizeText(row.pdv_name || ""),
+    public_slug: normalizeText(row.public_slug),
+    status: normalizeText(row.status),
+    public_title: normalizeText(row.public_title),
+    public_short_description: normalizeText(row.public_short_description || ""),
+    public_category_slug: normalizeText(row.public_category_slug || ""),
+    public_category_label: normalizeText(row.public_category_label || ""),
+    featured: Boolean(row.featured),
+    sort_order: Number(row.sort_order || 0),
+    needs_photo: Boolean(row.needs_photo),
+    image_count: Number(row.image_count || 0),
+    published_at: row.published_at || null,
+    updated_at: row.updated_at || null
+  };
+  assertNoForbiddenAdminKeys(item);
+  return item;
 }
 
 module.exports = {
@@ -166,5 +211,7 @@ module.exports = {
   toPublicationCandidate,
   toPublicationCandidateVariant,
   toPublicationCandidateStats,
-  toPublicationCandidateList
+  toPublicationLayerStats,
+  toPublicationCandidateList,
+  toPublicationRecord
 };

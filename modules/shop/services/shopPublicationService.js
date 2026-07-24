@@ -1,11 +1,15 @@
 "use strict";
 
 const { get, all } = require("../../../db");
-const { isPilotJsonEnabled } = require("./shopSettingsService");
+const {
+  isPilotJsonEnabled,
+  isShopPublicCatalogEnabled
+} = require("./shopSettingsService");
 const { getAvailabilityLabel, getFulfillmentConfig } = require("./shopStockService");
 const {
   toPublicationCandidate,
   toPublicationCandidateList,
+  toPublicationRecord,
   parseAttributes,
   assertNoForbiddenAdminKeys
 } = require("../dto/publicationAdminDto");
@@ -202,6 +206,23 @@ function resolveAvailabilityLabel(sellableQty = 0, threshold = 2) {
   return getAvailabilityLabel(Math.max(0, Number(sellableQty || 0)), 0, threshold);
 }
 
+function parseMetadataJson(raw = "{}") {
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function publicationNeedsPhoto(row = {}) {
+  const metadata = parseMetadataJson(row.metadata_json);
+  if (Object.prototype.hasOwnProperty.call(metadata, "needs_photo")) {
+    return Boolean(metadata.needs_photo);
+  }
+  return Number(row.image_count || 0) <= 0;
+}
+
 async function loadPublicationMapByProductIds(productIds = []) {
   const ids = productIds.map((id) => Number(id)).filter((id) => id > 0);
   if (!ids.length || !(await isTableReady("shop_product_publications"))) {
@@ -209,16 +230,113 @@ async function loadPublicationMapByProductIds(productIds = []) {
   }
   const placeholders = ids.map(() => "?").join(", ");
   const rows = await all(
-    `SELECT id, product_id, public_slug, status, public_title, featured, sort_order
-     FROM shop_product_publications
-     WHERE product_id IN (${placeholders})`,
+    `SELECT
+       p.id,
+       p.product_id,
+       p.public_slug,
+       p.status,
+       p.public_title,
+       p.public_short_description,
+       p.public_category_slug,
+       p.public_category_label,
+       p.featured,
+       p.sort_order,
+       p.metadata_json,
+       (
+         SELECT COUNT(*) FROM shop_product_images i
+         WHERE i.publication_id = p.id
+       ) AS image_count
+     FROM shop_product_publications p
+     WHERE p.product_id IN (${placeholders})`,
     ids
   );
   const map = new Map();
   rows.forEach((row) => {
-    map.set(Number(row.product_id), row);
+    map.set(Number(row.product_id), {
+      id: row.id,
+      product_id: row.product_id,
+      public_slug: row.public_slug,
+      status: row.status,
+      public_title: row.public_title,
+      public_short_description: row.public_short_description,
+      public_category_slug: row.public_category_slug,
+      public_category_label: row.public_category_label,
+      featured: row.featured,
+      sort_order: row.sort_order,
+      metadata_json: row.metadata_json,
+      image_count: Number(row.image_count || 0),
+      needs_photo: publicationNeedsPhoto(row)
+    });
   });
   return map;
+}
+
+async function getPublicationLayerStats() {
+  if (!(await isTableReady("shop_product_publications"))) {
+    return {
+      total: 0,
+      draft: 0,
+      published: 0,
+      archived: 0,
+      featured: 0,
+      needs_photo: 0,
+      with_images: 0
+    };
+  }
+
+  const statusRows = await all(
+    `SELECT status, COUNT(*) AS c
+     FROM shop_product_publications
+     GROUP BY status`
+  );
+  const counts = { draft: 0, published: 0, archived: 0 };
+  let total = 0;
+  statusRows.forEach((row) => {
+    const key = normalizeText(row.status);
+    const value = Number(row.c || 0);
+    total += value;
+    if (Object.prototype.hasOwnProperty.call(counts, key)) {
+      counts[key] = value;
+    }
+  });
+
+  const featuredRow = await get(
+    `SELECT COUNT(*) AS c FROM shop_product_publications WHERE featured = 1`
+  );
+  const imageReady = await isTableReady("shop_product_images");
+  let withImages = 0;
+  let needsPhoto = counts.draft + counts.published + counts.archived;
+  if (imageReady) {
+    const withImagesRow = await get(
+      `SELECT COUNT(DISTINCT publication_id) AS c FROM shop_product_images`
+    );
+    withImages = Number(withImagesRow?.c || 0);
+    const needsPhotoRow = await get(
+      `SELECT COUNT(*) AS c
+       FROM shop_product_publications p
+       WHERE (
+         json_extract(p.metadata_json, '$.needs_photo') = 1
+         OR json_extract(p.metadata_json, '$.needs_photo') = 'true'
+         OR (
+           (json_extract(p.metadata_json, '$.needs_photo') IS NULL)
+           AND NOT EXISTS (
+             SELECT 1 FROM shop_product_images i WHERE i.publication_id = p.id
+           )
+         )
+       )`
+    );
+    needsPhoto = Number(needsPhotoRow?.c || 0);
+  }
+
+  return {
+    total,
+    draft: counts.draft,
+    published: counts.published,
+    archived: counts.archived,
+    featured: Number(featuredRow?.c || 0),
+    needs_photo: needsPhoto,
+    with_images: withImages
+  };
 }
 
 function buildProductSearchClause(query = "") {
@@ -365,6 +483,74 @@ function buildPublicationCandidateItem(productRow, variants, publication, fulfil
   }, variants, { threshold: fulfillment.low_stock_threshold });
 }
 
+function buildSyntheticPublicationCandidate(publication = {}) {
+  const status = normalizeText(publication.status || "draft") || "draft";
+  const title = normalizeText(publication.public_title || publication.pdv_name || publication.public_slug);
+  return toPublicationCandidate({
+    product_id: Number(publication.pdv_product_ref || publication.product_id || 0),
+    name: title || `Produto #${publication.pdv_product_ref || "?"}`,
+    product_type: "simple",
+    status: "ativo",
+    sale_price_cents: 0,
+    sellable: false,
+    availability: "out_of_stock",
+    publication: {
+      id: Number(publication.publication_id || publication.id || 0),
+      public_slug: publication.public_slug,
+      status,
+      public_title: publication.public_title,
+      public_short_description: publication.public_short_description,
+      public_category_slug: publication.public_category_slug,
+      public_category_label: publication.public_category_label,
+      featured: publication.featured,
+      sort_order: publication.sort_order,
+      needs_photo: publication.needs_photo,
+      image_count: publication.image_count
+    },
+    publication_status: status,
+    is_test_candidate: false,
+    block_reasons: [BLOCK_REASON.INCOMPLETE, "Draft SQL sem espelho PDV completo nesta base"],
+    block_reason_primary: "Draft SQL sem espelho PDV completo nesta base",
+    is_potentially_publishable: false
+  }, []);
+}
+
+async function appendMissingPublicationCandidates(items = []) {
+  if (!(await isTableReady("shop_product_publications"))) {
+    return items;
+  }
+  const publications = await listPublicationRecords({ limit: 100 });
+  const existing = new Set(
+    items.map((item) => Number(item.pdv_product_ref)).filter((id) => id > 0)
+  );
+  const merged = [];
+  publications.items.forEach((publication) => {
+    const productId = Number(publication.pdv_product_ref || 0);
+    if (!productId || existing.has(productId)) {
+      return;
+    }
+    merged.push(buildSyntheticPublicationCandidate(publication));
+    existing.add(productId);
+  });
+  return merged.concat(items);
+}
+
+function prioritizeShopPublications(items = []) {
+  return items.slice().sort((left, right) => {
+    const leftRank = left.publication_status && left.publication_status !== "none" ? 0 : 1;
+    const rightRank = right.publication_status && right.publication_status !== "none" ? 0 : 1;
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    const leftSort = Number(left.publication?.sort_order || Number.MAX_SAFE_INTEGER);
+    const rightSort = Number(right.publication?.sort_order || Number.MAX_SAFE_INTEGER);
+    if (leftSort !== rightSort) {
+      return leftSort - rightSort;
+    }
+    return Number(left.pdv_product_ref || 0) - Number(right.pdv_product_ref || 0);
+  });
+}
+
 async function listPdvPublicationCandidates(query = {}) {
   const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
   const limit = Math.min(200, Math.max(1, Number.parseInt(query.limit, 10) || 24));
@@ -373,6 +559,7 @@ async function listPdvPublicationCandidates(query = {}) {
   const includeTestCandidates = parseIncludeTestCandidates(query);
   const schemaStatus = await getShopPublicationSchemaStatus();
   const fulfillment = getFulfillmentConfig();
+  const publicationLayer = await getPublicationLayerStats();
 
   const productRows = await fetchAllPdvProductRows(search);
   const publicationMap = await loadPublicationMapByProductIds(productRows.map((row) => row.product_id));
@@ -381,7 +568,7 @@ async function listPdvPublicationCandidates(query = {}) {
     fulfillment.store_ids
   );
 
-  const allItems = productRows.map((productRow) => buildPublicationCandidateItem(
+  let allItems = productRows.map((productRow) => buildPublicationCandidateItem(
     productRow,
     buildVariantCandidates(
       variantsByProduct.get(Number(productRow.product_id)) || [],
@@ -392,6 +579,10 @@ async function listPdvPublicationCandidates(query = {}) {
     fulfillment
   ));
 
+  if (!search) {
+    allItems = prioritizeShopPublications(await appendMissingPublicationCandidates(allItems));
+  }
+
   const stats = computeCandidateStats(allItems);
   const visibleItems = includeTestCandidates
     ? allItems
@@ -401,11 +592,13 @@ async function listPdvPublicationCandidates(query = {}) {
   const payload = toPublicationCandidateList({
     schema_ready: schemaStatus.ready,
     pilot_json_active: isPilotJsonEnabled(),
+    public_catalog_enabled: isShopPublicCatalogEnabled(),
     page,
     limit,
     total: visibleItems.length,
     include_test_candidates: includeTestCandidates,
     stats,
+    publication_layer: publicationLayer,
     items: paginatedItems
   });
   assertNoForbiddenAdminKeys(payload);
@@ -444,6 +637,8 @@ async function getPdvPublicationCandidate(productRef = "") {
     success: true,
     schema_ready: (await getShopPublicationSchemaStatus()).ready,
     pilot_json_active: isPilotJsonEnabled(),
+    public_catalog_enabled: isShopPublicCatalogEnabled(),
+    publication_layer: await getPublicationLayerStats(),
     item
   };
 }
@@ -455,36 +650,74 @@ async function listPublicationRecords(query = {}) {
       success: true,
       schema_ready: false,
       pilot_json_active: isPilotJsonEnabled(),
+      public_catalog_enabled: isShopPublicCatalogEnabled(),
+      publication_layer: await getPublicationLayerStats(),
       items: [],
       message: "Tabelas shop_* ainda não aplicadas. Nenhuma publicação SQL disponível."
     };
   }
   const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit, 10) || 50));
+  const statusFilter = normalizeText(query.status || query.publication_status || "");
+  const params = [];
+  let whereClause = "1=1";
+  if (statusFilter) {
+    whereClause += " AND p.status = ?";
+    params.push(statusFilter);
+  }
+  params.push(limit);
+
   const rows = await all(
-    `SELECT id, product_id, public_slug, status, public_title, public_category_slug,
-            featured, sort_order, published_at, updated_at
-     FROM shop_product_publications
-     ORDER BY sort_order ASC, updated_at DESC
+    `SELECT
+       p.id,
+       p.product_id,
+       pdv.name AS pdv_name,
+       p.public_slug,
+       p.status,
+       p.public_title,
+       p.public_short_description,
+       p.public_category_slug,
+       p.public_category_label,
+       p.featured,
+       p.sort_order,
+       p.metadata_json,
+       p.published_at,
+       p.updated_at,
+       (
+         SELECT COUNT(*) FROM shop_product_images i
+         WHERE i.publication_id = p.id
+       ) AS image_count
+     FROM shop_product_publications p
+     LEFT JOIN pdv_products_v2 pdv ON pdv.id = p.product_id
+     WHERE ${whereClause}
+     ORDER BY p.sort_order ASC, p.updated_at DESC
      LIMIT ?`,
-    [limit]
+    params
   );
-  const items = rows.map((row) => ({
-    publication_id: Number(row.id),
-    pdv_product_ref: Number(row.product_id),
-    public_slug: normalizeText(row.public_slug),
-    status: normalizeText(row.status),
-    public_title: normalizeText(row.public_title),
-    public_category_slug: normalizeText(row.public_category_slug),
-    featured: Boolean(row.featured),
-    sort_order: Number(row.sort_order || 0),
-    published_at: row.published_at || null,
-    updated_at: row.updated_at || null
+
+  const items = rows.map((row) => toPublicationRecord({
+    publication_id: row.id,
+    pdv_product_ref: row.product_id,
+    pdv_name: row.pdv_name,
+    public_slug: row.public_slug,
+    status: row.status,
+    public_title: row.public_title,
+    public_short_description: row.public_short_description,
+    public_category_slug: row.public_category_slug,
+    public_category_label: row.public_category_label,
+    featured: row.featured,
+    sort_order: row.sort_order,
+    needs_photo: publicationNeedsPhoto(row),
+    image_count: row.image_count,
+    published_at: row.published_at,
+    updated_at: row.updated_at
   }));
   assertNoForbiddenAdminKeys({ items });
   return {
     success: true,
     schema_ready: true,
     pilot_json_active: isPilotJsonEnabled(),
+    public_catalog_enabled: isShopPublicCatalogEnabled(),
+    publication_layer: await getPublicationLayerStats(),
     items
   };
 }
@@ -494,6 +727,7 @@ module.exports = {
   BLOCK_REASON,
   TEST_NAME_PATTERNS,
   getShopPublicationSchemaStatus,
+  getPublicationLayerStats,
   listPdvPublicationCandidates,
   getPdvPublicationCandidate,
   listPublicationRecords,
