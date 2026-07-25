@@ -4,8 +4,13 @@ const {
   listPdvPublicationCandidates,
   getPdvPublicationCandidate,
   listPublicationRecords,
-  getShopPublicationSchemaStatus
+  getShopPublicationSchemaStatus,
+  getPublicationLayerStats
 } = require("../services/shopPublicationService");
+const {
+  isPilotJsonEnabled,
+  isShopPublicCatalogEnabled
+} = require("../services/shopSettingsService");
 
 function createShopAdminAuthGuard(requireAnyPermission) {
   return requireAnyPermission(
@@ -29,11 +34,15 @@ function registerShopAdminRoutes(app, deps = {}) {
   app.get("/api/shop/publication/status", guard, async (req, res) => {
     try {
       const schema = await getShopPublicationSchemaStatus();
+      const layer = await getPublicationLayerStats();
       res.json({
         success: true,
         schema_ready: schema.ready,
         tables: schema.tables,
-        message: schema.message
+        message: schema.message,
+        publication_layer: layer,
+        public_catalog_enabled: isShopPublicCatalogEnabled(),
+        pilot_json_active: isPilotJsonEnabled()
       });
     } catch (error) {
       res.status(500).json({ error: "Falha ao consultar status da camada shop." });

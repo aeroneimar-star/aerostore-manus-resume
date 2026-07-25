@@ -1587,7 +1587,7 @@ const PATHNAME_SECTION_META = {
   "pdv-quotes": { displaySection: "pdv-quotes", title: "Orçamentos" },
   "pdv-imports": { displaySection: "pdv-imports", title: "Importações" },
   "pdv-gestao": { displaySection: "pdv-gestao", get title() { return getCommercialSectionLabel(); } },
-  "shop-publication": { displaySection: "shop-publication", title: "Shop — candidatos" }
+  "shop-publication": { displaySection: "shop-publication", title: "Shop — publicação" }
 };
 
 function normalizePathname(pathname = "") {
