@@ -229,6 +229,13 @@ async function loadPublicationMapByProductIds(productIds = []) {
     return new Map();
   }
   const placeholders = ids.map(() => "?").join(", ");
+  const imagesReady = await isTableReady("shop_product_images");
+  const imageCountSelect = imagesReady
+    ? `(
+         SELECT COUNT(*) FROM shop_product_images i
+         WHERE i.publication_id = p.id
+       ) AS image_count`
+    : `0 AS image_count`;
   const rows = await all(
     `SELECT
        p.id,
@@ -242,10 +249,7 @@ async function loadPublicationMapByProductIds(productIds = []) {
        p.featured,
        p.sort_order,
        p.metadata_json,
-       (
-         SELECT COUNT(*) FROM shop_product_images i
-         WHERE i.publication_id = p.id
-       ) AS image_count
+       ${imageCountSelect}
      FROM shop_product_publications p
      WHERE p.product_id IN (${placeholders})`,
     ids
@@ -315,10 +319,21 @@ async function getPublicationLayerStats() {
       `SELECT COUNT(*) AS c
        FROM shop_product_publications p
        WHERE (
-         json_extract(p.metadata_json, '$.needs_photo') = 1
-         OR json_extract(p.metadata_json, '$.needs_photo') = 'true'
+         (
+           CASE
+             WHEN json_valid(p.metadata_json)
+             THEN json_extract(p.metadata_json, '$.needs_photo')
+             ELSE NULL
+           END
+         ) IN (1, 'true')
          OR (
-           (json_extract(p.metadata_json, '$.needs_photo') IS NULL)
+           (
+             CASE
+               WHEN json_valid(p.metadata_json)
+               THEN json_extract(p.metadata_json, '$.needs_photo')
+               ELSE NULL
+             END
+           ) IS NULL
            AND NOT EXISTS (
              SELECT 1 FROM shop_product_images i WHERE i.publication_id = p.id
            )
@@ -666,6 +681,14 @@ async function listPublicationRecords(query = {}) {
   }
   params.push(limit);
 
+  const imagesReady = await isTableReady("shop_product_images");
+  const imageCountSelect = imagesReady
+    ? `(
+         SELECT COUNT(*) FROM shop_product_images i
+         WHERE i.publication_id = p.id
+       ) AS image_count`
+    : `0 AS image_count`;
+
   const rows = await all(
     `SELECT
        p.id,
@@ -682,10 +705,7 @@ async function listPublicationRecords(query = {}) {
        p.metadata_json,
        p.published_at,
        p.updated_at,
-       (
-         SELECT COUNT(*) FROM shop_product_images i
-         WHERE i.publication_id = p.id
-       ) AS image_count
+       ${imageCountSelect}
      FROM shop_product_publications p
      LEFT JOIN pdv_products_v2 pdv ON pdv.id = p.product_id
      WHERE ${whereClause}
