@@ -1,6 +1,64 @@
 "use strict";
 
+/**
+ * Helpers puros da admin de publicação (testáveis em Node e usados no browser).
+ * Separação de estados: loading / success+drafts / success+empty / error.
+ */
+function isValidPublicationsPayload(payload) {
+  return Boolean(payload && typeof payload === "object" && Array.isArray(payload.items));
+}
+
+function resolvePublicationsLoad(result = {}) {
+  if (!result || result.ok !== true) {
+    const raw = result && result.error;
+    const message = raw && typeof raw === "object"
+      ? String(raw.message || raw.error || "")
+      : String(raw || "");
+    return {
+      status: "error",
+      items: [],
+      errorMessage: message || "Não foi possível carregar os drafts SQL.",
+      publicationLayer: null
+    };
+  }
+  if (!isValidPublicationsPayload(result.data)) {
+    return {
+      status: "error",
+      items: [],
+      errorMessage: "Resposta inválida ao carregar drafts SQL.",
+      publicationLayer: null
+    };
+  }
+  return {
+    status: "success",
+    items: result.data.items,
+    errorMessage: "",
+    publicationLayer: result.data.publication_layer || null
+  };
+}
+
+function resolveDraftStripKind(pubState = {}, toArrayFn) {
+  const toArray = typeof toArrayFn === "function"
+    ? toArrayFn
+    : (value) => (Array.isArray(value) ? value : []);
+  if (pubState.publicationsError) {
+    return "error";
+  }
+  if (!pubState.schemaReady) {
+    return "schema_absent";
+  }
+  const drafts = toArray(pubState.publications).filter((item) => String(item.status || "").trim() === "draft");
+  if (!drafts.length) {
+    return "empty";
+  }
+  return "drafts";
+}
+
 (function initShopPublicationAdmin(global) {
+  if (!global) {
+    return;
+  }
+
   const stateKey = "shopPublication";
 
   const CURATION_FILTERS = [
@@ -24,6 +82,7 @@
         publicCatalogEnabled: false,
         items: [],
         publications: [],
+        publicationsError: "",
         publicationLayer: null,
         total: 0,
         stats: null,
@@ -48,6 +107,9 @@
     }
     if (!Array.isArray(rootState[stateKey].publications)) {
       rootState[stateKey].publications = [];
+    }
+    if (typeof rootState[stateKey].publicationsError !== "string") {
+      rootState[stateKey].publicationsError = "";
     }
     if (!rootState[stateKey].filters) {
       rootState[stateKey].filters = {
@@ -314,15 +376,23 @@
   }
 
   function buildDraftStrip(pubState, ctx) {
-    const drafts = ctx.toArray(pubState.publications).filter((item) => item.status === "draft");
-    if (!pubState.schemaReady) {
+    const kind = resolveDraftStripKind(pubState, ctx.toArray);
+    if (kind === "error") {
+      return `
+        <div class="shop-pub-draft-strip shop-pub-draft-strip--empty">
+          <strong>Não foi possível carregar os drafts SQL.</strong>
+          <span>${ctx.escapeHtml(pubState.publicationsError || "Tente novamente ou consulte os detalhes técnicos.")}</span>
+        </div>`;
+    }
+    if (kind === "schema_absent") {
       return `
         <div class="shop-pub-draft-strip shop-pub-draft-strip--empty">
           <strong>Schema shop_* ausente neste banco.</strong>
           <span>Os drafts SQL só aparecem depois da migration/seed (já aplicados na VPS 2.9C).</span>
         </div>`;
     }
-    if (!drafts.length) {
+    const drafts = ctx.toArray(pubState.publications).filter((item) => item.status === "draft");
+    if (kind === "empty") {
       return `
         <div class="shop-pub-draft-strip shop-pub-draft-strip--empty">
           <strong>Nenhum draft em shop_product_publications.</strong>
@@ -463,22 +533,39 @@
     const pubState = ensureState(ctx.state);
     pubState.loading = true;
     pubState.error = "";
+    pubState.publicationsError = "";
     renderFront(ctx);
-    try {
-      const [candidatesResponse, publicationsResponse] = await Promise.all([
-        ctx.api(buildCandidatesQuery(pubState)),
-        ctx.api("/api/shop/publications?status=draft&limit=50").catch(() => null)
-      ]);
+
+    const candidatesSettled = ctx.api(buildCandidatesQuery(pubState))
+      .then((data) => ({ ok: true, data }))
+      .catch((error) => ({ ok: false, error }));
+    const publicationsSettled = ctx.api("/api/shop/publications?status=draft&limit=50")
+      .then((data) => ({ ok: true, data }))
+      .catch((error) => ({ ok: false, error }));
+
+    const [candidatesResult, publicationsResult] = await Promise.all([
+      candidatesSettled,
+      publicationsSettled
+    ]);
+
+    const publicationsLoad = resolvePublicationsLoad(publicationsResult);
+    pubState.publications = publicationsLoad.status === "success"
+      ? ctx.toArray(publicationsLoad.items)
+      : [];
+    pubState.publicationsError = publicationsLoad.errorMessage || "";
+
+    if (candidatesResult.ok) {
+      const candidatesResponse = candidatesResult.data || {};
       pubState.items = ctx.toArray(candidatesResponse.items);
       pubState.total = Number(candidatesResponse.total || pubState.items.length || 0);
       pubState.stats = candidatesResponse.stats || null;
       pubState.publicationLayer = candidatesResponse.publication_layer
-        || publicationsResponse?.publication_layer
+        || publicationsLoad.publicationLayer
         || null;
       pubState.schemaReady = Boolean(candidatesResponse.schema_ready);
       pubState.pilotJsonActive = Boolean(candidatesResponse.pilot_json_active);
       pubState.publicCatalogEnabled = Boolean(candidatesResponse.public_catalog_enabled);
-      pubState.publications = ctx.toArray(publicationsResponse?.items);
+      pubState.error = "";
       bootstrapDraftFocus(pubState);
       pubState.page = 1;
       if (!pubState.selectedKey && pubState.items.length) {
@@ -490,17 +577,24 @@
           pubState.selectedKey = pubState.items.length ? rowKey(pubState.items[0]) : "";
         }
       }
-    } catch (error) {
-      pubState.error = error.message || "Falha ao carregar candidatos/publicações shop.";
+    } else {
+      const candidatesError = candidatesResult.error;
+      pubState.error = (candidatesError && candidatesError.message)
+        || "Falha ao carregar candidatos PDV.";
       pubState.items = [];
-      pubState.publications = [];
       pubState.total = 0;
       pubState.stats = null;
-      pubState.publicationLayer = null;
-    } finally {
-      pubState.loading = false;
-      renderFront(ctx);
+      // Drafts SQL permanecem independentes: layer pode vir de publications se sucesso.
+      pubState.publicationLayer = publicationsLoad.publicationLayer || null;
+      if (publicationsLoad.status === "success") {
+        pubState.schemaReady = Boolean(publicationsResult.data?.schema_ready);
+        pubState.pilotJsonActive = Boolean(publicationsResult.data?.pilot_json_active);
+        pubState.publicCatalogEnabled = Boolean(publicationsResult.data?.public_catalog_enabled);
+      }
     }
+
+    pubState.loading = false;
+    renderFront(ctx);
   }
 
   function handleClick(event, ctx) {
@@ -577,6 +671,17 @@
     renderFront: () => renderFront(getContext()),
     loadCandidates: () => loadCandidates(getContext()),
     handleClick: (event) => handleClick(event, getContext()),
-    handleSubmit: (event) => handleSubmit(event, getContext())
+    handleSubmit: (event) => handleSubmit(event, getContext()),
+    isValidPublicationsPayload,
+    resolvePublicationsLoad,
+    resolveDraftStripKind
   };
-}(window));
+}(typeof window !== "undefined" ? window : null));
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    isValidPublicationsPayload,
+    resolvePublicationsLoad,
+    resolveDraftStripKind
+  };
+}
