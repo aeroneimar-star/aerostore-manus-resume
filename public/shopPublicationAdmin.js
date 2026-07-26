@@ -8,6 +8,26 @@ function isValidPublicationsPayload(payload) {
   return Boolean(payload && typeof payload === "object" && Array.isArray(payload.items));
 }
 
+/** Item estruturalmente válido para a faixa SQL (objeto plano; editorial pode faltar). */
+function isStructurallyValidPublicationItem(item) {
+  return Boolean(item) && typeof item === "object" && !Array.isArray(item);
+}
+
+function normalizePublicationItems(items) {
+  const raw = Array.isArray(items) ? items : [];
+  const accepted = [];
+  let rejected = 0;
+  for (let index = 0; index < raw.length; index += 1) {
+    const item = raw[index];
+    if (isStructurallyValidPublicationItem(item)) {
+      accepted.push(item);
+    } else {
+      rejected += 1;
+    }
+  }
+  return { accepted, rejected, rawCount: raw.length };
+}
+
 function resolvePublicationsLoad(result = {}) {
   if (!result || result.ok !== true) {
     const raw = result && result.error;
@@ -29,9 +49,19 @@ function resolvePublicationsLoad(result = {}) {
       publicationLayer: null
     };
   }
+  const normalized = normalizePublicationItems(result.data.items);
+  // Coleção declarada, mas só com entradas incompatíveis → erro de contrato.
+  if (normalized.rawCount > 0 && normalized.accepted.length === 0 && normalized.rejected > 0) {
+    return {
+      status: "error",
+      items: [],
+      errorMessage: "Resposta inválida ao carregar drafts SQL.",
+      publicationLayer: null
+    };
+  }
   return {
     status: "success",
-    items: result.data.items,
+    items: normalized.accepted,
     errorMessage: "",
     publicationLayer: result.data.publication_layer || null
   };
@@ -41,13 +71,21 @@ function resolveDraftStripKind(pubState = {}, toArrayFn) {
   const toArray = typeof toArrayFn === "function"
     ? toArrayFn
     : (value) => (Array.isArray(value) ? value : []);
+  // Prioridade: loading → error → schema_absent → drafts → empty.
+  // Retry pendente nunca deve renderizar empty falso.
+  if (pubState.loading) {
+    return "loading";
+  }
   if (pubState.publicationsError) {
     return "error";
   }
   if (!pubState.schemaReady) {
     return "schema_absent";
   }
-  const drafts = toArray(pubState.publications).filter((item) => String(item.status || "").trim() === "draft");
+  const drafts = toArray(pubState.publications).filter((item) => (
+    isStructurallyValidPublicationItem(item)
+    && String(item.status || "").trim() === "draft"
+  ));
   if (!drafts.length) {
     return "empty";
   }
@@ -377,6 +415,13 @@ function resolveDraftStripKind(pubState = {}, toArrayFn) {
 
   function buildDraftStrip(pubState, ctx) {
     const kind = resolveDraftStripKind(pubState, ctx.toArray);
+    if (kind === "loading") {
+      return `
+        <div class="shop-pub-draft-strip shop-pub-draft-strip--empty">
+          <strong>Carregando drafts SQL...</strong>
+          <span>Consultando shop_product_publications.</span>
+        </div>`;
+    }
     if (kind === "error") {
       return `
         <div class="shop-pub-draft-strip shop-pub-draft-strip--empty">
@@ -391,7 +436,9 @@ function resolveDraftStripKind(pubState = {}, toArrayFn) {
           <span>Os drafts SQL só aparecem depois da migration/seed (já aplicados na VPS 2.9C).</span>
         </div>`;
     }
-    const drafts = ctx.toArray(pubState.publications).filter((item) => item.status === "draft");
+    const drafts = ctx.toArray(pubState.publications).filter((item) => (
+      isStructurallyValidPublicationItem(item) && item.status === "draft"
+    ));
     if (kind === "empty") {
       return `
         <div class="shop-pub-draft-strip shop-pub-draft-strip--empty">
@@ -673,6 +720,8 @@ function resolveDraftStripKind(pubState = {}, toArrayFn) {
     handleClick: (event) => handleClick(event, getContext()),
     handleSubmit: (event) => handleSubmit(event, getContext()),
     isValidPublicationsPayload,
+    isStructurallyValidPublicationItem,
+    normalizePublicationItems,
     resolvePublicationsLoad,
     resolveDraftStripKind
   };
@@ -681,6 +730,8 @@ function resolveDraftStripKind(pubState = {}, toArrayFn) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     isValidPublicationsPayload,
+    isStructurallyValidPublicationItem,
+    normalizePublicationItems,
     resolvePublicationsLoad,
     resolveDraftStripKind
   };
