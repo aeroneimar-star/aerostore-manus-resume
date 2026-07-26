@@ -1,7 +1,5 @@
 "use strict";
 
-process.env.SHOP_PUBLIC_CATALOG_ENABLED = "true";
-
 const assert = require("assert");
 const http = require("http");
 const express = require("express");
@@ -25,6 +23,20 @@ const {
 } = require("../modules/b2c/catalog/b2cCatalogService");
 
 const passThroughRateLimit = (req, res, next) => next();
+
+async function withCatalogEnabled(value, callback) {
+  const previous = process.env.SHOP_PUBLIC_CATALOG_ENABLED;
+  process.env.SHOP_PUBLIC_CATALOG_ENABLED = value;
+  try {
+    return await callback();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.SHOP_PUBLIC_CATALOG_ENABLED;
+    } else {
+      process.env.SHOP_PUBLIC_CATALOG_ENABLED = previous;
+    }
+  }
+}
 
 function request(port, path, options = {}) {
   return new Promise((resolve, reject) => {
@@ -93,6 +105,15 @@ function assertError(response, status, code) {
   assert.ok(!response.body.includes("node:internal"));
   assert.ok(!response.body.includes("C:\\"));
   assert.ok(!response.body.toLowerCase().includes("sqlite"));
+}
+
+function assertCatalogDisabled(response, pilotSlug) {
+  assertError(response, 404, "CATALOG_DISABLED");
+  assert.strictEqual(response.json?.data, undefined);
+  assert.ok(!Object.hasOwn(response.json || {}, "items"));
+  assert.ok(!Object.hasOwn(response.json || {}, "filters"));
+  assert.ok(!Object.hasOwn(response.json || {}, "product"));
+  assert.ok(!response.body.includes(pilotSlug));
 }
 
 function assertUniqueBySlug(items, label) {
@@ -165,6 +186,14 @@ async function testProductionRoutesAndLegacyParity() {
     assertError(await request(port, "/b2c/v1/catalog?limit=abc"), 400, "INVALID_LIMIT");
     assertError(await request(port, "/b2c/v1/catalog?color=azul"), 400, "INVALID_FILTER");
     assertError(await request(port, "/b2c/v1/catalog?featured=talvez"), 400, "INVALID_FILTER");
+    assertError(await request(port, "/b2c/v1/catalog?featured=TRUE"), 400, "INVALID_FILTER");
+    assertError(await request(port, "/b2c/v1/catalog?featured=1"), 400, "INVALID_FILTER");
+    assertError(await request(port, "/b2c/v1/catalog?featured="), 400, "INVALID_FILTER");
+    assertError(
+      await request(port, "/b2c/v1/catalog?featured=true&featured=false"),
+      400,
+      "INVALID_FILTER"
+    );
 
     const category = legacyFilters.categories[0]?.slug;
     assert.ok(category, "categoria piloto esperada");
@@ -176,9 +205,34 @@ async function testProductionRoutesAndLegacyParity() {
     assert.strictEqual(missingCategory.status, 200);
     assert.deepStrictEqual(missingCategory.json.data.items, []);
 
-    const featured = await request(port, "/b2c/v1/catalog?featured=true");
-    assert.strictEqual(featured.status, 200);
-    assert.ok(featured.json.data.items.every((item) => item.featured === true));
+    const allFeaturedStates = await request(port, "/b2c/v1/catalog?limit=48");
+    const featuredTrue = await request(port, "/b2c/v1/catalog?featured=true&limit=48");
+    const featuredFalse = await request(port, "/b2c/v1/catalog?featured=false&limit=48");
+    assert.strictEqual(allFeaturedStates.status, 200);
+    assert.strictEqual(featuredTrue.status, 200);
+    assert.strictEqual(featuredFalse.status, 200);
+    assert.ok(allFeaturedStates.json.data.items.some((item) => item.featured === true));
+    assert.ok(allFeaturedStates.json.data.items.some((item) => item.featured === false));
+    assert.ok(featuredTrue.json.data.items.every((item) => item.featured === true));
+    assert.ok(featuredFalse.json.data.items.every((item) => item.featured === false));
+
+    const allSlugs = new Set(allFeaturedStates.json.data.items.map((item) => item.slug));
+    const trueSlugs = new Set(featuredTrue.json.data.items.map((item) => item.slug));
+    const falseSlugs = new Set(featuredFalse.json.data.items.map((item) => item.slug));
+    assert.ok([...trueSlugs].every((slug) => !falseSlugs.has(slug)));
+    assert.deepStrictEqual(new Set([...trueSlugs, ...falseSlugs]), allSlugs);
+    assert.strictEqual(featuredTrue.json.data.pagination.total, trueSlugs.size);
+    assert.strictEqual(featuredFalse.json.data.pagination.total, falseSlugs.size);
+
+    const pagedFalse = await request(port, "/b2c/v1/catalog?featured=false&limit=2&page=2");
+    assert.strictEqual(pagedFalse.status, 200);
+    assert.strictEqual(pagedFalse.json.data.items.length, 2);
+    assert.ok(pagedFalse.json.data.items.every((item) => item.featured === false));
+    assert.strictEqual(pagedFalse.json.data.pagination.total, falseSlugs.size);
+    assert.strictEqual(
+      pagedFalse.json.data.pagination.total_pages,
+      Math.max(1, Math.ceil(falseSlugs.size / 2))
+    );
 
     const filters = await request(port, "/b2c/v1/catalog/filters");
     assert.strictEqual(filters.status, 200);
@@ -243,76 +297,71 @@ async function testControlledFailures() {
     getProductBySlug: () => null
   };
 
-  const disabledService = createB2cCatalogService({
-    source: baseSource,
-    isCatalogEnabled: () => false
-  });
-  await withServer(createPublicApp({ service: disabledService }), async (port) => {
-    assertError(await request(port, "/b2c/v1/catalog"), 404, "CATALOG_DISABLED");
-    assertError(await request(port, "/b2c/v1/catalog/filters"), 404, "CATALOG_DISABLED");
-    assertError(await request(port, "/b2c/v1/products/qualquer"), 404, "CATALOG_DISABLED");
-  });
+  const pilotSlug = loadPilotPublications().publications
+    .find((item) => String(item.status || "").trim() === "published")?.public_slug;
+  assert.ok(pilotSlug, "slug piloto publicado esperado");
 
-  process.env.SHOP_PUBLIC_CATALOG_ENABLED = "false";
-  try {
+  await withCatalogEnabled("false", async () => {
     await withServer(createPublicApp(), async (port) => {
-      assertError(await request(port, "/b2c/v1/catalog"), 404, "CATALOG_DISABLED");
+      assertCatalogDisabled(await request(port, "/b2c/v1/catalog"), pilotSlug);
+      assertCatalogDisabled(await request(port, "/b2c/v1/catalog/filters"), pilotSlug);
+      assertCatalogDisabled(await request(port, `/b2c/v1/products/${pilotSlug}`), pilotSlug);
     });
-  } finally {
-    process.env.SHOP_PUBLIC_CATALOG_ENABLED = "true";
-  }
-
-  const unavailableService = createB2cCatalogService({
-    source: {},
-    isCatalogEnabled: () => true
   });
-  await withServer(createPublicApp({ service: unavailableService }), async (port) => {
-    assertError(
-      await request(port, "/b2c/v1/catalog"),
-      503,
-      "CATALOG_SOURCE_UNAVAILABLE"
+
+  await withCatalogEnabled("true", async () => {
+    const unavailableService = createB2cCatalogService({
+      source: {},
+      isCatalogEnabled: () => true
+    });
+    await withServer(createPublicApp({ service: unavailableService }), async (port) => {
+      assertError(
+        await request(port, "/b2c/v1/catalog"),
+        503,
+        "CATALOG_SOURCE_UNAVAILABLE"
+      );
+    });
+
+    const explicitUnavailableService = createB2cCatalogService({
+      source: {
+        ...baseSource,
+        listCatalog() {
+          const error = new Error("caminho interno que não pode vazar");
+          error.code = "CATALOG_SOURCE_UNAVAILABLE";
+          throw error;
+        }
+      },
+      isCatalogEnabled: () => true
+    });
+    await withServer(createPublicApp({ service: explicitUnavailableService }), async (port) => {
+      const response = await request(port, "/b2c/v1/catalog");
+      assertError(response, 503, "CATALOG_SOURCE_UNAVAILABLE");
+      assert.ok(!response.body.includes("caminho interno"));
+    });
+
+    const internalErrorService = createB2cCatalogService({
+      source: {
+        ...baseSource,
+        listCatalog() {
+          throw new Error("stack e SQL privados");
+        }
+      },
+      isCatalogEnabled: () => true
+    });
+    await withServer(createPublicApp({ service: internalErrorService }), async (port) => {
+      const response = await request(port, "/b2c/v1/catalog");
+      assertError(response, 500, "INTERNAL_ERROR");
+      assert.ok(!response.body.includes("stack e SQL privados"));
+    });
+
+    assert.throws(
+      () => createB2cCatalogService({
+        source: baseSource,
+        isCatalogEnabled: () => true
+      }).getProductBySlug(""),
+      (error) => error instanceof B2cCatalogError && error.code === "INVALID_FILTER"
     );
   });
-
-  const explicitUnavailableService = createB2cCatalogService({
-    source: {
-      ...baseSource,
-      listCatalog() {
-        const error = new Error("caminho interno que não pode vazar");
-        error.code = "CATALOG_SOURCE_UNAVAILABLE";
-        throw error;
-      }
-    },
-    isCatalogEnabled: () => true
-  });
-  await withServer(createPublicApp({ service: explicitUnavailableService }), async (port) => {
-    const response = await request(port, "/b2c/v1/catalog");
-    assertError(response, 503, "CATALOG_SOURCE_UNAVAILABLE");
-    assert.ok(!response.body.includes("caminho interno"));
-  });
-
-  const internalErrorService = createB2cCatalogService({
-    source: {
-      ...baseSource,
-      listCatalog() {
-        throw new Error("stack e SQL privados");
-      }
-    },
-    isCatalogEnabled: () => true
-  });
-  await withServer(createPublicApp({ service: internalErrorService }), async (port) => {
-    const response = await request(port, "/b2c/v1/catalog");
-    assertError(response, 500, "INTERNAL_ERROR");
-    assert.ok(!response.body.includes("stack e SQL privados"));
-  });
-
-  assert.throws(
-    () => createB2cCatalogService({
-      source: baseSource,
-      isCatalogEnabled: () => true
-    }).getProductBySlug(""),
-    (error) => error instanceof B2cCatalogError && error.code === "INVALID_FILTER"
-  );
 }
 
 function testRecursiveSecurityGuard() {
@@ -335,7 +384,7 @@ function testRecursiveSecurityGuard() {
 
 async function main() {
   testRecursiveSecurityGuard();
-  await testProductionRoutesAndLegacyParity();
+  await withCatalogEnabled("true", testProductionRoutesAndLegacyParity);
   await testControlledFailures();
   console.log("B2C_CATALOG_V1_CONTRACT_READONLY_OK");
 }

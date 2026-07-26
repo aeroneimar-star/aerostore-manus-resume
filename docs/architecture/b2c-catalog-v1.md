@@ -54,6 +54,9 @@ Enquanto `SHOP_PUBLIC_CATALOG_ENABLED` estiver desabilitada, as três rotas
 retornam `404 CATALOG_DISABLED`. O mount permanece presente para que ativar o
 catálogo não exija mudar o contrato ou registrar novas rotas.
 
+O gate é aplicado antes da leitura da fonte: catálogo, filtros e produto por slug
+retornam o mesmo erro, sem expor itens, filtros, produto ou dados do piloto.
+
 ## 5. Parâmetros
 
 ### `GET /b2c/v1/catalog`
@@ -63,7 +66,9 @@ catálogo não exija mudar o contrato ou registrar novas rotas.
 | `page` | inteiro, mínimo 1, padrão 1 |
 | `limit` | inteiro, mínimo 1, padrão 24, máximo 48 |
 | `category` | slug público ASCII com hífens |
-| `featured` | `true` ou `false` |
+| `featured` ausente | todos os produtos publicados |
+| `featured=true` | somente produtos publicados destacados |
+| `featured=false` | somente produtos publicados não destacados |
 
 O limite 48 e o padrão 24 vêm de `modules/shop/config/shop-settings.json`.
 
@@ -73,6 +78,10 @@ listagem. Aceitá-los sem efeito criaria um contrato falso.
 
 Categoria inexistente e página acima da última são resultados vazios legítimos,
 não erros.
+
+Quando `featured` está presente, o filtro B2C é aplicado sobre o conjunto
+publicado completo antes da paginação. `total` e `total_pages` refletem o conjunto
+filtrado. A semântica legada de `/public-api` não é alterada.
 
 ## 6. DTOs
 

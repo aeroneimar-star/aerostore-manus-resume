@@ -99,7 +99,7 @@ function normalizeCatalogParams(query = {}, limits = {}) {
     if (Array.isArray(query.featured)) {
       throw new B2cCatalogError("INVALID_FILTER", { filter: "featured" });
     }
-    const featured = String(query.featured).trim().toLowerCase();
+    const featured = String(query.featured).trim();
     if (!["true", "false"].includes(featured)) {
       throw new B2cCatalogError("INVALID_FILTER", { filter: "featured" });
     }
@@ -159,7 +159,41 @@ function createB2cCatalogService(options = {}) {
   function listCatalog(query = {}) {
     ensureCatalogEnabled();
     const params = normalizeCatalogParams(query, { defaultLimit, maxLimit });
-    return toB2cCatalogResponse(callSource("listCatalog", params));
+    if (params.featured === undefined) {
+      return toB2cCatalogResponse(callSource("listCatalog", params));
+    }
+
+    const sourceParams = {
+      page: 1,
+      limit: maxLimit
+    };
+    if (params.category) {
+      sourceParams.category = params.category;
+    }
+
+    const firstPage = callSource("listCatalog", sourceParams);
+    const allItems = Array.isArray(firstPage?.items) ? [...firstPage.items] : [];
+    const sourceTotalPages = Math.max(1, Number(firstPage?.total_pages || 1));
+    for (let page = 2; page <= sourceTotalPages; page += 1) {
+      const nextPage = callSource("listCatalog", { ...sourceParams, page });
+      if (Array.isArray(nextPage?.items)) {
+        allItems.push(...nextPage.items);
+      }
+    }
+
+    const expectedFeatured = params.featured === "true";
+    const filteredItems = allItems.filter((item) => Boolean(item?.featured) === expectedFeatured);
+    const total = filteredItems.length;
+    const totalPages = Math.max(1, Math.ceil(total / params.limit));
+    const offset = (params.page - 1) * params.limit;
+    return toB2cCatalogResponse({
+      ...firstPage,
+      page: params.page,
+      limit: params.limit,
+      total,
+      total_pages: totalPages,
+      items: filteredItems.slice(offset, offset + params.limit)
+    });
   }
 
   function getFilters() {
