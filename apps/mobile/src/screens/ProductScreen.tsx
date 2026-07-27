@@ -96,17 +96,31 @@ export function ProductScreen({
           showsHorizontalScrollIndicator={false}
           accessibilityLabel={`Galeria de ${product.title}`}
           contentContainerStyle={styles.gallery}>
-          {product.images.map((item) => (
-            <Image
-              key={`${item.url}-${item.sort_order ?? 0}`}
+          {product.images.length > 0 ? (
+            product.images.map((item) => (
+              <Image
+                key={`${item.url}-${item.sort_order ?? 0}`}
+                accessible
+                accessibilityLabel={item.alt ?? product.title}
+                source={{ uri: item.url }}
+                contentFit="cover"
+                transition={240}
+                style={[styles.image, { width: imageWidth }]}
+              />
+            ))
+          ) : (
+            <View
               accessible
-              accessibilityLabel={item.alt ?? product.title}
-              source={{ uri: item.url }}
-              contentFit="cover"
-              transition={240}
-              style={[styles.image, { width: imageWidth }]}
-            />
-          ))}
+              accessibilityRole="image"
+              accessibilityLabel="Imagem do produto indisponível"
+              style={[styles.image, styles.imagePlaceholder, { width: imageWidth }]}>
+              <Text
+                maxFontSizeMultiplier={1.6}
+                style={styles.imagePlaceholderText}>
+                Imagem indisponível
+              </Text>
+            </View>
+          )}
         </ScrollView>
 
         <View style={styles.details}>
@@ -226,6 +240,20 @@ const styles = StyleSheet.create({
     aspectRatio: 0.82,
     backgroundColor: '#24231F',
     borderRadius: theme.radii.lg,
+  },
+  imagePlaceholder: {
+    alignItems: 'center',
+    borderColor: '#34332F',
+    borderWidth: 1,
+    justifyContent: 'center',
+    padding: theme.spacing.lg,
+  },
+  imagePlaceholderText: {
+    color: theme.colors.stone,
+    fontFamily: theme.typography.body,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
   },
   details: {
     maxWidth: 680,
