@@ -10,6 +10,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import {
+  useWebFocusVisible,
+  webFocusVisibleStyle,
+} from '@/accessibility/useWebFocusVisible';
 import type { CatalogClient } from '@/catalog/CatalogClient';
 import { toCatalogClientError } from '@/catalog/CatalogClientError';
 import { catalogClient } from '@/catalog/client';
@@ -32,6 +36,7 @@ interface CatalogScreenProps {
 
 export function CatalogScreen({ client = catalogClient }: CatalogScreenProps) {
   const router = useRouter();
+  const loadMoreFocus = useWebFocusVisible();
   const { width } = useWindowDimensions();
   const [items, setItems] = useState<B2cCatalogItem[]>([]);
   const [categories, setCategories] = useState<B2cCatalogFilter[]>([]);
@@ -186,10 +191,13 @@ export function CatalogScreen({ client = catalogClient }: CatalogScreenProps) {
                   accessibilityState={{ busy: loadingMore }}
                   accessibilityLabel={loadingMore ? 'Carregando mais peças' : 'Carregar mais peças'}
                   disabled={loadingMore}
+                  onBlur={loadMoreFocus.onBlur}
+                  onFocus={loadMoreFocus.onFocus}
                   onPress={loadMore}
                   style={({ pressed }) => [
                     styles.loadMore,
                     pressed && styles.loadMorePressed,
+                    loadMoreFocus.focusVisible && webFocusVisibleStyle,
                   ]}>
                   <Text style={styles.loadMoreText}>
                     {loadingMore ? 'Carregando…' : 'Carregar mais'}

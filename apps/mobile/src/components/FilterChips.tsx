@@ -1,5 +1,9 @@
 import { Pressable, ScrollView, StyleSheet, Text } from 'react-native';
 
+import {
+  useWebFocusVisible,
+  webFocusVisibleStyle,
+} from '@/accessibility/useWebFocusVisible';
 import { theme } from '@/theme';
 
 export interface ChipOption<T extends string | boolean | undefined> {
@@ -13,6 +17,45 @@ interface FilterChipsProps<T extends string | boolean | undefined> {
   options: ChipOption<T>[];
   value: T;
   onChange: (value: T) => void;
+}
+
+interface FilterChipProps<T extends string | boolean | undefined> {
+  active: boolean;
+  onChange: (value: T) => void;
+  option: ChipOption<T>;
+}
+
+function FilterChip<T extends string | boolean | undefined>({
+  active,
+  onChange,
+  option,
+}: FilterChipProps<T>) {
+  const focus = useWebFocusVisible();
+
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ checked: active }}
+      accessibilityLabel={
+        option.count === undefined
+          ? option.label
+          : `${option.label}, ${option.count} produtos`
+      }
+      onBlur={focus.onBlur}
+      onFocus={focus.onFocus}
+      onPress={() => onChange(option.value)}
+      style={({ pressed }) => [
+        styles.chip,
+        active && styles.chipActive,
+        pressed && styles.chipPressed,
+        focus.focusVisible && webFocusVisibleStyle,
+      ]}>
+      <Text style={[styles.label, active && styles.labelActive]}>
+        {option.label}
+        {option.count === undefined ? '' : `  ${option.count}`}
+      </Text>
+    </Pressable>
+  );
 }
 
 export function FilterChips<T extends string | boolean | undefined>({
@@ -31,26 +74,12 @@ export function FilterChips<T extends string | boolean | undefined>({
       {options.map((option) => {
         const active = option.value === value;
         return (
-          <Pressable
+          <FilterChip
             key={`${String(option.value)}-${option.label}`}
-            accessibilityRole="radio"
-            accessibilityState={{ checked: active }}
-            accessibilityLabel={
-              option.count === undefined
-                ? option.label
-                : `${option.label}, ${option.count} produtos`
-            }
-            onPress={() => onChange(option.value)}
-            style={({ pressed }) => [
-              styles.chip,
-              active && styles.chipActive,
-              pressed && styles.chipPressed,
-            ]}>
-            <Text style={[styles.label, active && styles.labelActive]}>
-              {option.label}
-              {option.count === undefined ? '' : `  ${option.count}`}
-            </Text>
-          </Pressable>
+            active={active}
+            onChange={onChange}
+            option={option}
+          />
         );
       })}
     </ScrollView>

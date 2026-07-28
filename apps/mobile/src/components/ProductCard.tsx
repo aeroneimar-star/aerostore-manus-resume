@@ -1,6 +1,10 @@
 import { Image } from 'expo-image';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import {
+  useWebFocusVisible,
+  webFocusVisibleStyle,
+} from '@/accessibility/useWebFocusVisible';
 import type { B2cCatalogItem } from '@/catalog/contracts';
 import { theme } from '@/theme';
 
@@ -13,16 +17,21 @@ interface ProductCardProps {
 }
 
 export function ProductCard({ item, width, onPress }: ProductCardProps) {
+  const focus = useWebFocusVisible();
+
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Ver produto ${item.title}`}
       accessibilityHint="Abre os detalhes editoriais do produto"
+      onBlur={focus.onBlur}
+      onFocus={focus.onFocus}
       onPress={onPress}
       style={({ pressed }) => [
         styles.card,
         { width },
         pressed && styles.cardPressed,
+        focus.focusVisible && webFocusVisibleStyle,
       ]}>
       <View style={styles.imageFrame}>
         {item.primary_image ? (

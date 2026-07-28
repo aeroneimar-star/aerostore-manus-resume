@@ -6,6 +6,10 @@ import {
   View,
 } from 'react-native';
 
+import {
+  useWebFocusVisible,
+  webFocusVisibleStyle,
+} from '@/accessibility/useWebFocusVisible';
 import { theme } from '@/theme';
 
 type StateKind = 'loading' | 'empty' | 'error' | 'disabled' | 'not_found';
@@ -44,6 +48,7 @@ interface ScreenStateProps {
 }
 
 export function ScreenState({ kind, onRetry }: ScreenStateProps) {
+  const retryFocus = useWebFocusVisible();
   const copy = content[kind];
   const loading = kind === 'loading';
   return (
@@ -73,8 +78,14 @@ export function ScreenState({ kind, onRetry }: ScreenStateProps) {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Tentar carregar novamente"
+          onBlur={retryFocus.onBlur}
+          onFocus={retryFocus.onFocus}
           onPress={onRetry}
-          style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
+          style={({ pressed }) => [
+            styles.button,
+            pressed && styles.buttonPressed,
+            retryFocus.focusVisible && webFocusVisibleStyle,
+          ]}>
           <Text style={styles.buttonText}>Tentar novamente</Text>
         </Pressable>
       ) : null}
