@@ -29,8 +29,10 @@ test("59k calibration limits are explicit and do not change general defaults", (
   assert.deepEqual(calibrated, SYNTHETIC_59143_LIMITS);
   assert.equal(calibrated.maxRecords, 59143);
   assert.equal(calibrated.maxConflicts, 5000);
+  assert.equal(calibrated.maxOperations, 400000);
   assert.equal(calibrated.maxApproxMemoryBytes, 128 * 1024 * 1024);
   assert.equal(defaults.maxRecords, 5000);
+  assert.equal(defaults.maxOperations, 200000);
   assert.throws(
     () => resolveCalibrationLimits("unknown"),
     /CUSTOMER_MASTER_CALIBRATION_LIMIT_PROFILE_INVALID/

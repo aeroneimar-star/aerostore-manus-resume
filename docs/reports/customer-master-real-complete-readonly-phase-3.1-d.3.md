@@ -11,7 +11,7 @@ consumidor, rede, VPS ou exposição de PII.
 
 ## Integridade e volume
 
-- `quick_check`: `ok`, em 484 ms;
+- `quick_check`: `ok`, em 12.122 ms;
 - `contacts`: 36.502;
 - `crm_contacts`: 22.641;
 - total: 59.143;
@@ -60,23 +60,26 @@ Endereços:
 ## Execução e limite
 
 - status: `INCOMPLETE`;
-- causa concreta: `OPERATION_LIMIT_EXCEEDED`;
-- operações observadas: 280.199;
-- limite: 200.000;
-- duração total: 43.556 ms;
+- causa concreta: `CONFLICT_LIMIT_EXCEEDED`;
+- conflitos observados: 34.051;
+- limite de conflitos: 5.000;
+- limite de operações aplicado: 400.000;
+- o guard de operações foi ultrapassado com sucesso; o resultado incompleto não
+  emitiu o total exato, mas ele não excedeu 400.000;
+- duração total: 54.944 ms;
 - páginas de fonte: 238, derivadas de 147 páginas de `contacts` e 91 de
   `crm_contacts`, todas com página máxima de 250;
 - SELECTs registrados: 250;
 - PRAGMAs de leitura: 12;
 - SQL bloqueado/tentado: 0;
-- memória inicial do processo: 14.798.848 bytes;
-- pico de memória do processo: 800.477.184 bytes;
-- última amostra de memória: 149.000.192 bytes;
+- memória inicial do processo: 9.162.752 bytes;
+- pico de memória do processo: 799.559.680 bytes;
+- última amostra de memória: 553.525.248 bytes;
 - fingerprint: `null`.
 
-O limite foi atingido depois da leitura e normalização das fontes e antes da
-formação final de candidatos, conflitos e clusters. Por isso permanecem não
-avaliados:
+O limite foi atingido depois da leitura, normalização, formação do grafo e
+detecção agregada de conflitos, mas antes da emissão do relatório completo. Por
+isso permanecem não avaliados no resultado sanitizado:
 
 - candidatos isolados;
 - candidatos seguros;
@@ -106,12 +109,19 @@ tentada ou executada.
 
 ## Correção mínima
 
-O relatório agregado passou a preservar o código de erro sanitizado do dry-run
-incompleto. Nenhum limite, regra de identidade ou comportamento operacional foi
-alterado.
+Somente `maxOperations` do perfil opt-in `synthetic-59143-v1` foi elevado de
+200.000 para 400.000. O default geral permanece em 200.000. Cluster máximo 50,
+máximo de 5.000 conflitos, memória estrutural de 128 MiB e todas as regras de
+identidade permaneceram inalterados.
+
+O bloqueio anterior de operações foi corrigido, mas o volume real de conflitos
+superou o limite explicitamente preservado. Nenhum novo aumento foi aplicado.
 
 ## Veredito
 
 `BLOQUEADO_LIMITES_REAIS`
+
+Bloqueio concreto: `CONFLICT_LIMIT_EXCEEDED` — 34.051 observados para limite de
+5.000.
 
 Não classificado como `READY_FOR_CONTROLLED_BACKFILL`.

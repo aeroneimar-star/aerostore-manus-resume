@@ -9,6 +9,7 @@ const SYNTHETIC_59143_LIMITS = Object.freeze({
   ...DEFAULT_LIMITS,
   maxRecords: 59143,
   maxConflicts: 5000,
+  maxOperations: 400000,
   maxApproxMemoryBytes: 128 * 1024 * 1024
 });
 
