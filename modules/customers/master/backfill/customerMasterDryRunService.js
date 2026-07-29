@@ -28,10 +28,10 @@ const {
   REPORT_VERSION,
   buildCounts,
   sanitizeCandidate,
-  sanitizeConflict
+  buildConflictSummary
 } = require("./customerMasterDryRunReport");
 
-const DRY_RUN_SERVICE_VERSION = "customer-master-backfill-dry-run/v1";
+const DRY_RUN_SERVICE_VERSION = "customer-master-backfill-dry-run/v2";
 const ELIGIBILITY_RULE_VERSION = "customer-master-simulated-eligibility/v1";
 const DEFAULT_LIMITS = Object.freeze({
   pageSize: 250,
@@ -48,7 +48,6 @@ const SAFE_ERROR_CODES = new Set([
   "SOURCE_RECORD_LIMIT_EXCEEDED",
   "SOURCE_COUNT_CHANGED_DURING_READ",
   "CLUSTER_SIZE_LIMIT_EXCEEDED",
-  "CONFLICT_LIMIT_EXCEEDED",
   "CONFLICT_EVIDENCE_LIMIT_EXCEEDED",
   "OPERATION_LIMIT_EXCEEDED",
   "APPROX_MEMORY_LIMIT_EXCEEDED",
@@ -244,13 +243,8 @@ async function runCustomerMasterBackfillDryRun(reader, options = {}) {
         limit: limits.maxOperations
       });
     }
-    if (conflicts.length > limits.maxConflicts) {
-      return incompleteReport("CONFLICT_LIMIT_EXCEEDED", startedAt, {
-        observed: conflicts.length,
-        limit: limits.maxConflicts
-      });
-    }
-    const oversizedEvidence = conflicts.find((conflict) => (
+    const conflictSummary = buildConflictSummary(conflicts, limits.maxConflicts);
+    const oversizedEvidence = conflictSummary.sampledConflicts.find((conflict) => (
       Buffer.byteLength(stableStringify(conflict.evidence), "utf8") > limits.maxEvidenceBytes
     ));
     if (oversizedEvidence) {
@@ -275,7 +269,7 @@ async function runCustomerMasterBackfillDryRun(reader, options = {}) {
       eligibilityRuleVersion: ELIGIBILITY_RULE_VERSION,
       sources: records,
       candidates,
-      conflicts,
+      conflictSummary,
       counts
     });
     const report = {
@@ -299,10 +293,17 @@ async function runCustomerMasterBackfillDryRun(reader, options = {}) {
       },
       counts,
       candidates: candidates.map((candidate) => sanitizeCandidate(candidate, records)),
-      conflicts: conflicts.map(sanitizeConflict),
+      totalConflicts: conflictSummary.totalConflicts,
+      conflictCountsByType: conflictSummary.conflictCountsByType,
+      conflictCountsBySeverity: conflictSummary.conflictCountsBySeverity,
+      blockingConflictCount: conflictSummary.blockingConflictCount,
+      sampledConflictCount: conflictSummary.sampledConflictCount,
+      conflictsTruncated: conflictSummary.conflictsTruncated,
+      conflicts: conflictSummary.sampledConflicts,
       warnings: Array.from(new Set([
         "DRY_RUN_ONLY_NO_WRITE_PATH_EXISTS",
         "PHONE_OWNERSHIP_AND_RECYCLED_PHONE_ARE_NOT_VERIFIED",
+        ...(conflictSummary.conflictsTruncated ? ["CONFLICT_SAMPLE_TRUNCATED"] : []),
         ...detection.warnings,
         ...records.flatMap((record) => record.warnings)
       ])).sort(),

@@ -4,7 +4,7 @@ const {
   stableStringify
 } = require("./customerMasterSourceModel");
 
-const REPORT_VERSION = "customer-master-backfill-dry-run-report/v1";
+const REPORT_VERSION = "customer-master-backfill-dry-run-report/v2";
 
 function increment(target, key, amount = 1) {
   target[key] = Number(target[key] || 0) + amount;
@@ -124,10 +124,8 @@ function sanitizeConflict(conflict) {
   return {
     type: conflict.type,
     severity: conflict.severity,
-    participants: [...conflict.participants],
     evidence: {
       identifierType: conflict.evidence.identifierType,
-      maskedValues: [...conflict.evidence.maskedValues],
       participantCount: conflict.evidence.participantCount,
       sourceTypes: [...conflict.evidence.sourceTypes]
     },
@@ -137,9 +135,40 @@ function sanitizeConflict(conflict) {
   };
 }
 
+function buildConflictSummary(conflicts, sampleLimit) {
+  const conflictCountsByType = {};
+  const conflictCountsBySeverity = {};
+  let blockingConflictCount = 0;
+  conflicts.forEach((conflict) => {
+    increment(conflictCountsByType, conflict.type);
+    increment(conflictCountsBySeverity, conflict.severity);
+    if (conflict.blocking) blockingConflictCount += 1;
+  });
+  const deterministic = [...conflicts].sort((a, b) => (
+    a.type.localeCompare(b.type)
+    || a.severity.localeCompare(b.severity)
+    || Number(b.blocking) - Number(a.blocking)
+    || a.reasonCodes.join("|").localeCompare(b.reasonCodes.join("|"))
+    || a.participants.join("|").localeCompare(b.participants.join("|"))
+  ));
+  const sampledConflicts = deterministic
+    .slice(0, Math.max(0, Number(sampleLimit || 0)))
+    .map(sanitizeConflict);
+  return {
+    totalConflicts: conflicts.length,
+    conflictCountsByType,
+    conflictCountsBySeverity,
+    blockingConflictCount,
+    sampledConflictCount: sampledConflicts.length,
+    conflictsTruncated: sampledConflicts.length < conflicts.length,
+    sampledConflicts
+  };
+}
+
 module.exports = {
   REPORT_VERSION,
   buildCounts,
   sanitizeCandidate,
-  sanitizeConflict
+  sanitizeConflict,
+  buildConflictSummary
 };

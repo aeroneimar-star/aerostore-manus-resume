@@ -414,6 +414,48 @@ test("open blocking conflicts and multiple eligible phone owners never become re
   assert.equal(JSON.stringify(report).includes("\"SIMULATED_ELIGIBLE\""), false);
 });
 
+test("all conflicts are counted while the deterministic sample contains no participants or PII", async () => {
+  const rows = [1, 2, 3].map((index) => rawContact(index, {
+    phone: "11900000001",
+    email: `private-${index}@example.invalid`
+  }));
+  const first = await runCustomerMasterBackfillDryRun(createArrayReader(rows), {
+    codeVersion: "conflict-summary-v1",
+    limits: { maxConflicts: 1 }
+  });
+  const second = await runCustomerMasterBackfillDryRun(createArrayReader([...rows].reverse()), {
+    codeVersion: "conflict-summary-v1",
+    limits: { maxConflicts: 2 }
+  });
+  const sameSample = await runCustomerMasterBackfillDryRun(createArrayReader([...rows].reverse()), {
+    codeVersion: "conflict-summary-v1",
+    limits: { maxConflicts: 1 }
+  });
+
+  assert.equal(first.status, "COMPLETE");
+  assert.equal(first.totalConflicts, 3);
+  assert.deepEqual(first.conflictCountsByType, {
+    MULTIPLE_ELIGIBLE_CUSTOMERS: 1,
+    PHONE_DUPLICATE: 1,
+    PHONE_SHARED: 1
+  });
+  assert.deepEqual(first.conflictCountsBySeverity, {
+    HIGH: 1,
+    CRITICAL: 2
+  });
+  assert.equal(first.blockingConflictCount, 3);
+  assert.equal(first.sampledConflictCount, 1);
+  assert.equal(first.conflictsTruncated, true);
+  assert.equal(first.conflicts.length, 1);
+  assert.equal(second.sampledConflictCount, 2);
+  assert.equal(second.conflictsTruncated, true);
+  assert.equal(second.fingerprint, first.fingerprint);
+  assert.deepEqual(sameSample.conflicts, first.conflicts);
+
+  const sample = JSON.stringify(first.conflicts);
+  assert.doesNotMatch(sample, /participants|maskedValues|contacts:|crm_contacts:|private-/);
+});
+
 test("legacy DTO and 3.1-C shadow result are compared in memory without operational decisions", async () => {
   const report = await runCustomerMasterBackfillDryRun(
     createArrayReader([rawContact(1, { document: "", email: "" })]),

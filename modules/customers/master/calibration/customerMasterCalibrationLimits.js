@@ -8,7 +8,7 @@ const SYNTHETIC_59143_LIMIT_PROFILE = "synthetic-59143-v1";
 const SYNTHETIC_59143_LIMITS = Object.freeze({
   ...DEFAULT_LIMITS,
   maxRecords: 59143,
-  maxConflicts: 5000,
+  maxConflicts: 2000,
   maxOperations: 400000,
   maxApproxMemoryBytes: 128 * 1024 * 1024
 });

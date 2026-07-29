@@ -6,6 +6,9 @@ const {
   runCustomerMasterBackfillDryRun
 } = require("../backfill/customerMasterDryRunService");
 const {
+  buildDryRunFingerprint
+} = require("../backfill/customerMasterDryRunFingerprint");
+const {
   buildSourceRecord
 } = require("../backfill/customerMasterSourceModel");
 const {
@@ -51,6 +54,48 @@ test("fingerprint includes semantic versions and sanitized decisions, not runtim
   assert.notEqual(v1.fingerprint, v2.fingerprint);
   assert.equal(typeof v1.performance.durationMs, "number");
   assert.equal(JSON.stringify(v1).includes("executionTimestamp"), false);
+});
+
+test("fingerprint uses aggregate conflict totals and ignores sample contents and order", () => {
+  const input = {
+    codeVersion: "aggregate-conflicts-v1",
+    normalizationVersion: "normalization-v1",
+    candidateRuleVersion: "candidates-v1",
+    conflictRuleVersion: "conflicts-v1",
+    eligibilityRuleVersion: "eligibility-v1",
+    sources: [],
+    candidates: [],
+    counts: { sourceRows: 0 },
+    conflictSummary: {
+      totalConflicts: 3,
+      conflictCountsByType: { PHONE_SHARED: 1, PHONE_DUPLICATE: 2 },
+      conflictCountsBySeverity: { CRITICAL: 1, HIGH: 2 },
+      blockingConflictCount: 3,
+      sampledConflicts: [{ type: "PHONE_SHARED" }]
+    }
+  };
+  const sameAggregatesDifferentSample = {
+    ...input,
+    conflictSummary: {
+      ...input.conflictSummary,
+      sampledConflicts: [{ type: "PHONE_DUPLICATE" }, { type: "PHONE_SHARED" }]
+    }
+  };
+  const changedTotal = {
+    ...input,
+    conflictSummary: {
+      ...input.conflictSummary,
+      totalConflicts: 4,
+      conflictCountsByType: { PHONE_SHARED: 2, PHONE_DUPLICATE: 2 },
+      blockingConflictCount: 4
+    }
+  };
+
+  assert.equal(
+    buildDryRunFingerprint(sameAggregatesDifferentSample),
+    buildDryRunFingerprint(input)
+  );
+  assert.notEqual(buildDryRunFingerprint(changedTotal), buildDryRunFingerprint(input));
 });
 
 test("source hash is stable, normalized and changes only for relevant modeled data", () => {

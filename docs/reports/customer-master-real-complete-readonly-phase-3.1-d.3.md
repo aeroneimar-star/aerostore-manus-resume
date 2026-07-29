@@ -11,7 +11,7 @@ consumidor, rede, VPS ou exposição de PII.
 
 ## Integridade e volume
 
-- `quick_check`: `ok`, em 12.122 ms;
+- `quick_check`: `ok`, em 4.593 ms;
 - `contacts`: 36.502;
 - `crm_contacts`: 22.641;
 - total: 59.143;
@@ -59,36 +59,75 @@ Endereços:
 
 ## Execução e limite
 
-- status: `INCOMPLETE`;
-- causa concreta: `CONFLICT_LIMIT_EXCEEDED`;
-- conflitos observados: 34.051;
-- limite de conflitos: 5.000;
+- status: `COMPLETE`;
+- erros: 0;
 - limite de operações aplicado: 400.000;
-- o guard de operações foi ultrapassado com sucesso; o resultado incompleto não
-  emitiu o total exato, mas ele não excedeu 400.000;
-- duração total: 54.944 ms;
-- páginas de fonte: 238, derivadas de 147 páginas de `contacts` e 91 de
-  `crm_contacts`, todas com página máxima de 250;
+- operações: 280.199;
+- comparações: 29.928;
+- duração do dry-run: 30.132 ms;
+- páginas de fonte: 238, sendo 147 de `contacts` e 91 de `crm_contacts`;
 - SELECTs registrados: 250;
 - PRAGMAs de leitura: 12;
 - SQL bloqueado/tentado: 0;
-- memória inicial do processo: 9.162.752 bytes;
-- pico de memória do processo: 799.559.680 bytes;
-- última amostra de memória: 553.525.248 bytes;
-- fingerprint: `null`.
+- memória estrutural aproximada: 101.628.790 bytes;
+- primeira amostra de memória do processo: 108.625.920 bytes;
+- pico de memória do processo: 802.373.632 bytes;
+- última amostra de memória: 375.525.376 bytes;
+- fingerprint v2:
+  `43ea26f9e217c5c92b94367da16197d13f1b06f9043d3f06367bd6f600353a8c`.
 
-O limite foi atingido depois da leitura, normalização, formação do grafo e
-detecção agregada de conflitos, mas antes da emissão do relatório completo. Por
-isso permanecem não avaliados no resultado sanitizado:
+## Candidatos e clusters
 
-- candidatos isolados;
-- candidatos seguros;
-- revisão necessária;
-- conflitos por tipo;
-- maior cluster;
-- clusters bloqueados.
+- grupos candidatos: 47.928;
+- isolados: 6.066;
+- candidatos seguros: 4.670;
+- revisão necessária: 1.262;
+- candidatos conflitantes: 35.930;
+- maior cluster: 6;
+- clusters acima do limite 50: 0.
 
-Nenhum resultado parcial foi tratado como completo.
+Histograma:
+
+- tamanho 1: 37.992;
+- tamanho 2: 8.732;
+- tamanho 3: 1.140;
+- tamanho 4: 55;
+- tamanho 5: 7;
+- tamanho 6: 2.
+
+## Conflitos agregados
+
+- `totalConflicts`: 34.051;
+- `blockingConflictCount`: 20.986;
+- `sampledConflictCount`: 2.000;
+- `conflictsTruncated`: `true`.
+
+Contagem por tipo:
+
+- `CPF_DUPLICATE`: 6.157;
+- `CPF_INVALID`: 5.558;
+- `CPF_MISMATCH`: 57;
+- `DELETED_SOURCE`: 6;
+- `EMAIL_DUPLICATE`: 88;
+- `INACTIVE_SOURCE`: 74;
+- `MANUAL_REVIEW_REQUIRED`: 1.262;
+- `MULTIPLE_ELIGIBLE_CUSTOMERS`: 7.423;
+- `NAME_MISMATCH`: 277;
+- `PHONE_DUPLICATE`: 7.426;
+- `PHONE_MISMATCH`: 29;
+- `PHONE_SHARED`: 5.614;
+- `TRANSITIVE_MATCH_CONFLICT`: 80.
+
+Contagem por severidade:
+
+- `CRITICAL`: 13.174;
+- `HIGH`: 7.535;
+- `MEDIUM`: 13.254;
+- `LOW`: 88.
+
+A amostra é determinística, não participa do fingerprint e não contém
+participantes, IDs, valores mascarados ou PII. As contagens representam todos
+os 34.051 conflitos, sem truncamento agregado.
 
 ## Invariantes antes e depois
 
@@ -109,19 +148,19 @@ tentada ou executada.
 
 ## Correção mínima
 
-Somente `maxOperations` do perfil opt-in `synthetic-59143-v1` foi elevado de
-200.000 para 400.000. O default geral permanece em 200.000. Cluster máximo 50,
-máximo de 5.000 conflitos, memória estrutural de 128 MiB e todas as regras de
-identidade permaneceram inalterados.
+O total de conflitos deixou de ser motivo de aborto. Todos os conflitos são
+contados por tipo, severidade e bloqueio; somente a amostra detalhada é limitada
+a 2.000 itens sanitizados. O fingerprint v2 usa os totais agregados e versões,
+sem depender da amostra.
 
-O bloqueio anterior de operações foi corrigido, mas o volume real de conflitos
-superou o limite explicitamente preservado. Nenhum novo aumento foi aplicado.
+O perfil opt-in preserva 400.000 operações, cluster máximo 50 e memória
+estrutural de 128 MiB. Os defaults gerais e todas as regras de normalização,
+candidatos, conflitos e elegibilidade permanecem inalterados.
 
 ## Veredito
 
-`BLOQUEADO_LIMITES_REAIS`
+`CUSTOMER_MASTER_REAL_DRY_RUN_COMPLETE_OK`
 
-Bloqueio concreto: `CONFLICT_LIMIT_EXCEEDED` — 34.051 observados para limite de
-5.000.
+Classificação: `READY_FOR_CONTROLLED_BACKFILL`.
 
-Não classificado como `READY_FOR_CONTROLLED_BACKFILL`.
+Nenhum backfill persistente foi executado.

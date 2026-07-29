@@ -5,7 +5,7 @@ const {
   stableStringify
 } = require("./customerMasterSourceModel");
 
-const FINGERPRINT_VERSION = "customer-master-dry-run-fingerprint/v1";
+const FINGERPRINT_VERSION = "customer-master-dry-run-fingerprint/v2";
 
 function buildDryRunFingerprint(input = {}) {
   const payload = {
@@ -30,16 +30,12 @@ function buildDryRunFingerprint(input = {}) {
         simulatedStatus: candidate.simulatedEligibility?.simulatedStatus
       }))
       .sort((a, b) => a.id.localeCompare(b.id)),
-    conflicts: [...(input.conflicts || [])]
-      .map((conflict) => ({
-        type: conflict.type,
-        severity: conflict.severity,
-        participants: [...conflict.participants].sort(),
-        evidence: conflict.evidence,
-        reasonCodes: [...conflict.reasonCodes].sort(),
-        blocking: conflict.blocking
-      }))
-      .sort((a, b) => `${a.type}:${a.participants.join("|")}`.localeCompare(`${b.type}:${b.participants.join("|")}`)),
+    conflicts: {
+      totalConflicts: Number(input.conflictSummary?.totalConflicts || 0),
+      conflictCountsByType: { ...(input.conflictSummary?.conflictCountsByType || {}) },
+      conflictCountsBySeverity: { ...(input.conflictSummary?.conflictCountsBySeverity || {}) },
+      blockingConflictCount: Number(input.conflictSummary?.blockingConflictCount || 0)
+    },
     counts: input.counts
   };
   return crypto.createHash("sha256").update(stableStringify(payload)).digest("hex");

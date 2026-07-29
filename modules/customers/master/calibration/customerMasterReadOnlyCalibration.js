@@ -18,7 +18,7 @@ const {
   resolveCalibrationLimits
 } = require("./customerMasterCalibrationLimits");
 
-const CALIBRATION_VERSION = "customer-master-real-readonly-calibration/v1";
+const CALIBRATION_VERSION = "customer-master-real-readonly-calibration/v2";
 const MASTER_TABLES = Object.freeze([
   "customer_master_records",
   "customer_master_sources",
@@ -383,6 +383,13 @@ function aggregateCompletedReport(report, telemetry, timing) {
       normalizationObservationMs: telemetry.normalizationMs
     },
     fingerprint: report.fingerprint,
+    totalConflicts: report.totalConflicts,
+    conflictCountsByType: report.conflictCountsByType,
+    conflictCountsBySeverity: report.conflictCountsBySeverity,
+    blockingConflictCount: report.blockingConflictCount,
+    sampledConflictCount: report.sampledConflictCount,
+    conflictsTruncated: report.conflictsTruncated,
+    conflicts: report.conflicts || [],
     errors: report.errors || [],
     warnings: report.warnings
   };
