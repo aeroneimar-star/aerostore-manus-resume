@@ -383,6 +383,7 @@ function aggregateCompletedReport(report, telemetry, timing) {
       normalizationObservationMs: telemetry.normalizationMs
     },
     fingerprint: report.fingerprint,
+    errors: report.errors || [],
     warnings: report.warnings
   };
 }

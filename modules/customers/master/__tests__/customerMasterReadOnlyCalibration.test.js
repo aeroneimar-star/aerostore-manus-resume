@@ -196,6 +196,32 @@ test("limit excess aborts before paging and returns no fingerprint", async () =>
   }, { rows: 3 });
 });
 
+test("incomplete calibrated dry-run preserves only the sanitized concrete error", async () => {
+  await withSyntheticDatabase(async ({ directory, databasePath }) => {
+    const result = await runRealReadOnlyCalibration({
+      databasePath,
+      allowedRoots: [directory],
+      databaseLabel: "synthetic/data/<database>",
+      codeVersion: "synthetic-calibration-v1",
+      readOnly: true,
+      limits: {
+        maxRecords: 3,
+        maxApproxMemoryBytes: 1
+      }
+    });
+    assert.equal(result.status, "INCOMPLETE");
+    assert.equal(result.fingerprint, null);
+    assert.deepEqual(result.dryRun.errors, [{
+      code: "APPROX_MEMORY_LIMIT_EXCEEDED",
+      details: {
+        observed: result.dryRun.errors[0].details.observed,
+        limit: 1
+      }
+    }]);
+    assert.equal(result.dryRun.errors[0].details.observed > 1, true);
+  }, { rows: 3 });
+});
+
 test("CLI parser and errors remain explicit and sanitized", () => {
   assert.deepEqual(parseArgs([
     "--read-only",
