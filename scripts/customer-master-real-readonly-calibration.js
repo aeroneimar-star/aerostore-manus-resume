@@ -10,7 +10,13 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === "--read-only") values.readOnly = true;
-    else if (["--database", "--allowed-root", "--label", "--code-version"].includes(token)) {
+    else if ([
+      "--database",
+      "--allowed-root",
+      "--label",
+      "--code-version",
+      "--limit-profile"
+    ].includes(token)) {
       values[token.slice(2)] = argv[index + 1];
       index += 1;
     } else {
@@ -41,6 +47,7 @@ async function main() {
       allowedRoots: args["allowed-root"] ? [path.resolve(args["allowed-root"])] : [],
       databaseLabel: String(args.label || "authorized-local-database"),
       codeVersion: String(args["code-version"] || "LOCAL_UNCOMMITTED"),
+      limitProfile: args["limit-profile"],
       readOnly: args.readOnly === true
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

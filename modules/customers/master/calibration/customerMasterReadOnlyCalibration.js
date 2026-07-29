@@ -12,9 +12,11 @@ const {
   stableStringify
 } = require("../backfill/customerMasterSourceModel");
 const {
-  runCustomerMasterBackfillDryRun,
-  DEFAULT_LIMITS
+  runCustomerMasterBackfillDryRun
 } = require("../backfill/customerMasterDryRunService");
+const {
+  resolveCalibrationLimits
+} = require("./customerMasterCalibrationLimits");
 
 const CALIBRATION_VERSION = "customer-master-real-readonly-calibration/v1";
 const MASTER_TABLES = Object.freeze([
@@ -431,7 +433,7 @@ async function runRealReadOnlyCalibration(options = {}) {
     }
     const sourceStates = await readAggregatedSourceStates(database);
     const total = before.sourceCounts.contacts + before.sourceCounts.crm_contacts;
-    const limits = { ...DEFAULT_LIMITS, ...(options.limits || {}) };
+    const limits = resolveCalibrationLimits(options.limitProfile, options.limits);
     if (total > limits.maxRecords) {
       const after = await captureSnapshot(database, database.databasePath);
       const invariantsUnchanged = snapshotsMatch(before, after);
