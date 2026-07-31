@@ -99,6 +99,13 @@ const {
   getUnifiedCustomerRawById,
   findUnifiedCustomerDuplicateCandidates
 } = require("./modules/customers/customerUnifiedService");
+const {
+  createCustomerIdentityAdminRouter
+} = require("./modules/customers/master/admin/customerIdentityAdminRoutes");
+const {
+  getCustomerIdentityAdminSchemaStatus,
+  applyCustomerIdentityAdminSchema
+} = require("./modules/customers/master/admin/customerIdentityAdminSchema");
 const { getNotificationService, getNotificationDryRunDefault } = require("./src/notification/NotificationService");
 const { startCashbackReminderScheduler } = require("./src/notification/CashbackScheduler");
 const {
@@ -18794,6 +18801,14 @@ app.get("/api/admin/audit-logs", requirePermission("can_view_audit"), async (req
     res.status(500).json({ error: "Falha ao carregar auditoria operacional." });
   }
 });
+app.use(
+  "/api/admin/customer-identity-cases",
+  createCustomerIdentityAdminRouter({
+    dbApi: { run, get, all },
+    databasePath: dbPath,
+    requireAdmin
+  })
+);
 
 // Guards para rotas legadas: autenticar nao basta; cada familia sensivel precisa de permissao real.
 app.use("/api/dashboard", requireAnyPermission(["can_sell", "can_view_reports", "can_view_store_reports", "can_view_cashback", "can_view_campaigns"]));
@@ -27770,6 +27785,10 @@ process.on('unhandledRejection', (reason) => {
 
 initializeDatabase()
   .then(async () => {
+    const identityAdminSchema = await getCustomerIdentityAdminSchemaStatus({ get, all });
+    if (identityAdminSchema.tableExists) {
+      await applyCustomerIdentityAdminSchema({ run, get, all });
+    }
     await expireCashbacks();
     scheduleWarmupIncrement();
     startCashbackReminderScheduler({ dryRun: getNotificationDryRunDefault() });

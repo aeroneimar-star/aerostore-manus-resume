@@ -38,6 +38,40 @@ const state = {
       sale_id: ""
     }
   },
+  identityCasesAdmin: {
+    loading: false,
+    detailLoading: false,
+    actionLoading: false,
+    error: "",
+    concurrencyError: "",
+    rows: [],
+    selectedId: "",
+    detail: null,
+    counters: {
+      total: 0,
+      byPriority: {},
+      byStatus: {}
+    },
+    pagination: {
+      page: 1,
+      pageSize: 25,
+      total: 0,
+      pageCount: 1
+    },
+    filters: {
+      status: "",
+      priority: "",
+      blocking: "",
+      caseType: "",
+      composite: "",
+      minConflicts: "",
+      minMasters: "",
+      createdFrom: "",
+      createdTo: "",
+      reviewer: "",
+      search: ""
+    }
+  },
   storePublicContexts: {},
   storePublicContextsLoading: {},
   sellers: [],
@@ -1533,6 +1567,7 @@ const PATHNAME_SECTION_MAP = {
   "/usuarios": "users-admin",
   "/users": "users-admin",
   "/auditoria": "audit-logs",
+  "/admin/casos-identidade": "identity-cases-admin",
   "/whatsapp-crm": "whatsapp-crm",
   "/campanhas": "campaigns",
   "/cashback": "cashback",
@@ -1569,6 +1604,7 @@ const PATHNAME_SECTION_META = {
   login: { displaySection: "login", title: "Entrar" },
   "users-admin": { displaySection: "users-admin", title: "Usuarios e permissoes" },
   "audit-logs": { displaySection: "audit-logs", title: "Auditoria operacional" },
+  "identity-cases-admin": { displaySection: "identity-cases-admin", title: "Casos de identidade" },
   settings: { displaySection: "settings", title: "Configurações" },
   fiscal: { displaySection: "fiscal", title: "Fiscal" },
   "whatsapp-crm": { displaySection: "whatsapp-crm", title: "WhatsApp CRM" },
@@ -1634,6 +1670,7 @@ const OFFICIAL_ROUTE_SECTIONS = new Set([
   "fiscal",
   "users-admin",
   "audit-logs",
+  "identity-cases-admin",
   "shop-publication"
 ]);
 
@@ -1690,6 +1727,9 @@ function canAccessOfficialSection(sectionId = "") {
   }
   if (sectionId === "audit-logs") {
     return canViewAuditLogsPanel();
+  }
+  if (sectionId === "identity-cases-admin") {
+    return getCurrentRole() === "admin";
   }
   if (sectionId === "shop-publication") {
     return canViewShopPublicationPanel();
@@ -26118,6 +26158,11 @@ function renderOfficialRouteSection(sectionId = "") {
     });
     return;
   }
+  if (sectionId === "identity-cases-admin") {
+    renderIdentityCasesAdminFront();
+    loadIdentityCasesAdmin().catch(handleIdentityCasesAdminError);
+    return;
+  }
   if (sectionId === "shop-publication") {
     window.AeroStoreShopPublication?.renderFront?.();
     window.AeroStoreShopPublication?.loadCandidates?.().catch((error) => {
@@ -26133,6 +26178,397 @@ function renderOfficialRouteSection(sectionId = "") {
       });
     }
   }
+}
+
+function getIdentityCasesAdminContainer() {
+  return document.getElementById("identity-cases-admin-content");
+}
+
+function getIdentityCaseStatusLabel(value = "") {
+  return {
+    OPEN: "Aberto",
+    UNDER_REVIEW: "Em revisão",
+    RESOLVED: "Resolvido",
+    ARCHIVED: "Arquivado",
+    REOPENED: "Reaberto"
+  }[value] || value || "-";
+}
+
+function getIdentityCasePriorityLabel(value = "") {
+  return {
+    CRITICAL: "Crítica",
+    HIGH: "Alta",
+    MEDIUM: "Média",
+    LOW: "Baixa"
+  }[value] || value || "-";
+}
+
+function buildIdentityCasesAdminParams() {
+  const filters = state.identityCasesAdmin.filters || {};
+  const params = new URLSearchParams({
+    queue: "IDENTITY_ELIGIBILITY",
+    page: String(state.identityCasesAdmin.pagination.page || 1),
+    pageSize: String(state.identityCasesAdmin.pagination.pageSize || 25)
+  });
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== "" && value !== null && value !== undefined) params.set(key, String(value));
+  });
+  return params;
+}
+
+function handleIdentityCasesAdminError(error) {
+  const adminState = state.identityCasesAdmin;
+  adminState.loading = false;
+  adminState.detailLoading = false;
+  adminState.actionLoading = false;
+  if (Number(error?.status || 0) === 409) {
+    adminState.concurrencyError = "O caso mudou desde a última leitura. Os dados foram atualizados antes de uma nova ação.";
+    if (adminState.selectedId) {
+      openIdentityCaseAdmin(adminState.selectedId, { silent: true }).catch(() => {});
+    }
+  } else if (Number(error?.status || 0) === 403) {
+    adminState.error = "Acesso restrito: somente administradores podem consultar e operar esta fila.";
+  } else {
+    adminState.error = error?.message || "Falha ao carregar a fila administrativa.";
+  }
+  renderIdentityCasesAdminFront();
+  showFeedback(adminState.concurrencyError || adminState.error, "error");
+}
+
+async function loadIdentityCasesAdmin({ preserveDetail = true } = {}) {
+  if (getCurrentRole() !== "admin") {
+    state.identityCasesAdmin.error = "Acesso restrito: somente administradores podem consultar esta fila.";
+    renderIdentityCasesAdminFront();
+    return;
+  }
+  state.identityCasesAdmin.loading = true;
+  state.identityCasesAdmin.error = "";
+  state.identityCasesAdmin.concurrencyError = "";
+  renderIdentityCasesAdminFront();
+  const result = await api(`/api/admin/customer-identity-cases?${buildIdentityCasesAdminParams().toString()}`);
+  state.identityCasesAdmin.rows = toArray(result.rows);
+  state.identityCasesAdmin.pagination = result.pagination || state.identityCasesAdmin.pagination;
+  state.identityCasesAdmin.counters = result.counters || state.identityCasesAdmin.counters;
+  state.identityCasesAdmin.loading = false;
+  if (!preserveDetail) {
+    state.identityCasesAdmin.selectedId = "";
+    state.identityCasesAdmin.detail = null;
+  }
+  renderIdentityCasesAdminFront();
+}
+
+async function openIdentityCaseAdmin(caseId, { silent = false } = {}) {
+  const id = normalizeText(caseId || "");
+  if (!id) return;
+  state.identityCasesAdmin.selectedId = id;
+  state.identityCasesAdmin.detailLoading = true;
+  state.identityCasesAdmin.concurrencyError = "";
+  renderIdentityCasesAdminFront();
+  try {
+    const result = await api(`/api/admin/customer-identity-cases/${encodeURIComponent(id)}`);
+    state.identityCasesAdmin.detail = result.case || null;
+  } finally {
+    state.identityCasesAdmin.detailLoading = false;
+    renderIdentityCasesAdminFront();
+  }
+  if (!silent) {
+    document.querySelector(".identity-case-detail")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+async function runIdentityCaseAdminAction(action, form) {
+  const detail = state.identityCasesAdmin.detail;
+  if (!detail?.id || state.identityCasesAdmin.actionLoading) return;
+  const data = new FormData(form);
+  const reason = normalizeText(data.get("reason") || "");
+  const note = normalizeText(data.get("note") || "");
+  if (!reason) {
+    showFeedback("Informe o motivo administrativo antes de continuar.", "warning");
+    return;
+  }
+  if (action === "note" && !note) {
+    showFeedback("Escreva a observação administrativa.", "warning");
+    return;
+  }
+  const endpoint = {
+    start: "review/start",
+    release: "review/release",
+    note: "notes",
+    waiting: "review/waiting-information",
+    end: "review/end-without-resolution",
+    reopen: "reopen"
+  }[action];
+  if (!endpoint) return;
+  state.identityCasesAdmin.actionLoading = true;
+  state.identityCasesAdmin.error = "";
+  state.identityCasesAdmin.concurrencyError = "";
+  renderIdentityCasesAdminFront();
+  try {
+    const result = await api(
+      `/api/admin/customer-identity-cases/${encodeURIComponent(detail.id)}/${endpoint}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expectedVersion: Number(detail.reviewVersion || 0),
+          reason,
+          ...(action === "note" ? { note } : {})
+        })
+      }
+    );
+    state.identityCasesAdmin.detail = result.case || detail;
+    showFeedback("Ação administrativa registrada com auditoria.");
+    await loadIdentityCasesAdmin({ preserveDetail: true });
+  } finally {
+    state.identityCasesAdmin.actionLoading = false;
+    renderIdentityCasesAdminFront();
+  }
+}
+
+function applyIdentityCasesAdminFilters(form) {
+  const data = new FormData(form);
+  state.identityCasesAdmin.filters = {
+    status: normalizeText(data.get("status") || ""),
+    priority: normalizeText(data.get("priority") || ""),
+    blocking: normalizeText(data.get("blocking") || ""),
+    caseType: normalizeText(data.get("caseType") || ""),
+    composite: normalizeText(data.get("composite") || ""),
+    minConflicts: normalizeText(data.get("minConflicts") || ""),
+    minMasters: normalizeText(data.get("minMasters") || ""),
+    createdFrom: normalizeText(data.get("createdFrom") || ""),
+    createdTo: normalizeText(data.get("createdTo") || ""),
+    reviewer: normalizeText(data.get("reviewer") || ""),
+    search: normalizeText(data.get("search") || "")
+  };
+  state.identityCasesAdmin.pagination.page = 1;
+  loadIdentityCasesAdmin({ preserveDetail: true }).catch(handleIdentityCasesAdminError);
+}
+
+function resetIdentityCasesAdminFilters() {
+  state.identityCasesAdmin.filters = {
+    status: "",
+    priority: "",
+    blocking: "",
+    caseType: "",
+    composite: "",
+    minConflicts: "",
+    minMasters: "",
+    createdFrom: "",
+    createdTo: "",
+    reviewer: "",
+    search: ""
+  };
+  state.identityCasesAdmin.pagination.page = 1;
+  loadIdentityCasesAdmin({ preserveDetail: true }).catch(handleIdentityCasesAdminError);
+}
+
+function buildIdentityCaseActiveFilters() {
+  const labels = {
+    status: "Status",
+    priority: "Prioridade",
+    blocking: "Bloqueante",
+    caseType: "Tipo",
+    composite: "Composição",
+    minConflicts: "Mín. conflitos",
+    minMasters: "Mín. mestres",
+    createdFrom: "Criado desde",
+    createdTo: "Criado até",
+    reviewer: "Responsável",
+    search: "ID técnico"
+  };
+  const active = Object.entries(state.identityCasesAdmin.filters || {}).filter(([, value]) => value !== "");
+  if (!active.length) return `<span class="identity-cases-filter-empty">Nenhum filtro adicional ativo.</span>`;
+  return active.map(([key, value]) => (
+    `<span class="identity-cases-filter-chip">${escapeHtml(labels[key] || key)}: ${escapeHtml(String(value))}</span>`
+  )).join("");
+}
+
+function renderIdentityCaseEvidence(detail) {
+  const participants = toArray(detail?.participants);
+  if (!participants.length) {
+    return `<div class="identity-cases-empty compact"><strong>Sem participantes sanitizados</strong><span>Os vínculos técnicos permanecem preservados no banco.</span></div>`;
+  }
+  return participants.map((participant) => `
+    <article class="identity-case-participant">
+      <div class="identity-case-participant-head">
+        <strong>${escapeHtml(participant.reference || "Participante")}</strong>
+        <span>${toArray(participant.origins).length} origem(ns)</span>
+      </div>
+      <div class="identity-case-identifiers">
+        ${toArray(participant.identifiers).length ? toArray(participant.identifiers).map((identifier) => `
+          <span>
+            <small>${escapeHtml(identifier.type || "IDENTIFICADOR")}</small>
+            <strong>${escapeHtml(identifier.value || "Dado protegido")}</strong>
+          </span>
+        `).join("") : `<span><small>Identificadores</small><strong>Dados protegidos</strong></span>`}
+      </div>
+      <div class="identity-case-origins">
+        ${toArray(participant.origins).map((origin) => `
+          <span>${escapeHtml(origin.reference || "Origem")} · ${escapeHtml(origin.sourceType || "-")} · ${escapeHtml(origin.status || "-")}</span>
+        `).join("")}
+      </div>
+    </article>
+  `).join("");
+}
+
+function renderIdentityCaseAdminDetail() {
+  const adminState = state.identityCasesAdmin;
+  if (adminState.detailLoading) {
+    return `<div class="identity-cases-empty"><strong>Carregando detalhe...</strong><span>Montando evidências sanitizadas e histórico.</span></div>`;
+  }
+  const detail = adminState.detail;
+  if (!detail || detail.id !== adminState.selectedId) {
+    return `<div class="identity-cases-empty"><strong>Selecione um caso</strong><span>O detalhe abre sem perder filtros ou paginação.</span></div>`;
+  }
+  const currentUserId = String(state.currentUser?.id || "");
+  const reviewedByAnother = detail.status === "UNDER_REVIEW"
+    && detail.reviewerUserId
+    && String(detail.reviewerUserId) !== currentUserId;
+  const canStart = ["OPEN", "REOPENED"].includes(detail.status);
+  const canOperateReview = detail.status === "UNDER_REVIEW" && !reviewedByAnother;
+  const canAddNote = !reviewedByAnother;
+  const canReopen = ["RESOLVED", "ARCHIVED"].includes(detail.status);
+  const summary = detail.summary || {};
+  const conflictTypes = toArray(detail.evidenceGroups);
+  return `
+    <article class="identity-case-detail">
+      <div class="identity-case-detail-head">
+        <div>
+          <p class="eyebrow">Detalhe sanitizado</p>
+          <h3>${escapeHtml(detail.id)}</h3>
+          <span>${detail.composite ? "Caso composto" : "Caso individual"} · versão ${escapeHtml(String(detail.reviewVersion || 0))}</span>
+        </div>
+        <div class="identity-case-badges">
+          <span class="identity-priority ${escapeHtml(String(detail.priority || "").toLowerCase())}">${escapeHtml(getIdentityCasePriorityLabel(detail.priority))}</span>
+          <span class="identity-status">${escapeHtml(getIdentityCaseStatusLabel(detail.status))}</span>
+          ${detail.blocking ? `<span class="identity-blocking">Bloqueante</span>` : ""}
+        </div>
+      </div>
+      ${reviewedByAnother ? `<div class="identity-cases-alert warning"><strong>Revisão assumida por outro administrador</strong><span>Responsável técnico: ADMIN-${escapeHtml(detail.reviewerUserId)}. Atualize antes de tentar uma ação.</span></div>` : ""}
+      ${adminState.concurrencyError ? `<div class="identity-cases-alert danger">${escapeHtml(adminState.concurrencyError)}</div>` : ""}
+      <div class="identity-case-facts">
+        <div><span>Conflitos</span><strong>${escapeHtml(String(detail.conflictCount || 0))}</strong></div>
+        <div><span>Mestres</span><strong>${escapeHtml(String(detail.masterCount || 0))}</strong></div>
+        <div><span>Origens</span><strong>${escapeHtml(String(detail.sourceCount || 0))}</strong></div>
+        <div><span>Responsável</span><strong>${detail.reviewerUserId ? `ADMIN-${escapeHtml(detail.reviewerUserId)}` : "Não atribuído"}</strong></div>
+        <div><span>Início da revisão</span><strong>${escapeHtml(detail.reviewStartedAt ? formatDateTimeBR(detail.reviewStartedAt) : "-")}</strong></div>
+        <div><span>Sinal operacional</span><strong>${escapeHtml(detail.operationalFlag || "Sem sinal")}</strong></div>
+      </div>
+      <section class="identity-case-detail-section">
+        <div class="identity-case-section-title"><div><span>Leitura do caso</span><strong>Tipos e severidades participantes</strong></div></div>
+        <div class="identity-case-type-grid">
+          ${conflictTypes.map((item) => `<span><strong>${escapeHtml(item.conflictType || "-")}</strong><small>${escapeHtml(item.severity || "-")} · ${escapeHtml(String(item.count || 0))}</small></span>`).join("")}
+        </div>
+        <p class="identity-case-summary">Fila ${escapeHtml(summary.queueType || detail.queueType)}. ${detail.composite ? "Evidências repetidas foram agrupadas no mesmo bucket determinístico." : "Caso conservador com uma única evidência."} Nenhuma regra de identidade ou elegibilidade é alterada nesta tela.</p>
+      </section>
+      <section class="identity-case-detail-section">
+        <div class="identity-case-section-title"><div><span>Evidências agrupadas</span><strong>Participantes e origens com mascaramento no servidor</strong></div></div>
+        <div class="identity-case-participants">${renderIdentityCaseEvidence(detail)}</div>
+      </section>
+      <form class="identity-case-action-panel" data-identity-case-action-form>
+        <div>
+          <label>Motivo administrativo<textarea name="reason" rows="2" maxlength="500" placeholder="Contexto obrigatório para a auditoria"></textarea></label>
+          <label>Observação<textarea name="note" rows="2" maxlength="500" placeholder="Usada somente ao registrar uma observação"></textarea></label>
+        </div>
+        <div class="identity-case-action-buttons">
+          ${canStart ? `<button class="primary-button" type="submit" data-identity-case-action="start">Iniciar revisão</button>` : ""}
+          ${canOperateReview ? `<button class="secondary-button" type="submit" data-identity-case-action="waiting">Aguardar informação</button>` : ""}
+          ${canAddNote ? `<button class="ghost-button" type="submit" data-identity-case-action="note">Registrar observação</button>` : ""}
+          ${canOperateReview ? `<button class="ghost-button" type="submit" data-identity-case-action="end">Encerrar sem resolução</button>` : ""}
+          ${detail.status === "UNDER_REVIEW" ? `<button class="ghost-button" type="submit" data-identity-case-action="release">Devolver para OPEN</button>` : ""}
+          ${canReopen ? `<button class="secondary-button" type="submit" data-identity-case-action="reopen">Reabrir caso</button>` : ""}
+        </div>
+        ${adminState.actionLoading ? `<span class="identity-case-action-progress">Registrando ação e evento imutável...</span>` : ""}
+      </form>
+      <section class="identity-case-detail-section">
+        <div class="identity-case-section-title"><div><span>Auditoria</span><strong>Histórico de eventos do caso</strong></div></div>
+        <div class="identity-case-timeline">
+          ${toArray(detail.events).length ? toArray(detail.events).map((event) => `
+            <article>
+              <span></span>
+              <div>
+                <strong>${escapeHtml(event.eventType || "-")}</strong>
+                <small>${escapeHtml(formatDateTimeBR(event.createdAt))} · ${event.actorUserId ? `ADMIN-${escapeHtml(event.actorUserId)}` : "Sistema"}</small>
+                <p>${escapeHtml(event.reason || "Sem observação adicional.")}</p>
+              </div>
+            </article>
+          `).join("") : `<div class="identity-cases-empty compact">Nenhum evento disponível.</div>`}
+        </div>
+      </section>
+    </article>
+  `;
+}
+
+function renderIdentityCasesAdminFront() {
+  const container = getIdentityCasesAdminContainer();
+  if (!container) return;
+  const adminState = state.identityCasesAdmin;
+  const filters = adminState.filters || {};
+  const pagination = adminState.pagination || {};
+  const counters = adminState.counters || {};
+  const byPriority = counters.byPriority || {};
+  const byStatus = counters.byStatus || {};
+  if (getCurrentRole() !== "admin") {
+    container.innerHTML = `<div class="identity-cases-empty"><strong>Sem autorização</strong><span>Somente ADMIN pode consultar ou operar casos de identidade.</span></div>`;
+    return;
+  }
+  container.innerHTML = `
+    <section class="identity-cases-shell">
+      <header class="identity-cases-hero">
+        <div>
+          <p class="eyebrow">Governança de identidade</p>
+          <h3>Fila administrativa de revisão</h3>
+          <p>Priorize evidências bloqueantes sem alterar clientes mestres, conflitos ou elegibilidade.</p>
+        </div>
+        <div class="identity-cases-hero-total"><span>IDENTITY_ELIGIBILITY</span><strong>${escapeHtml(String(counters.total || 0))}</strong><small>casos persistidos</small></div>
+      </header>
+      <div class="identity-cases-kpis">
+        ${["CRITICAL", "HIGH", "MEDIUM", "LOW"].map((priority) => `<article><span>${escapeHtml(getIdentityCasePriorityLabel(priority))}</span><strong>${escapeHtml(String(byPriority[priority] || 0))}</strong></article>`).join("")}
+        <article><span>Em revisão</span><strong>${escapeHtml(String(byStatus.UNDER_REVIEW || 0))}</strong></article>
+        <article><span>Reabertos</span><strong>${escapeHtml(String(byStatus.REOPENED || 0))}</strong></article>
+      </div>
+      <form class="identity-cases-filters" data-identity-cases-filters>
+        <label>ID técnico<input name="search" value="${escapeHtml(filters.search || "")}" placeholder="cicase:..." /></label>
+        <label>Status<select name="status"><option value="">Todos</option>${["OPEN", "UNDER_REVIEW", "REOPENED", "RESOLVED", "ARCHIVED"].map((value) => `<option value="${value}"${filters.status === value ? " selected" : ""}>${escapeHtml(getIdentityCaseStatusLabel(value))}</option>`).join("")}</select></label>
+        <label>Prioridade<select name="priority"><option value="">Todas</option>${["CRITICAL", "HIGH", "MEDIUM", "LOW"].map((value) => `<option value="${value}"${filters.priority === value ? " selected" : ""}>${escapeHtml(getIdentityCasePriorityLabel(value))}</option>`).join("")}</select></label>
+        <label>Bloqueante<select name="blocking"><option value="">Todos</option><option value="1"${filters.blocking === "1" ? " selected" : ""}>Sim</option><option value="0"${filters.blocking === "0" ? " selected" : ""}>Não</option></select></label>
+        <label>Composição<select name="composite"><option value="">Todos</option><option value="1"${filters.composite === "1" ? " selected" : ""}>Composto</option><option value="0"${filters.composite === "0" ? " selected" : ""}>Individual</option></select></label>
+        <label>Tipo do caso<input name="caseType" value="${escapeHtml(filters.caseType || "")}" placeholder="IDENTITY_ELIGIBILITY" /></label>
+        <label>Mín. conflitos<input name="minConflicts" type="number" min="0" value="${escapeHtml(filters.minConflicts || "")}" /></label>
+        <label>Mín. mestres<input name="minMasters" type="number" min="0" value="${escapeHtml(filters.minMasters || "")}" /></label>
+        <label>Criado desde<input name="createdFrom" type="date" value="${escapeHtml(filters.createdFrom || "")}" /></label>
+        <label>Criado até<input name="createdTo" type="date" value="${escapeHtml(filters.createdTo || "")}" /></label>
+        <label>Responsável<input name="reviewer" value="${escapeHtml(filters.reviewer || "")}" placeholder="ID técnico do admin" /></label>
+        <div class="identity-cases-filter-actions"><button class="primary-button" type="submit">Aplicar filtros</button><button class="ghost-button" type="button" data-identity-cases-reset>Limpar</button></div>
+      </form>
+      <div class="identity-cases-active-filters">${buildIdentityCaseActiveFilters()}</div>
+      ${adminState.error ? `<div class="identity-cases-alert danger">${escapeHtml(adminState.error)}</div>` : ""}
+      <div class="identity-cases-workspace">
+        <article class="identity-cases-list-panel">
+          <div class="identity-cases-list-head">
+            <div><strong>${adminState.loading ? "Carregando..." : `${pagination.total || 0} caso(s)`}</strong><span>Página ${pagination.page || 1} de ${pagination.pageCount || 1}</span></div>
+            <button class="ghost-button small" type="button" data-identity-cases-refresh>Atualizar</button>
+          </div>
+          <div class="identity-cases-list">
+            ${adminState.loading ? `<div class="identity-cases-empty"><strong>Carregando fila...</strong><span>Buscando somente a página atual.</span></div>` : toArray(adminState.rows).length ? toArray(adminState.rows).map((row) => `
+              <button class="identity-case-row${row.id === adminState.selectedId ? " active" : ""}" type="button" data-identity-case-open="${escapeHtml(row.id)}">
+                <span class="identity-case-row-priority ${escapeHtml(String(row.priority || "").toLowerCase())}"></span>
+                <span class="identity-case-row-main"><strong>${escapeHtml(row.id)}</strong><small>${escapeHtml(row.caseType || "-")} · ${row.composite ? "composto" : "individual"}</small></span>
+                <span class="identity-case-row-counts"><strong>${escapeHtml(String(row.conflictCount || 0))}</strong><small>conflitos</small></span>
+                <span class="identity-case-row-status">${escapeHtml(getIdentityCaseStatusLabel(row.status))}</span>
+              </button>
+            `).join("") : `<div class="identity-cases-empty"><strong>Nenhum caso encontrado</strong><span>Altere ou limpe os filtros ativos.</span></div>`}
+          </div>
+          <div class="identity-cases-pagination">
+            <button class="ghost-button" type="button" data-identity-cases-page="${Math.max(1, Number(pagination.page || 1) - 1)}" ${Number(pagination.page || 1) <= 1 ? "disabled" : ""}>Anterior</button>
+            <span>${escapeHtml(String(pagination.page || 1))} / ${escapeHtml(String(pagination.pageCount || 1))}</span>
+            <button class="ghost-button" type="button" data-identity-cases-page="${Math.min(Number(pagination.pageCount || 1), Number(pagination.page || 1) + 1)}" ${Number(pagination.page || 1) >= Number(pagination.pageCount || 1) ? "disabled" : ""}>Próxima</button>
+          </div>
+        </article>
+        ${renderIdentityCaseAdminDetail()}
+      </div>
+    </section>
+  `;
 }
 
 function getAuditLogsContainer() {
@@ -26439,6 +26875,7 @@ function getSidebarMenuGroups() {
         title: "Admin / Configurações",
         items: [
           { label: "Configurações operacionais", section: "settings" },
+          { label: "Casos de identidade", route: "/admin/casos-identidade" },
           { label: "Fiscal", section: "fiscal", route: "/fiscal", visible: () => hasPermission("can_view_fiscal") || hasPermission("can_manage_fiscal") || hasPermission("can_view_audit") }
         ]
       }
@@ -30765,6 +31202,7 @@ function setActiveSection(sectionId) {
     fiscal: "Fiscal",
     "access-denied": "Acesso restrito",
     "audit-logs": "Auditoria operacional",
+    "identity-cases-admin": "Casos de identidade",
     login: "Entrar",
     "whatsapp-crm": "WhatsApp CRM",
     aerointel: "AEROINTEL",
@@ -35244,6 +35682,30 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const identityCaseOpen = event.target.closest("[data-identity-case-open]");
+  if (identityCaseOpen) {
+    openIdentityCaseAdmin(identityCaseOpen.dataset.identityCaseOpen || "")
+      .catch(handleIdentityCasesAdminError);
+    return;
+  }
+
+  const identityCasesPage = event.target.closest("[data-identity-cases-page]");
+  if (identityCasesPage && !identityCasesPage.disabled) {
+    state.identityCasesAdmin.pagination.page = Number(identityCasesPage.dataset.identityCasesPage || 1);
+    loadIdentityCasesAdmin({ preserveDetail: true }).catch(handleIdentityCasesAdminError);
+    return;
+  }
+
+  if (event.target.closest("[data-identity-cases-refresh]")) {
+    loadIdentityCasesAdmin({ preserveDetail: true }).catch(handleIdentityCasesAdminError);
+    return;
+  }
+
+  if (event.target.closest("[data-identity-cases-reset]")) {
+    resetIdentityCasesAdminFilters();
+    return;
+  }
+
   const usersAdminSelect = event.target.closest("[data-users-admin-select]");
   if (usersAdminSelect) {
     state.usersAdmin.selectedId = usersAdminSelect.dataset.usersAdminSelect || "";
@@ -37097,6 +37559,21 @@ function handlePdvSaleExchangeCreditApplyCapture(event) {
 }
 
 function handleDocumentSubmit(event) {
+  const identityCasesFilters = event.target.closest("[data-identity-cases-filters]");
+  if (identityCasesFilters) {
+    event.preventDefault();
+    applyIdentityCasesAdminFilters(identityCasesFilters);
+    return;
+  }
+
+  const identityCaseActionForm = event.target.closest("[data-identity-case-action-form]");
+  if (identityCaseActionForm) {
+    event.preventDefault();
+    const action = event.submitter?.dataset?.identityCaseAction || "";
+    runIdentityCaseAdminAction(action, identityCaseActionForm).catch(handleIdentityCasesAdminError);
+    return;
+  }
+
   const usersAdminForm = event.target.closest("[data-users-admin-form]");
   if (usersAdminForm) {
     event.preventDefault();
