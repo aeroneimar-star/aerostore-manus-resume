@@ -22,6 +22,7 @@ function createAppPhoneOtpService(options = {}) {
   const now = options.now || (() => new Date());
   const randomCode = options.randomCode || (() => String(crypto.randomInt(0, 1000000)).padStart(6, "0"));
   const audit = options.recordAudit || (() => undefined);
+  const completeLogin = options.completeLogin || null;
   const limits = { expiry: 300, cooldown: 60, fallbackDelay: 30, maxAttempts: 5, maxResends: 3, perPhone: 5, perIp: 20, perDevice: 10, window: 3600, ...(options.limits || {}) };
 
   const hmac = (value) => crypto.createHmac("sha256", pepper).update(String(value)).digest("hex");
@@ -186,6 +187,10 @@ function createAppPhoneOtpService(options = {}) {
     const changed=await db.run("UPDATE app_phone_verifications SET status='CONSUMED',consumed_at=?,updated_at=? WHERE id=? AND status IN ('SENT','PENDING')",[iso(now()),iso(now()),row.id]);
     if(Number(changed.changes)!==1) throw new AppPhoneOtpError("OTP_INVALID_OR_EXPIRED",400);
     const access=await fulfill(row); await emit("OTP_VERIFIED",row,{accessStatus:access.accessStatus});
+    if (completeLogin) {
+      const tokens = await completeLogin({ accountId: access.accountId, deviceId: input.deviceId, deviceName: input.deviceName, platform: input.platform, appVersion: input.appVersion, ip: input.ip, userAgent: input.userAgent });
+      return { status:"PHONE_VERIFIED",accessStatus:access.accessStatus,...tokens };
+    }
     return { status:"PHONE_VERIFIED",accessStatus:access.accessStatus,statusToken:issueStatusToken({accountId:access.accountId}) };
   }
 

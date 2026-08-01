@@ -111,6 +111,7 @@ const {
   createAppCustomerReviewPermissionHandler
 } = require("./modules/customers/app-access/appCustomerAccessRoutes");
 const { createAppPhoneOtpRouter } = require("./modules/customers/app-auth/appPhoneOtpRoutes");
+const { createAppSessionRouter } = require("./modules/customers/app-auth/appSessionRoutes");
 const { getNotificationService, getNotificationDryRunDefault } = require("./src/notification/NotificationService");
 const { startCashbackReminderScheduler } = require("./src/notification/CashbackScheduler");
 const {
@@ -18645,6 +18646,7 @@ app.post("/api/payments/pagbank/webhook/payment", async (req, res) => {
 registerPublicNotificationRoutes(app);
 
 app.use("/app/v1", createAppPhoneOtpRouter({ dbApi: { run, get, all }, recordAudit: recordAuditEvent }));
+app.use("/app/v1", createAppSessionRouter({ dbApi: { run, get, all }, recordAudit: recordAuditEvent }));
 app.use("/api", authMiddleware);
 app.use("/api", auditSensitiveMutationMiddleware);
 

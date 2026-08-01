@@ -20,4 +20,6 @@ export const authStyles = StyleSheet.create({
   error: { color: theme.colors.error, fontSize: 13, marginBottom: theme.spacing.md },
   seal: { width: 54, height: 54, borderRadius: 27, alignItems: 'center', justifyContent: 'center', backgroundColor: '#292720', marginBottom: theme.spacing.lg },
   sealText: { color: theme.colors.copperSoft, fontSize: 24 },
+  splashMark: { width: 76, height: 76, borderRadius: 38, borderWidth: 1, borderColor: theme.colors.copper, alignItems: 'center', justifyContent: 'center', marginBottom: theme.spacing.lg, backgroundColor: '#171613' },
+  splashLetter: { color: theme.colors.ivory, fontFamily: theme.typography.display, fontSize: 38 },
 });

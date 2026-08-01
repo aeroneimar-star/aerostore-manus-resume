@@ -2,11 +2,16 @@
 
 const express = require("express");
 const { AppPhoneOtpError, createAppPhoneOtpService } = require("./appPhoneOtpService");
+const { createAppSessionService } = require("./appSessionService");
 
 function clientContext(req) {
   return {
     ip: req.ip || req.socket?.remoteAddress || "unknown",
-    deviceId: String(req.get("x-device-id") || req.body?.deviceId || "unknown")
+    deviceId: String(req.get("x-device-id") || req.body?.deviceId || "unknown"),
+    deviceName: String(req.get("x-device-name") || req.body?.deviceName || ""),
+    platform: String(req.get("x-app-platform") || req.body?.platform || "UNKNOWN"),
+    appVersion: String(req.get("x-app-version") || req.body?.appVersion || ""),
+    userAgent: String(req.get("user-agent") || "unknown")
   };
 }
 
@@ -23,7 +28,9 @@ function sendError(res, error) {
 
 function createAppPhoneOtpRouter(options = {}) {
   let service = options.service || null;
-  const getService = () => { service ||= createAppPhoneOtpService(options); return service; };
+  let sessions = options.sessionService || null;
+  const getSessions = () => { sessions ||= createAppSessionService(options); return sessions; };
+  const getService = () => { service ||= createAppPhoneOtpService({ ...options, completeLogin: (input) => getSessions().createSession(input) }); return service; };
   const router = express.Router();
   router.use(express.json({ limit: "16kb" }));
   router.post("/auth/start", async (req, res) => {
@@ -37,12 +44,6 @@ function createAppPhoneOtpRouter(options = {}) {
   });
   router.post("/auth/sms", async (req, res) => {
     try { res.status(202).json(await getService().useSms({ ...(req.body || {}), ...clientContext(req) })); } catch (error) { sendError(res, error); }
-  });
-  router.get("/access/status", async (req, res) => {
-    try {
-      const token = String(req.get("authorization") || "").replace(/^Bearer\s+/i, "");
-      res.json(await getService().status(token));
-    } catch (error) { sendError(res, error); }
   });
   return router;
 }

@@ -346,10 +346,12 @@ function createAppCustomerAccessService(dbApi) {
     const nextVersion = Number(current.version) + 1;
     const after = { accountStatus: nextAccountStatus, accessStatus: nextAccessStatus, version: nextVersion };
     const idempotencyKey = stableHash([current.id, current.request_id, operation, current.version, selectedLink?.master_id || ""].join("|"));
+    const accountColumns = operation === "BLOCK" ? await dbApi.all("PRAGMA table_info(app_customer_accounts)") : [];
+    const incrementTokenVersion = operation === "BLOCK" && accountColumns.some((column) => column.name === "token_version");
     await dbApi.run("BEGIN IMMEDIATE");
     try {
       const update = await dbApi.run(
-        `UPDATE app_customer_accounts SET account_status = ?, access_status = ?, version = ?, updated_at = ?,
+        `UPDATE app_customer_accounts SET account_status = ?, access_status = ?, version = ?, updated_at = ?${incrementTokenVersion ? ", token_version = token_version + 1" : ""},
           suspended_at = CASE WHEN ? = 'SUSPENDED' THEN ? WHEN ? = 'ACTIVE' THEN NULL ELSE suspended_at END,
           blocked_at = CASE WHEN ? = 'BLOCKED' THEN ? ELSE blocked_at END
          WHERE id = ? AND version = ?`,
