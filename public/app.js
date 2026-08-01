@@ -26296,7 +26296,13 @@ async function runIdentityCaseAdminAction(action, form) {
     note: "notes",
     waiting: "review/waiting-information",
     end: "review/end-without-resolution",
-    reopen: "reopen"
+    reopen: "reopen",
+    confirmSamePerson: "resolution/confirm-same-person",
+    keepSeparate: "resolution/keep-separate",
+    phoneShared: "resolution/phone-shared",
+    phoneRecycled: "resolution/phone-recycled",
+    cpfValidate: "resolution/cpf-validate",
+    cpfReject: "resolution/cpf-reject"
   }[action];
   if (!endpoint) return;
   state.identityCasesAdmin.actionLoading = true;
@@ -26472,11 +26478,17 @@ function renderIdentityCaseAdminDetail() {
         </div>
         <div class="identity-case-action-buttons">
           ${canStart ? `<button class="primary-button" type="submit" data-identity-case-action="start">Iniciar revisão</button>` : ""}
+          ${canOperateReview ? `<button class="secondary-button" type="submit" data-identity-case-action="confirmSamePerson">Confirmar mesma pessoa</button>` : ""}
+          ${canOperateReview ? `<button class="secondary-button" type="submit" data-identity-case-action="keepSeparate">Manter separados</button>` : ""}
+          ${canOperateReview ? `<button class="ghost-button" type="submit" data-identity-case-action="phoneShared">Telefone compartilhado</button>` : ""}
+          ${canOperateReview ? `<button class="ghost-button" type="submit" data-identity-case-action="phoneRecycled">Telefone reciclado</button>` : ""}
+          ${canOperateReview ? `<button class="ghost-button" type="submit" data-identity-case-action="cpfValidate">Validar CPF</button>` : ""}
+          ${canOperateReview ? `<button class="ghost-button" type="submit" data-identity-case-action="cpfReject">Rejeitar CPF</button>` : ""}
           ${canOperateReview ? `<button class="secondary-button" type="submit" data-identity-case-action="waiting">Aguardar informação</button>` : ""}
           ${canAddNote ? `<button class="ghost-button" type="submit" data-identity-case-action="note">Registrar observação</button>` : ""}
           ${canOperateReview ? `<button class="ghost-button" type="submit" data-identity-case-action="end">Encerrar sem resolução</button>` : ""}
           ${detail.status === "UNDER_REVIEW" ? `<button class="ghost-button" type="submit" data-identity-case-action="release">Devolver para OPEN</button>` : ""}
-          ${canReopen ? `<button class="secondary-button" type="submit" data-identity-case-action="reopen">Reabrir caso</button>` : ""}
+          ${canReopen ? `<button class="secondary-button" type="submit" data-identity-case-action="reopen">Reabrir decisão</button>` : ""}
         </div>
         ${adminState.actionLoading ? `<span class="identity-case-action-progress">Registrando ação e evento imutável...</span>` : ""}
       </form>

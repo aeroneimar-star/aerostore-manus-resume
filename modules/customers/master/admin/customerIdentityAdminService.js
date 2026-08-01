@@ -10,6 +10,43 @@ const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_ADMIN_TEXT = 500;
 
+const CASE_RESOLUTIONS = Object.freeze({
+  CONFIRM_SAME_PERSON: Object.freeze({
+    resolutionType: "CONFIRMED_SAME_PERSON",
+    operationalFlag: "RESOLVED_SAME_PERSON",
+    eventType: "CASE_RESOLVED_SAME_PERSON"
+  }),
+  KEEP_SEPARATE: Object.freeze({
+    resolutionType: "KEPT_SEPARATE",
+    operationalFlag: "RESOLVED_KEPT_SEPARATE",
+    eventType: "CASE_RESOLVED_KEPT_SEPARATE"
+  }),
+  PHONE_SHARED: Object.freeze({
+    resolutionType: "PHONE_SHARED_ACKNOWLEDGED",
+    operationalFlag: "RESOLVED_PHONE_SHARED",
+    eventType: "CASE_RESOLVED_PHONE_SHARED"
+  }),
+  PHONE_RECYCLED: Object.freeze({
+    resolutionType: "PHONE_RECYCLED_ACKNOWLEDGED",
+    operationalFlag: "RESOLVED_PHONE_RECYCLED",
+    eventType: "CASE_RESOLVED_PHONE_RECYCLED"
+  }),
+  CPF_VALIDATED: Object.freeze({
+    resolutionType: "CPF_VALIDATED",
+    operationalFlag: "RESOLVED_CPF_VALIDATED",
+    eventType: "CASE_RESOLVED_CPF_VALIDATED"
+  }),
+  CPF_REJECTED: Object.freeze({
+    resolutionType: "CPF_REJECTED",
+    operationalFlag: "RESOLVED_CPF_REJECTED",
+    eventType: "CASE_RESOLVED_CPF_REJECTED"
+  })
+});
+
+const ADMINISTRATIVE_RESOLUTION_TYPES = Object.freeze(
+  Object.values(CASE_RESOLUTIONS).map((resolution) => resolution.resolutionType)
+);
+
 class CustomerIdentityAdminError extends Error {
   constructor(code, status = 400, message = code) {
     super(message);
@@ -213,6 +250,8 @@ function sanitizeEventState(jsonValue) {
     "blocking",
     "conflictCount",
     "reviewerUserId",
+    "resolvedConflicts",
+    "reopenedConflicts",
     "note"
   ];
   return Object.fromEntries(
@@ -590,6 +629,155 @@ async function mutateCase(db, caseId, actor, input, operation) {
   return getCase(db, id);
 }
 
+async function mutateCaseResolution(db, caseId, actor, input, operation) {
+  assertDb(db);
+  const id = normalizeCaseSearch(caseId);
+  const actorUserId = String(actor?.id || "").trim();
+  if (!actorUserId) {
+    throw new CustomerIdentityAdminError("ACTOR_REQUIRED", 400);
+  }
+  const validated = validateMutationInput(input);
+  if (validated.expectedVersion < 0) {
+    throw new CustomerIdentityAdminError("EXPECTED_VERSION_REQUIRED");
+  }
+  const now = new Date().toISOString();
+
+  await db.run("PRAGMA busy_timeout = 5000");
+  await db.run("BEGIN IMMEDIATE");
+  try {
+    const current = await db.get(
+      `SELECT id, queue_type, status, reviewer_user_id, review_version,
+              operational_flag, review_started_at, resolved_at
+         FROM customer_identity_cases
+        WHERE id = ? AND queue_type = ?`,
+      [id, IDENTITY_QUEUE]
+    );
+    if (!current) {
+      throw new CustomerIdentityAdminError("CASE_NOT_FOUND", 404);
+    }
+    if (Number(current.review_version || 0) !== validated.expectedVersion) {
+      throw new CustomerIdentityAdminError("CASE_CONCURRENT_UPDATE", 409);
+    }
+    const change = operation({
+      current,
+      actorUserId,
+      reason: validated.reason,
+      now,
+      input
+    });
+    const nextVersion = Number(current.review_version || 0) + 1;
+    const before = snapshot(current);
+    let resolvedConflicts = 0;
+    let reopenedConflicts = 0;
+    if (change.conflictAction?.mode === "resolve") {
+      const update = await db.run(
+        `UPDATE customer_identity_conflicts
+            SET status = 'RESOLVED',
+                resolution_type = ?,
+                resolution_reason = ?,
+                resolved_by = ?,
+                resolved_at = ?,
+                updated_at = ?
+          WHERE status = 'OPEN'
+            AND id IN (
+              SELECT conflict_id FROM customer_identity_case_conflicts WHERE case_id = ?
+            )`,
+        [
+          change.conflictAction.resolutionType,
+          validated.reason,
+          actorUserId,
+          now,
+          now,
+          id
+        ]
+      );
+      resolvedConflicts = Number(update?.changes || 0);
+    } else if (change.conflictAction?.mode === "reopen") {
+      const placeholders = ADMINISTRATIVE_RESOLUTION_TYPES.map(() => "?").join(", ");
+      const update = await db.run(
+        `UPDATE customer_identity_conflicts
+            SET status = 'OPEN',
+                resolution_type = NULL,
+                resolution_reason = NULL,
+                resolved_by = NULL,
+                resolved_at = NULL,
+                reopened_at = ?,
+                updated_at = ?
+          WHERE resolution_type IN (${placeholders})
+            AND id IN (
+              SELECT conflict_id FROM customer_identity_case_conflicts WHERE case_id = ?
+            )`,
+        [now, now, ...ADMINISTRATIVE_RESOLUTION_TYPES, id]
+      );
+      reopenedConflicts = Number(update?.changes || 0);
+    }
+    const after = {
+      status: change.status,
+      reviewerUserId: change.reviewerUserId,
+      reviewVersion: nextVersion,
+      operationalFlag: change.operationalFlag,
+      ...(resolvedConflicts ? { resolvedConflicts } : {}),
+      ...(reopenedConflicts ? { reopenedConflicts } : {})
+    };
+    const update = await db.run(
+      `UPDATE customer_identity_cases
+          SET status = ?,
+              reviewer_user_id = ?,
+              review_started_at = ?,
+              review_updated_at = ?,
+              review_version = ?,
+              operational_flag = ?,
+              last_event_at = ?,
+              resolved_at = ?,
+              updated_at = ?
+        WHERE id = ? AND queue_type = ? AND review_version = ?`,
+      [
+        change.status,
+        change.reviewerUserId,
+        change.reviewStartedAt,
+        now,
+        nextVersion,
+        change.operationalFlag,
+        now,
+        change.resolvedAt,
+        now,
+        id,
+        IDENTITY_QUEUE,
+        validated.expectedVersion
+      ]
+    );
+    if (Number(update?.changes || 0) !== 1) {
+      throw new CustomerIdentityAdminError("CASE_CONCURRENT_UPDATE", 409);
+    }
+    await db.run(
+      `INSERT INTO customer_identity_case_events
+        (id, case_id, event_type, actor_user_id, reason, before_json, after_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        `cice-admin:${crypto.randomUUID()}`,
+        id,
+        change.eventType,
+        actorUserId,
+        validated.reason,
+        JSON.stringify(before),
+        JSON.stringify(after),
+        now
+      ]
+    );
+    await db.run("COMMIT");
+  } catch (error) {
+    await db.run("ROLLBACK").catch(() => null);
+    if (
+      error?.code === "SQLITE_BUSY"
+      || /cannot start a transaction within a transaction/i.test(String(error?.message || ""))
+    ) {
+      throw new CustomerIdentityAdminError("CASE_CONCURRENT_UPDATE", 409);
+    }
+    throw error;
+  }
+  return getCase(db, id);
+}
+
 function requireStatus(current, allowed) {
   if (!allowed.includes(String(current.status || ""))) {
     throw new CustomerIdentityAdminError("INVALID_CASE_TRANSITION", 409);
@@ -616,6 +804,33 @@ function createCustomerIdentityAdminService(dbApi, options = {}) {
       if (mutationDb !== dbApi) await mutationDb.close();
     }
   };
+  const mutateResolution = async (caseId, actor, input, operation) => {
+    const mutationDb = databasePath ? createDedicatedSqliteDbApi(databasePath) : dbApi;
+    try {
+      return await mutateCaseResolution(mutationDb, caseId, actor, input, operation);
+    } finally {
+      if (mutationDb !== dbApi) await mutationDb.close();
+    }
+  };
+  const resolveWith = (actionKey) => (caseId, actor, input) => mutateResolution(
+    caseId,
+    actor,
+    input,
+    ({ current, actorUserId, now }) => {
+      requireStatus(current, ["UNDER_REVIEW"]);
+      requireReviewer(current, actorUserId);
+      const resolution = CASE_RESOLUTIONS[actionKey];
+      return {
+        status: "RESOLVED",
+        reviewerUserId: actorUserId,
+        reviewStartedAt: current.review_started_at,
+        operationalFlag: resolution.operationalFlag,
+        eventType: resolution.eventType,
+        resolvedAt: now,
+        conflictAction: { mode: "resolve", resolutionType: resolution.resolutionType }
+      };
+    }
+  );
   return Object.freeze({
     listCases: (query) => listCases(dbApi, query),
     getCase: (caseId) => getCase(dbApi, caseId),
@@ -680,7 +895,7 @@ function createCustomerIdentityAdminService(dbApi, options = {}) {
         eventType: "CASE_REOPENED"
       };
     }),
-    reopenCase: (caseId, actor, input) => mutate(caseId, actor, input, ({ current, actorUserId }) => {
+    reopenCase: (caseId, actor, input) => mutateResolution(caseId, actor, input, ({ current, actorUserId }) => {
       requireStatus(current, ["UNDER_REVIEW", "RESOLVED", "ARCHIVED"]);
       if (String(current.status || "") === "UNDER_REVIEW") requireReviewer(current, actorUserId);
       return {
@@ -688,9 +903,17 @@ function createCustomerIdentityAdminService(dbApi, options = {}) {
         reviewerUserId: null,
         reviewStartedAt: null,
         operationalFlag: "REOPENED_FOR_REVIEW",
-        eventType: "CASE_REOPENED"
+        eventType: "CASE_REOPENED",
+        resolvedAt: null,
+        conflictAction: { mode: "reopen" }
       };
-    })
+    }),
+    confirmSamePerson: resolveWith("CONFIRM_SAME_PERSON"),
+    keepSeparate: resolveWith("KEEP_SEPARATE"),
+    markPhoneShared: resolveWith("PHONE_SHARED"),
+    markPhoneRecycled: resolveWith("PHONE_RECYCLED"),
+    validateCpf: resolveWith("CPF_VALIDATED"),
+    rejectCpf: resolveWith("CPF_REJECTED")
   });
 }
 
@@ -698,6 +921,8 @@ module.exports = {
   IDENTITY_QUEUE,
   PRIORITIES,
   STATUSES,
+  CASE_RESOLUTIONS,
+  ADMINISTRATIVE_RESOLUTION_TYPES,
   CustomerIdentityAdminError,
   maskCpf,
   maskPhone,

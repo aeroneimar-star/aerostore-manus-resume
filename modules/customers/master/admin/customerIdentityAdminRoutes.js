@@ -82,6 +82,30 @@ function createCustomerIdentityAdminRouter({ dbApi, databasePath, requireAdmin }
     res.json({ case: await service.reopenCase(req.params.caseId, req.user, req.body || {}) });
   }));
 
+  router.post("/:caseId/resolution/confirm-same-person", asyncHandler(async (req, res) => {
+    res.json({ case: await service.confirmSamePerson(req.params.caseId, req.user, req.body || {}) });
+  }));
+
+  router.post("/:caseId/resolution/keep-separate", asyncHandler(async (req, res) => {
+    res.json({ case: await service.keepSeparate(req.params.caseId, req.user, req.body || {}) });
+  }));
+
+  router.post("/:caseId/resolution/phone-shared", asyncHandler(async (req, res) => {
+    res.json({ case: await service.markPhoneShared(req.params.caseId, req.user, req.body || {}) });
+  }));
+
+  router.post("/:caseId/resolution/phone-recycled", asyncHandler(async (req, res) => {
+    res.json({ case: await service.markPhoneRecycled(req.params.caseId, req.user, req.body || {}) });
+  }));
+
+  router.post("/:caseId/resolution/cpf-validate", asyncHandler(async (req, res) => {
+    res.json({ case: await service.validateCpf(req.params.caseId, req.user, req.body || {}) });
+  }));
+
+  router.post("/:caseId/resolution/cpf-reject", asyncHandler(async (req, res) => {
+    res.json({ case: await service.rejectCpf(req.params.caseId, req.user, req.body || {}) });
+  }));
+
   return router;
 }
 
