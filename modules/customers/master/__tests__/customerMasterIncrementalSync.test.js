@@ -42,6 +42,7 @@ const {
 } = require("../governance/customerIdentityCaseService");
 const {
   assertIncrementalSql,
+  previewCustomerMasterIncrementalSync,
   runCustomerMasterIncrementalSync
 } = require("../incremental/customerMasterIncrementalSyncService");
 
@@ -120,7 +121,40 @@ test("cursor incremental usa updated_at e id, pagina sem offset e e idempotente"
       runAt: "2026-07-04T10:00:00.000Z", codeVersion: "test-h"
     });
     assert.equal(second.stats.scanned, 0);
+    assert.equal(second.jobId, null);
+    assert.equal(Number((await db.get(
+      "SELECT COUNT(*) AS total FROM customer_master_jobs WHERE job_type = 'INCREMENTAL_SOURCE_SYNC'"
+    )).total), 1);
     assert.equal(Number((await db.get("SELECT COUNT(*) AS total FROM customer_master_sources")).total), 2);
+  } finally {
+    await db.close();
+  }
+});
+
+test("dry-run incremental calcula mudancas sem persistir job, fonte ou checkpoint", async () => {
+  const db = await prepareDb();
+  try {
+    await insertContact(db, { id: "dry-1", name: "Dry Run", updated_at: T1 });
+    const before = {
+      jobs: Number((await db.get("SELECT COUNT(*) AS total FROM customer_master_jobs")).total),
+      checkpoints: Number((await db.get("SELECT COUNT(*) AS total FROM customer_master_sync_checkpoints")).total),
+      sources: Number((await db.get("SELECT COUNT(*) AS total FROM customer_master_sources")).total),
+      contacts: await db.all("SELECT * FROM contacts ORDER BY id")
+    };
+    const preview = await previewCustomerMasterIncrementalSync({
+      db,
+      reader: createCustomerMasterSourceReader(db),
+      sourceTypes: ["contacts"],
+      runAt: T1,
+      codeVersion: "test-h"
+    });
+    assert.equal(preview.mode, "DRY_RUN");
+    assert.equal(preview.stats.scanned, 1);
+    assert.equal(preview.stats.materialChanges, 1);
+    assert.equal(Number((await db.get("SELECT COUNT(*) AS total FROM customer_master_jobs")).total), before.jobs);
+    assert.equal(Number((await db.get("SELECT COUNT(*) AS total FROM customer_master_sync_checkpoints")).total), before.checkpoints);
+    assert.equal(Number((await db.get("SELECT COUNT(*) AS total FROM customer_master_sources")).total), before.sources);
+    assert.deepEqual(await db.all("SELECT * FROM contacts ORDER BY id"), before.contacts);
   } finally {
     await db.close();
   }
@@ -228,9 +262,9 @@ test("falha na pagina nao avanca checkpoint", async () => {
       }),
       /CUSTOMER_MASTER_INCREMENTAL_CURSOR_REQUIRED/
     );
-    assert.deepEqual(await db.get(
+    assert.equal(await db.get(
       "SELECT cursor_source_id, status FROM customer_master_sync_checkpoints WHERE source_type = 'contacts'"
-    ), { cursor_source_id: null, status: "FAILED" });
+    ), undefined);
     assert.equal(Number((await db.get("SELECT COUNT(*) AS total FROM customer_master_sources")).total), 0);
   } finally {
     await db.close();

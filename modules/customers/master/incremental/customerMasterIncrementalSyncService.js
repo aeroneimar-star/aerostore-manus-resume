@@ -466,6 +466,141 @@ function createStats() {
   };
 }
 
+async function getSourceWindow(db, reader, sourceType) {
+  if (await reader.countInvalidIncrementalCursors(sourceType) > 0) {
+    throw new Error(`CUSTOMER_MASTER_INCREMENTAL_CURSOR_REQUIRED:${sourceType}`);
+  }
+  const checkpoint = await db.get(
+    "SELECT cursor_updated_at, cursor_source_id FROM customer_master_sync_checkpoints WHERE source_type = ?",
+    [sourceType]
+  );
+  const upperCursor = await reader.readLatestCursor(sourceType);
+  return { checkpoint, upperCursor };
+}
+
+async function readWindowPage(reader, sourceType, window, limit) {
+  if (!window.upperCursor) return [];
+  return reader.readIncrementalPage(sourceType, {
+    updatedAt: window.checkpoint?.cursor_updated_at || null,
+    sourceId: window.checkpoint?.cursor_source_id || null,
+    upperUpdatedAt: String(window.upperCursor.updated_at),
+    upperSourceId: String(window.upperCursor.id),
+    limit
+  });
+}
+
+async function previewMaterialSource(db, reader, record, existingSource, options) {
+  const neighborhood = await loadNeighborhood(db, reader, record, existingSource, options);
+  const graph = buildCandidateGraph(neighborhood.records, { maxClusterSize: options.maxAffectedSources });
+  if (graph.oversizedBuckets.length) {
+    throw new Error("CUSTOMER_MASTER_INCREMENTAL_CLUSTER_LIMIT");
+  }
+  const candidates = buildCandidateClusters(neighborhood.records, graph);
+  const targetKey = sourceKey(record);
+  const detected = detectCustomerMasterConflicts(neighborhood.records, graph, candidates)
+    .conflicts.filter((conflict) => conflict.participants.includes(targetKey));
+  const expectedIds = detected.map(conflictIdFor);
+  const affectedConflictIds = [...new Set([...neighborhood.directConflictIds, ...expectedIds])];
+  let casesAffected = 0;
+  let casesReopened = 0;
+  if (affectedConflictIds.length) {
+    const cases = await db.all(
+      `SELECT DISTINCT c.id, c.status
+         FROM customer_identity_cases c
+         JOIN customer_identity_case_conflicts cc ON cc.case_id = c.id
+        WHERE cc.conflict_id IN (${placeholders(affectedConflictIds)})`,
+      affectedConflictIds
+    );
+    casesAffected = cases.length;
+    casesReopened = cases.filter((row) => ["RESOLVED", "ARCHIVED"].includes(String(row.status))).length;
+  }
+  return {
+    created: !existingSource,
+    conflictsDetected: expectedIds.length,
+    conflictsResolved: neighborhood.directConflictIds.filter((id) => !expectedIds.includes(id)).length,
+    casesAffected,
+    casesReopened,
+    affectedSources: neighborhood.records.length
+  };
+}
+
+async function previewCustomerMasterIncrementalSync(input = {}) {
+  const rawDb = input.db;
+  const reader = input.reader;
+  if (!rawDb || !reader || typeof reader.readIncrementalPage !== "function"
+    || typeof reader.readLatestCursor !== "function"
+    || typeof reader.countInvalidIncrementalCursors !== "function") {
+    throw new Error("CUSTOMER_MASTER_INCREMENTAL_DEPENDENCIES_REQUIRED");
+  }
+  const sourceTypes = input.sourceTypes || SOURCE_TYPES;
+  if (!sourceTypes.length || sourceTypes.some((type) => !SOURCE_TYPES.includes(type))) {
+    throw new Error("CUSTOMER_MASTER_INCREMENTAL_SOURCE_TYPE_INVALID");
+  }
+  const options = {
+    pageSize: Math.max(1, Math.min(500, Number(input.pageSize) || DEFAULT_PAGE_SIZE)),
+    maxPages: input.maxPages == null ? Infinity : Math.max(1, Number(input.maxPages)),
+    maxAffectedSources: Math.max(2, Number(input.maxAffectedSources) || DEFAULT_MAX_AFFECTED_SOURCES),
+    codeVersion: String(input.codeVersion || "LOCAL_UNCOMMITTED"),
+    runAt: String(input.runAt || new Date().toISOString())
+  };
+  const db = createIncrementalRepository(rawDb);
+  const stats = createStats();
+  for (const sourceType of sourceTypes) {
+    const initialWindow = await getSourceWindow(db, reader, sourceType);
+    if (!initialWindow.upperCursor) continue;
+    let checkpoint = initialWindow.checkpoint;
+    let pageCount = 0;
+    while (pageCount < options.maxPages) {
+      const rows = await readWindowPage(reader, sourceType, {
+        checkpoint,
+        upperCursor: initialWindow.upperCursor
+      }, options.pageSize);
+      if (!rows.length) break;
+      for (const row of rows) {
+        const record = buildSourceRecord(sourceType, row);
+        if (!record.sourceId || !record.sourceUpdatedAt) {
+          throw new Error("CUSTOMER_MASTER_INCREMENTAL_CURSOR_REQUIRED");
+        }
+        stats.scanned += 1;
+        const existing = await db.get(
+          "SELECT id, master_id, source_hash FROM customer_master_sources WHERE source_type = ? AND source_id = ?",
+          [sourceType, record.sourceId]
+        );
+        if (existing && String(existing.source_hash) === record.sourceHash) {
+          stats.unchanged += 1;
+        } else {
+          const result = await previewMaterialSource(db, reader, record, existing, options);
+          stats.materialChanges += 1;
+          if (result.created) stats.sourcesCreated += 1;
+          stats.conflictsDetected += result.conflictsDetected;
+          stats.conflictsResolved += result.conflictsResolved;
+          stats.casesAffected += result.casesAffected;
+          stats.casesReopened += result.casesReopened;
+          stats.maxAffectedSources = Math.max(stats.maxAffectedSources, result.affectedSources);
+        }
+      }
+      const last = rows[rows.length - 1];
+      checkpoint = {
+        cursor_updated_at: String(last.updated_at || "").trim(),
+        cursor_source_id: String(last.id ?? "").trim()
+      };
+      pageCount += 1;
+      stats.pages += 1;
+      if (rows.length < options.pageSize) break;
+    }
+  }
+  return {
+    status: "COMPLETE",
+    mode: "DRY_RUN",
+    fingerprint: sha256(stableStringify({
+      version: INCREMENTAL_SYNC_VERSION,
+      codeVersion: options.codeVersion,
+      stats
+    })),
+    stats
+  };
+}
+
 async function claimSourceCheckpoint(db, sourceType, jobId, runAt) {
   await withTransaction(db, async () => {
     const current = await db.get(
@@ -512,6 +647,27 @@ async function runCustomerMasterIncrementalSync(input = {}) {
     runAt: String(input.runAt || new Date().toISOString())
   };
   const db = createIncrementalRepository(rawDb);
+  let pending = false;
+  for (const sourceType of sourceTypes) {
+    const window = await getSourceWindow(db, reader, sourceType);
+    if ((await readWindowPage(reader, sourceType, window, 1)).length) {
+      pending = true;
+      break;
+    }
+  }
+  if (!pending) {
+    const stats = createStats();
+    return {
+      status: "COMPLETE",
+      jobId: null,
+      fingerprint: sha256(stableStringify({
+        version: INCREMENTAL_SYNC_VERSION,
+        codeVersion: options.codeVersion,
+        stats
+      })),
+      stats
+    };
+  }
   const jobId = `cmj:${sha256(stableStringify({
     version: INCREMENTAL_SYNC_VERSION,
     runAt: options.runAt,
@@ -642,5 +798,6 @@ module.exports = {
   DEFAULT_MAX_AFFECTED_SOURCES,
   assertIncrementalSql,
   createIncrementalRepository,
+  previewCustomerMasterIncrementalSync,
   runCustomerMasterIncrementalSync
 };
