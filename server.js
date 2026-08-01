@@ -106,6 +106,10 @@ const {
   getCustomerIdentityAdminSchemaStatus,
   applyCustomerIdentityAdminSchema
 } = require("./modules/customers/master/admin/customerIdentityAdminSchema");
+const {
+  createAppCustomerAccessRouter,
+  createAppCustomerReviewPermissionHandler
+} = require("./modules/customers/app-access/appCustomerAccessRoutes");
 const { getNotificationService, getNotificationDryRunDefault } = require("./src/notification/NotificationService");
 const { startCashbackReminderScheduler } = require("./src/notification/CashbackScheduler");
 const {
@@ -12193,7 +12197,8 @@ function buildDefaultPermissions(role = "seller") {
     can_adjust_inventory: false,
     can_adjust_product_price: false,
     can_move_stock: false,
-    can_export_data: false
+    can_export_data: false,
+    can_review_app_customers: false
   };
 
   if (normalized === "admin") {
@@ -12388,6 +12393,7 @@ const USER_PERMISSION_CATALOG = [
       ["can_view_aerointel", "Acessar AEROINTEL"],
       ["can_view_campaigns", "Ver campanhas"],
       ["can_manage_campaigns", "Gerenciar campanhas"],
+      ["can_review_app_customers", "Revisar clientes do app"],
       ["can_view_commercial_management", "Ver gestao comercial"],
       ["can_manage_commercial_goals", "Gerenciar metas comerciais"],
       ["can_manage_campaign_challenges", "Gerenciar Corridinhas"],
@@ -18788,6 +18794,11 @@ registerProtectedWhatsappCloudRoutes(app, { requireAnyPermission });
 app.get("/api/admin/users", requirePermission("can_manage_users"), listAdminUsers);
 app.post("/api/admin/users", requirePermission("can_manage_users"), createAdminUser);
 app.patch("/api/admin/users/:id", requirePermission("can_manage_users"), updateAdminUser);
+app.patch(
+  "/api/admin/users/:id/app-customer-review-permission",
+  requireAdmin,
+  createAppCustomerReviewPermissionHandler({ dbApi: { run, get, all }, recordAudit: recordAuditEvent })
+);
 app.post("/api/admin/users/:id/reset-password", requirePermission("can_manage_users"), resetAdminUserPassword);
 app.patch("/api/users/:id/reset-password", requirePermission("can_manage_users"), resetAdminUserPassword);
 app.post("/api/admin/users/:id/status", requirePermission("can_manage_users"), setAdminUserStatus);
@@ -18808,6 +18819,10 @@ app.use(
     databasePath: dbPath,
     requireAdmin
   })
+);
+app.use(
+  "/api/admin/app-customers",
+  createAppCustomerAccessRouter({ dbApi: { run, get, all }, recordAudit: recordAuditEvent })
 );
 
 // Guards para rotas legadas: autenticar nao basta; cada familia sensivel precisa de permissao real.

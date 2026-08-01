@@ -129,7 +129,8 @@ function buildRolePermissions(role = "seller") {
     can_manage_commercial_goals: false,
     can_view_campaign_rankings: false,
     can_settle_campaign_rewards: false,
-    can_manage_campaign_challenges: false
+    can_manage_campaign_challenges: false,
+    can_review_app_customers: false
   };
 
   if (["admin", "administrator", "administrador", "master"].includes(normalized)) {
