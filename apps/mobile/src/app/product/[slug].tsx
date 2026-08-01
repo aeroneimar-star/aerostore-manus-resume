@@ -1,3 +1,5 @@
-import { ProductScreen } from '@/screens/ProductScreen';
+import { Redirect } from 'expo-router';
 
-export default ProductScreen;
+export default function ProductRoute() {
+  return <Redirect href="/" />;
+}

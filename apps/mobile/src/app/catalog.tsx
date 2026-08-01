@@ -1,3 +1,5 @@
-import { CatalogScreen } from '@/screens/CatalogScreen';
+import { Redirect } from 'expo-router';
 
-export default CatalogScreen;
+export default function CatalogRoute() {
+  return <Redirect href="/" />;
+}

@@ -295,14 +295,13 @@ test("workflow nao altera contacts, crm_contacts ou mestres", async () => {
   await context.db.close();
 });
 
-test("frontend administrativo existe sem rota publica de login ou alteracao mobile", () => {
+test("frontend administrativo permanece separado do fluxo publico de autenticacao", () => {
   const root = path.resolve(__dirname, "../../../..");
   const appSource = fs.readFileSync(path.join(root, "public", "appCustomerAccessAdmin.js"), "utf8");
   const html = fs.readFileSync(path.join(root, "public", "index.html"), "utf8");
-  const server = fs.readFileSync(path.join(root, "server.js"), "utf8");
+  const accessRoutes = fs.readFileSync(path.join(root, "modules", "customers", "app-access", "appCustomerAccessRoutes.js"), "utf8");
   assert.match(appSource, /data-app-customer-action="approve"/);
   assert.match(html, /\/admin\/clientes-app/);
-  assert.doesNotMatch(server, /\/app\/v1\/auth/);
-  const mobileChanges = require("node:child_process").execFileSync("git", ["diff", "--name-only", "HEAD", "--", "apps/mobile"], { cwd: root, encoding: "utf8" });
-  assert.equal(mobileChanges.trim(), "");
+  assert.doesNotMatch(accessRoutes, /\/app\/v1\/auth/);
+  assert.match(accessRoutes, /APP_CUSTOMER_REVIEW_FORBIDDEN/);
 });

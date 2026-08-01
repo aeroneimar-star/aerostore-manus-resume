@@ -389,6 +389,7 @@ module.exports = {
   AppCustomerAccessError,
   createAppCustomerAccessService,
   validateAndSanitizeRegistration,
+  normalizePhone,
   maskPhone,
   maskEmail,
   maskDocument,
