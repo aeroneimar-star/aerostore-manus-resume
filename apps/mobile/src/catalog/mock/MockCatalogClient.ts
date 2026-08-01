@@ -57,14 +57,17 @@ export class MockCatalogClient implements CatalogClient {
     await this.wait();
     this.failWhenConfigured();
     const page = params.page ?? 1;
-    const limit = params.limit ?? 4;
-    const filtered = this.scenario === 'empty'
+    const limit = params.pageSize ?? 4;
+    let filtered = this.scenario === 'empty'
       ? []
       : mockCatalogItems.filter((item) => {
           const categoryMatches = !params.category || item.category_slug === params.category;
-          const featuredMatches = params.featured === undefined || item.featured === params.featured;
-          return categoryMatches && featuredMatches;
+          const brandMatches = !params.brand || item.brand.toLowerCase() === params.brand.toLowerCase();
+          const searchMatches = !params.search || [item.title, item.brand, item.sku].some((value) => value.toLowerCase().includes(params.search!.toLowerCase()));
+          return categoryMatches && brandMatches && searchMatches;
         });
+    const sort = params.sort ?? 'recentes';
+    filtered = [...filtered].sort(sort === 'nome_asc' ? (a, b) => a.title.localeCompare(b.title) : sort === 'nome_desc' ? (a, b) => b.title.localeCompare(a.title) : sort === 'preco_asc' ? (a, b) => a.price_cents - b.price_cents : sort === 'preco_desc' ? (a, b) => b.price_cents - a.price_cents : (a, b) => b.updated_at.localeCompare(a.updated_at));
     const total = filtered.length;
     const totalPages = Math.max(1, Math.ceil(total / limit));
     const offset = (page - 1) * limit;
@@ -89,12 +92,12 @@ export class MockCatalogClient implements CatalogClient {
     };
   }
 
-  async getProductBySlug(slug: string) {
+  async getProduct(productId: string) {
     await this.wait();
     this.failWhenConfigured();
     const product = this.scenario === 'product_not_found'
       ? undefined
-      : mockProducts.find((item) => item.slug === slug);
+      : mockProducts.find((item) => item.id === productId || item.slug === productId);
     if (!product) {
       throw new CatalogClientError(
         'PRODUCT_NOT_FOUND',

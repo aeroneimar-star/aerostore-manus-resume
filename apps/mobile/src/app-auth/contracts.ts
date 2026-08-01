@@ -27,10 +27,10 @@ export interface AccessSnapshot {
   hasActiveMasterLink: boolean;
   requestStatus: string | null;
   updatedAt: string;
-  canViewCatalog: false;
+  canViewCatalog: boolean;
   requiresAction: boolean;
   safeReasonCode: string;
-  permissions: { canViewProfile: boolean; canEditProfile: boolean; canViewCatalog: false };
+  permissions: { canViewProfile: boolean; canEditProfile: boolean; canViewCatalog: boolean };
 }
 
 export interface CustomerProfile {

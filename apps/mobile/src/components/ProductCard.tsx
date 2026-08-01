@@ -40,6 +40,7 @@ export function ProductCard({ item, width, onPress }: ProductCardProps) {
             accessibilityLabel={item.primary_image.alt ?? item.title}
             source={{ uri: item.primary_image.url }}
             contentFit="cover"
+            placeholder={{ blurhash: 'L16R;f%M00xu~qM{Rjof00of~qay' }}
             transition={240}
             style={styles.image}
           />

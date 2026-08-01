@@ -1,5 +1,5 @@
-import { type Href, Redirect } from 'expo-router';
+import { CatalogScreen } from '@/screens/CatalogScreen';
 
 export default function CatalogRoute() {
-  return <Redirect href={'/access-status' as Href} />;
+  return <CatalogScreen />;
 }

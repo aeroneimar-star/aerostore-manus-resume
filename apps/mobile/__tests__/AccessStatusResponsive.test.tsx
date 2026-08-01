@@ -25,7 +25,7 @@ describe('responsive access status header', () => {
 
   it.each(['PENDING_PHONE_VERIFICATION', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'SUSPENDED', 'BLOCKED', 'CLOSED'])('keeps every %s action separated with complete borders', async (status) => {
     const snapshot = await visualAppAuthClient.status(`visual-${status.toLowerCase()}`, 'device');
-    const screen = render(<AccessStatusScreen snapshot={snapshot} onRefresh={() => undefined} onProfile={() => undefined} onLogout={() => undefined} onVerifyPhone={() => undefined} />);
+    const screen = render(<AccessStatusScreen snapshot={snapshot} onRefresh={() => undefined} onProfile={() => undefined} onCatalog={() => undefined} onLogout={() => undefined} onVerifyPhone={() => undefined} />);
     expect(StyleSheet.flatten(screen.getByLabelText('Ações do status de acesso').props.style)).toEqual(expect.objectContaining({ width: '100%' }));
     const buttons = screen.getAllByRole('button');
     for (const [index, button] of buttons.entries()) {

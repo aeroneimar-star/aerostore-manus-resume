@@ -15,5 +15,5 @@ export default function AccessStatusRoute() {
   useEffect(() => { const listener = AppState.addEventListener('change', (next: AppStateStatus) => { if (next === 'active') void loadStatus(); }); return () => listener.remove(); }, [loadStatus]);
   const logout = async () => { setLoading(true); await closeLocalSession(credentials.current.accessToken, credentials.current.deviceId); router.replace('/'); };
   if (!snapshot) return <SessionSplashScreen message={error || 'Consultando seu acesso…'} />;
-  return <AccessStatusScreen snapshot={snapshot} loading={loading} error={error} onRefresh={() => void loadStatus()} onProfile={() => router.push('/profile' as Href)} onLogout={() => void logout()} onVerifyPhone={() => { void sessionStorage.clear(); router.replace('/'); }} />;
+  return <AccessStatusScreen snapshot={snapshot} loading={loading} error={error} onRefresh={() => void loadStatus()} onProfile={() => router.push('/profile' as Href)} onCatalog={() => router.replace('/catalog' as Href)} onLogout={() => void logout()} onVerifyPhone={() => { void sessionStorage.clear(); router.replace('/'); }} />;
 }

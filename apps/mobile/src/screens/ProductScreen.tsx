@@ -1,5 +1,5 @@
 import { Image } from 'expo-image';
-import { useLocalSearchParams } from 'expo-router';
+import { type Href, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ScrollView,
@@ -31,16 +31,17 @@ const availabilityCopy: Record<B2cAvailability, string> = {
 
 interface ProductScreenProps {
   client?: CatalogClient;
-  slugOverride?: string;
+  productIdOverride?: string;
 }
 
 export function ProductScreen({
   client = catalogClient,
-  slugOverride,
+  productIdOverride,
 }: ProductScreenProps) {
+  const router = useRouter();
   const params = useLocalSearchParams<{ slug?: string | string[] }>();
   const slugParam = Array.isArray(params.slug) ? params.slug[0] : params.slug;
-  const slug = slugOverride ?? slugParam ?? '';
+  const productId = productIdOverride ?? slugParam ?? '';
   const { width } = useWindowDimensions();
   const [product, setProduct] = useState<B2cProduct>();
   const [state, setState] = useState<ProductState>('loading');
@@ -49,7 +50,7 @@ export function ProductScreen({
   useEffect(() => {
     let active = true;
     setState('loading');
-    client.getProductBySlug(slug)
+    client.getProduct(productId)
       .then((response) => {
         if (!active) return;
         setProduct(response.data.product);
@@ -58,23 +59,25 @@ export function ProductScreen({
       .catch((error: unknown) => {
         if (!active) return;
         const normalized = toCatalogClientError(error);
-        if (normalized.code === 'PRODUCT_NOT_FOUND') setState('not_found');
+        if (normalized.status === 401) router.replace('/?expired=1' as Href);
+        else if (normalized.status === 403) router.replace('/access-status' as Href);
+        else if (normalized.code === 'PRODUCT_NOT_FOUND') setState('not_found');
         else if (normalized.code === 'CATALOG_DISABLED') setState('disabled');
         else setState('error');
       });
     return () => {
       active = false;
     };
-  }, [client, reloadKey, slug]);
+  }, [client, productId, reloadKey, router]);
 
   const retry = useCallback(() => setReloadKey((value) => value + 1), []);
   const imageWidth = Math.min(Math.max(width - 48, 280), 620);
   const colors = useMemo(
-    () => uniqueVariantValue(product?.variants, 'color'),
+    () => product?.colors ?? uniqueVariantValue(product?.variants, 'color'),
     [product],
   );
   const sizes = useMemo(
-    () => uniqueVariantValue(product?.variants, 'size'),
+    () => product?.sizes ?? uniqueVariantValue(product?.variants, 'size'),
     [product],
   );
 
@@ -104,6 +107,7 @@ export function ProductScreen({
                 accessibilityLabel={item.alt ?? product.title}
                 source={{ uri: item.url }}
                 contentFit="cover"
+                placeholder={{ blurhash: 'L16R;f%M00xu~qM{Rjof00of~qay' }}
                 transition={240}
                 style={[styles.image, { width: imageWidth }]}
               />
@@ -125,7 +129,7 @@ export function ProductScreen({
 
         <View style={styles.details}>
           <Text style={styles.category}>
-            {product.category_label ?? 'Coleção AEROSTORE'}
+            {product.brand} · {product.category_label ?? 'Coleção AEROSTORE'}
           </Text>
           <Text accessibilityRole="header" maxFontSizeMultiplier={1.4} style={styles.title}>
             {product.title}
@@ -133,6 +137,7 @@ export function ProductScreen({
           <Text maxFontSizeMultiplier={1.6} style={styles.shortDescription}>
             {product.short_description}
           </Text>
+          <Text style={styles.sku}>CÓDIGO {product.sku}</Text>
           <Price
             large
             priceCents={product.price_cents}
@@ -171,11 +176,10 @@ export function ProductScreen({
             accessibilityRole="summary"
             style={styles.prototypeNotice}>
             <Text style={styles.prototypeTitle}>
-              Indisponível para compra nesta versão
+              Compra disponível em breve.
             </Text>
             <Text style={styles.prototypeBody}>
-              Esta etapa apresenta somente o catálogo editorial. Nenhuma seleção
-              reserva produto ou inicia pedido.
+              Explore a coleção com tranquilidade. Carrinho, pedido e pagamento ainda não estão ativos.
             </Text>
           </View>
         </View>
@@ -283,6 +287,13 @@ const styles = StyleSheet.create({
     lineHeight: 26,
     marginBottom: theme.spacing.lg,
     marginTop: theme.spacing.sm,
+  },
+  sku: {
+    color: theme.colors.stone,
+    fontFamily: theme.typography.body,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    marginBottom: theme.spacing.sm,
   },
   statusRow: {
     alignItems: 'center',

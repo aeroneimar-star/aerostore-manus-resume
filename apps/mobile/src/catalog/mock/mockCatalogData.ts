@@ -11,7 +11,7 @@ const image = (seed: string, alt: string, sortOrder = 0) => ({
   role: sortOrder === 0 ? 'primary' : 'gallery',
 });
 
-export const mockProducts: B2cProduct[] = [
+const mockProductSeeds: Omit<B2cProduct, 'id' | 'sku' | 'brand' | 'colors' | 'sizes' | 'updated_at'>[] = [
   {
     slug: 'polo-pima-marinho',
     title: 'Polo Pima Marinho',
@@ -134,6 +134,16 @@ export const mockProducts: B2cProduct[] = [
   },
 ];
 
+export const mockProducts: B2cProduct[] = mockProductSeeds.map((product, index) => ({
+  ...product,
+  id: String(index + 1),
+  sku: `AERO-${String(index + 1).padStart(6, '0')}`,
+  brand: index % 2 === 0 ? 'Osklen' : 'AEROSTORE',
+  colors: [...new Set(product.variants.flatMap((variant) => variant.color ? [variant.color] : []))],
+  sizes: [...new Set(product.variants.flatMap((variant) => variant.size ? [variant.size] : []))],
+  updated_at: `2026-08-0${Math.min(index + 1, 9)}T12:00:00.000Z`,
+}));
+
 const statusCopy = {
   in_stock: 'Disponível na coleção',
   low_stock: 'Últimas disponibilidades',
@@ -145,8 +155,11 @@ export const mockCatalogItems: B2cCatalogItem[] = mockProducts.map((product) => 
   const colorSlugs = [...new Set(product.variants.flatMap((variant) => variant.color_slug ? [variant.color_slug] : []))];
   const sizes = [...new Set(product.variants.flatMap((variant) => variant.size ? [variant.size] : []))];
   return {
+    id: product.id,
+    sku: product.sku,
     slug: product.slug,
     title: product.title,
+    brand: product.brand,
     short_description: product.short_description,
     category_slug: product.category_slug,
     category_label: product.category_label,
@@ -155,6 +168,7 @@ export const mockCatalogItems: B2cCatalogItem[] = mockProducts.map((product) => 
     featured: product.featured,
     availability: product.availability,
     primary_image: product.images[0] ?? null,
+    images: product.images,
     variant_count: product.variants.length,
     colors,
     color_slugs: colorSlugs,
@@ -162,6 +176,7 @@ export const mockCatalogItems: B2cCatalogItem[] = mockProducts.map((product) => 
     action_label: 'Ver produto',
     status_copy: statusCopy[product.availability],
     badge_label: product.featured ? 'Destaque' : undefined,
+    updated_at: product.updated_at,
   };
 });
 

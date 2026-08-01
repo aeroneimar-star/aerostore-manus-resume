@@ -9,7 +9,9 @@ export type B2cApiErrorCode =
   | 'INVALID_LIMIT'
   | 'INVALID_FILTER'
   | 'CATALOG_SOURCE_UNAVAILABLE'
-  | 'INTERNAL_ERROR';
+  | 'INTERNAL_ERROR'
+  | 'APP_SESSION_INVALID'
+  | 'APP_ACCESS_NOT_APPROVED';
 
 export interface B2cApiMeta {
   api_version: typeof B2C_API_VERSION;
@@ -36,8 +38,11 @@ export interface B2cImage {
 }
 
 export interface B2cCatalogItem {
+  id: string;
+  sku: string;
   slug: string;
   title: string;
+  brand: string;
   short_description?: string;
   category_slug?: string;
   category_label?: string;
@@ -46,6 +51,7 @@ export interface B2cCatalogItem {
   featured: boolean;
   availability: B2cAvailability;
   primary_image?: B2cImage | null;
+  images: B2cImage[];
   variant_count: number;
   colors: string[];
   color_slugs: string[];
@@ -53,6 +59,7 @@ export interface B2cCatalogItem {
   action_label?: string;
   status_copy?: string;
   badge_label?: string;
+  updated_at: string;
 }
 
 export interface B2cCatalogPagination {
@@ -70,8 +77,8 @@ export interface B2cCatalogFilter {
 
 export interface B2cCatalogFilters {
   categories: B2cCatalogFilter[];
-  colors: B2cCatalogFilter[];
-  sizes: B2cCatalogFilter[];
+  colors?: B2cCatalogFilter[];
+  sizes?: B2cCatalogFilter[];
 }
 
 export interface B2cCatalogResponse {
@@ -107,8 +114,11 @@ export interface B2cProductSeo {
 }
 
 export interface B2cProduct {
+  id: string;
+  sku: string;
   slug: string;
   title: string;
+  brand: string;
   short_description?: string;
   description?: string;
   category_slug?: string;
@@ -119,6 +129,9 @@ export interface B2cProduct {
   availability: B2cAvailability;
   images: B2cImage[];
   variants: B2cProductVariant[];
+  colors: string[];
+  sizes: string[];
+  updated_at: string;
   seo?: B2cProductSeo;
 }
 
@@ -132,7 +145,9 @@ export interface B2cProductResponse {
 
 export interface CatalogQuery {
   page?: number;
-  limit?: number;
+  pageSize?: number;
   category?: string;
-  featured?: boolean;
+  brand?: string;
+  search?: string;
+  sort?: 'recentes' | 'nome_asc' | 'nome_desc' | 'preco_asc' | 'preco_desc';
 }

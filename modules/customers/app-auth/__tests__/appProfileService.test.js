@@ -49,11 +49,11 @@ for (const [accountStatus, accessStatus, expected] of [
   ["ACTIVE", "PENDING_PHONE_VERIFICATION", "PENDING_PHONE_VERIFICATION"], ["ACTIVE", "PENDING_APPROVAL", "PENDING_APPROVAL"],
   ["ACTIVE", "APPROVED", "APPROVED"], ["ACTIVE", "REJECTED", "REJECTED"], ["SUSPENDED", "APPROVED", "SUSPENDED"],
   ["BLOCKED", "APPROVED", "BLOCKED"], ["CLOSED", "APPROVED", "CLOSED"]
-]) test(`status real ${expected} mantem catalogo fechado`, async () => {
+]) test(`status real ${expected} aplica permissao do catalogo`, async () => {
   const context = await fixture(); const seeded = await seed(context);
   await context.db.run("UPDATE app_customer_accounts SET account_status=?,access_status=?,updated_at='2026-08-01T12:01:00.000Z' WHERE id=?", [accountStatus, accessStatus, seeded.accountId]);
   const status = await context.profile.getAccessStatus(seeded.auth);
-  assert.equal(status.effectiveStatus, expected); assert.equal(status.canViewCatalog, false); assert.equal(status.permissions.canViewCatalog, false); assert.equal(status.hasActiveMasterLink, true);
+  assert.equal(status.effectiveStatus, expected); assert.equal(status.canViewCatalog, expected === "APPROVED"); assert.equal(status.permissions.canViewCatalog, expected === "APPROVED"); assert.equal(status.hasActiveMasterLink, true);
   assert.doesNotMatch(JSON.stringify(status), /administrativeReason|internalReason|cpf|phone_lookup|master-/i);
   if (expected === "CLOSED") assert.equal((await context.db.get("SELECT status FROM app_sessions WHERE account_id=?", [seeded.accountId])).status, "REVOKED");
   await context.db.close();
@@ -86,7 +86,7 @@ test("endpoints privados entregam status e perfil e rejeitam requisicao sem toke
   const headers = { Authorization: `Bearer ${seeded.tokens.accessToken}`, "x-device-id": "device-1", "Content-Type": "application/json" };
   try {
     assert.equal((await fetch(`${base}/app/v1/access/status`)).status, 401);
-    const statusResponse = await fetch(`${base}/app/v1/access/status`, { headers }); assert.equal(statusResponse.status, 200); assert.equal((await statusResponse.json()).canViewCatalog, false);
+    const statusResponse = await fetch(`${base}/app/v1/access/status`, { headers }); assert.equal(statusResponse.status, 200); assert.equal((await statusResponse.json()).canViewCatalog, true);
     const profileResponse = await fetch(`${base}/app/v1/profile`, { headers }); assert.equal(profileResponse.status, 200); const profile = await profileResponse.json();
     const updateResponse = await fetch(`${base}/app/v1/profile`, { method: "PATCH", headers, body: JSON.stringify({ version: profile.version, fullName: "Cliente Endpoint", email: "endpoint@example.test" }) }); assert.equal(updateResponse.status, 200); assert.equal((await updateResponse.json()).email, "e***@example.test");
   } finally { await new Promise((resolve) => server.close(resolve)); await context.db.close(); }

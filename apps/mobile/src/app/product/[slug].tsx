@@ -1,5 +1,5 @@
-import { type Href, Redirect } from 'expo-router';
+import { ProductScreen } from '@/screens/ProductScreen';
 
 export default function ProductRoute() {
-  return <Redirect href={'/access-status' as Href} />;
+  return <ProductScreen />;
 }

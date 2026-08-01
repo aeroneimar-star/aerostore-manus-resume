@@ -50,7 +50,7 @@ function createAppProfileService(options = {}) {
     const policies = {
       PENDING_PHONE_VERIFICATION: [true, "PHONE_VERIFICATION_REQUIRED"],
       PENDING_APPROVAL: [false, "ACCESS_REVIEW_PENDING"],
-      APPROVED: [false, "CATALOG_NOT_AVAILABLE_YET"],
+      APPROVED: [true, "CATALOG_AVAILABLE"],
       REJECTED: [true, "CONTACT_SUPPORT"],
       SUSPENDED: [true, "CONTACT_SUPPORT"],
       BLOCKED: [true, "CONTACT_SUPPORT"],
@@ -87,10 +87,10 @@ function createAppProfileService(options = {}) {
       hasActiveMasterLink: Boolean(row.has_active_master_link),
       requestStatus: row.request_status || null,
       updatedAt: row.updated_at,
-      canViewCatalog: false,
+      canViewCatalog: status === "APPROVED",
       requiresAction,
       safeReasonCode,
-      permissions: { canViewProfile: !["BLOCKED", "CLOSED"].includes(status), canEditProfile: ["PENDING_APPROVAL", "APPROVED"].includes(status), canViewCatalog: false }
+      permissions: { canViewProfile: !["BLOCKED", "CLOSED"].includes(status), canEditProfile: ["PENDING_APPROVAL", "APPROVED"].includes(status), canViewCatalog: status === "APPROVED" }
     };
   }
 
