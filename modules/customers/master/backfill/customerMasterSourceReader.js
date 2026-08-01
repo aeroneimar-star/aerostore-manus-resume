@@ -30,6 +30,17 @@ function normalizePageOptions(options = {}) {
   return { limit, offset };
 }
 
+function normalizeCursorOptions(options = {}) {
+  const { limit } = normalizePageOptions(options);
+  return {
+    limit,
+    updatedAt: options.updatedAt == null ? null : String(options.updatedAt),
+    sourceId: options.sourceId == null ? null : String(options.sourceId),
+    upperUpdatedAt: options.upperUpdatedAt == null ? null : String(options.upperUpdatedAt),
+    upperSourceId: options.upperSourceId == null ? null : String(options.upperSourceId)
+  };
+}
+
 function createCustomerMasterSourceReader(dbApi) {
   if (!dbApi || typeof dbApi.get !== "function" || typeof dbApi.all !== "function") {
     throw new Error("CUSTOMER_MASTER_SOURCE_READER_DB_REQUIRED");
@@ -84,6 +95,65 @@ function createCustomerMasterSourceReader(dbApi) {
     );
   }
 
+  async function readIncrementalPage(sourceType, options = {}) {
+    if (!["contacts", "crm_contacts"].includes(sourceType)) {
+      throw new Error("CUSTOMER_MASTER_INCREMENTAL_SOURCE_TYPE_INVALID");
+    }
+    const { limit, updatedAt, sourceId, upperUpdatedAt, upperSourceId } = normalizeCursorOptions(options);
+    const columns = sourceType === "contacts" ? CONTACT_COLUMNS : CRM_CONTACT_COLUMNS;
+    const predicates = [];
+    const params = [];
+    if (updatedAt !== null) {
+      predicates.push("(updated_at > ? OR (updated_at = ? AND id > ?))");
+      params.push(updatedAt, updatedAt, sourceId || "");
+    }
+    if (upperUpdatedAt !== null) {
+      predicates.push("(updated_at < ? OR (updated_at = ? AND id <= ?))");
+      params.push(upperUpdatedAt, upperUpdatedAt, upperSourceId || "");
+    }
+    const cursorSql = predicates.length ? `WHERE ${predicates.join(" AND ")}` : "";
+    params.push(limit);
+    return all(
+      `SELECT ${columns}
+       FROM ${sourceType}
+       ${cursorSql}
+       ORDER BY updated_at ASC, id ASC
+       LIMIT ?`,
+      params
+    );
+  }
+
+  async function readLatestCursor(sourceType) {
+    if (!["contacts", "crm_contacts"].includes(sourceType)) {
+      throw new Error("CUSTOMER_MASTER_INCREMENTAL_SOURCE_TYPE_INVALID");
+    }
+    return get(
+      `SELECT updated_at, id FROM ${sourceType}
+       WHERE updated_at IS NOT NULL AND TRIM(CAST(updated_at AS TEXT)) != ''
+       ORDER BY updated_at DESC, id DESC
+       LIMIT 1`
+    );
+  }
+
+  async function countInvalidIncrementalCursors(sourceType) {
+    if (!["contacts", "crm_contacts"].includes(sourceType)) {
+      throw new Error("CUSTOMER_MASTER_INCREMENTAL_SOURCE_TYPE_INVALID");
+    }
+    const row = await get(
+      `SELECT COUNT(*) AS total FROM ${sourceType}
+       WHERE updated_at IS NULL OR TRIM(CAST(updated_at AS TEXT)) = ''`
+    );
+    return Number(row?.total || 0);
+  }
+
+  async function readSourceById(sourceType, sourceId) {
+    if (!["contacts", "crm_contacts"].includes(sourceType)) {
+      throw new Error("CUSTOMER_MASTER_INCREMENTAL_SOURCE_TYPE_INVALID");
+    }
+    const columns = sourceType === "contacts" ? CONTACT_COLUMNS : CRM_CONTACT_COLUMNS;
+    return get(`SELECT ${columns} FROM ${sourceType} WHERE id = ?`, [String(sourceId)]);
+  }
+
   async function getSourceSchemaSummary() {
     const [contacts, crmContacts] = await Promise.all([
       tableExists("contacts"),
@@ -100,6 +170,10 @@ function createCustomerMasterSourceReader(dbApi) {
     countCrmContacts,
     readContactsPage,
     readCrmContactsPage,
+    readIncrementalPage,
+    readLatestCursor,
+    countInvalidIncrementalCursors,
+    readSourceById,
     getSourceSchemaSummary
   });
 }
@@ -108,5 +182,6 @@ module.exports = {
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
   normalizePageOptions,
+  normalizeCursorOptions,
   createCustomerMasterSourceReader
 };
