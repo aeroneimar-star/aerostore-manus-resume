@@ -1,14 +1,45 @@
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
-import type { AccessStatus } from '@/app-auth/contracts';
+import { ActivityIndicator, Pressable, ScrollView, Text, useWindowDimensions, View } from 'react-native';
+import { useWebFocusVisible, webFocusVisibleStyle } from '@/accessibility/useWebFocusVisible';
+import type { AccessSnapshot, AccessStatus } from '@/app-auth/contracts';
 import { authStyles as s } from './authStyles';
 
-export function AccessStatusScreen({ status, loggingOut=false, onLogout }: { status: AccessStatus; loggingOut?: boolean; onLogout?: () => void }) {
-  const approved=status==='APPROVED'; const rejected=status==='REJECTED'; const restricted=status==='SUSPENDED'||status==='BLOCKED'; const phonePending=status==='PENDING_PHONE_VERIFICATION';
+const copy: Record<AccessStatus, { title: string; description: string; symbol: string }> = {
+  PENDING_PHONE_VERIFICATION: { title: 'Confirme seu telefone para continuar.', description: 'Volte à confirmação para concluir esta etapa com segurança.', symbol: '·' },
+  PENDING_APPROVAL: { title: 'Seu cadastro está em análise.', description: 'A equipe AEROSTORE está verificando seus dados. Avisaremos quando o acesso for liberado.', symbol: '◷' },
+  APPROVED: { title: 'Seu acesso foi aprovado.', description: 'Seu perfil está pronto. O catálogo será disponibilizado em breve.', symbol: '✓' },
+  REJECTED: { title: 'Não foi possível liberar seu acesso.', description: 'Entre em contato com a AEROSTORE para mais informações.', symbol: '!' },
+  SUSPENDED: { title: 'Seu acesso está temporariamente suspenso.', description: 'Entre em contato com a AEROSTORE para receber ajuda.', symbol: '—' },
+  BLOCKED: { title: 'Não foi possível acessar sua conta.', description: 'Entre em contato com a AEROSTORE.', symbol: '×' },
+  CLOSED: { title: 'Esta conta não está disponível.', description: 'A sessão foi encerrada com segurança.', symbol: '—' },
+};
+
+function Action({ label, onPress, secondary = false, separated = false, disabled = false }: { label: string; onPress(): void; secondary?: boolean; separated?: boolean; disabled?: boolean }) {
+  const focus = useWebFocusVisible();
+  return <Pressable accessibilityLabel={label} accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} onFocus={focus.onFocus} onBlur={focus.onBlur} style={[s.button, secondary && s.secondary, s.statusAction, separated && s.statusActionSeparated, disabled && s.buttonMuted, focus.focusVisible && webFocusVisibleStyle]}><Text style={[s.buttonText, secondary && s.secondaryText]}>{label}</Text></Pressable>;
+}
+
+export const isCompactAccessHeader = (width: number) => width <= 430;
+
+export function AccessStatusHeader({ compact }: { compact: boolean }) {
+  return <View accessibilityLabel="Cabeçalho do status de acesso" style={[s.statusHeader, compact && s.statusHeaderCompact]}><Text style={[s.eyebrow, s.statusEyebrow]}>AEROSTORE · ACESSO</Text><Text style={s.statusMeta}>ATUALIZADO AGORA</Text></View>;
+}
+
+export function AccessStatusScreen({ snapshot, loading = false, error, onRefresh, onProfile, onLogout, onVerifyPhone }: { snapshot: AccessSnapshot; loading?: boolean; error?: string; onRefresh(): void; onProfile(): void; onLogout(): void; onVerifyPhone(): void }) {
+  const { width } = useWindowDimensions();
+  const compactHeader = isCompactAccessHeader(width);
+  const status = snapshot.effectiveStatus; const content = copy[status]; const profileAvailable = snapshot.permissions.canViewProfile;
   return <ScrollView style={s.page} contentContainerStyle={s.content}><View style={s.card}>
-    <Text style={s.eyebrow}>AEROSTORE</Text><View style={s.seal}><Text style={s.sealText}>{approved?'✓':rejected?'!':'◷'}</Text></View>
-    <Text style={s.title}>{approved?'Seu acesso foi aprovado.':rejected?'Não foi possível liberar seu acesso.':restricted?'Seu acesso está indisponível.':phonePending?'Confirme seu telefone.':'Seu cadastro está em análise.'}</Text>
-    <Text style={s.description}>{approved?'O catálogo será carregado em uma próxima fase segura.':rejected?'Entre em contato com a AEROSTORE.':restricted?'Entre em contato com a AEROSTORE para receber ajuda.':phonePending?'Conclua a confirmação para continuar.':'Avisaremos quando o acesso for liberado.'}</Text>
-    <Text style={s.helper}>O catálogo privado permanece protegido nesta etapa.</Text>
-    {onLogout ? <Pressable accessibilityLabel="Sair da conta" accessibilityRole="button" disabled={loggingOut} onPress={onLogout} style={[s.button,s.secondary,loggingOut&&s.buttonMuted]}>{loggingOut?<ActivityIndicator color="#E8E1D5"/>:<Text style={[s.buttonText,s.secondaryText]}>Sair da conta</Text>}</Pressable> : null}
+    <AccessStatusHeader compact={compactHeader} />
+    <View style={s.seal}><Text style={s.sealText}>{content.symbol}</Text></View>
+    <Text accessibilityRole="header" style={s.title}>{content.title}</Text><Text style={s.description}>{content.description}</Text>
+    <View style={s.securityNote}><Text style={s.securityNoteTitle}>Status verificado</Text><Text style={s.securityNoteText}>Esta informação vem diretamente da AEROSTORE. O catálogo privado permanece protegido nesta etapa.</Text></View>
+    {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
+    <View accessibilityLabel="Ações do status de acesso" style={s.statusActions}>
+      {status === 'PENDING_PHONE_VERIFICATION' ? <Action label="Confirmar telefone" onPress={onVerifyPhone} disabled={loading} /> : null}
+      {profileAvailable ? <Action label="Abrir meu perfil" onPress={onProfile} separated={status === 'PENDING_PHONE_VERIFICATION'} disabled={loading} /> : null}
+      <Action label={loading ? 'Atualizando status…' : 'Atualizar status'} onPress={onRefresh} secondary separated={status === 'PENDING_PHONE_VERIFICATION' || profileAvailable} disabled={loading} />
+      <Action label={status === 'CLOSED' ? 'Voltar ao início' : 'Sair da conta'} onPress={onLogout} secondary separated disabled={loading} />
+    </View>
+    {loading ? <ActivityIndicator accessibilityLabel="Atualizando status" color="#E3B18E" style={s.inlineLoader} /> : null}
   </View></ScrollView>;
 }

@@ -158,8 +158,10 @@ function createAppSessionService(options = {}) {
     if(!session||session.status!=="ACTIVE"||session.revoked_at) throw new AppSessionError("SESSION_REVOKED");
     if(clock()>=new Date(session.expires_at)){const at=iso(clock());await db.run("UPDATE app_sessions SET status='EXPIRED',revoked_at=?,revoke_reason='EXPIRED',updated_at=? WHERE id=? AND status='ACTIVE'",[at,at,session.id]);await emit("SESSION_EXPIRED",session);throw new AppSessionError("SESSION_EXPIRED");}
     const {account,masterId}=await accountContext(payload.account_id);
-    if(session.account_id!==account.id||Number(payload.token_version)!==Number(account.token_version)||Number(session.token_version)!==Number(account.token_version))throw new AppSessionError("TOKEN_VERSION_INVALID");
-    accessState(account,options.allowPending===true);
+    const versionMatches=Number(payload.token_version)===Number(account.token_version)&&Number(session.token_version)===Number(account.token_version);
+    const restrictedStatusObservation=options.observeStatus===true&&["BLOCKED","CLOSED"].includes(account.account_status);
+    if(session.account_id!==account.id||(!versionMatches&&!restrictedStatusObservation))throw new AppSessionError("TOKEN_VERSION_INVALID");
+    if (options.observeStatus !== true) accessState(account,options.allowPending===true);
     await db.run("UPDATE app_sessions SET last_seen_at=?,updated_at=? WHERE id=?",[iso(clock()),iso(clock()),session.id]);
     return {account,masterId,session,payload};
   }

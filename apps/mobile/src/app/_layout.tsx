@@ -20,6 +20,8 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: theme.colors.ink },
         }}>
         <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="access-status" options={{ headerShown: false }} />
+        <Stack.Screen name="profile" options={{ headerShown: false }} />
         <Stack.Screen name="catalog" options={{ headerShown: false }} />
         <Stack.Screen
           name="product/[slug]"

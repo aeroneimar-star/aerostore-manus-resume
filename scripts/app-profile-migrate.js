@@ -1,0 +1,46 @@
+"use strict";
+
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const sqlite3 = require("sqlite3");
+const { applyAppProfileSchema, getAppProfileSchemaStatus } = require("../modules/customers/app-auth/persistence/appProfileSchema");
+
+function parseArgs(argv) {
+  const out = {}; const values = new Set(["database", "allowed-root", "backup-root", "backup-file", "backup-sha256"]);
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (["--preflight", "--apply", "--verify"].includes(token)) out[token.slice(2)] = true;
+    else if (token.startsWith("--") && values.has(token.slice(2)) && argv[index + 1]) out[token.slice(2)] = argv[++index];
+    else throw new Error("APP_PROFILE_ARGUMENT_INVALID");
+  }
+  if (Number(!!out.preflight) + Number(!!out.apply) + Number(!!out.verify) !== 1) throw new Error("APP_PROFILE_MODE_REQUIRED");
+  return { ...out, mode: out.apply ? "apply" : out.verify ? "verify" : "preflight" };
+}
+function inside(root, target) { const relative = path.relative(path.resolve(root), path.resolve(target)); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); }
+function open(file, readonly) { return new Promise((resolve, reject) => { const connection = new sqlite3.Database(file, readonly ? sqlite3.OPEN_READONLY : sqlite3.OPEN_READWRITE, (error) => error ? reject(error) : resolve(connection)); }); }
+function api(connection) { return { run: (sql, params = []) => new Promise((resolve, reject) => connection.run(sql, params, function done(error) { error ? reject(error) : resolve({ changes: this.changes }); })), get: (sql, params = []) => new Promise((resolve, reject) => connection.get(sql, params, (error, row) => error ? reject(error) : resolve(row))), all: (sql, params = []) => new Promise((resolve, reject) => connection.all(sql, params, (error, rows) => error ? reject(error) : resolve(rows))), close: () => new Promise((resolve, reject) => connection.close((error) => error ? reject(error) : resolve())) }; }
+async function fileHash(file) { const digest = crypto.createHash("sha256"); for await (const chunk of fs.createReadStream(file)) digest.update(chunk); return digest.digest("hex"); }
+async function tableHash(db, table, columns) { const rows = await db.all(`SELECT ${columns} FROM ${table} ORDER BY id`); return { count: rows.length, hash: crypto.createHash("sha256").update(JSON.stringify(rows)).digest("hex") }; }
+async function snapshot(db) { return { masters: await tableHash(db, "customer_master_records", "id,status,version,eligibility_status,updated_at,deleted_at"), sources: await tableHash(db, "customer_master_sources", "id,master_id,source_type,source_id,source_hash,status,updated_at"), conflicts: await tableHash(db, "customer_identity_conflicts", "id,conflict_type,severity,status,rule_version,updated_at"), accounts: await tableHash(db, "app_customer_accounts", "id,phone_lookup_hash,phone_verified_at,account_status,access_status,version,updated_at") }; }
+
+async function main() {
+  const input = parseArgs(process.argv.slice(2));
+  if (!input.database || !input["allowed-root"]) throw new Error("APP_PROFILE_DATABASE_REQUIRED");
+  const file = path.resolve(input.database); const root = path.resolve(input["allowed-root"]);
+  if (!inside(root, file) || !fs.existsSync(file)) throw new Error("APP_PROFILE_DATABASE_NOT_ALLOWED");
+  if (input.mode === "apply") {
+    const backup = path.resolve(String(input["backup-file"] || "")); const backupRoot = path.resolve(String(input["backup-root"] || input["allowed-root"]));
+    if (!inside(backupRoot, backup) || !fs.existsSync(backup) || await fileHash(backup) !== String(input["backup-sha256"] || "").toLowerCase()) throw new Error("APP_PROFILE_BACKUP_REQUIRED");
+  }
+  const db = api(await open(file, input.mode !== "apply"));
+  try {
+    if (input.mode !== "apply") await db.run("PRAGMA query_only=ON"); else await db.run("PRAGMA busy_timeout=10000");
+    if ((await db.get("PRAGMA quick_check"))?.quick_check !== "ok") throw new Error("APP_PROFILE_QUICK_CHECK_FAILED");
+    const before = await snapshot(db); const migration = input.mode === "apply" ? await applyAppProfileSchema(db) : null;
+    const schema = await getAppProfileSchemaStatus(db); if (input.mode !== "preflight" && !schema.ready) throw new Error("APP_PROFILE_SCHEMA_INCOMPLETE");
+    const after = await snapshot(db); if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("APP_PROFILE_EXISTING_DATA_CHANGED");
+    process.stdout.write(`${JSON.stringify({ status: "APP_PROFILE_MIGRATION_OK", mode: input.mode, quickCheck: "ok", queryOnly: Number((await db.get("PRAGMA query_only")).query_only || 0), schema, existingData: after, statementsExecuted: migration?.statementsExecuted || 0 }, null, 2)}\n`);
+  } finally { await db.close(); }
+}
+main().catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
