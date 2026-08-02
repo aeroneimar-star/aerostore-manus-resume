@@ -271,6 +271,13 @@ export function CartScreen() {
         <Text style={[styles.headerSubtitle, { color: tokens.textMuted }]}>
           {state.itemCount} {state.itemCount === 1 ? 'peça' : 'peças'}
         </Text>
+        <Pressable
+          onPress={() => router.navigate('/orders')}
+          testID="cart-my-orders"
+          style={{ marginLeft: 'auto' }}
+        >
+          <Text style={[styles.ordersLink, { color: tokens.accent }]}>Meus Pedidos</Text>
+        </Pressable>
       </View>
 
       <FlatList
@@ -506,5 +513,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     letterSpacing: 1,
+  },
+  ordersLink: {
+    fontSize: 13,
+    fontWeight: '600',
   },
 });
