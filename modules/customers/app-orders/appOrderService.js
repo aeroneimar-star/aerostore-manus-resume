@@ -447,8 +447,8 @@ function createAppOrderService(options = {}) {
       await audit("order_failed", { error: err.message, idempotency_key: idempotencyKey }, failedOrderId || "");
 
       throw new AppOrderError(
-        err.code === "INSUFFICIENT_STOCK" ? "STOCK_UNAVAILABLE" :
-        err.code === "STOCK_CONCURRENCY_CONFLICT" ? "STOCK_CONCURRENCY" :
+        (err.code === "INSUFFICIENT_STOCK" || err.message?.includes("INSUFFICIENT_STOCK")) ? "STOCK_UNAVAILABLE" :
+        (err.code === "STOCK_CONCURRENCY_CONFLICT" || err.message?.includes("STOCK_CONCURRENCY_CONFLICT")) ? "STOCK_CONCURRENCY" :
         "ORDER_CREATION_FAILED",
         400,
         `Falha ao criar pedido: ${err.message}`
