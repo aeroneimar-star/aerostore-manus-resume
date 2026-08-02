@@ -117,6 +117,7 @@ const { createAppCatalogService } = require("./modules/customers/app-catalog/app
 const { createAppCartRouter } = require("./modules/customers/app-cart/appCartRoutes");
 const { createAppAddressRouter } = require("./modules/customers/app-address/appAddressRoutes");
 const { createAppFulfillmentRouter } = require("./modules/customers/app-fulfillment/appFulfillmentRoutes");
+const { createAppOrderRouter } = require("./modules/customers/app-orders/appOrderRoutes");
 const { getNotificationService, getNotificationDryRunDefault } = require("./src/notification/NotificationService");
 const { startCashbackReminderScheduler } = require("./src/notification/CashbackScheduler");
 const {
@@ -18656,6 +18657,26 @@ app.use("/app/v1", createAppCatalogRouter({ dbApi: { run, get, all }, catalogSer
 app.use("/app/v1", createAppCartRouter({ dbApi: { run, get, all }, catalogService: appCatalogService, recordAudit: recordAuditEvent }));
 app.use("/app/v1", createAppAddressRouter({ dbApi: { run, get, all }, recordAudit: recordAuditEvent }));
 app.use("/app/v1", createAppFulfillmentRouter({ dbApi: { run, get, all }, catalogService: appCatalogService, recordAudit: recordAuditEvent }));
+
+// Shop Order Routes — pedido com reserva de estoque PDV real
+try {
+  const { createAppFulfillmentService } = require("./modules/customers/app-fulfillment/appFulfillmentService");
+  const { createInventoryService } = require("./modules/customers/app-orders/inventoryService");
+  const { createAppOrderService } = require("./modules/customers/app-orders/appOrderService");
+  const appFulfillmentService = createAppFulfillmentService({ dbApi: { run, get, all }, catalogService: appCatalogService, recordAudit: recordAuditEvent });
+  const inventoryService = createInventoryService({ dbApi: { run, get, all } });
+  const appOrderService = createAppOrderService({
+    dbApi: { run, get, all },
+    fulfillmentService: appFulfillmentService,
+    inventoryService,
+    catalogService: appCatalogService,
+    recordAudit: recordAuditEvent,
+  });
+  app.use("/app/v1", createAppOrderRouter({ express: require("express"), orderService: appOrderService }));
+} catch (orderInitErr) {
+  console.error("[server] Falha ao inicializar Order Service:", orderInitErr.message);
+}
+
 app.use("/api", authMiddleware);
 app.use("/api", auditSensitiveMutationMiddleware);
 

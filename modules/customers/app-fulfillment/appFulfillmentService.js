@@ -398,13 +398,33 @@ function createAppFulfillmentService(options = {}) {
     }));
   }
 
+  async function validateDelivery(input = {}) {
+    if (!input.address_id) throw new AppFulfillmentError("ADDRESS_REQUIRED", 400, "Endereço de entrega obrigatório.");
+    if (!input.account_id) throw new AppFulfillmentError("ACCOUNT_REQUIRED", 400, "account_id obrigatório.");
+    const addr = await db.get(
+      "SELECT * FROM app_customer_addresses WHERE id = ? AND account_id = ? AND archived_at IS NULL",
+      [input.address_id, input.account_id]
+    );
+    if (!addr) throw new AppFulfillmentError("ADDRESS_NOT_FOUND", 404, "Endereço de entrega não encontrado.");
+    return { ok: true, address_id: addr.id };
+  }
+
+  async function validatePickup(input = {}) {
+    if (!input.store_id) throw new AppFulfillmentError("PICKUP_STORE_REQUIRED", 400, "Loja de retirada obrigatória.");
+    const store = STORES_BY_ID[input.store_id];
+    if (!store) throw new AppFulfillmentError("INVALID_PICKUP_STORE", 400, "Loja de retirada inválida ou indisponível.");
+    return { ok: true, store_id: store.id, store_name: store.name };
+  }
+
   return {
     getFulfillmentOptions,
     setFulfillment,
     requestShippingQuote,
     getDeliverySummary,
     getActiveStores,
-    getActiveCart
+    getActiveCart,
+    validateDelivery,
+    validatePickup,
   };
 }
 

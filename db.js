@@ -2461,6 +2461,8 @@ async function initializeDatabase() {
   await applyAppCartSchema({ run, get, all });
   await applyAppAddressSchema({ run, get, all });
   await applyAppFulfillmentSchema({ run, get, all });
+  const { applyAppOrderSchema } = require("./modules/customers/app-orders/persistence/appOrderSchema");
+  await applyAppOrderSchema({ run, get, all });
 
   await ensureSeedData();
   await ensureAiCatalogSeed();
