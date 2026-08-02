@@ -34,6 +34,8 @@ function RootLayoutInner() {
         <Stack.Screen name="address-list" options={{ title: 'Enderecos', headerBackTitle: 'Voltar' }} />
         <Stack.Screen name="address-form" options={{ title: 'Endereco', headerBackTitle: 'Enderecos' }} />
         <Stack.Screen name="fulfillment" options={{ title: 'Entrega', headerBackTitle: 'Carrinho' }} />
+        <Stack.Screen name="orders" options={{ title: 'Meus Pedidos', headerBackTitle: 'Voltar' }} />
+        <Stack.Screen name="order/[id]" options={{ title: 'Pedido', headerBackTitle: 'Pedidos' }} />
       </Stack>
     </>
   );
