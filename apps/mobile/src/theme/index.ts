@@ -1,5 +1,18 @@
+/**
+ * AEROSTORE Theme Module — Fase 3.7.1
+ *
+ * Exports:
+ * - theme: legacy static theme (backward compat)
+ * - ThemeProvider: global theme provider
+ * - useAppTheme: hook for semantic tokens + preference
+ * - darkTokens / lightTokens: raw token sets
+ * - themeStorage: persistence layer
+ * - types: ThemeTokens, ThemePreference, ActiveTheme
+ */
+
 import { Platform } from 'react-native';
 
+// Legacy static theme — preserved for backward compat where needed
 const fonts = Platform.select({
   ios: { display: 'Georgia', body: 'Avenir Next' },
   android: { display: 'serif', body: 'sans-serif' },
@@ -60,3 +73,11 @@ export const theme = {
     }) ?? {},
   },
 } as const;
+
+// New theme system exports
+export { ThemeProvider, useAppTheme, getThemeContext } from './ThemeContext';
+export { darkTokens, lightTokens } from './tokens';
+export type { ThemeTokens } from './tokens';
+export { themeStorage } from './storage';
+export type { ThemePreference } from './storage';
+export type { ActiveTheme } from './ThemeContext';

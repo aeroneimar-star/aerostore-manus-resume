@@ -6,7 +6,7 @@ import {
   webFocusVisibleStyle,
 } from '@/accessibility/useWebFocusVisible';
 import type { B2cCatalogItem } from '@/catalog/contracts';
-import { theme } from '@/theme';
+import { useAppTheme, theme } from '@/theme';
 
 import { Price } from './Price';
 
@@ -18,6 +18,7 @@ interface ProductCardProps {
 
 export function ProductCard({ item, width, onPress }: ProductCardProps) {
   const focus = useWebFocusVisible();
+  const { tokens } = useAppTheme();
 
   return (
     <Pressable
@@ -33,7 +34,7 @@ export function ProductCard({ item, width, onPress }: ProductCardProps) {
         pressed && styles.cardPressed,
         focus.focusVisible && webFocusVisibleStyle,
       ]}>
-      <View style={styles.imageFrame}>
+      <View style={[styles.imageFrame, { backgroundColor: tokens.skeleton }]}>
         {item.primary_image ? (
           <Image
             accessible
@@ -46,34 +47,34 @@ export function ProductCard({ item, width, onPress }: ProductCardProps) {
           />
         ) : (
           <View style={styles.placeholder}>
-            <Text style={styles.placeholderText}>A</Text>
+            <Text style={[styles.placeholderText, { color: tokens.accent }]}>A</Text>
           </View>
         )}
         {item.badge_label ? (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{item.badge_label}</Text>
+          <View style={[styles.badge, { backgroundColor: tokens.background }]}>
+            <Text style={[styles.badgeText, { color: tokens.textPrimary }]}>{item.badge_label}</Text>
           </View>
         ) : null}
       </View>
       <View style={styles.copy}>
-        <Text maxFontSizeMultiplier={1.5} style={styles.category}>
+        <Text maxFontSizeMultiplier={1.5} style={[styles.category, { color: tokens.textMuted }]}>
           {item.category_label ?? 'Coleção'}
         </Text>
-        <Text maxFontSizeMultiplier={1.45} style={styles.title}>
+        <Text maxFontSizeMultiplier={1.45} style={[styles.title, { color: tokens.textPrimary }]}>
           {item.title}
         </Text>
-        <Text maxFontSizeMultiplier={1.5} style={styles.description} numberOfLines={2}>
+        <Text maxFontSizeMultiplier={1.5} style={[styles.description, { color: tokens.textSecondary }]} numberOfLines={2}>
           {item.short_description}
         </Text>
         <Price
           priceCents={item.price_cents}
           compareAtPriceCents={item.compare_at_price_cents}
         />
-        <View style={styles.footer}>
-          <Text maxFontSizeMultiplier={1.5} style={styles.status}>
+        <View style={[styles.footer, { borderTopColor: tokens.divider }]}>
+          <Text maxFontSizeMultiplier={1.5} style={[styles.status, { color: tokens.textSecondary }]}>
             {item.status_copy}
           </Text>
-          <Text style={styles.arrow} accessibilityElementsHidden>
+          <Text style={[styles.arrow, { color: tokens.textMuted }]} accessibilityElementsHidden>
             ↗
           </Text>
         </View>
@@ -84,7 +85,6 @@ export function ProductCard({ item, width, onPress }: ProductCardProps) {
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: theme.colors.inkRaised,
     borderRadius: theme.radii.lg,
     overflow: 'hidden',
     ...theme.shadows.card,
@@ -95,7 +95,6 @@ const styles = StyleSheet.create({
   },
   imageFrame: {
     aspectRatio: 0.82,
-    backgroundColor: '#24231F',
     position: 'relative',
   },
   image: {
@@ -108,12 +107,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   placeholderText: {
-    color: theme.colors.copper,
     fontFamily: theme.typography.display,
     fontSize: 64,
   },
   badge: {
-    backgroundColor: theme.colors.ivory,
     borderRadius: theme.radii.pill,
     left: theme.spacing.sm,
     paddingHorizontal: theme.spacing.sm,
@@ -122,7 +119,6 @@ const styles = StyleSheet.create({
     top: theme.spacing.sm,
   },
   badgeText: {
-    color: theme.colors.ink,
     fontFamily: theme.typography.body,
     fontSize: 10,
     fontWeight: '800',
@@ -134,7 +130,6 @@ const styles = StyleSheet.create({
     padding: theme.spacing.md,
   },
   category: {
-    color: theme.colors.copperSoft,
     fontFamily: theme.typography.body,
     fontSize: 10,
     fontWeight: '700',
@@ -142,13 +137,11 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   title: {
-    color: theme.colors.ivory,
     fontFamily: theme.typography.display,
     fontSize: 22,
     lineHeight: 27,
   },
   description: {
-    color: theme.colors.stone,
     fontFamily: theme.typography.body,
     fontSize: 13,
     lineHeight: 19,
@@ -156,7 +149,6 @@ const styles = StyleSheet.create({
   },
   footer: {
     alignItems: 'center',
-    borderTopColor: '#302F2B',
     borderTopWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -164,13 +156,11 @@ const styles = StyleSheet.create({
     paddingTop: theme.spacing.sm,
   },
   status: {
-    color: theme.colors.paper,
     flex: 1,
     fontFamily: theme.typography.body,
     fontSize: 11,
   },
   arrow: {
-    color: theme.colors.copperSoft,
     fontSize: 20,
   },
 });

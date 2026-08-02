@@ -4,7 +4,7 @@ import {
   useWebFocusVisible,
   webFocusVisibleStyle,
 } from '@/accessibility/useWebFocusVisible';
-import { theme } from '@/theme';
+import { useAppTheme, theme } from '@/theme';
 
 export interface ChipOption<T extends string | boolean | undefined> {
   label: string;
@@ -31,6 +31,7 @@ function FilterChip<T extends string | boolean | undefined>({
   option,
 }: FilterChipProps<T>) {
   const focus = useWebFocusVisible();
+  const { tokens } = useAppTheme();
 
   return (
     <Pressable
@@ -46,11 +47,12 @@ function FilterChip<T extends string | boolean | undefined>({
       onPress={() => onChange(option.value)}
       style={({ pressed }) => [
         styles.chip,
-        active && styles.chipActive,
+        { borderColor: tokens.borderStrong },
+        active && { backgroundColor: tokens.primary, borderColor: tokens.primary },
         pressed && styles.chipPressed,
         focus.focusVisible && webFocusVisibleStyle,
       ]}>
-      <Text style={[styles.label, active && styles.labelActive]}>
+      <Text style={[styles.label, { color: tokens.textSecondary }, active && { color: tokens.primaryText }]}>
         {option.label}
         {option.count === undefined ? '' : `  ${option.count}`}
       </Text>
@@ -93,27 +95,18 @@ const styles = StyleSheet.create({
   },
   chip: {
     alignItems: 'center',
-    borderColor: '#373631',
     borderRadius: theme.radii.pill,
     borderWidth: 1,
     justifyContent: 'center',
     minHeight: theme.sizes.touch,
     paddingHorizontal: theme.spacing.md,
   },
-  chipActive: {
-    backgroundColor: theme.colors.ivory,
-    borderColor: theme.colors.ivory,
-  },
   chipPressed: {
     opacity: 0.7,
   },
   label: {
-    color: theme.colors.paper,
     fontFamily: theme.typography.body,
     fontSize: 13,
     fontWeight: '600',
-  },
-  labelActive: {
-    color: theme.colors.ink,
   },
 });

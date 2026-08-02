@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 
-import { theme } from '@/theme';
+import { useAppTheme, theme } from '@/theme';
 import { createCartClient } from '@/cart/client';
 import { CartClientError } from '@/cart/CartClientError';
 import type { CartItem } from '@/cart/contracts';
@@ -30,19 +30,20 @@ function formatBrl(cents: number): string {
   return Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(cents / 100);
 }
 
-function getQuantityState(availability: string): { color: string; label: string } {
+function getQuantityState(availability: string, tokens: import('@/theme').ThemeTokens): { color: string; label: string } {
   switch (availability) {
     case 'in_stock':
-      return { color: theme.colors.mint, label: 'Disponível' };
+      return { color: tokens.success, label: 'Disponível' };
     case 'low_stock':
-      return { color: theme.colors.copper, label: 'Últimas peças' };
+      return { color: tokens.accent, label: 'Últimas peças' };
     default:
-      return { color: theme.colors.rose, label: 'Indisponível' };
+      return { color: tokens.error, label: 'Indisponível' };
   }
 }
 
 export function CartScreen() {
   const router = useRouter();
+  const { tokens } = useAppTheme();
   const client = createCartClient();
   const [state, setState] = useState<CartState>({
     status: 'loading',
@@ -143,9 +144,9 @@ export function CartScreen() {
 
   const renderItem = useCallback(
     ({ item }: { item: CartItem }) => {
-      const qtyState = getQuantityState(item.availability);
+      const qtyState = getQuantityState(item.availability, tokens);
       return (
-        <View style={styles.cartItem} testID="cart-item">
+        <View style={[styles.cartItem, { backgroundColor: tokens.surface }]} testID="cart-item">
           <View style={styles.itemImageContainer}>
             {item.product.primary_image?.url ? (
               <Image
@@ -154,43 +155,43 @@ export function CartScreen() {
                 resizeMode="cover"
               />
             ) : (
-              <View style={[styles.itemImage, styles.itemImagePlaceholder]}>
-                <Text style={styles.placeholderText}>PE</Text>
+              <View style={[styles.itemImage, styles.itemImagePlaceholder, { backgroundColor: tokens.surfaceMuted }]}>
+                <Text style={[styles.placeholderText, { color: tokens.textMuted }]}>PE</Text>
               </View>
             )}
           </View>
           <View style={styles.itemDetails}>
-            <Text style={styles.itemBrand} numberOfLines={1}>
+            <Text style={[styles.itemBrand, { color: tokens.textMuted }]} numberOfLines={1}>
               {item.product.brand}
             </Text>
-            <Text style={styles.itemTitle} numberOfLines={2}>
+            <Text style={[styles.itemTitle, { color: tokens.textPrimary }]} numberOfLines={2}>
               {item.product.title}
             </Text>
-            <Text style={styles.itemVariant}>
+            <Text style={[styles.itemVariant, { color: tokens.textMuted }]}>
               {[item.product.color, item.product.size].filter(Boolean).join(' · ')}
             </Text>
             <View style={styles.itemBottom}>
               <View style={styles.quantityRow}>
                 <Pressable
-                  style={styles.qtyButton}
+                  style={[styles.qtyButton, { borderColor: tokens.accent }]}
                   onPress={() => handleQuantityChange(item.id, -1)}
                   accessibilityLabel="Diminuir quantidade"
                   testID={`qty-decrease-${item.id}`}
                 >
-                  <Text style={styles.qtyButtonText}>−</Text>
+                  <Text style={[styles.qtyButtonText, { color: tokens.accent }]}>−</Text>
                 </Pressable>
-                <Text style={styles.qtyValue}>{item.quantity}</Text>
+                <Text style={[styles.qtyValue, { color: tokens.textPrimary }]}>{item.quantity}</Text>
                 <Pressable
-                  style={styles.qtyButton}
+                  style={[styles.qtyButton, { borderColor: tokens.accent }]}
                   onPress={() => handleQuantityChange(item.id, 1)}
                   accessibilityLabel="Aumentar quantidade"
                   testID={`qty-increase-${item.id}`}
                 >
-                  <Text style={styles.qtyButtonText}>+</Text>
+                  <Text style={[styles.qtyButtonText, { color: tokens.accent }]}>+</Text>
                 </Pressable>
               </View>
               <View style={styles.itemPriceRow}>
-                <Text style={styles.itemTotal}>{formatBrl(item.line_total_cents)}</Text>
+                <Text style={[styles.itemTotal, { color: tokens.textPrimary }]}>{formatBrl(item.line_total_cents)}</Text>
                 <Text style={[styles.availabilityBadge, { color: qtyState.color }]}>
                   {qtyState.label}
                 </Text>
@@ -203,20 +204,20 @@ export function CartScreen() {
             accessibilityLabel="Remover item"
             testID={`remove-${item.id}`}
           >
-            <Text style={styles.removeIcon}>✕</Text>
+            <Text style={[styles.removeIcon, { color: tokens.textMuted }]}>✕</Text>
           </Pressable>
         </View>
       );
     },
-    [handleRemoveItem, handleQuantityChange]
+    [handleRemoveItem, handleQuantityChange, tokens]
   );
 
   if (state.status === 'loading') {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: tokens.background }]}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={theme.colors.copper} />
-          <Text style={styles.loadingText}>Carregando seu carrinho...</Text>
+          <ActivityIndicator size="large" color={tokens.accent} />
+          <Text style={[styles.loadingText, { color: tokens.textSecondary }]}>Carregando seu carrinho...</Text>
         </View>
       </View>
     );
@@ -224,18 +225,18 @@ export function CartScreen() {
 
   if (state.status === 'error') {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: tokens.background }]}>
         <View style={styles.stateContainer}>
-          <Text style={styles.stateSymbol}>⚠</Text>
-          <Text style={styles.stateTitle}>Algo deu errado</Text>
-          <Text style={styles.stateBody}>{state.message || 'Não foi possível carregar o carrinho.'}</Text>
+          <Text style={[styles.stateSymbol, { color: tokens.accent }]}>⚠</Text>
+          <Text style={[styles.stateTitle, { color: tokens.textPrimary }]}>Algo deu errado</Text>
+          <Text style={[styles.stateBody, { color: tokens.textMuted }]}>{state.message || 'Não foi possível carregar o carrinho.'}</Text>
           <Pressable
-            style={styles.retryButton}
+            style={[styles.retryButton, { borderColor: tokens.accent }]}
             onPress={loadCart}
             accessibilityLabel="Tentar carregar novamente"
             testID="cart-retry"
           >
-            <Text style={styles.retryText}>Tentar novamente</Text>
+            <Text style={[styles.retryText, { color: tokens.accent }]}>Tentar novamente</Text>
           </Pressable>
         </View>
       </View>
@@ -244,19 +245,19 @@ export function CartScreen() {
 
   if (state.status === 'empty') {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: tokens.background }]}>
         <View style={styles.stateContainer}>
-          <Text style={styles.stateSymbol}>○</Text>
-          <Text style={styles.stateTitle}>Seu carrinho está vazio</Text>
-          <Text style={styles.stateBody}>
+          <Text style={[styles.stateSymbol, { color: tokens.accent }]}>○</Text>
+          <Text style={[styles.stateTitle, { color: tokens.textPrimary }]}>Seu carrinho está vazio</Text>
+          <Text style={[styles.stateBody, { color: tokens.textMuted }]}>
             Explore a coleção e adicione suas peças favoritas.
           </Text>
           <Pressable
-            style={styles.continueButton}
+            style={[styles.continueButton, { backgroundColor: tokens.accent }]}
             onPress={() => router.navigate('/catalog')}
             testID="cart-continue-shopping"
           >
-            <Text style={styles.continueButtonText}>Ver coleção</Text>
+            <Text style={[styles.continueButtonText, { color: tokens.textInverse }]}>Ver coleção</Text>
           </Pressable>
         </View>
       </View>
@@ -264,10 +265,10 @@ export function CartScreen() {
   }
 
   return (
-    <View style={styles.container} testID="cart-screen">
+    <View style={[styles.container, { backgroundColor: tokens.background }]} testID="cart-screen">
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Carrinho</Text>
-        <Text style={styles.headerSubtitle}>
+        <Text style={[styles.headerTitle, { color: tokens.textPrimary }]}>Carrinho</Text>
+        <Text style={[styles.headerSubtitle, { color: tokens.textMuted }]}>
           {state.itemCount} {state.itemCount === 1 ? 'peça' : 'peças'}
         </Text>
       </View>
@@ -278,23 +279,23 @@ export function CartScreen() {
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
         ListFooterComponent={
-          <View style={styles.footer}>
+          <View style={[styles.footer, { borderTopColor: tokens.border }]}>
             <View style={styles.subtotalRow}>
-              <Text style={styles.subtotalLabel}>Subtotal</Text>
-              <Text style={styles.subtotalValue}>{formatBrl(state.subtotalCents)}</Text>
+              <Text style={[styles.subtotalLabel, { color: tokens.textSecondary }]}>Subtotal</Text>
+              <Text style={[styles.subtotalValue, { color: tokens.textPrimary }]}>{formatBrl(state.subtotalCents)}</Text>
             </View>
-            <Text style={styles.disclaimer}>
+            <Text style={[styles.disclaimer, { color: tokens.textMuted }]}>
               Preços e disponibilidade serão confirmados antes do pedido.
             </Text>
             <Pressable
-              style={styles.checkoutButton}
+              style={[styles.checkoutButton, { backgroundColor: tokens.accent }]}
               testID="cart-checkout"
               onPress={() => {
                 // Fase 3.7 — carrinho read-only, sem criar pedido
               }}
               accessibilityLabel="Revisar entrega"
             >
-              <Text style={styles.checkoutButtonText}>
+              <Text style={[styles.checkoutButtonText, { color: tokens.textInverse }]}>
                 Revisar entrega
               </Text>
             </Pressable>
@@ -308,7 +309,6 @@ export function CartScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: theme.colors.ink,
   },
   loadingContainer: {
     flex: 1,
@@ -317,8 +317,6 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     marginTop: 16,
-    color: theme.colors.ivory,
-    fontFamily: theme.typography.body,
     fontSize: 14,
     opacity: 0.7,
   },
@@ -330,20 +328,15 @@ const styles = StyleSheet.create({
   },
   stateSymbol: {
     fontSize: 48,
-    color: theme.colors.copper,
     marginBottom: 16,
   },
   stateTitle: {
-    color: theme.colors.ivory,
-    fontFamily: theme.typography.body,
     fontSize: 18,
     fontWeight: '600',
     marginBottom: 8,
     textAlign: 'center',
   },
   stateBody: {
-    color: theme.colors.pearl,
-    fontFamily: theme.typography.body,
     fontSize: 14,
     opacity: 0.7,
     textAlign: 'center',
@@ -353,24 +346,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderWidth: 1,
-    borderColor: theme.colors.copper,
     borderRadius: 6,
   },
   retryText: {
-    color: theme.colors.copper,
-    fontFamily: theme.typography.body,
     fontSize: 14,
     fontWeight: '600',
   },
   continueButton: {
     paddingHorizontal: 24,
     paddingVertical: 12,
-    backgroundColor: theme.colors.copper,
     borderRadius: 6,
   },
   continueButtonText: {
-    color: theme.colors.ink,
-    fontFamily: theme.typography.body,
     fontSize: 14,
     fontWeight: '600',
   },
@@ -380,15 +367,11 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   headerTitle: {
-    color: theme.colors.ivory,
-    fontFamily: theme.typography.body,
     fontSize: 20,
     fontWeight: '700',
     letterSpacing: 2,
   },
   headerSubtitle: {
-    color: theme.colors.pearl,
-    fontFamily: theme.typography.body,
     fontSize: 13,
     opacity: 0.6,
     marginTop: 2,
@@ -399,7 +382,6 @@ const styles = StyleSheet.create({
   },
   cartItem: {
     flexDirection: 'row',
-    backgroundColor: theme.colors.paper,
     borderRadius: 12,
     marginBottom: 12,
     overflow: 'hidden',
@@ -413,12 +395,10 @@ const styles = StyleSheet.create({
     height: 120,
   },
   itemImagePlaceholder: {
-    backgroundColor: 'rgba(255,255,255,0.05)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   placeholderText: {
-    color: theme.colors.pearl,
     fontSize: 12,
     opacity: 0.4,
   },
@@ -428,7 +408,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   itemBrand: {
-    color: theme.colors.pearl,
     fontSize: 11,
     fontWeight: '600',
     textTransform: 'uppercase',
@@ -436,13 +415,11 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   itemTitle: {
-    color: theme.colors.ivory,
     fontSize: 14,
     fontWeight: '500',
     marginTop: 2,
   },
   itemVariant: {
-    color: theme.colors.pearl,
     fontSize: 12,
     opacity: 0.6,
     marginTop: 2,
@@ -464,16 +441,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: theme.colors.copper,
     borderRadius: 4,
   },
   qtyButtonText: {
-    color: theme.colors.copper,
     fontSize: 16,
     fontWeight: '600',
   },
   qtyValue: {
-    color: theme.colors.ivory,
     fontSize: 14,
     fontWeight: '600',
     minWidth: 20,
@@ -483,7 +457,6 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
   },
   itemTotal: {
-    color: theme.colors.ivory,
     fontSize: 14,
     fontWeight: '600',
   },
@@ -496,7 +469,6 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
   },
   removeIcon: {
-    color: theme.colors.pearl,
     fontSize: 14,
     opacity: 0.4,
   },
@@ -504,7 +476,6 @@ const styles = StyleSheet.create({
     marginTop: 16,
     paddingTop: 16,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.08)',
   },
   subtotalRow: {
     flexDirection: 'row',
@@ -513,31 +484,25 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   subtotalLabel: {
-    color: theme.colors.pearl,
     fontSize: 14,
     opacity: 0.7,
   },
   subtotalValue: {
-    color: theme.colors.ivory,
     fontSize: 20,
     fontWeight: '700',
   },
   disclaimer: {
-    color: theme.colors.pearl,
     fontSize: 12,
     opacity: 0.5,
     textAlign: 'center',
     marginBottom: 16,
   },
   checkoutButton: {
-    backgroundColor: theme.colors.copper,
     paddingVertical: 16,
     borderRadius: 8,
     alignItems: 'center',
   },
   checkoutButtonText: {
-    color: theme.colors.ink,
-    fontFamily: theme.typography.body,
     fontSize: 14,
     fontWeight: '700',
     letterSpacing: 1,

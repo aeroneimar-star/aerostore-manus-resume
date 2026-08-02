@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEROSTORE — Smoke Visual Tema</title>
+<style>
+  :root {
+    --bg: #FDFBF7;
+    --surface: #F5F2EC;
+    --surface-elevated: #FFFFFF;
+    --surface-muted: #EDE9E2;
+    --text-primary: #1A1A18;
+    --text-secondary: #6B6B68;
+    --text-muted: #8A8A88;
+    --text-inverse: #FDFBF7;
+    --accent: #C48054;
+    --border: #E5E2DC;
+    --success: #4A7A3E;
+    --error: #B84A3A;
+    --warning: #A67C3F;
+    --copper: #C48054;
+    --moss: #6B7A5B;
+    --amber: #C9A96E;
+  }
+
+  body.dark {
+    --bg: #10100F;
+    --surface: #1A1A18;
+    --surface-elevated: #252523;
+    --surface-muted: #151514;
+    --text-primary: #E8E8E6;
+    --text-secondary: #8A8A88;
+    --text-muted: #6B6B68;
+    --text-inverse: #10100F;
+    --accent: #C48054;
+    --border: #2A2A28;
+    --success: #82977B;
+    --error: #D99386;
+    --warning: #C9A96E;
+    --copper: #C48054;
+    --moss: #6B7A5B;
+    --amber: #C9A96E;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text-primary);
+    min-height: 100vh;
+    transition: background 0.3s ease, color 0.3s ease;
+  }
+
+  .container {
+    max-width: 375px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 0 24px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+
+  .header-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+  }
+
+  .theme-toggle {
+    display: flex;
+    gap: 4px;
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 3px;
+    border: 1px solid var(--border);
+  }
+
+  .theme-btn {
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    background: transparent;
+    color: var(--text-secondary);
+    transition: all 0.2s ease;
+  }
+
+  .theme-btn.active {
+    background: var(--accent);
+    color: #FFF;
+  }
+
+  /* Screen Navigation */
+  .screen-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .screen-btn {
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--surface);
+    color: var(--text-primary);
+    transition: all 0.2s;
+  }
+
+  .screen-btn.active {
+    background: var(--accent);
+    color: #FFF;
+    border-color: var(--accent);
+  }
+
+  /* Screen container */
+  .screen-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px;
+    min-height: 500px;
+    transition: all 0.3s ease;
+  }
+
+  /* Phone Entry */
+  .phone-entry { text-align: center; }
+  .phone-entry h2 { font-size: 22px; font-weight: 700; margin-bottom: 8px; color: var(--text-primary); }
+  .phone-entry p { font-size: 14px; color: var(--text-secondary); margin-bottom: 32px; }
+  .phone-input {
+    width: 100%;
+    padding: 16px;
+    font-size: 18px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-elevated);
+    color: var(--text-primary);
+    text-align: center;
+    margin-bottom: 16px;
+    transition: border-color 0.2s;
+  }
+  .phone-input:focus { border-color: var(--accent); outline: none; }
+  .phone-placeholder { color: var(--text-muted); }
+
+  /* OTP */
+  .otp-entry { text-align: center; }
+  .otp-entry h2 { font-size: 22px; font-weight: 700; margin-bottom: 8px; color: var(--text-primary); }
+  .otp-entry p { font-size: 14px; color: var(--text-secondary); margin-bottom: 24px; }
+  .otp-digits {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-bottom: 24px;
+  }
+  .otp-digit {
+    width: 44px;
+    height: 52px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-elevated);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+  .otp-digit.filled { border-color: var(--accent); }
+  .otp-resend { font-size: 13px; color: var(--text-muted); margin-top: 16px; }
+  .otp-resend a { color: var(--accent); text-decoration: none; font-weight: 600; }
+
+  /* Access Status */
+  .access-status { text-align: center; padding-top: 40px; }
+  .access-status .status-icon {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    margin: 0 auto 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+  }
+  .access-status .status-icon.success { background: var(--success); color: #FFF; }
+  .access-status .status-icon.error { background: var(--error); color: #FFF; }
+  .access-status .status-icon.warning { background: var(--warning); color: #FFF; }
+  .access-status .status-icon.pending { background: var(--accent); color: #FFF; }
+  .access-status h2 { font-size: 20px; font-weight: 700; margin-bottom: 12px; color: var(--text-primary); }
+  .access-status p { font-size: 14px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 24px; }
+
+  /* Profile */
+  .profile-screen h2 { font-size: 20px; font-weight: 700; margin-bottom: 24px; color: var(--text-primary); }
+  .profile-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .profile-row-label { font-size: 14px; color: var(--text-primary); font-weight: 500; }
+  .profile-row-value { font-size: 14px; color: var(--text-secondary); }
+  .theme-options { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .theme-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: var(--surface-elevated);
+  }
+  .theme-option.selected { border-color: var(--accent); background: var(--surface-muted); }
+  .theme-option-radio {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .theme-option.selected .theme-option-radio {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  .theme-option.selected .theme-option-radio::after {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #FFF;
+  }
+  .theme-option-label { font-size: 14px; color: var(--text-primary); font-weight: 500; }
+
+  /* Catalog */
+  .catalog-screen h2 { font-size: 20px; font-weight: 700; margin-bottom: 16px; color: var(--text-primary); }
+  .filter-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .filter-chip {
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .filter-chip.active {
+    background: var(--accent);
+    color: #FFF;
+    border-color: var(--accent);
+  }
+  .product-list { display: flex; flex-direction: column; gap: 12px; }
+  .product-item {
+    display: flex;
+    gap: 12px;
+    padding: 12px;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .product-thumb {
+    width: 64px;
+    height: 64px;
+    border-radius: 8px;
+    background: var(--surface-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+  }
+  .product-info { flex: 1; }
+  .product-name { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+  .product-brand { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+  .product-price { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+  .product-price-old { font-size: 12px; color: var(--text-muted); text-decoration: line-through; margin-left: 8px; }
+  .product-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 4px;
+    background: var(--error);
+    color: #FFF;
+    margin-left: 8px;
+  }
+
+  /* Cart */
+  .cart-screen h2 { font-size: 20px; font-weight: 700; margin-bottom: 16px; color: var(--text-primary); }
+  .cart-item {
+    display: flex;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .cart-item-thumb {
+    width: 56px;
+    height: 56px;
+    border-radius: 8px;
+    background: var(--surface-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+  }
+  .cart-item-info { flex: 1; }
+  .cart-item-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+  .cart-item-brand { font-size: 12px; color: var(--text-muted); }
+  .cart-item-price { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-top: 4px; }
+  .cart-qty { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  .cart-qty-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface-elevated);
+    color: var(--text-primary);
+    font-size: 16px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .cart-qty-value { font-size: 14px; font-weight: 600; color: var(--text-primary); min-width: 20px; text-align: center; }
+  .cart-summary {
+    margin-top: 16px;
+    padding: 16px;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .cart-total-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .cart-total-label { font-size: 14px; color: var(--text-secondary); }
+  .cart-total-value { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+  .cart-total-final {
+    display: flex;
+    justify-content: space-between;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+  }
+  .cart-total-final .cart-total-label { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+  .cart-total-final .cart-total-value { font-size: 18px; font-weight: 700; color: var(--text-primary); }
+  .cart-note { font-size: 12px; color: var(--text-muted); margin-top: 12px; text-align: center; }
+
+  /* Buttons */
+  .btn-primary {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    background: var(--accent);
+    color: #FFF;
+    border: none;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: 12px;
+    transition: opacity 0.2s;
+  }
+  .btn-primary:hover { opacity: 0.9; }
+
+  .btn-secondary {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    background: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: all 0.2s;
+  }
+
+  /* Loading spinner */
+  .spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 40px auto;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Footer */
+  .footer {
+    padding: 16px 0;
+    border-top: 1px solid var(--border);
+    margin-top: 32px;
+  }
+  .footer-text {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Theme Toggle -->
+  <div class="header">
+    <div class="header-title">AEROSTORE · TEMA</div>
+    <div class="theme-toggle">
+      <button class="theme-btn" onclick="setTheme('dark')" id="btn-dark">Escuro</button>
+      <button class="theme-btn active" onclick="setTheme('light')" id="btn-light">Claro</button>
+    </div>
+  </div>
+
+  <!-- Screen Navigation -->
+  <div class="screen-nav">
+    <button class="screen-btn active" onclick="showScreen('phone')" id="nav-phone">Telefone</button>
+    <button class="screen-btn" onclick="showScreen('otp')" id="nav-otp">OTP</button>
+    <button class="screen-btn" onclick="showScreen('status')" id="nav-status">Status</button>
+    <button class="screen-btn" onclick="showScreen('profile')" id="nav-profile">Perfil</button>
+    <button class="screen-btn" onclick="showScreen('catalog')" id="nav-catalog">Catálogo</button>
+    <button class="screen-btn" onclick="showScreen('product')" id="nav-product">Produto</button>
+    <button class="screen-btn" onclick="showScreen('cart')" id="nav-cart">Carrinho</button>
+  </div>
+
+  <!-- Screens -->
+  <div id="screen-content">
+    <!-- Phone Entry Screen -->
+    <div class="screen-container" id="screen-phone">
+      <div class="phone-entry">
+        <h2>Acesse sua conta</h2>
+        <p>Digite seu número de WhatsApp para receber o código de verificação.</p>
+        <input class="phone-input" type="tel" placeholder="(11) 99999-9999" value="11 98765-4321">
+        <button class="btn-primary">Receber código pelo WhatsApp</button>
+      </div>
+    </div>
+
+    <!-- OTP Screen -->
+    <div class="screen-container" id="screen-otp" style="display:none">
+      <div class="otp-entry">
+        <h2>Verificação</h2>
+        <p>Digite o código de 6 dígitos enviado para (11) 9****-4321</p>
+        <div class="otp-digits">
+          <div class="otp-digit filled">3</div>
+          <div class="otp-digit filled">8</div>
+          <div class="otp-digit filled">1</div>
+          <div class="otp-digit filled">5</div>
+          <div class="otp-digit">_</div>
+          <div class="otp-digit">_</div>
+        </div>
+        <button class="btn-primary">Confirmar código</button>
+        <p class="otp-resend">Não recebeu? <a href="#">Reenviar pelo WhatsApp</a> · <a href="#">Receber por SMS</a></p>
+      </div>
+    </div>
+
+    <!-- Access Status Screen -->
+    <div class="screen-container" id="screen-status" style="display:none">
+      <div class="access-status">
+        <div class="status-icon success">✓</div>
+        <h2>Acesso liberado</h2>
+        <p>Bem-vindo(a) à AEROSTORE. Seu catálogo privado está disponível para navegação.</p>
+        <button class="btn-primary">Ver catálogo privado</button>
+      </div>
+    </div>
+
+    <!-- Profile Screen -->
+    <div class="screen-container" id="screen-profile" style="display:none">
+      <div class="profile-screen">
+        <h2>Meu Perfil</h2>
+        <div class="profile-row">
+          <span class="profile-row-label">Nome</span>
+          <span class="profile-row-value">Neimar Aero</span>
+        </div>
+        <div class="profile-row">
+          <span class="profile-row-label">E-mail</span>
+          <span class="profile-row-value">n***@email.com</span>
+        </div>
+        <div class="profile-row">
+          <span class="profile-row-label">Telefone</span>
+          <span class="profile-row-value">(11) 9****-****</span>
+        </div>
+        <div class="profile-row">
+          <span class="profile-row-label">Status</span>
+          <span class="profile-row-value" style="color: var(--success); font-weight: 600;">Aprovado</span>
+        </div>
+
+        <div style="margin-top: 24px; margin-bottom: 12px;">
+          <div class="section-label" style="font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: var(--text-muted); text-transform: uppercase;">APARÊNCIA</div>
+        </div>
+        <div class="theme-options">
+          <div class="theme-option" id="opt-dark" onclick="setTheme('dark')">
+            <div class="theme-option-radio"></div>
+            <span class="theme-option-label">Escuro</span>
+          </div>
+          <div class="theme-option selected" id="opt-light" onclick="setTheme('light')">
+            <div class="theme-option-radio"></div>
+            <span class="theme-option-label">Claro</span>
+          </div>
+          <div class="theme-option" id="opt-system">
+            <div class="theme-option-radio"></div>
+            <span class="theme-option-label">Automático</span>
+          </div>
+        </div>
+
+        <button class="btn-secondary" style="margin-top: 24px;">Sair da conta</button>
+      </div>
+    </div>
+
+    <!-- Catalog Screen -->
+    <div class="screen-container" id="screen-catalog" style="display:none">
+      <div class="catalog-screen">
+        <h2>Catálogo Privado</h2>
+        <div class="filter-row">
+          <span class="filter-chip active">Todos</span>
+          <span class="filter-chip">Polos</span>
+          <span class="filter-chip">Camisas</span>
+          <span class="filter-chip">Calças</span>
+          <span class="filter-chip">Acessórios</span>
+        </div>
+        <div class="product-list">
+          <div class="product-item">
+            <div class="product-thumb">👕</div>
+            <div class="product-info">
+              <div class="product-name">Polo Pima Marinho</div>
+              <div class="product-brand">Osklen · Polos</div>
+              <div>
+                <span class="product-price">R$ 459,90</span>
+                <span class="product-price-old">R$ 519,90</span>
+                <span class="product-badge">-12%</span>
+              </div>
+            </div>
+          </div>
+          <div class="product-item">
+            <div class="product-thumb">👔</div>
+            <div class="product-info">
+              <div class="product-name">Camisa Linho Branca</div>
+              <div class="product-brand">Osklen · Camisas</div>
+              <div>
+                <span class="product-price">R$ 389,90</span>
+              </div>
+            </div>
+          </div>
+          <div class="product-item">
+            <div class="product-thumb">👖</div>
+            <div class="product-info">
+              <div class="product-name">Calça Alfaiataria</div>
+              <div class="product-brand">Osklen · Calças</div>
+              <div>
+                <span class="product-price">R$ 429,90</span>
+                <span class="product-price-old">R$ 499,90</span>
+                <span class="product-badge">-14%</span>
+              </div>
+            </div>
+          </div>
+          <div class="product-item">
+            <div class="product-thumb">🧢</div>
+            <div class="product-info">
+              <div class="product-name">Boné Logo Embroidered</div>
+              <div class="product-brand">Osklen · Acessórios</div>
+              <div>
+                <span class="product-price">R$ 149,90</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Product Screen -->
+    <div class="screen-container" id="screen-product" style="display:none">
+      <div style="text-align: center;">
+        <div style="width: 100%; height: 200px; background: var(--surface-muted); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 64px; margin-bottom: 20px;">👕</div>
+        <h2 style="font-size: 20px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Polo Pima Marinho</h2>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">Osklen · Polos · Marinho, M</p>
+        <div style="margin-bottom: 24px;">
+          <span style="font-size: 24px; font-weight: 700; color: var(--text-primary);">R$ 459,90</span>
+          <span style="font-size: 14px; color: var(--text-muted); text-decoration: line-through; margin-left: 8px;">R$ 519,90</span>
+          <span style="display: inline-block; padding: 2px 8px; font-size: 10px; font-weight: 700; border-radius: 4px; background: var(--error); color: #FFF; margin-left: 8px;">-12%</span>
+        </div>
+        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 24px; line-height: 1.5;">
+          Polo em algodão Pima de alta qualidade. Corte clássico com acabamento premium. Ideal para uso casual e semi-formal.
+        </p>
+        <div style="text-align: left; margin-bottom: 16px;">
+          <div style="font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">TAMANHO</div>
+          <div style="display: flex; gap: 8px;">
+            <span style="padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--text-secondary);">P</span>
+            <span style="padding: 8px 16px; border: 2px solid var(--accent); border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--accent);">M</span>
+            <span style="padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--text-secondary);">G</span>
+            <span style="padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--text-secondary);">GG</span>
+          </div>
+        </div>
+        <button class="btn-primary">Adicionar ao carrinho</button>
+      </div>
+    </div>
+
+    <!-- Cart Screen -->
+    <div class="screen-container" id="screen-cart" style="display:none">
+      <div class="cart-screen">
+        <h2>Meu Carrinho</h2>
+        <div class="cart-item">
+          <div class="cart-item-thumb">👕</div>
+          <div class="cart-item-info">
+            <div class="cart-item-name">Polo Pima Marinho</div>
+            <div class="cart-item-brand">Osklen · M</div>
+            <div class="cart-item-price">R$ 459,90</div>
+            <div class="cart-qty">
+              <button class="cart-qty-btn">−</button>
+              <span class="cart-qty-value">1</span>
+              <button class="cart-qty-btn">+</button>
+            </div>
+          </div>
+        </div>
+        <div class="cart-item">
+          <div class="cart-item-thumb">👔</div>
+          <div class="cart-item-info">
+            <div class="cart-item-name">Camisa Linho Branca</div>
+            <div class="cart-item-brand">Osklen · G</div>
+            <div class="cart-item-price">R$ 389,90</div>
+            <div class="cart-qty">
+              <button class="cart-qty-btn">−</button>
+              <span class="cart-qty-value">2</span>
+              <button class="cart-qty-btn">+</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="cart-summary">
+          <div class="cart-total-row">
+            <span class="cart-total-label">Subtotal (3 itens)</span>
+            <span class="cart-total-value">R$ 1.239,70</span>
+          </div>
+          <div class="cart-total-final">
+            <span class="cart-total-label">Total</span>
+            <span class="cart-total-value">R$ 1.239,70</span>
+          </div>
+        </div>
+        <p class="cart-note">Preços e disponibilidade serão confirmados antes do pedido.</p>
+        <button class="btn-primary">Revisar entrega</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Theme Info -->
+  <div style="margin-top: 24px; padding: 12px; background: var(--surface-elevated); border: 1px solid var(--accent); border-radius: 12px; text-align: center;">
+    <div style="font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: var(--accent); text-transform: uppercase;">Tema Ativo</div>
+    <div style="font-size: 14px; font-weight: 600; color: var(--text-primary);" id="active-theme-label">CLARO</div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-text">Catálogo privado AEROSTORE · Tema sincronizado com sessão · Fase 3.7.1</div>
+  </div>
+
+</div>
+
+<script>
+  const themes = {
+    dark: {
+      '--bg': '#10100F',
+      '--surface': '#1A1A18',
+      '--surface-elevated': '#252523',
+      '--surface-muted': '#151514',
+      '--text-primary': '#E8E8E6',
+      '--text-secondary': '#8A8A88',
+      '--text-muted': '#6B6B68',
+      '--text-inverse': '#10100F',
+      '--accent': '#C48054',
+      '--border': '#2A2A28',
+      '--success': '#82977B',
+      '--error': '#D99386',
+      '--warning': '#C9A96E',
+      '--copper': '#C48054',
+      '--moss': '#6B7A5B',
+      '--amber': '#C9A96E',
+    },
+    light: {
+      '--bg': '#FDFBF7',
+      '--surface': '#F5F2EC',
+      '--surface-elevated': '#FFFFFF',
+      '--surface-muted': '#EDE9E2',
+      '--text-primary': '#1A1A18',
+      '--text-secondary': '#6B6B68',
+      '--text-muted': '#8A8A88',
+      '--text-inverse': '#FDFBF7',
+      '--accent': '#C48054',
+      '--border': '#E5E2DC',
+      '--success': '#4A7A3E',
+      '--error': '#B84A3A',
+      '--warning': '#A67C3F',
+      '--copper': '#C48054',
+      '--moss': '#6B7A5B',
+      '--amber': '#C9A96E',
+    }
+  };
+
+  let currentTheme = 'light';
+
+  function setTheme(theme) {
+    currentTheme = theme;
+    document.body.className = theme;
+    document.documentElement.setAttribute('data-theme', theme);
+
+    // Update header buttons
+    document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('btn-' + theme).classList.add('active');
+
+    // Update profile options
+    document.querySelectorAll('.theme-option').forEach(o => o.classList.remove('selected'));
+    const optEl = document.getElementById('opt-' + theme);
+    if (optEl) optEl.classList.add('selected');
+
+    // Update info label
+    document.getElementById('active-theme-label').textContent =
+      theme === 'dark' ? 'ESCURO' : 'CLARO';
+
+    // Persist
+    localStorage.setItem('aerostore-theme', theme);
+  }
+
+  function showScreen(screen) {
+    document.querySelectorAll('.screen-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('nav-' + screen).classList.add('active');
+
+    document.querySelectorAll('.screen-container').forEach(s => s.style.display = 'none');
+    document.getElementById('screen-' + screen).style.display = 'block';
+  }
+
+  // Load persisted theme
+  const saved = localStorage.getItem('aerostore-theme');
+  if (saved && themes[saved]) setTheme(saved);
+</script>
+</body>
+</html>

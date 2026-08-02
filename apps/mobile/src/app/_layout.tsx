@@ -1,23 +1,26 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
-import { theme } from '@/theme';
+import { ThemeProvider, useAppTheme, theme } from '@/theme';
 
-export default function RootLayout() {
+function RootLayoutInner() {
+  const { active, tokens } = useAppTheme();
+
   return (
     <>
-      <StatusBar style="light" />
+      <StatusBar style={active === 'dark' ? 'light' : 'dark'} />
       <Stack
         screenOptions={{
-          headerStyle: { backgroundColor: theme.colors.ink },
+          headerStyle: { backgroundColor: tokens.background },
           headerShadowVisible: false,
-          headerTintColor: theme.colors.ivory,
+          headerTintColor: active === 'dark' ? tokens.textPrimary : tokens.textPrimary,
           headerTitleStyle: {
             fontFamily: theme.typography.body,
             fontSize: 14,
             fontWeight: '600',
+            color: tokens.textPrimary,
           },
-          contentStyle: { backgroundColor: theme.colors.ink },
+          contentStyle: { backgroundColor: tokens.background },
         }}>
         <Stack.Screen name="index" options={{ headerShown: false }} />
         <Stack.Screen name="access-status" options={{ headerShown: false }} />
@@ -30,5 +33,13 @@ export default function RootLayout() {
         />
       </Stack>
     </>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <ThemeProvider>
+      <RootLayoutInner />
+    </ThemeProvider>
   );
 }

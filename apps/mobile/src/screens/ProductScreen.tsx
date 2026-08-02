@@ -20,7 +20,7 @@ import type {
 } from '@/catalog/contracts';
 import { Price } from '@/components/Price';
 import { ScreenState } from '@/components/ScreenState';
-import { theme } from '@/theme';
+import { useAppTheme, theme } from '@/theme';
 import { createCartClient } from '@/cart/client';
 
 type ProductState = 'loading' | 'ready' | 'error' | 'disabled' | 'not_found';
@@ -46,6 +46,7 @@ export function ProductScreen({
   const slugParam = Array.isArray(params.slug) ? params.slug[0] : params.slug;
   const productId = productIdOverride ?? slugParam ?? '';
   const { width } = useWindowDimensions();
+  const { tokens } = useAppTheme();
   const [product, setProduct] = useState<B2cProduct>();
   const [state, setState] = useState<ProductState>('loading');
   const [reloadKey, setReloadKey] = useState(0);
@@ -111,7 +112,7 @@ export function ProductScreen({
 
   return (
     <ScrollView
-      style={styles.screen}
+      style={[styles.screen, { backgroundColor: tokens.background }]}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
       <View style={styles.maxContent}>
@@ -131,7 +132,7 @@ export function ProductScreen({
                 contentFit="cover"
                 placeholder={{ blurhash: 'L16R;f%M00xu~qM{Rjof00of~qay' }}
                 transition={240}
-                style={[styles.image, { width: imageWidth }]}
+                style={[styles.image, { width: imageWidth, backgroundColor: tokens.skeleton }]}
               />
             ))
           ) : (
@@ -139,10 +140,10 @@ export function ProductScreen({
               accessible
               accessibilityRole="image"
               accessibilityLabel="Imagem do produto indisponível"
-              style={[styles.image, styles.imagePlaceholder, { width: imageWidth }]}>
+              style={[styles.image, styles.imagePlaceholder, { width: imageWidth, borderColor: tokens.border }]}>
               <Text
                 maxFontSizeMultiplier={1.6}
-                style={styles.imagePlaceholderText}>
+                style={[styles.imagePlaceholderText, { color: tokens.textSecondary }]}>
                 Imagem indisponível
               </Text>
             </View>
@@ -150,16 +151,16 @@ export function ProductScreen({
         </ScrollView>
 
         <View style={styles.details}>
-          <Text style={styles.category}>
+          <Text style={[styles.category, { color: tokens.textMuted }]}>
             {product.brand} · {product.category_label ?? 'Coleção AEROSTORE'}
           </Text>
-          <Text accessibilityRole="header" maxFontSizeMultiplier={1.4} style={styles.title}>
+          <Text accessibilityRole="header" maxFontSizeMultiplier={1.4} style={[styles.title, { color: tokens.textPrimary }]}>
             {product.title}
           </Text>
-          <Text maxFontSizeMultiplier={1.6} style={styles.shortDescription}>
+          <Text maxFontSizeMultiplier={1.6} style={[styles.shortDescription, { color: tokens.textSecondary }]}>
             {product.short_description}
           </Text>
-          <Text style={styles.sku}>CÓDIGO {product.sku}</Text>
+          <Text style={[styles.sku, { color: tokens.textMuted }]}>CÓDIGO {product.sku}</Text>
           <Price
             large
             priceCents={product.price_cents}
@@ -169,27 +170,27 @@ export function ProductScreen({
             <View
               style={[
                 styles.statusDot,
-                product.availability === 'out_of_stock' && styles.statusDotMuted,
+                { backgroundColor: product.availability === 'out_of_stock' ? tokens.textMuted : tokens.success },
               ]}
             />
-            <Text style={styles.statusText}>
+            <Text style={[styles.statusText, { color: tokens.textSecondary }]}>
               {availabilityCopy[product.availability]}
             </Text>
           </View>
 
-          <View style={styles.divider} />
-          <Text style={styles.sectionLabel}>SOBRE A PEÇA</Text>
-          <Text maxFontSizeMultiplier={1.7} style={styles.description}>
+          <View style={[styles.divider, { backgroundColor: tokens.divider }]} />
+          <Text style={[styles.sectionLabel, { color: tokens.textMuted }]}>SOBRE A PEÇA</Text>
+          <Text maxFontSizeMultiplier={1.7} style={[styles.description, { color: tokens.textSecondary }]}>
             {product.description}
           </Text>
 
-          <VariantValues title="Cores" values={colors} />
-          <VariantValues title="Tamanhos" values={sizes} />
+          <VariantValues title="Cores" values={colors} tokens={tokens} />
+          <VariantValues title="Tamanhos" values={sizes} tokens={tokens} />
 
-          <Text style={styles.sectionLabel}>VARIAÇÕES</Text>
-          <View style={styles.variantList}>
+          <Text style={[styles.sectionLabel, { color: tokens.textMuted }]}>VARIAÇÕES</Text>
+          <View style={[styles.variantList, { borderTopColor: tokens.divider }]}>
             {product.variants.map((variant) => (
-              <VariantRow key={variant.slug} variant={variant} />
+              <VariantRow key={variant.slug} variant={variant} tokens={tokens} />
             ))}
           </View>
 
@@ -198,17 +199,17 @@ export function ProductScreen({
             accessibilityLabel="Adicionar ao carrinho"
             onPress={handleAddToCart}
             disabled={product.availability === 'out_of_stock' || addingToCart}
-            style={[styles.addToCartButton, (product.availability === 'out_of_stock' || addingToCart) && styles.addToCartDisabled]}
+            style={[styles.addToCartButton, { backgroundColor: tokens.accent }, (product.availability === 'out_of_stock' || addingToCart) && { opacity: 0.5, backgroundColor: tokens.surfaceMuted }]}
             testID="add-to-cart">
-            <Text style={styles.addToCartText}>
+            <Text style={[styles.addToCartText, { color: tokens.textInverse }]}>
               {addingToCart ? 'Adicionando...' : product.availability === 'out_of_stock' ? 'Indisponível' : 'Adicionar ao carrinho'}
             </Text>
           </Pressable>
           <Pressable
             onPress={() => router.push('/cart' as Href)}
-            style={styles.viewCartButton}
+            style={[styles.viewCartButton, { borderColor: tokens.accent }]}
             testID="view-cart">
-            <Text style={styles.viewCartText}>Ver carrinho</Text>
+            <Text style={[styles.viewCartText, { color: tokens.accent }]}>Ver carrinho</Text>
           </Pressable>
         </View>
       </View>
@@ -223,15 +224,15 @@ function uniqueVariantValue(
   return [...new Set((variants ?? []).flatMap((variant) => variant[key] ? [variant[key] as string] : []))];
 }
 
-function VariantValues({ title, values }: { title: string; values: string[] }) {
+function VariantValues({ title, values, tokens }: { title: string; values: string[]; tokens: import('@/theme').ThemeTokens }) {
   if (!values.length) return null;
   return (
     <View style={styles.variantGroup}>
-      <Text style={styles.sectionLabel}>{title.toUpperCase()}</Text>
+      <Text style={[styles.sectionLabel, { color: tokens.textMuted }]}>{title.toUpperCase()}</Text>
       <View style={styles.chipRow}>
         {values.map((value) => (
-          <View key={value} accessible accessibilityLabel={`${title}: ${value}`} style={styles.chip}>
-            <Text style={styles.chipText}>{value}</Text>
+          <View key={value} accessible accessibilityLabel={`${title}: ${value}`} style={[styles.chip, { borderColor: tokens.border }]}>
+            <Text style={[styles.chipText, { color: tokens.textPrimary }]}>{value}</Text>
           </View>
         ))}
       </View>
@@ -239,12 +240,12 @@ function VariantValues({ title, values }: { title: string; values: string[] }) {
   );
 }
 
-function VariantRow({ variant }: { variant: B2cProductVariant }) {
+function VariantRow({ variant, tokens }: { variant: B2cProductVariant; tokens: import('@/theme').ThemeTokens }) {
   const label = [variant.color, variant.size].filter(Boolean).join(' • ');
   return (
-    <View style={styles.variantRow}>
-      <Text style={styles.variantName}>{label || 'Variação'}</Text>
-      <Text style={styles.variantStatus}>
+    <View style={[styles.variantRow, { borderBottomColor: tokens.divider }]}>
+      <Text style={[styles.variantName, { color: tokens.textPrimary }]}>{label || 'Variação'}</Text>
+      <Text style={[styles.variantStatus, { color: tokens.textMuted }]}>
         {availabilityCopy[variant.availability]}
       </Text>
     </View>
@@ -253,7 +254,6 @@ function VariantRow({ variant }: { variant: B2cProductVariant }) {
 
 const styles = StyleSheet.create({
   screen: {
-    backgroundColor: theme.colors.ink,
     flex: 1,
   },
   content: {
@@ -270,18 +270,15 @@ const styles = StyleSheet.create({
   },
   image: {
     aspectRatio: 0.82,
-    backgroundColor: '#24231F',
     borderRadius: theme.radii.lg,
   },
   imagePlaceholder: {
     alignItems: 'center',
-    borderColor: '#34332F',
     borderWidth: 1,
     justifyContent: 'center',
     padding: theme.spacing.lg,
   },
   imagePlaceholderText: {
-    color: theme.colors.stone,
     fontFamily: theme.typography.body,
     fontSize: 15,
     lineHeight: 22,
@@ -293,7 +290,6 @@ const styles = StyleSheet.create({
     paddingTop: theme.spacing.lg,
   },
   category: {
-    color: theme.colors.copperSoft,
     fontFamily: theme.typography.body,
     fontSize: 10,
     fontWeight: '700',
@@ -301,7 +297,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   title: {
-    color: theme.colors.ivory,
     fontFamily: theme.typography.display,
     fontSize: 42,
     letterSpacing: -1,
@@ -309,7 +304,6 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.sm,
   },
   shortDescription: {
-    color: theme.colors.stone,
     fontFamily: theme.typography.body,
     fontSize: 17,
     lineHeight: 26,
@@ -317,7 +311,6 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.sm,
   },
   sku: {
-    color: theme.colors.stone,
     fontFamily: theme.typography.body,
     fontSize: 10,
     letterSpacing: 1.4,
@@ -330,26 +323,21 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.md,
   },
   statusDot: {
-    backgroundColor: theme.colors.moss,
     borderRadius: 4,
     height: 8,
     width: 8,
   },
   statusDotMuted: {
-    backgroundColor: theme.colors.stone,
   },
   statusText: {
-    color: theme.colors.paper,
     fontFamily: theme.typography.body,
     fontSize: 13,
   },
   divider: {
-    backgroundColor: '#34332F',
     height: StyleSheet.hairlineWidth,
     marginVertical: theme.spacing.xl,
   },
   sectionLabel: {
-    color: theme.colors.stone,
     fontFamily: theme.typography.body,
     fontSize: 10,
     fontWeight: '700',
@@ -357,7 +345,6 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.sm,
   },
   description: {
-    color: theme.colors.paper,
     fontFamily: theme.typography.body,
     fontSize: 16,
     lineHeight: 27,
@@ -372,7 +359,6 @@ const styles = StyleSheet.create({
   },
   chip: {
     alignItems: 'center',
-    borderColor: '#474640',
     borderRadius: theme.radii.pill,
     borderWidth: 1,
     justifyContent: 'center',
@@ -380,45 +366,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.md,
   },
   chipText: {
-    color: theme.colors.ivory,
     fontFamily: theme.typography.body,
     fontSize: 13,
     fontWeight: '600',
   },
   variantList: {
-    borderTopColor: '#34332F',
     borderTopWidth: StyleSheet.hairlineWidth,
     marginBottom: theme.spacing.xl,
   },
   variantRow: {
-    borderBottomColor: '#34332F',
     borderBottomWidth: StyleSheet.hairlineWidth,
     gap: theme.spacing.xs,
     paddingVertical: theme.spacing.md,
   },
   variantName: {
-    color: theme.colors.ivory,
     fontFamily: theme.typography.body,
     fontSize: 14,
     fontWeight: '700',
   },
   variantStatus: {
-    color: theme.colors.stone,
     fontFamily: theme.typography.body,
     fontSize: 12,
   },
-  prototypeNotice: {
-    backgroundColor: theme.colors.paper,
-    borderRadius: theme.radii.lg,
-    padding: theme.spacing.lg,
-  },
-  prototypeTitle: {
-    color: theme.colors.ink,
-    fontFamily: theme.typography.display,
-    fontSize: 22,
-  },
   addToCartButton: {
-    backgroundColor: theme.colors.copper,
     paddingVertical: 16,
     borderRadius: 8,
     alignItems: 'center',
@@ -426,10 +396,8 @@ const styles = StyleSheet.create({
   },
   addToCartDisabled: {
     opacity: 0.5,
-    backgroundColor: theme.colors.stone,
   },
   addToCartText: {
-    color: theme.colors.ink,
     fontFamily: theme.typography.body,
     fontSize: 14,
     fontWeight: '700',
@@ -437,14 +405,12 @@ const styles = StyleSheet.create({
   },
   viewCartButton: {
     borderWidth: 1,
-    borderColor: theme.colors.copper,
     borderRadius: 8,
     paddingVertical: 12,
     alignItems: 'center',
     marginTop: theme.spacing.md,
   },
   viewCartText: {
-    color: theme.colors.copper,
     fontFamily: theme.typography.body,
     fontSize: 13,
     fontWeight: '600',

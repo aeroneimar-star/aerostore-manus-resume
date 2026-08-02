@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-import { theme } from '@/theme';
+import { useAppTheme, theme } from '@/theme';
 
 const formatBrl = (cents: number) =>
   new Intl.NumberFormat('pt-BR', {
@@ -19,6 +19,8 @@ export function Price({
   compareAtPriceCents,
   large = false,
 }: PriceProps) {
+  const { tokens } = useAppTheme();
+
   return (
     <View
       style={styles.row}
@@ -30,11 +32,11 @@ export function Price({
       }>
       <Text
         maxFontSizeMultiplier={1.5}
-        style={[styles.price, large && styles.priceLarge]}>
+        style={[styles.price, { color: tokens.textPrimary }, large && styles.priceLarge]}>
         {formatBrl(priceCents)}
       </Text>
       {compareAtPriceCents ? (
-        <Text maxFontSizeMultiplier={1.5} style={styles.compare}>
+        <Text maxFontSizeMultiplier={1.5} style={[styles.compare, { color: tokens.textMuted }]}>
           {formatBrl(compareAtPriceCents)}
         </Text>
       ) : null}
@@ -50,7 +52,6 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
   },
   price: {
-    color: theme.colors.ivory,
     fontFamily: theme.typography.body,
     fontSize: 18,
     fontWeight: '700',
@@ -62,7 +63,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   compare: {
-    color: theme.colors.stone,
     fontFamily: theme.typography.body,
     fontSize: 13,
     textDecorationLine: 'line-through',
