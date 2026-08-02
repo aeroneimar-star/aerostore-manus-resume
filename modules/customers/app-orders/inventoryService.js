@@ -14,15 +14,12 @@
  *   2. releaseReservation: reverte hold (incrementa available_qty,
  *      decrementa reserved_qty), grava movimento RESERVATION_RELEASE.
  *
+ * Idempotência: por movimento individual (orderId + storeId + variantId).
+ * Transação: aceita { tx } para rodar dentro de BEGIN/COMMIT externo.
  * Nenhuma tabela paralela de reserva é criada. O PDV é a fonte da verdade.
  */
 
 const { randomUUID } = require("crypto");
-
-const ALLOWED_MOVEMENT_TYPES = Object.freeze([
-  "RESERVATION_HOLD",
-  "RESERVATION_RELEASE",
-]);
 
 function iso(d) {
   return (d instanceof Date ? d : new Date(d)).toISOString();
@@ -114,7 +111,6 @@ function createInventoryService(options = {}) {
         const variantId = item.variant_id;
         const quantity = Math.max(1, Math.floor(item.quantity || 1));
 
-        // Obter saldo atual com lock implícito (transação)
         const balance = await ensureBalance(variantId, storeId);
         if (balance.available_qty < quantity) {
           await db.run("ROLLBACK");
@@ -126,7 +122,6 @@ function createInventoryService(options = {}) {
         const newVersion = balance.version + 1;
         const movementId = generateId();
 
-        // Atualizar saldo
         await db.run(
           `UPDATE pdv_inventory_balances_v2
            SET available_qty = ?, reserved_qty = ?, version = ?, updated_at = ?
@@ -134,7 +129,6 @@ function createInventoryService(options = {}) {
           [newAvailable, newReserved, newVersion, now, balance.id, balance.version]
         );
 
-        // Verificar se a atualização foi aplicada (caso de concorrência)
         const updated = await db.get(
           `SELECT id FROM pdv_inventory_balances_v2 WHERE id = ? AND version = ?`,
           [balance.id, newVersion]
@@ -144,7 +138,6 @@ function createInventoryService(options = {}) {
           throw new Error(`STOCK_CONCURRENCY_CONFLICT: variant=${variantId}, store=${storeId}`);
         }
 
-        // Gravar movimento
         await db.run(
           `INSERT INTO pdv_inventory_movements_v2
            (id, variant_id, store_id, movement_type, quantity_delta, quantity_before,
@@ -180,7 +173,6 @@ function createInventoryService(options = {}) {
 
       await db.run("COMMIT");
     } catch (err) {
-      // ROLLBACK já foi feito em caso de erro específico, mas garantir
       try { await db.run("ROLLBACK"); } catch (_) {}
       throw err;
     }
@@ -199,32 +191,56 @@ function createInventoryService(options = {}) {
    *
    * Reverte o hold: incrementa available_qty, decrementa reserved_qty.
    * Grava movimento RESERVATION_RELEASE.
+   *
+   * Idempotente: usa chave por movimento (orderId + storeId + variantId).
+   * Se já foi liberado, retorna sem re-liberar (evita double-release).
+   *
+   * Aceita { tx } para rodar dentro de uma transação externa.
+   * Se tx não fornecida, usa db diretamente.
    */
-  async function releaseReservation(orderId, storeId, items) {
+  async function releaseReservation(orderId, storeId, items, txOpts = null) {
     if (!orderId) throw new Error("ORDER_ID_REQUIRED");
     if (!storeId) throw new Error("STORE_ID_REQUIRED");
     if (!Array.isArray(items) || items.length === 0) return { released: false, reason: "NO_ITEMS" };
 
-    const now = iso(new Date());
+    // txOpts pode ser { db: dbConn } para usar em transação externa
+    const runner = txOpts?.db || db;
+
+    const results = [];
 
     for (const item of items) {
       const variantId = item.variant_id;
       const quantity = Math.max(1, Math.floor(item.quantity || 1));
 
-      const balance = await ensureBalance(variantId, storeId);
+      // Idempotência por movimento individual
+      const releaseKey = `RELEASE::${orderId}::${storeId}::${variantId}`;
+      const existingRelease = await runner.get(
+        `SELECT id FROM pdv_inventory_movements_v2
+         WHERE idempotency_key = ? AND movement_type = 'RESERVATION_RELEASE'`,
+        [releaseKey]
+      );
+      if (existingRelease) {
+        results.push({ variant_id: variantId, released: false, reason: "ALREADY_RELEASED", idempotent: true });
+        continue;
+      }
+
+      const now = iso(new Date());
+      const balance = await ensureBalance.call(null, variantId, storeId);
+
+      // Se não há saldo reservado, registrar o release mesmo assim (idempotente)
       const newAvailable = balance.available_qty + quantity;
       const newReserved = Math.max(0, balance.reserved_qty - quantity);
       const newVersion = balance.version + 1;
       const movementId = generateId();
 
-      await db.run(
+      await runner.run(
         `UPDATE pdv_inventory_balances_v2
          SET available_qty = ?, reserved_qty = ?, version = ?, updated_at = ?
          WHERE id = ? AND version = ?`,
         [newAvailable, newReserved, newVersion, now, balance.id, balance.version]
       );
 
-      await db.run(
+      await runner.run(
         `INSERT INTO pdv_inventory_movements_v2
          (id, variant_id, store_id, movement_type, quantity_delta, quantity_before,
           quantity_after, origin, reference_type, reference_id, idempotency_key,
@@ -239,16 +255,27 @@ function createInventoryService(options = {}) {
           newAvailable,
           "app_order_shop",
           orderId,
-          generateId(),
+          releaseKey,
           0,
           "system",
           JSON.stringify({ order_id: orderId, reason: "release" }),
           now,
         ]
       );
+
+      results.push({ variant_id: variantId, released: true, movement_id: movementId });
     }
 
-    return { released: true, order_id: orderId, store_id: storeId };
+    const anyReleased = results.some(r => r.released);
+    const allIdempotent = results.length > 0 && results.every(r => r.idempotent === true);
+    return {
+      released: anyReleased,
+      idempotent: allIdempotent,
+      reason: allIdempotent ? 'ALREADY_RELEASED' : undefined,
+      order_id: orderId,
+      store_id: storeId,
+      results,
+    };
   }
 
   return {

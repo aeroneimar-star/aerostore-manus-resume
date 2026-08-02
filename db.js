@@ -2462,7 +2462,9 @@ async function initializeDatabase() {
   await applyAppAddressSchema({ run, get, all });
   await applyAppFulfillmentSchema({ run, get, all });
   const { applyAppOrderSchema } = require("./modules/customers/app-orders/persistence/appOrderSchema");
+  const { applyAppOrderSchemaV2 } = require("./modules/customers/app-orders/persistence/appOrderSchemaV2");
   await applyAppOrderSchema({ run, get, all });
+  await applyAppOrderSchemaV2({ run, get, all });
 
   await ensureSeedData();
   await ensureAiCatalogSeed();

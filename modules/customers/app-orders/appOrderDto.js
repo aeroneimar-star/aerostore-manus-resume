@@ -30,6 +30,7 @@ function orderDto(o = {}) {
     created_at: o.created_at || null,
     updated_at: o.updated_at || null,
     expires_at: o.expires_at || null,
+    expired_at: o.expired_at || null,
     failed_reason: o.failed_reason || null,
   };
 }

@@ -225,6 +225,24 @@ export function OrderDetailScreen() {
         </View>
       )}
 
+      {/* Expiry info */}
+      {order.expires_at && (
+        <View style={[styles.metaRow, { marginTop: 12 }]}>
+          <Text style={[styles.metaText, { color: tokens.textMuted }]}>
+            {order.status === 'EXPIRED'
+              ? `Reserva expirada em ${formatDateTime(order.expires_at)}`
+              : `Paga ate ${formatDateTime(order.expires_at)}`}
+          </Text>
+        </View>
+      )}
+      {order.expired_at && order.status === 'EXPIRED' && (
+        <View style={[styles.metaRow, { marginTop: 4 }]}>
+          <Text style={[styles.metaText, { color: tokens.error }]}>
+            Expiracao processada em {formatDateTime(order.expired_at)}
+          </Text>
+        </View>
+      )}
+
       {/* Created/Updated */}
       <View style={styles.metaRow}>
         <Text style={[styles.metaText, { color: tokens.textMuted }]}>
