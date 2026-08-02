@@ -2453,6 +2453,7 @@ async function initializeDatabase() {
   const { applyAppCartSchema } = require("./modules/customers/app-cart/persistence/appCartSchema");
   const { applyAppAddressSchema } = require("./modules/customers/app-address/persistence/appAddressSchema");
   const { applyAppFulfillmentSchema } = require("./modules/customers/app-fulfillment/persistence/appFulfillmentSchema");
+  const { applyAppOrderSchema } = require("./modules/customers/app-orders/persistence/appOrderSchema");
   await applyAppCustomerAccessSchema({ run, get, all });
   await applyAppPhoneVerificationSchema({ run, get, all });
   await applyAppSessionSchema({ run, get, all });
@@ -2461,6 +2462,7 @@ async function initializeDatabase() {
   await applyAppCartSchema({ run, get, all });
   await applyAppAddressSchema({ run, get, all });
   await applyAppFulfillmentSchema({ run, get, all });
+  await applyAppOrderSchema({ run, get, all });
 
   await ensureSeedData();
   await ensureAiCatalogSeed();

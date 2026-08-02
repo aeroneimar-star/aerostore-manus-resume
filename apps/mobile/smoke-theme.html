@@ -404,6 +404,19 @@
     margin-bottom: 16px;
   }
   .note-text { font-size: 12px; color: var(--info); line-height: 1.6; }
+
+  /* Checkout */
+  .order-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .order-item-info { flex: 1; }
+  .order-item-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+  .order-item-variant { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .order-item-qty { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .order-item-price { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-left: 12px; }
+  .checkout-row { display: flex; justify-content: space-between; padding: 8px 0; }
+  .checkout-label { font-size: 13px; color: var(--text-secondary); }
+  .checkout-value { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+  .checkout-card { background: var(--surface-elevated); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+
   .empty-panel { padding: 24px; text-align: center; }
   .empty-text { font-size: 14px; color: var(--text-muted); margin-bottom: 4px; }
 
@@ -536,6 +549,12 @@
     <button class="screen-btn" onclick="showScreen('pickup-no-stores')" id="nav-pickup-no-stores">Sem Lojas</button>
     <button class="screen-btn" onclick="showScreen('pickup-blocked')" id="nav-pickup-blocked">Loja Bloqueada</button>
     <button class="screen-btn" onclick="showScreen('pickup-summary')" id="nav-pickup-summary">Resumo Retirada</button>
+    <button class="screen-btn" onclick="showScreen('checkout')" id="nav-checkout">Revisao Pedido</button>
+    <button class="screen-btn" onclick="showScreen('order-success')" id="nav-order-success">Pedido OK</button>
+    <button class="screen-btn" onclick="showScreen('order-error')" id="nav-order-error">Pedido Erro</button>
+    <button class="screen-btn" onclick="showScreen('order-stock')" id="nav-order-stock">Estoque Insuf.</button>
+    <button class="screen-btn" onclick="showScreen('order-price')" id="nav-order-price">Preco Alterado</button>
+    <button class="screen-btn" onclick="showScreen('order-dup')" id="nav-order-dup">Pedido Duplicado</button>
   </div>
 
   <!-- Screens -->
@@ -1050,6 +1069,214 @@
 
   </div>
 
+    <!-- Checkout Review -->
+    <div class="screen-container" id="screen-checkout" style="display:none">
+      <div class="section-title">Itens do Pedido</div>
+      <div class="order-item">
+        <div class="order-item-info">
+          <div class="order-item-name">Camiseta AERO Basic</div>
+          <div class="order-item-variant">Tamanho: M | Cor: Stone</div>
+          <div class="order-item-qty">Qtd: 2</div>
+        </div>
+        <div class="order-item-price">R$ 259,80</div>
+      </div>
+      <div class="order-item">
+        <div class="order-item-info">
+          <div class="order-item-name">Boné AERO</div>
+          <div class="order-item-variant">Tamanho: Único</div>
+          <div class="order-item-qty">Qtd: 1</div>
+        </div>
+        <div class="order-item-price">R$ 89,90</div>
+      </div>
+
+      <div class="section-title" style="margin-top: 24px;">Entrega</div>
+      <div class="checkout-row">
+        <span class="checkout-label">Modalidade</span>
+        <span class="checkout-value">Entrega em endereço</span>
+      </div>
+      <div class="checkout-row">
+        <span class="checkout-label">Endereço</span>
+        <span class="checkout-value">Rua das Palmeiras, 123</span>
+      </div>
+      <div class="checkout-row">
+        <span class="checkout-label">Bairro</span>
+        <span class="checkout-value">Jardim Paulistano</span>
+      </div>
+
+      <div class="section-title" style="margin-top: 24px;">Resumo</div>
+      <div class="checkout-row">
+        <span class="checkout-label">Subtotal</span>
+        <span class="checkout-value">R$ 349,70</span>
+      </div>
+      <div class="checkout-row">
+        <span class="checkout-label">Frete</span>
+        <span class="checkout-value">R$ 24,90</span>
+      </div>
+      <div class="checkout-row" style="border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px;">
+        <span class="checkout-label" style="font-weight: 700; font-size: 16px;">Total</span>
+        <span class="checkout-value" style="font-weight: 700; font-size: 18px; color: var(--accent);">R$ 374,60</span>
+      </div>
+
+      <div class="note-card" style="margin-top: 16px;">
+        <div class="note-text">Nenhum pagamento será processado agora. O pagamento será iniciado após a confirmação.</div>
+      </div>
+
+      <div style="margin-top: 12px; display: flex; align-items: center; gap: 8px;">
+        <div style="width: 18px; height: 18px; border: 2px solid var(--accent); border-radius: 4px; background: var(--accent); display: flex; align-items: center; justify-content: center;">
+          <span style="color: var(--text-inverse); font-size: 12px; font-weight: 700;">✓</span>
+        </div>
+        <span style="font-size: 13px; color: var(--text-secondary);">Li e aceito os termos de uso e política de privacidade</span>
+      </div>
+
+      <button class="btn-primary" style="margin-top: 20px;">CONFIRMAR PEDIDO</button>
+    </div>
+
+    <!-- Order Success -->
+    <div class="screen-container" id="screen-order-success" style="display:none">
+      <div style="text-align: center; padding: 40px 0 24px;">
+        <div style="font-size: 64px; margin-bottom: 16px;">✓</div>
+        <h2 style="font-size: 22px; font-weight: 700; color: var(--success); margin-bottom: 8px;">Pedido Confirmado!</h2>
+        <p style="font-size: 16px; color: var(--text-secondary); margin-bottom: 32px;">Seu pedido foi registrado com sucesso.</p>
+      </div>
+      <div class="checkout-card">
+        <div class="checkout-row">
+          <span class="checkout-label">Número do Pedido</span>
+          <span class="checkout-value">AERO-2026-000147</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Status</span>
+          <span class="checkout-value" style="color: var(--success);">Aguardando Pagamento</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Total</span>
+          <span class="checkout-value">R$ 374,60</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Itens</span>
+          <span class="checkout-value">3 produtos</span>
+        </div>
+      </div>
+      <div class="note-card" style="margin-top: 16px;">
+        <div class="note-text">O pagamento será iniciado em breve. Você receberá um link seguro por SMS.</div>
+      </div>
+      <button class="btn-primary" style="margin-top: 20px;">Voltar para Início</button>
+      <button class="btn-secondary" style="margin-top: 8px;">Ver Meus Pedidos</button>
+    </div>
+
+    <!-- Order Error -->
+    <div class="screen-container" id="screen-order-error" style="display:none">
+      <div style="text-align: center; padding: 40px 0 24px;">
+        <div style="font-size: 64px; margin-bottom: 16px;">!</div>
+        <h2 style="font-size: 22px; font-weight: 700; color: var(--error); margin-bottom: 8px;">Erro no Pedido</h2>
+        <p style="font-size: 16px; color: var(--text-secondary); margin-bottom: 32px;">Ocorreu um erro ao processar seu pedido. Tente novamente.</p>
+      </div>
+      <div class="checkout-card" style="background: var(--error-surface); border-color: var(--error);">
+        <div class="checkout-row">
+          <span class="checkout-label">Código do Erro</span>
+          <span class="checkout-value" style="color: var(--error);">INTERNAL_ERROR</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Status do Carrinho</span>
+          <span class="checkout-value">Mantido</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Pagamento</span>
+          <span class="checkout-value">Não iniciado</span>
+        </div>
+      </div>
+      <div class="note-card" style="margin-top: 16px;">
+        <div class="note-text">Nenhum pagamento foi iniciado. Seu carrinho está seguro e você pode tentar novamente.</div>
+      </div>
+      <button class="btn-primary" style="margin-top: 20px;">Tentar Novamente</button>
+      <button class="btn-secondary" style="margin-top: 8px;">Voltar para Início</button>
+    </div>
+
+    <!-- Order Stock Insufficient -->
+    <div class="screen-container" id="screen-order-stock" style="display:none">
+      <div style="text-align: center; padding: 40px 0 24px;">
+        <div style="font-size: 64px; margin-bottom: 16px;">!</div>
+        <h2 style="font-size: 22px; font-weight: 700; color: var(--warning); margin-bottom: 8px;">Estoque Insuficiente</h2>
+        <p style="font-size: 16px; color: var(--text-secondary); margin-bottom: 32px;">Um dos itens do seu carrinho não está mais disponível na quantidade solicitada.</p>
+      </div>
+      <div class="checkout-card" style="background: var(--warning-surface); border-color: var(--warning);">
+        <div class="checkout-row">
+          <span class="checkout-label">Produto</span>
+          <span class="checkout-value" style="color: var(--warning);">Camiseta AERO Basic</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Solicitado</span>
+          <span class="checkout-value">2 unidades</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Disponível</span>
+          <span class="checkout-value" style="color: var(--error);">1 unidade</span>
+        </div>
+      </div>
+      <div class="note-card" style="margin-top: 16px;">
+        <div class="note-text">Atualize a quantidade no carrinho e tente novamente.</div>
+      </div>
+      <button class="btn-primary" style="margin-top: 20px;">Voltar ao Carrinho</button>
+    </div>
+
+    <!-- Order Price Changed -->
+    <div class="screen-container" id="screen-order-price" style="display:none">
+      <div style="text-align: center; padding: 40px 0 24px;">
+        <div style="font-size: 64px; margin-bottom: 16px;">!</div>
+        <h2 style="font-size: 22px; font-weight: 700; color: var(--warning); margin-bottom: 8px;">Preço Atualizado</h2>
+        <p style="font-size: 16px; color: var(--text-secondary); margin-bottom: 32px;">O preço de um produto mudou desde que você adicionou ao carrinho.</p>
+      </div>
+      <div class="checkout-card" style="background: var(--warning-surface); border-color: var(--warning);">
+        <div class="checkout-row">
+          <span class="checkout-label">Produto</span>
+          <span class="checkout-value" style="color: var(--warning);">Boné AERO</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Preço anterior</span>
+          <span class="checkout-value" style="text-decoration: line-through;">R$ 89,90</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Novo preço</span>
+          <span class="checkout-value" style="color: var(--success);">R$ 79,90</span>
+        </div>
+        <div class="checkout-row" style="border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px;">
+          <span class="checkout-label" style="font-weight: 700;">Novo total</span>
+          <span class="checkout-value" style="font-weight: 700; font-size: 18px; color: var(--accent);">R$ 364,60</span>
+        </div>
+      </div>
+      <div class="note-card" style="margin-top: 16px;">
+        <div class="note-text">Revise o valor e confirme o pedido para prosseguir.</div>
+      </div>
+      <button class="btn-primary" style="margin-top: 20px;">Confirmar com Novo Preço</button>
+      <button class="btn-secondary" style="margin-top: 8px;">Cancelar</button>
+    </div>
+
+    <!-- Order Duplicate -->
+    <div class="screen-container" id="screen-order-dup" style="display:none">
+      <div style="text-align: center; padding: 40px 0 24px;">
+        <div style="font-size: 64px; margin-bottom: 16px;">!</div>
+        <h2 style="font-size: 22px; font-weight: 700; color: var(--warning); margin-bottom: 8px;">Pedido Duplicado</h2>
+        <p style="font-size: 16px; color: var(--text-secondary); margin-bottom: 32px;">Este pedido já está sendo processado. Evite clicar novamente.</p>
+      </div>
+      <div class="checkout-card" style="background: var(--warning-surface); border-color: var(--warning);">
+        <div class="checkout-row">
+          <span class="checkout-label">Número do Pedido</span>
+          <span class="checkout-value" style="color: var(--warning);">AERO-2026-000147</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Status</span>
+          <span class="checkout-value">Criando...</span>
+        </div>
+        <div class="checkout-row">
+          <span class="checkout-label">Mensagem</span>
+          <span class="checkout-value">IDEMPOTENT_RETRY</span>
+        </div>
+      </div>
+      <div class="note-card" style="margin-top: 16px;">
+        <div class="note-text">Aguardando confirmação. O pedido será concluído automaticamente.</div>
+      </div>
+      <button class="btn-secondary" style="margin-top: 20px;">Aguardar</button>
+    </div>
+
   <!-- Theme Info -->
   <div style="margin-top: 24px; padding: 12px; background: var(--surface-elevated); border: 1px solid var(--accent); border-radius: 12px; text-align: center;">
     <div style="font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: var(--accent); text-transform: uppercase;">Tema Ativo</div>
@@ -1058,7 +1285,7 @@
 
   <!-- Footer -->
   <div class="footer">
-    <div class="footer-text">AEROSTORE · Enderecos + Entrega + Retirada · Fase 3.8</div>
+    <div class="footer-text">AEROSTORE · Checkout + Pedido + Erros · Fase 3.9</div>
   </div>
 
 </div>
