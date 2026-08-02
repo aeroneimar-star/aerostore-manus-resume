@@ -23,6 +23,7 @@ export default function RootLayout() {
         <Stack.Screen name="access-status" options={{ headerShown: false }} />
         <Stack.Screen name="profile" options={{ headerShown: false }} />
         <Stack.Screen name="catalog" options={{ headerShown: false }} />
+        <Stack.Screen name="cart" options={{ title: 'Carrinho', headerBackTitle: 'Catálogo' }} />
         <Stack.Screen
           name="product/[slug]"
           options={{ title: 'Coleção AEROSTORE', headerBackTitle: 'Catálogo' }}

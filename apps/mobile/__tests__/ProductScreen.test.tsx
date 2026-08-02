@@ -34,7 +34,7 @@ describe('ProductScreen', () => {
     await waitFor(() => expect(screen.getByText('Polo Pima Marinho')).toBeTruthy());
     await waitFor(() => expect(screen.getByText(/Osklen · Polos/)).toBeTruthy());
     await waitFor(() => expect(screen.getByText('CÓDIGO AERO-000001')).toBeTruthy());
-    await waitFor(() => expect(screen.getByText('Compra disponível em breve.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText('Adicionar ao carrinho')).toBeTruthy());
   });
 
   it('renders an accessible image placeholder', async () => {

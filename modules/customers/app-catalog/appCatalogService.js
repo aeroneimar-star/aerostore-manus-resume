@@ -150,7 +150,7 @@ function createAppCatalogService(options = {}) {
     return envelope({ product: detailDto(product) });
   }
 
-  return { list, categories, detail, limits: { maxPageSize: MAX_PAGE_SIZE } };
+  return { list, categories, detail, loadProductsForRefresh: loadProducts, limits: { maxPageSize: MAX_PAGE_SIZE } };
 }
 
 module.exports = { AppCatalogError, createAppCatalogService, normalizeQuery, publicImageUrl, isTestProduct, MAX_PAGE_SIZE };

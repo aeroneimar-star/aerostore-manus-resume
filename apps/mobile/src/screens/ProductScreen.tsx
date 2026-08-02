@@ -2,6 +2,7 @@ import { Image } from 'expo-image';
 import { type Href, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,6 +21,7 @@ import type {
 import { Price } from '@/components/Price';
 import { ScreenState } from '@/components/ScreenState';
 import { theme } from '@/theme';
+import { createCartClient } from '@/cart/client';
 
 type ProductState = 'loading' | 'ready' | 'error' | 'disabled' | 'not_found';
 
@@ -39,6 +41,7 @@ export function ProductScreen({
   productIdOverride,
 }: ProductScreenProps) {
   const router = useRouter();
+  const cartClient = createCartClient();
   const params = useLocalSearchParams<{ slug?: string | string[] }>();
   const slugParam = Array.isArray(params.slug) ? params.slug[0] : params.slug;
   const productId = productIdOverride ?? slugParam ?? '';
@@ -46,6 +49,25 @@ export function ProductScreen({
   const [product, setProduct] = useState<B2cProduct>();
   const [state, setState] = useState<ProductState>('loading');
   const [reloadKey, setReloadKey] = useState(0);
+  const [addingToCart, setAddingToCart] = useState(false);
+
+  const handleAddToCart = useCallback(async () => {
+    if (!product) return;
+    setAddingToCart(true);
+    try {
+      const variant = product.variants[0];
+      await cartClient.addItem({
+        product_id: product.id,
+        variant_id: variant?.slug,
+        quantity: 1,
+      });
+      router.push('/cart' as Href);
+    } catch {
+      // Silently fail — user can retry
+    } finally {
+      setAddingToCart(false);
+    }
+  }, [product, router]);
 
   useEffect(() => {
     let active = true;
@@ -171,17 +193,23 @@ export function ProductScreen({
             ))}
           </View>
 
-          <View
-            accessible
-            accessibilityRole="summary"
-            style={styles.prototypeNotice}>
-            <Text style={styles.prototypeTitle}>
-              Compra disponível em breve.
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Adicionar ao carrinho"
+            onPress={handleAddToCart}
+            disabled={product.availability === 'out_of_stock' || addingToCart}
+            style={[styles.addToCartButton, (product.availability === 'out_of_stock' || addingToCart) && styles.addToCartDisabled]}
+            testID="add-to-cart">
+            <Text style={styles.addToCartText}>
+              {addingToCart ? 'Adicionando...' : product.availability === 'out_of_stock' ? 'Indisponível' : 'Adicionar ao carrinho'}
             </Text>
-            <Text style={styles.prototypeBody}>
-              Explore a coleção com tranquilidade. Carrinho, pedido e pagamento ainda não estão ativos.
-            </Text>
-          </View>
+          </Pressable>
+          <Pressable
+            onPress={() => router.push('/cart' as Href)}
+            style={styles.viewCartButton}
+            testID="view-cart">
+            <Text style={styles.viewCartText}>Ver carrinho</Text>
+          </Pressable>
         </View>
       </View>
     </ScrollView>
@@ -389,11 +417,37 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.display,
     fontSize: 22,
   },
-  prototypeBody: {
-    color: '#56534D',
+  addToCartButton: {
+    backgroundColor: theme.colors.copper,
+    paddingVertical: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: theme.spacing.lg,
+  },
+  addToCartDisabled: {
+    opacity: 0.5,
+    backgroundColor: theme.colors.stone,
+  },
+  addToCartText: {
+    color: theme.colors.ink,
+    fontFamily: theme.typography.body,
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  viewCartButton: {
+    borderWidth: 1,
+    borderColor: theme.colors.copper,
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: theme.spacing.md,
+  },
+  viewCartText: {
+    color: theme.colors.copper,
     fontFamily: theme.typography.body,
     fontSize: 13,
-    lineHeight: 20,
-    marginTop: theme.spacing.xs,
+    fontWeight: '600',
+    letterSpacing: 0.5,
   },
 });
