@@ -291,7 +291,7 @@ export function CartScreen() {
               style={[styles.checkoutButton, { backgroundColor: tokens.accent }]}
               testID="cart-checkout"
               onPress={() => {
-                // Fase 3.7 — carrinho read-only, sem criar pedido
+                router.navigate('/fulfillment');
               }}
               accessibilityLabel="Revisar entrega"
             >

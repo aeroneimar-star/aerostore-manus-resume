@@ -31,6 +31,9 @@ function RootLayoutInner() {
           name="product/[slug]"
           options={{ title: 'Coleção AEROSTORE', headerBackTitle: 'Catálogo' }}
         />
+        <Stack.Screen name="address-list" options={{ title: 'Enderecos', headerBackTitle: 'Voltar' }} />
+        <Stack.Screen name="address-form" options={{ title: 'Endereco', headerBackTitle: 'Enderecos' }} />
+        <Stack.Screen name="fulfillment" options={{ title: 'Entrega', headerBackTitle: 'Carrinho' }} />
       </Stack>
     </>
   );

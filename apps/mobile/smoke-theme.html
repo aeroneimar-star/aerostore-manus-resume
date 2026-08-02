@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AEROSTORE — Smoke Visual Tema</title>
+<title>AEROSTORE — Smoke Visual Tema + Entrega</title>
 <style>
   :root {
     --bg: #FDFBF7;
@@ -19,9 +19,15 @@
     --success: #4A7A3E;
     --error: #B84A3A;
     --warning: #A67C3F;
-    --copper: #C48054;
-    --moss: #6B7A5B;
-    --amber: #C9A96E;
+    --info: #3B7BA0;
+    --info-surface: #EAF4FB;
+    --warning-surface: #FFF8EB;
+    --error-surface: #FDF0EE;
+    --input-bg: #FFFFFF;
+    --input-border: #E5E2DC;
+    --input-placeholder: #8A8A88;
+    --text-disabled: #AAAAAA;
+    --button-disabled: #D0C8BC;
   }
 
   body.dark {
@@ -38,9 +44,15 @@
     --success: #82977B;
     --error: #D99386;
     --warning: #C9A96E;
-    --copper: #C48054;
-    --moss: #6B7A5B;
-    --amber: #C9A96E;
+    --info: #7BB8D9;
+    --info-surface: #1A2A35;
+    --warning-surface: #2A2518;
+    --error-surface: #2A1A18;
+    --input-bg: #1A1A18;
+    --input-border: #2A2A28;
+    --input-placeholder: #6B6B68;
+    --text-disabled: #555555;
+    --button-disabled: #3A3A38;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -155,56 +167,245 @@
     color: var(--text-primary);
     text-align: center;
     margin-bottom: 16px;
-    transition: border-color 0.2s;
   }
-  .phone-input:focus { border-color: var(--accent); outline: none; }
-  .phone-placeholder { color: var(--text-muted); }
+  .btn-primary {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    background: var(--accent);
+    color: var(--text-inverse);
+    border: none;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: 12px;
+    text-align: center;
+  }
+  .btn-secondary {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    background: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 8px;
+    text-align: center;
+  }
+  .btn-outline {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+  }
 
-  /* OTP */
-  .otp-entry { text-align: center; }
-  .otp-entry h2 { font-size: 22px; font-weight: 700; margin-bottom: 8px; color: var(--text-primary); }
-  .otp-entry p { font-size: 14px; color: var(--text-secondary); margin-bottom: 24px; }
-  .otp-digits {
-    display: flex;
-    gap: 8px;
-    justify-content: center;
-    margin-bottom: 24px;
+  /* Address List */
+  .address-card {
+    background: var(--surface-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
   }
-  .otp-digit {
-    width: 44px;
-    height: 52px;
+  .address-card.default { border-color: var(--accent); }
+  .address-header { margin-bottom: 8px; }
+  .address-label-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .address-label { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+  .default-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-radius: 4px;
+    background: var(--accent);
+    color: var(--text-inverse);
+  }
+  .address-recipient { font-size: 13px; color: var(--text-secondary); }
+  .address-body { margin-bottom: 12px; }
+  .address-line { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+  .address-actions { display: flex; gap: 8px; }
+  .action-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid;
+    border-radius: 6px;
+    cursor: pointer;
+    background: transparent;
+  }
+  .action-btn.default-btn { border-color: var(--accent); color: var(--accent); }
+  .action-btn.danger-btn { border-color: var(--error); color: var(--error); }
+
+  /* Address Form */
+  .form-group { margin-bottom: 16px; }
+  .form-label { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); margin-bottom: 6px; display: block; }
+  .form-input {
+    width: 100%;
+    height: 44px;
+    padding: 0 14px;
+    font-size: 15px;
+    border: 1px solid var(--input-border);
+    border-radius: 8px;
+    background: var(--input-bg);
+    color: var(--text-primary);
+    outline: none;
+  }
+  .form-input::placeholder { color: var(--input-placeholder); }
+  .form-input:focus { border-color: var(--accent); }
+  .form-textarea {
+    width: 100%;
+    height: 80px;
+    padding: 10px 14px;
+    font-size: 15px;
+    border: 1px solid var(--input-border);
+    border-radius: 8px;
+    background: var(--input-bg);
+    color: var(--text-primary);
+    outline: none;
+    resize: vertical;
+  }
+  .form-row { display: flex; gap: 12px; }
+  .form-row .form-group { flex: 1; }
+  .form-row .form-group.wide { flex: 3; }
+  .cep-row { display: flex; gap: 8px; align-items: flex-end; }
+  .cep-row .form-group { flex: 1; margin-bottom: 0; }
+  .cep-btn {
+    height: 44px;
+    padding: 0 16px;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .form-error {
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--error-surface);
+    color: var(--error);
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 16px;
+  }
+
+  /* Fulfillment */
+  .section-title { font-size: 20px; font-weight: 700; letter-spacing: 2px; color: var(--text-primary); margin-bottom: 20px; }
+  .mode-row { display: flex; gap: 12px; margin-bottom: 24px; }
+  .mode-card {
+    flex: 1;
+    padding: 20px;
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-elevated);
+    text-align: center;
+    cursor: pointer;
+  }
+  .mode-card.active { border-color: var(--accent); }
+  .mode-icon { font-size: 24px; color: var(--accent); margin-bottom: 8px; }
+  .mode-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+  .mode-subtitle { font-size: 12px; color: var(--text-muted); }
+  .panel-title { font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; }
+  .address-option {
+    display: flex;
+    flex-direction: column;
+    padding: 14px;
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--surface-elevated);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 22px;
-    font-weight: 700;
-    color: var(--text-primary);
+    margin-bottom: 8px;
+    cursor: pointer;
   }
-  .otp-digit.filled { border-color: var(--accent); }
-  .otp-resend { font-size: 13px; color: var(--text-muted); margin-top: 16px; }
-  .otp-resend a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .address-option-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .address-option-label { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+  .address-option-city { font-size: 12px; color: var(--text-muted); }
+  .store-option {
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-elevated);
+    margin-bottom: 8px;
+    cursor: pointer;
+  }
+  .store-option.recommended { border-color: var(--accent); }
+  .recommended-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-radius: 4px;
+    background: var(--accent);
+    color: var(--text-inverse);
+    margin-bottom: 6px;
+  }
+  .store-name { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+  .store-address { font-size: 12px; color: var(--text-muted); }
+  .store-city { font-size: 12px; color: var(--text-muted); }
+  .store-distance { font-size: 11px; color: var(--text-muted); font-style: italic; margin-top: 2px; }
 
-  /* Access Status */
-  .access-status { text-align: center; padding-top: 40px; }
-  .access-status .status-icon {
-    width: 64px;
-    height: 64px;
-    border-radius: 50%;
-    margin: 0 auto 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 28px;
+  /* Summary */
+  .summary-card {
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-elevated);
+    margin-bottom: 12px;
   }
-  .access-status .status-icon.success { background: var(--success); color: #FFF; }
-  .access-status .status-icon.error { background: var(--error); color: #FFF; }
-  .access-status .status-icon.warning { background: var(--warning); color: #FFF; }
-  .access-status .status-icon.pending { background: var(--accent); color: #FFF; }
-  .access-status h2 { font-size: 20px; font-weight: 700; margin-bottom: 12px; color: var(--text-primary); }
-  .access-status p { font-size: 14px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 24px; }
+  .summary-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+  .summary-label { font-size: 13px; color: var(--text-secondary); }
+  .summary-value { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+  .totals-card {
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-elevated);
+    margin-bottom: 12px;
+  }
+  .total-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+  .total-label { font-size: 14px; color: var(--text-secondary); }
+  .total-value { font-size: 14px; font-weight: 500; color: var(--text-primary); }
+  .grand-total-row {
+    display: flex;
+    justify-content: space-between;
+    padding-top: 12px;
+    margin-top: 4px;
+    border-top: 1px solid var(--border);
+  }
+  .grand-total-label { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+  .grand-total-value { font-size: 16px; font-weight: 700; color: var(--accent); }
+  .blocking-card {
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--warning-surface);
+    margin-bottom: 12px;
+  }
+  .blocking-text { font-size: 13px; color: var(--warning); margin-bottom: 4px; }
+  .note-card {
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--info-surface);
+    margin-bottom: 16px;
+  }
+  .note-text { font-size: 12px; color: var(--info); line-height: 1.6; }
+  .empty-panel { padding: 24px; text-align: center; }
+  .empty-text { font-size: 14px; color: var(--text-muted); margin-bottom: 4px; }
 
   /* Profile */
   .profile-screen h2 { font-size: 20px; font-weight: 700; margin-bottom: 24px; color: var(--text-primary); }
@@ -226,7 +427,6 @@
     border: 1px solid var(--border);
     border-radius: 12px;
     cursor: pointer;
-    transition: all 0.2s;
     background: var(--surface-elevated);
   }
   .theme-option.selected { border-color: var(--accent); background: var(--surface-muted); }
@@ -235,75 +435,9 @@
     height: 20px;
     border-radius: 50%;
     border: 2px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: center;
   }
-  .theme-option.selected .theme-option-radio {
-    border-color: var(--accent);
-    background: var(--accent);
-  }
-  .theme-option.selected .theme-option-radio::after {
-    content: '';
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #FFF;
-  }
+  .theme-option.selected .theme-option-radio { border-color: var(--accent); background: var(--accent); }
   .theme-option-label { font-size: 14px; color: var(--text-primary); font-weight: 500; }
-
-  /* Catalog */
-  .catalog-screen h2 { font-size: 20px; font-weight: 700; margin-bottom: 16px; color: var(--text-primary); }
-  .filter-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
-  .filter-chip {
-    padding: 6px 14px;
-    font-size: 12px;
-    font-weight: 600;
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    background: var(--surface);
-    color: var(--text-secondary);
-    cursor: pointer;
-  }
-  .filter-chip.active {
-    background: var(--accent);
-    color: #FFF;
-    border-color: var(--accent);
-  }
-  .product-list { display: flex; flex-direction: column; gap: 12px; }
-  .product-item {
-    display: flex;
-    gap: 12px;
-    padding: 12px;
-    background: var(--surface-elevated);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-  }
-  .product-thumb {
-    width: 64px;
-    height: 64px;
-    border-radius: 8px;
-    background: var(--surface-muted);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 24px;
-  }
-  .product-info { flex: 1; }
-  .product-name { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
-  .product-brand { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
-  .product-price { font-size: 16px; font-weight: 700; color: var(--text-primary); }
-  .product-price-old { font-size: 12px; color: var(--text-muted); text-decoration: line-through; margin-left: 8px; }
-  .product-badge {
-    display: inline-block;
-    padding: 2px 8px;
-    font-size: 10px;
-    font-weight: 700;
-    border-radius: 4px;
-    background: var(--error);
-    color: #FFF;
-    margin-left: 8px;
-  }
 
   /* Cart */
   .cart-screen h2 { font-size: 20px; font-weight: 700; margin-bottom: 16px; color: var(--text-primary); }
@@ -327,22 +461,6 @@
   .cart-item-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
   .cart-item-brand { font-size: 12px; color: var(--text-muted); }
   .cart-item-price { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-top: 4px; }
-  .cart-qty { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
-  .cart-qty-btn {
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-    background: var(--surface-elevated);
-    color: var(--text-primary);
-    font-size: 16px;
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-  }
-  .cart-qty-value { font-size: 14px; font-weight: 600; color: var(--text-primary); min-width: 20px; text-align: center; }
   .cart-summary {
     margin-top: 16px;
     padding: 16px;
@@ -350,11 +468,7 @@
     border: 1px solid var(--border);
     border-radius: 12px;
   }
-  .cart-total-row {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 8px;
-  }
+  .cart-total-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
   .cart-total-label { font-size: 14px; color: var(--text-secondary); }
   .cart-total-value { font-size: 14px; font-weight: 600; color: var(--text-primary); }
   .cart-total-final {
@@ -366,51 +480,23 @@
   }
   .cart-total-final .cart-total-label { font-size: 16px; font-weight: 700; color: var(--text-primary); }
   .cart-total-final .cart-total-value { font-size: 18px; font-weight: 700; color: var(--text-primary); }
-  .cart-note { font-size: 12px; color: var(--text-muted); margin-top: 12px; text-align: center; }
 
-  /* Buttons */
-  .btn-primary {
-    display: block;
-    width: 100%;
-    padding: 14px;
-    background: var(--accent);
-    color: #FFF;
-    border: none;
-    border-radius: 12px;
-    font-size: 14px;
-    font-weight: 700;
-    cursor: pointer;
-    margin-top: 12px;
-    transition: opacity 0.2s;
-  }
-  .btn-primary:hover { opacity: 0.9; }
-
-  .btn-secondary {
-    display: block;
-    width: 100%;
-    padding: 14px;
-    background: transparent;
-    color: var(--text-primary);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    margin-top: 8px;
-    transition: all 0.2s;
-  }
-
-  /* Loading spinner */
-  .spinner {
-    width: 40px;
-    height: 40px;
-    border: 3px solid var(--border);
-    border-top-color: var(--accent);
+  /* Access Status */
+  .access-status { text-align: center; padding-top: 40px; }
+  .status-icon {
+    width: 64px;
+    height: 64px;
     border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    margin: 40px auto;
+    margin: 0 auto 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .status-icon.success { background: var(--success); color: #FFF; }
+  .status-icon.error { background: var(--error); color: #FFF; }
+  .access-status h2 { font-size: 20px; font-weight: 700; margin-bottom: 12px; color: var(--text-primary); }
+  .access-status p { font-size: 14px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 24px; }
 
   /* Footer */
   .footer {
@@ -418,11 +504,7 @@
     border-top: 1px solid var(--border);
     margin-top: 32px;
   }
-  .footer-text {
-    font-size: 11px;
-    color: var(--text-muted);
-    text-align: center;
-  }
+  .footer-text { font-size: 11px; color: var(--text-muted); text-align: center; }
 </style>
 </head>
 <body>
@@ -430,7 +512,7 @@
 
   <!-- Theme Toggle -->
   <div class="header">
-    <div class="header-title">AEROSTORE · TEMA</div>
+    <div class="header-title">AEROSTORE · ENTREGA</div>
     <div class="theme-toggle">
       <button class="theme-btn" onclick="setTheme('dark')" id="btn-dark">Escuro</button>
       <button class="theme-btn active" onclick="setTheme('light')" id="btn-light">Claro</button>
@@ -439,19 +521,28 @@
 
   <!-- Screen Navigation -->
   <div class="screen-nav">
-    <button class="screen-btn active" onclick="showScreen('phone')" id="nav-phone">Telefone</button>
+    <button class="screen-btn" onclick="showScreen('phone')" id="nav-phone">Telefone</button>
     <button class="screen-btn" onclick="showScreen('otp')" id="nav-otp">OTP</button>
     <button class="screen-btn" onclick="showScreen('status')" id="nav-status">Status</button>
     <button class="screen-btn" onclick="showScreen('profile')" id="nav-profile">Perfil</button>
     <button class="screen-btn" onclick="showScreen('catalog')" id="nav-catalog">Catálogo</button>
     <button class="screen-btn" onclick="showScreen('product')" id="nav-product">Produto</button>
     <button class="screen-btn" onclick="showScreen('cart')" id="nav-cart">Carrinho</button>
+    <button class="screen-btn active" onclick="showScreen('addresses')" id="nav-addresses">Enderecos</button>
+    <button class="screen-btn" onclick="showScreen('address-form')" id="nav-address-form">Form Endereco</button>
+    <button class="screen-btn" onclick="showScreen('fulfillment')" id="nav-fulfillment">Entrega</button>
+    <button class="screen-btn" onclick="showScreen('summary')" id="nav-summary">Resumo</button>
+    <button class="screen-btn" onclick="showScreen('pickup')" id="nav-pickup">Retirada</button>
+    <button class="screen-btn" onclick="showScreen('pickup-no-stores')" id="nav-pickup-no-stores">Sem Lojas</button>
+    <button class="screen-btn" onclick="showScreen('pickup-blocked')" id="nav-pickup-blocked">Loja Bloqueada</button>
+    <button class="screen-btn" onclick="showScreen('pickup-summary')" id="nav-pickup-summary">Resumo Retirada</button>
   </div>
 
   <!-- Screens -->
   <div id="screen-content">
-    <!-- Phone Entry Screen -->
-    <div class="screen-container" id="screen-phone">
+
+    <!-- Phone Entry -->
+    <div class="screen-container" id="screen-phone" style="display:none">
       <div class="phone-entry">
         <h2>Acesse sua conta</h2>
         <p>Digite seu número de WhatsApp para receber o código de verificação.</p>
@@ -460,57 +551,43 @@
       </div>
     </div>
 
-    <!-- OTP Screen -->
+    <!-- OTP -->
     <div class="screen-container" id="screen-otp" style="display:none">
-      <div class="otp-entry">
+      <div class="phone-entry">
         <h2>Verificação</h2>
         <p>Digite o código de 6 dígitos enviado para (11) 9****-4321</p>
-        <div class="otp-digits">
-          <div class="otp-digit filled">3</div>
-          <div class="otp-digit filled">8</div>
-          <div class="otp-digit filled">1</div>
-          <div class="otp-digit filled">5</div>
-          <div class="otp-digit">_</div>
-          <div class="otp-digit">_</div>
+        <div style="display: flex; gap: 8px; justify-content: center; margin-bottom: 24px;">
+          <div style="width: 44px; height: 52px; border: 1px solid var(--accent); border-radius: 10px; background: var(--surface-elevated); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; color: var(--text-primary);">3</div>
+          <div style="width: 44px; height: 52px; border: 1px solid var(--accent); border-radius: 10px; background: var(--surface-elevated); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; color: var(--text-primary);">8</div>
+          <div style="width: 44px; height: 52px; border: 1px solid var(--accent); border-radius: 10px; background: var(--surface-elevated); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; color: var(--text-primary);">1</div>
+          <div style="width: 44px; height: 52px; border: 1px solid var(--accent); border-radius: 10px; background: var(--surface-elevated); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; color: var(--text-primary);">5</div>
+          <div style="width: 44px; height: 52px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-elevated); display: flex; align-items: center; justify-content: center; font-size: 22px; color: var(--text-muted);">_</div>
+          <div style="width: 44px; height: 52px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-elevated); display: flex; align-items: center; justify-content: center; font-size: 22px; color: var(--text-muted);">_</div>
         </div>
         <button class="btn-primary">Confirmar código</button>
-        <p class="otp-resend">Não recebeu? <a href="#">Reenviar pelo WhatsApp</a> · <a href="#">Receber por SMS</a></p>
       </div>
     </div>
 
-    <!-- Access Status Screen -->
+    <!-- Access Status -->
     <div class="screen-container" id="screen-status" style="display:none">
       <div class="access-status">
-        <div class="status-icon success">✓</div>
+        <div class="status-icon success">&#10003;</div>
         <h2>Acesso liberado</h2>
         <p>Bem-vindo(a) à AEROSTORE. Seu catálogo privado está disponível para navegação.</p>
         <button class="btn-primary">Ver catálogo privado</button>
       </div>
     </div>
 
-    <!-- Profile Screen -->
+    <!-- Profile -->
     <div class="screen-container" id="screen-profile" style="display:none">
       <div class="profile-screen">
         <h2>Meu Perfil</h2>
-        <div class="profile-row">
-          <span class="profile-row-label">Nome</span>
-          <span class="profile-row-value">Neimar Aero</span>
-        </div>
-        <div class="profile-row">
-          <span class="profile-row-label">E-mail</span>
-          <span class="profile-row-value">n***@email.com</span>
-        </div>
-        <div class="profile-row">
-          <span class="profile-row-label">Telefone</span>
-          <span class="profile-row-value">(11) 9****-****</span>
-        </div>
-        <div class="profile-row">
-          <span class="profile-row-label">Status</span>
-          <span class="profile-row-value" style="color: var(--success); font-weight: 600;">Aprovado</span>
-        </div>
-
+        <div class="profile-row"><span class="profile-row-label">Nome</span><span class="profile-row-value">Neimar Aero</span></div>
+        <div class="profile-row"><span class="profile-row-label">E-mail</span><span class="profile-row-value">n***@email.com</span></div>
+        <div class="profile-row"><span class="profile-row-label">Telefone</span><span class="profile-row-value">(11) 9****-****</span></div>
+        <div class="profile-row"><span class="profile-row-label">Status</span><span class="profile-row-value" style="color: var(--success); font-weight: 600;">Aprovado</span></div>
         <div style="margin-top: 24px; margin-bottom: 12px;">
-          <div class="section-label" style="font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: var(--text-muted); text-transform: uppercase;">APARÊNCIA</div>
+          <div style="font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: var(--text-muted); text-transform: uppercase;">APARÊNCIA</div>
         </div>
         <div class="theme-options">
           <div class="theme-option" id="opt-dark" onclick="setTheme('dark')">
@@ -526,143 +603,451 @@
             <span class="theme-option-label">Automático</span>
           </div>
         </div>
-
         <button class="btn-secondary" style="margin-top: 24px;">Sair da conta</button>
       </div>
     </div>
 
-    <!-- Catalog Screen -->
+    <!-- Catalog -->
     <div class="screen-container" id="screen-catalog" style="display:none">
-      <div class="catalog-screen">
-        <h2>Catálogo Privado</h2>
-        <div class="filter-row">
-          <span class="filter-chip active">Todos</span>
-          <span class="filter-chip">Polos</span>
-          <span class="filter-chip">Camisas</span>
-          <span class="filter-chip">Calças</span>
-          <span class="filter-chip">Acessórios</span>
-        </div>
-        <div class="product-list">
-          <div class="product-item">
-            <div class="product-thumb">👕</div>
-            <div class="product-info">
-              <div class="product-name">Polo Pima Marinho</div>
-              <div class="product-brand">Osklen · Polos</div>
-              <div>
-                <span class="product-price">R$ 459,90</span>
-                <span class="product-price-old">R$ 519,90</span>
-                <span class="product-badge">-12%</span>
-              </div>
-            </div>
-          </div>
-          <div class="product-item">
-            <div class="product-thumb">👔</div>
-            <div class="product-info">
-              <div class="product-name">Camisa Linho Branca</div>
-              <div class="product-brand">Osklen · Camisas</div>
-              <div>
-                <span class="product-price">R$ 389,90</span>
-              </div>
-            </div>
-          </div>
-          <div class="product-item">
-            <div class="product-thumb">👖</div>
-            <div class="product-info">
-              <div class="product-name">Calça Alfaiataria</div>
-              <div class="product-brand">Osklen · Calças</div>
-              <div>
-                <span class="product-price">R$ 429,90</span>
-                <span class="product-price-old">R$ 499,90</span>
-                <span class="product-badge">-14%</span>
-              </div>
-            </div>
-          </div>
-          <div class="product-item">
-            <div class="product-thumb">🧢</div>
-            <div class="product-info">
-              <div class="product-name">Boné Logo Embroidered</div>
-              <div class="product-brand">Osklen · Acessórios</div>
-              <div>
-                <span class="product-price">R$ 149,90</span>
-              </div>
-            </div>
+      <h2 style="font-size: 20px; font-weight: 700; color: var(--text-primary); margin-bottom: 16px;">Catálogo Privado</h2>
+      <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;">
+        <span style="padding: 6px 14px; font-size: 12px; font-weight: 600; border: 1px solid var(--accent); border-radius: 20px; background: var(--accent); color: #FFF;">Todos</span>
+        <span style="padding: 6px 14px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); color: var(--text-secondary);">Polos</span>
+        <span style="padding: 6px 14px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); color: var(--text-secondary);">Camisas</span>
+        <span style="padding: 6px 14px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); color: var(--text-secondary);">Calças</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; gap: 12px; padding: 12px; background: var(--surface-elevated); border: 1px solid var(--border); border-radius: 12px;">
+          <div style="width: 64px; height: 64px; border-radius: 8px; background: var(--surface-muted); display: flex; align-items: center; justify-content: center; font-size: 24px;">&#128085;</div>
+          <div style="flex: 1;">
+            <div style="font-size: 14px; font-weight: 600; color: var(--text-primary);">Polo Pima Marinho</div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">Osklen · Polos</div>
+            <span style="font-size: 16px; font-weight: 700; color: var(--text-primary);">R$ 459,90</span>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Product Screen -->
+    <!-- Product -->
     <div class="screen-container" id="screen-product" style="display:none">
       <div style="text-align: center;">
-        <div style="width: 100%; height: 200px; background: var(--surface-muted); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 64px; margin-bottom: 20px;">👕</div>
+        <div style="width: 100%; height: 200px; background: var(--surface-muted); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 64px; margin-bottom: 20px;">&#128085;</div>
         <h2 style="font-size: 20px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Polo Pima Marinho</h2>
         <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">Osklen · Polos · Marinho, M</p>
         <div style="margin-bottom: 24px;">
           <span style="font-size: 24px; font-weight: 700; color: var(--text-primary);">R$ 459,90</span>
-          <span style="font-size: 14px; color: var(--text-muted); text-decoration: line-through; margin-left: 8px;">R$ 519,90</span>
-          <span style="display: inline-block; padding: 2px 8px; font-size: 10px; font-weight: 700; border-radius: 4px; background: var(--error); color: #FFF; margin-left: 8px;">-12%</span>
         </div>
-        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 24px; line-height: 1.5;">
-          Polo em algodão Pima de alta qualidade. Corte clássico com acabamento premium. Ideal para uso casual e semi-formal.
-        </p>
         <div style="text-align: left; margin-bottom: 16px;">
           <div style="font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">TAMANHO</div>
           <div style="display: flex; gap: 8px;">
             <span style="padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--text-secondary);">P</span>
             <span style="padding: 8px 16px; border: 2px solid var(--accent); border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--accent);">M</span>
             <span style="padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--text-secondary);">G</span>
-            <span style="padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--text-secondary);">GG</span>
           </div>
         </div>
         <button class="btn-primary">Adicionar ao carrinho</button>
       </div>
     </div>
 
-    <!-- Cart Screen -->
+    <!-- Cart -->
     <div class="screen-container" id="screen-cart" style="display:none">
-      <div class="cart-screen">
-        <h2>Meu Carrinho</h2>
-        <div class="cart-item">
-          <div class="cart-item-thumb">👕</div>
-          <div class="cart-item-info">
-            <div class="cart-item-name">Polo Pima Marinho</div>
-            <div class="cart-item-brand">Osklen · M</div>
-            <div class="cart-item-price">R$ 459,90</div>
-            <div class="cart-qty">
-              <button class="cart-qty-btn">−</button>
-              <span class="cart-qty-value">1</span>
-              <button class="cart-qty-btn">+</button>
-            </div>
-          </div>
+      <h2 style="font-size: 20px; font-weight: 700; color: var(--text-primary); margin-bottom: 16px;">Meu Carrinho</h2>
+      <div class="cart-item">
+        <div class="cart-item-thumb">&#128085;</div>
+        <div class="cart-item-info">
+          <div class="cart-item-name">Polo Pima Marinho</div>
+          <div class="cart-item-brand">Osklen · M</div>
+          <div class="cart-item-price">R$ 459,90</div>
         </div>
-        <div class="cart-item">
-          <div class="cart-item-thumb">👔</div>
-          <div class="cart-item-info">
-            <div class="cart-item-name">Camisa Linho Branca</div>
-            <div class="cart-item-brand">Osklen · G</div>
-            <div class="cart-item-price">R$ 389,90</div>
-            <div class="cart-qty">
-              <button class="cart-qty-btn">−</button>
-              <span class="cart-qty-value">2</span>
-              <button class="cart-qty-btn">+</button>
-            </div>
-          </div>
+      </div>
+      <div class="cart-item">
+        <div class="cart-item-thumb">&#128084;</div>
+        <div class="cart-item-info">
+          <div class="cart-item-name">Camisa Linho Branca</div>
+          <div class="cart-item-brand">Osklen · G</div>
+          <div class="cart-item-price">R$ 389,90</div>
         </div>
+      </div>
+      <div class="cart-summary">
+        <div class="cart-total-row">
+          <span class="cart-total-label">Subtotal (2 itens)</span>
+          <span class="cart-total-value">R$ 849,80</span>
+        </div>
+        <div class="cart-total-final">
+          <span class="cart-total-label">Total</span>
+          <span class="cart-total-value">R$ 849,80</span>
+        </div>
+      </div>
+      <p style="font-size: 12px; color: var(--text-muted); margin-top: 12px; text-align: center;">Preços e disponibilidade serão confirmados antes do pedido.</p>
+      <button class="btn-primary">Revisar entrega</button>
+    </div>
 
-        <div class="cart-summary">
-          <div class="cart-total-row">
-            <span class="cart-total-label">Subtotal (3 itens)</span>
-            <span class="cart-total-value">R$ 1.239,70</span>
+    <!-- Address List -->
+    <div class="screen-container" id="screen-addresses" style="display:none">
+      <h2 style="font-size: 20px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Meus Enderecos</h2>
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 20px;">2 enderecos</p>
+
+      <div class="address-card default">
+        <div class="address-header">
+          <div class="address-label-row">
+            <span class="address-label">Casa</span>
+            <span class="default-badge">Padrao</span>
           </div>
-          <div class="cart-total-final">
-            <span class="cart-total-label">Total</span>
-            <span class="cart-total-value">R$ 1.239,70</span>
-          </div>
+          <span class="address-recipient">Joao Silva</span>
         </div>
-        <p class="cart-note">Preços e disponibilidade serão confirmados antes do pedido.</p>
-        <button class="btn-primary">Revisar entrega</button>
+        <div class="address-body">
+          <div class="address-line">R. Saldanha Marinho, 807 - Apto 42</div>
+          <div class="address-line">Centro - Ribeirao Preto/SP</div>
+          <div class="address-line">CEP: 14010-030</div>
+        </div>
+        <div class="address-actions">
+          <button class="action-btn danger-btn">Excluir</button>
+        </div>
+      </div>
+
+      <div class="address-card">
+        <div class="address-header">
+          <div class="address-label-row">
+            <span class="address-label">Trabalho</span>
+          </div>
+          <span class="address-recipient">Joao Silva</span>
+        </div>
+        <div class="address-body">
+          <div class="address-line">Av. Nove de Julho, 49</div>
+          <div class="address-line">Sumare - Ribeirao Preto/SP</div>
+          <div class="address-line">CEP: 14015-175</div>
+        </div>
+        <div class="address-actions">
+          <button class="action-btn default-btn">Tornar padrao</button>
+          <button class="action-btn danger-btn">Excluir</button>
+        </div>
+      </div>
+
+      <button class="btn-primary" style="margin-top: 16px;">Novo endereco</button>
+    </div>
+
+    <!-- Address Form -->
+    <div class="screen-container" id="screen-address-form" style="display:none">
+      <h2 style="font-size: 20px; font-weight: 700; color: var(--text-primary); margin-bottom: 24px;">Novo Endereco</h2>
+
+      <div class="form-group">
+        <label class="form-label">Apelido (opcional)</label>
+        <input class="form-input" placeholder="Ex: Casa, Trabalho" value="Casa">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Nome completo *</label>
+        <input class="form-input" placeholder="Nome do destinatario" value="Joao Silva">
+      </div>
+
+      <div class="form-group">
+        <div class="cep-row">
+          <div class="form-group" style="flex: 1;">
+            <label class="form-label">CEP *</label>
+            <input class="form-input" placeholder="00000-000" value="14010-030">
+          </div>
+          <button class="cep-btn">Buscar</button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Logradouro *</label>
+        <input class="form-input" placeholder="Rua, Avenida..." value="R. Saldanha Marinho">
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Numero *</label>
+          <input class="form-input" placeholder="N" value="807">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Complemento</label>
+          <input class="form-input" placeholder="Apto, Bloco..." value="Apto 42">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Bairro *</label>
+        <input class="form-input" placeholder="Bairro" value="Centro">
+      </div>
+
+      <div class="form-row">
+        <div class="form-group wide">
+          <label class="form-label">Cidade *</label>
+          <input class="form-input" placeholder="Cidade" value="Ribeirao Preto">
+        </div>
+        <div class="form-group">
+          <label class="form-label">UF *</label>
+          <input class="form-input" placeholder="SP" value="SP" style="width: 60px;">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Instrucoes para entrega</label>
+        <textarea class="form-textarea" placeholder="Ex: Portao azul, tocar campainha...">Portao azul</textarea>
+      </div>
+
+      <button class="btn-primary" style="margin-top: 16px;">Salvar endereco</button>
+    </div>
+
+    <!-- Fulfillment (Select Mode) -->
+    <div class="screen-container" id="screen-fulfillment" style="display:none">
+      <div class="section-title">Como deseja receber?</div>
+
+      <div class="mode-row">
+        <div class="mode-card active">
+          <div class="mode-icon">&#8594;</div>
+          <div class="mode-title">Entrega</div>
+          <div class="mode-subtitle">Receba em casa</div>
+        </div>
+        <div class="mode-card">
+          <div class="mode-icon">&#9673;</div>
+          <div class="mode-title">Retirada</div>
+          <div class="mode-subtitle">Busque na loja</div>
+        </div>
+      </div>
+
+      <div style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px;">Selecione um endereco</div>
+
+      <div class="address-option" style="cursor: pointer;">
+        <div class="address-option-header">
+          <span class="address-option-label">Casa</span>
+          <span class="default-badge">Padrao</span>
+        </div>
+        <span class="address-option-city">Ribeirao Preto/SP</span>
+      </div>
+
+      <div class="address-option" style="cursor: pointer;">
+        <div class="address-option-header">
+          <span class="address-option-label">Trabalho</span>
+        </div>
+        <span class="address-option-city">Ribeirao Preto/SP</span>
+      </div>
+
+      <div class="address-option" style="cursor: pointer;">
+        <div class="address-option-header">
+          <span class="address-option-label">Sao Paulo</span>
+        </div>
+        <span class="address-option-city">Sao Paulo/SP</span>
+      </div>
+
+      <button class="btn-outline" style="margin-top: 12px;">+ Adicionar novo endereco</button>
+    </div>
+
+    <!-- Delivery Summary -->
+    <div class="screen-container" id="screen-summary" style="display:none">
+      <div class="section-title">Resumo da Entrega</div>
+
+      <div class="summary-card">
+        <div class="summary-row">
+          <span class="summary-label">Modalidade</span>
+          <span class="summary-value">Entrega</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Endereco</span>
+          <span class="summary-value">R. Saldanha Marinho, 807 - Centro, Ribeirao Preto</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Frete</span>
+          <span class="summary-value" style="color: var(--success);">Entrega gratuita (Ribeirao Preto)</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Entrega estimada</span>
+          <span class="summary-value">2 a 5 dias uteis</span>
+        </div>
+      </div>
+
+      <div class="totals-card">
+        <div class="total-row">
+          <span class="total-label">Subtotal</span>
+          <span class="total-value">R$ 180,00</span>
+        </div>
+        <div class="total-row">
+          <span class="total-label">Frete</span>
+          <span class="total-value" style="color: var(--success);">R$ 0,00</span>
+        </div>
+        <div class="grand-total-row">
+          <span class="grand-total-label">Total estimado</span>
+          <span class="grand-total-value">R$ 180,00</span>
+        </div>
+      </div>
+
+      <div class="note-card">
+        <div class="note-text">O estoque sera confirmado antes do pedido. Nenhum pagamento sera processado agora.</div>
+      </div>
+
+      <button class="btn-secondary">Alterar opcoes de entrega</button>
+    </div>
+
+  </div>
+
+    <!-- Pickup (Retirada) — Modalidade + Lojas com saldo -->
+    <div class="screen-container" id="screen-pickup" style="display:none">
+      <div class="section-title">Como deseja receber?</div>
+
+      <div class="mode-row">
+        <div class="mode-card">
+          <div class="mode-icon">&#8594;</div>
+          <div class="mode-title">Entrega</div>
+          <div class="mode-subtitle">Receba em casa</div>
+        </div>
+        <div class="mode-card active">
+          <div class="mode-icon">&#9673;</div>
+          <div class="mode-title">Retirada</div>
+          <div class="mode-subtitle">Busque na loja</div>
+        </div>
+      </div>
+
+      <div class="note-card">
+        <div class="note-text">Nao existe retirada fracionada. Todos os itens do carrinho devem estar disponiveis na mesma loja.</div>
+      </div>
+
+      <div style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px;">Lojas com saldo completo</div>
+
+      <div class="store-option recommended">
+        <span class="recommended-badge">Recomendada</span>
+        <div class="store-name">AEROSTORE Centro</div>
+        <div class="store-address">R. Saldanha Marinho, 807</div>
+        <div class="store-city">Centro - Ribeirao Preto/SP</div>
+        <div class="store-distance">0,8 km de distancia</div>
+      </div>
+
+      <div class="store-option">
+        <div class="store-name">AEROSTORE Sumare</div>
+        <div class="store-address">Av. Nove de Julho, 49</div>
+        <div class="store-city">Sumare - Ribeirao Preto/SP</div>
+        <div class="store-distance">3,2 km de distancia</div>
+      </div>
+
+      <div class="store-option">
+        <div class="store-name">AEROSTORE Vila Rica</div>
+        <div class="store-address">Av. Brasil, 1200</div>
+        <div class="store-city">Vila Rica - Ribeirao Preto/SP</div>
+        <div class="store-distance">5,1 km de distancia</div>
       </div>
     </div>
+
+    <!-- Pickup — Sem lojas elegiveis -->
+    <div class="screen-container" id="screen-pickup-no-stores" style="display:none">
+      <div class="section-title">Como deseja receber?</div>
+
+      <div class="mode-row">
+        <div class="mode-card">
+          <div class="mode-icon">&#8594;</div>
+          <div class="mode-title">Entrega</div>
+          <div class="mode-subtitle">Receba em casa</div>
+        </div>
+        <div class="mode-card active">
+          <div class="mode-icon">&#9673;</div>
+          <div class="mode-title">Retirada</div>
+          <div class="mode-subtitle">Busque na loja</div>
+        </div>
+      </div>
+
+      <div class="note-card">
+        <div class="note-text">Nao existe retirada fracionada. Todos os itens do carrinho devem estar disponiveis na mesma loja.</div>
+      </div>
+
+      <div class="empty-panel">
+        <div class="empty-text">Nenhuma loja possui estoque completo para todos os itens do carrinho.</div>
+        <div class="empty-text" style="margin-bottom: 16px;">Por favor, escolha entrega ou ajuste os itens.</div>
+        <button class="btn-outline">Voltar para Entrega</button>
+      </div>
+    </div>
+
+    <!-- Pickup — Loja bloqueada (saldo incompleto) -->
+    <div class="screen-container" id="screen-pickup-blocked" style="display:none">
+      <div class="section-title">Como deseja receber?</div>
+
+      <div class="mode-row">
+        <div class="mode-card">
+          <div class="mode-icon">&#8594;</div>
+          <div class="mode-title">Entrega</div>
+          <div class="mode-subtitle">Receba em casa</div>
+        </div>
+        <div class="mode-card active">
+          <div class="mode-icon">&#9673;</div>
+          <div class="mode-title">Retirada</div>
+          <div class="mode-subtitle">Busque na loja</div>
+        </div>
+      </div>
+
+      <div class="note-card">
+        <div class="note-text">Nao existe retirada fracionada. Todos os itens do carrinho devem estar disponiveis na mesma loja.</div>
+      </div>
+
+      <div style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px;">Lojas com saldo completo</div>
+
+      <div class="store-option recommended">
+        <span class="recommended-badge">Recomendada</span>
+        <div class="store-name">AEROSTORE Centro</div>
+        <div class="store-address">R. Saldanha Marinho, 807</div>
+        <div class="store-city">Centro - Ribeirao Preto/SP</div>
+        <div class="store-distance">0,8 km de distancia</div>
+      </div>
+
+      <div style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin-top: 20px; margin-bottom: 12px;">Lojas com saldo incompleto</div>
+
+      <div class="store-option" style="opacity: 0.5;">
+        <div class="store-name">AEROSTORE Sumare</div>
+        <div class="store-address">Av. Nove de Julho, 49</div>
+        <div class="store-city">Sumare - Ribeirao Preto/SP</div>
+        <div class="store-distance" style="color: var(--error);">Falta: Camisa Linho Branca (G) — estoque insuficiente</div>
+      </div>
+
+      <div class="store-option" style="opacity: 0.5;">
+        <div class="store-name">AEROSTORE Vila Rica</div>
+        <div class="store-address">Av. Brasil, 1200</div>
+        <div class="store-city">Vila Rica - Ribeirao Preto/SP</div>
+        <div class="store-distance" style="color: var(--error);">Falta: Polo Pima Marinho (M) — estoque insuficiente</div>
+      </div>
+    </div>
+
+    <!-- Pickup Summary — Resumo da Retirada -->
+    <div class="screen-container" id="screen-pickup-summary" style="display:none">
+      <div class="section-title">Resumo da Retirada</div>
+
+      <div class="summary-card">
+        <div class="summary-row">
+          <span class="summary-label">Modalidade</span>
+          <span class="summary-value">Retirada</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Loja</span>
+          <span class="summary-value">AEROSTORE Centro</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Endereco</span>
+          <span class="summary-value">R. Saldanha Marinho, 807 - Centro, Ribeirao Preto</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Frete</span>
+          <span class="summary-value" style="color: var(--success);">R$ 0,00</span>
+        </div>
+      </div>
+
+      <div class="totals-card">
+        <div class="total-row">
+          <span class="total-label">Subtotal</span>
+          <span class="total-value">R$ 180,00</span>
+        </div>
+        <div class="total-row">
+          <span class="total-label">Frete</span>
+          <span class="total-value" style="color: var(--success);">R$ 0,00</span>
+        </div>
+        <div class="grand-total-row">
+          <span class="grand-total-label">Total estimado</span>
+          <span class="grand-total-value">R$ 180,00</span>
+        </div>
+      </div>
+
+      <div class="note-card">
+        <div class="note-text">O estoque sera reconfirmado antes do pedido. Nenhum pagamento sera processado agora.</div>
+      </div>
+
+      <button class="btn-secondary">Alterar opcoes de retirada</button>
+    </div>
+
   </div>
 
   <!-- Theme Info -->
@@ -673,7 +1058,7 @@
 
   <!-- Footer -->
   <div class="footer">
-    <div class="footer-text">Catálogo privado AEROSTORE · Tema sincronizado com sessão · Fase 3.7.1</div>
+    <div class="footer-text">AEROSTORE · Enderecos + Entrega + Retirada · Fase 3.8</div>
   </div>
 
 </div>
@@ -681,76 +1066,47 @@
 <script>
   const themes = {
     dark: {
-      '--bg': '#10100F',
-      '--surface': '#1A1A18',
-      '--surface-elevated': '#252523',
-      '--surface-muted': '#151514',
-      '--text-primary': '#E8E8E6',
-      '--text-secondary': '#8A8A88',
-      '--text-muted': '#6B6B68',
-      '--text-inverse': '#10100F',
-      '--accent': '#C48054',
-      '--border': '#2A2A28',
-      '--success': '#82977B',
-      '--error': '#D99386',
-      '--warning': '#C9A96E',
-      '--copper': '#C48054',
-      '--moss': '#6B7A5B',
-      '--amber': '#C9A96E',
+      '--bg': '#10100F', '--surface': '#1A1A18', '--surface-elevated': '#252523',
+      '--surface-muted': '#151514', '--text-primary': '#E8E8E6', '--text-secondary': '#8A8A88',
+      '--text-muted': '#6B6B68', '--text-inverse': '#10100F', '--accent': '#C48054',
+      '--border': '#2A2A28', '--success': '#82977B', '--error': '#D99386', '--warning': '#C9A96E',
+      '--info': '#7BB8D9', '--info-surface': '#1A2A35', '--warning-surface': '#2A2518',
+      '--error-surface': '#2A1A18', '--input-bg': '#1A1A18', '--input-border': '#2A2A28',
+      '--input-placeholder': '#6B6B68', '--text-disabled': '#555555', '--button-disabled': '#3A3A38',
     },
     light: {
-      '--bg': '#FDFBF7',
-      '--surface': '#F5F2EC',
-      '--surface-elevated': '#FFFFFF',
-      '--surface-muted': '#EDE9E2',
-      '--text-primary': '#1A1A18',
-      '--text-secondary': '#6B6B68',
-      '--text-muted': '#8A8A88',
-      '--text-inverse': '#FDFBF7',
-      '--accent': '#C48054',
-      '--border': '#E5E2DC',
-      '--success': '#4A7A3E',
-      '--error': '#B84A3A',
-      '--warning': '#A67C3F',
-      '--copper': '#C48054',
-      '--moss': '#6B7A5B',
-      '--amber': '#C9A96E',
+      '--bg': '#FDFBF7', '--surface': '#F5F2EC', '--surface-elevated': '#FFFFFF',
+      '--surface-muted': '#EDE9E2', '--text-primary': '#1A1A18', '--text-secondary': '#6B6B68',
+      '--text-muted': '#8A8A88', '--text-inverse': '#FDFBF7', '--accent': '#C48054',
+      '--border': '#E5E2DC', '--success': '#4A7A3E', '--error': '#B84A3A', '--warning': '#A67C3F',
+      '--info': '#3B7BA0', '--info-surface': '#EAF4FB', '--warning-surface': '#FFF8EB',
+      '--error-surface': '#FDF0EE', '--input-bg': '#FFFFFF', '--input-border': '#E5E2DC',
+      '--input-placeholder': '#8A8A88', '--text-disabled': '#AAAAAA', '--button-disabled': '#D0C8BC',
     }
   };
 
   let currentTheme = 'light';
 
-  function setTheme(theme) {
-    currentTheme = theme;
-    document.body.className = theme;
-    document.documentElement.setAttribute('data-theme', theme);
-
-    // Update header buttons
+  function setTheme(t) {
+    currentTheme = t;
+    document.body.className = t;
+    document.documentElement.setAttribute('data-theme', t);
     document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
-    document.getElementById('btn-' + theme).classList.add('active');
-
-    // Update profile options
+    document.getElementById('btn-' + t).classList.add('active');
     document.querySelectorAll('.theme-option').forEach(o => o.classList.remove('selected'));
-    const optEl = document.getElementById('opt-' + theme);
+    const optEl = document.getElementById('opt-' + t);
     if (optEl) optEl.classList.add('selected');
-
-    // Update info label
-    document.getElementById('active-theme-label').textContent =
-      theme === 'dark' ? 'ESCURO' : 'CLARO';
-
-    // Persist
-    localStorage.setItem('aerostore-theme', theme);
+    document.getElementById('active-theme-label').textContent = t === 'dark' ? 'ESCURO' : 'CLARO';
+    localStorage.setItem('aerostore-theme', t);
   }
 
-  function showScreen(screen) {
+  function showScreen(s) {
     document.querySelectorAll('.screen-btn').forEach(b => b.classList.remove('active'));
-    document.getElementById('nav-' + screen).classList.add('active');
-
+    document.getElementById('nav-' + s).classList.add('active');
     document.querySelectorAll('.screen-container').forEach(s => s.style.display = 'none');
-    document.getElementById('screen-' + screen).style.display = 'block';
+    document.getElementById('screen-' + s).style.display = 'block';
   }
 
-  // Load persisted theme
   const saved = localStorage.getItem('aerostore-theme');
   if (saved && themes[saved]) setTheme(saved);
 </script>

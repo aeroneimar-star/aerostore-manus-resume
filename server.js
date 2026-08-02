@@ -115,6 +115,8 @@ const { createAppSessionRouter } = require("./modules/customers/app-auth/appSess
 const { createAppCatalogRouter } = require("./modules/customers/app-catalog/appCatalogRoutes");
 const { createAppCatalogService } = require("./modules/customers/app-catalog/appCatalogService");
 const { createAppCartRouter } = require("./modules/customers/app-cart/appCartRoutes");
+const { createAppAddressRouter } = require("./modules/customers/app-address/appAddressRoutes");
+const { createAppFulfillmentRouter } = require("./modules/customers/app-fulfillment/appFulfillmentRoutes");
 const { getNotificationService, getNotificationDryRunDefault } = require("./src/notification/NotificationService");
 const { startCashbackReminderScheduler } = require("./src/notification/CashbackScheduler");
 const {
@@ -18652,6 +18654,8 @@ app.use("/app/v1", createAppPhoneOtpRouter({ dbApi: { run, get, all }, recordAud
 app.use("/app/v1", createAppSessionRouter({ dbApi: { run, get, all }, recordAudit: recordAuditEvent }));
 app.use("/app/v1", createAppCatalogRouter({ dbApi: { run, get, all }, catalogService: appCatalogService, recordAudit: recordAuditEvent }));
 app.use("/app/v1", createAppCartRouter({ dbApi: { run, get, all }, catalogService: appCatalogService, recordAudit: recordAuditEvent }));
+app.use("/app/v1", createAppAddressRouter({ dbApi: { run, get, all }, recordAudit: recordAuditEvent }));
+app.use("/app/v1", createAppFulfillmentRouter({ dbApi: { run, get, all }, catalogService: appCatalogService, recordAudit: recordAuditEvent }));
 app.use("/api", authMiddleware);
 app.use("/api", auditSensitiveMutationMiddleware);
 

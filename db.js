@@ -2444,6 +2444,24 @@ async function initializeDatabase() {
   const { ensureFiscalSchema } = require("./modules/fiscal/persistence/ensureFiscalSchema");
   await ensureFiscalSchema({ run, get, all });
 
+  // App private schemas
+  const { applyAppCustomerAccessSchema } = require("./modules/customers/app-access/persistence/appCustomerAccessSchema");
+  const { applyAppPhoneVerificationSchema } = require("./modules/customers/app-auth/persistence/appPhoneVerificationSchema");
+  const { applyAppSessionSchema } = require("./modules/customers/app-auth/persistence/appSessionSchema");
+  const { applyAppProfileSchema } = require("./modules/customers/app-auth/persistence/appProfileSchema");
+
+  const { applyAppCartSchema } = require("./modules/customers/app-cart/persistence/appCartSchema");
+  const { applyAppAddressSchema } = require("./modules/customers/app-address/persistence/appAddressSchema");
+  const { applyAppFulfillmentSchema } = require("./modules/customers/app-fulfillment/persistence/appFulfillmentSchema");
+  await applyAppCustomerAccessSchema({ run, get, all });
+  await applyAppPhoneVerificationSchema({ run, get, all });
+  await applyAppSessionSchema({ run, get, all });
+  await applyAppProfileSchema({ run, get, all });
+
+  await applyAppCartSchema({ run, get, all });
+  await applyAppAddressSchema({ run, get, all });
+  await applyAppFulfillmentSchema({ run, get, all });
+
   await ensureSeedData();
   await ensureAiCatalogSeed();
   await migrateLegacyCashbacks();
