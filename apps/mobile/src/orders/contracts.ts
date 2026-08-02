@@ -63,6 +63,7 @@ export interface OrderItem {
   effective_unit_price_cents: number;
   line_total_cents: number;
   availability_status: string;
+  product_name?: string;
 }
 
 export interface OrderEvent {

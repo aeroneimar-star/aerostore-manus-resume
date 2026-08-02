@@ -123,7 +123,7 @@ async function sweepExpiredOrders(options = {}) {
 
       let stockReleased = false;
 
-      if (reservationIds.length > 0 && storeId) {
+      if (reservationIds.length > 0) {
         // Para cada reservation_id, buscar os movimentos HOLD
         const allHoldMovements = [];
         for (const reservationId of reservationIds) {
@@ -138,20 +138,30 @@ async function sweepExpiredOrders(options = {}) {
         }
 
         if (allHoldMovements.length > 0) {
-          const items = allHoldMovements.map((m) => ({
-            variant_id: m.variant_id,
-            quantity: Math.abs(m.quantity_delta),
-          }));
+          // Agrupar itens por store_id para liberação correta
+          const itemsByStore = {};
+          for (const m of allHoldMovements) {
+            const key = m.store_id;
+            if (!itemsByStore[key]) itemsByStore[key] = [];
+            itemsByStore[key].push({
+              variant_id: m.variant_id,
+              quantity: Math.abs(m.quantity_delta),
+            });
+          }
 
-          // 5. Liberar estoque usando releaseReservation com a transação externa
+          // 5. Liberar estoque por store usando releaseReservation
           try {
-            await inventoryService.releaseReservation(
-              orderId,
-              storeId,
-              items,
-              { db } // passar db para usar dentro da tx
-            );
-            stockReleased = true;
+            let anyReleased = false;
+            for (const [storeId, items] of Object.entries(itemsByStore)) {
+              await inventoryService.releaseReservation(
+                orderId,
+                storeId,
+                items,
+                { db } // passar db para usar dentro da tx
+              );
+              anyReleased = true;
+            }
+            stockReleased = anyReleased;
           } catch (releaseErr) {
             await db.run("ROLLBACK");
             errorsDetails.push({

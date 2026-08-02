@@ -36,6 +36,12 @@ function orderDto(o = {}) {
 }
 
 function orderItemDto(item = {}) {
+  // Extrair product_name do product_snapshot_json
+  let productName = null;
+  try {
+    const snap = item.product_snapshot_json ? JSON.parse(item.product_snapshot_json) : null;
+    if (snap && typeof snap === "object" && snap.name) productName = snap.name;
+  } catch (_) {}
   return {
     id: item.id || null,
     order_id: item.order_id || null,
@@ -46,6 +52,7 @@ function orderItemDto(item = {}) {
     effective_unit_price_cents: item.effective_unit_price_cents || 0,
     line_total_cents: item.line_total_cents || 0,
     availability_status: item.availability_status || "UNKNOWN",
+    product_name: productName,
     created_at: item.created_at || null,
   };
 }
