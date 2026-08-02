@@ -565,6 +565,7 @@
     <button class="screen-btn" onclick="showScreen('order-tracking')" id="nav-order-tracking">Rastreamento</button>
     <button class="screen-btn" onclick="showScreen('order-cancelled')" id="nav-order-cancelled">Cancelado</button>
     <button class="screen-btn" onclick="showScreen('order-return')" id="nav-order-return">Devolucao</button>
+    <button class="screen-btn" onclick="showScreen('brand-switch')" id="nav-brand-switch">Brand Switch</button>
   </div>
 
   <!-- Screens -->
@@ -1784,6 +1785,103 @@
       </div>
     </div>
 
+    <!-- Brand Switch -->
+    <div class="screen-container" id="screen-brand-switch" style="display:none">
+      <div style="background: var(--surface); border-radius: 16px; padding: 16px;">
+        <div style="text-align: center; margin-bottom: 16px;">
+          <div style="font-size: 18px; font-weight: 800; color: var(--text-primary);">Brand Engine</div>
+          <div style="font-size: 11px; color: var(--text-secondary);">Plataforma Multimarca (White-Label)</div>
+        </div>
+
+        <!-- Theme Toggle -->
+        <div style="display: flex; gap: 8px; justify-content: center; margin-bottom: 16px;">
+          <div style="padding: 6px 16px; border-radius: 8px; background: var(--accent); color: #FFF; font-size: 11px; font-weight: 700;" id="brand-theme-light-btn" onclick="setBrandTheme('light')">LIGHT</div>
+          <div style="padding: 6px 16px; border-radius: 8px; background: var(--background); border: 1px solid var(--border); color: var(--text-secondary); font-size: 11px; font-weight: 700;" id="brand-theme-dark-btn" onclick="setBrandTheme('dark')">DARK</div>
+        </div>
+
+        <!-- Active Brand Preview -->
+        <div id="brand-active-preview" style="padding: 12px; border-radius: 12px; border-left: 4px solid #C8834A; margin-bottom: 12px; background: var(--surface-elevated);">
+          <div style="font-size: 16px; font-weight: 800; color: #C8834A;">AEROSTORE</div>
+          <div style="font-size: 10px; color: var(--text-secondary); margin-top: 4px;">aerostore · BRL · pt-BR</div>
+          <div style="height: 4px; border-radius: 2px; background: #C8834A; margin-top: 8px;"></div>
+        </div>
+
+        <!-- Side by Side -->
+        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+          <!-- AEROSTORE Card -->
+          <div style="flex: 1; background: var(--surface-elevated); border-radius: 12px; padding: 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #C8834A; padding-bottom: 6px; margin-bottom: 6px;">
+              <div style="font-size: 11px; font-weight: 800; color: #C8834A;">AEROSTORE</div>
+              <div style="padding: 2px 6px; border-radius: 4px; background: #16A34A20;">
+                <span style="font-size: 8px; font-weight: 700; color: #16A34A;">Ativa</span>
+              </div>
+            </div>
+            <div style="font-size: 9px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Cores</div>
+            <div style="display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 6px;">
+              <div style="width: 20px; height: 20px; border-radius: 4px; background: #C8834A;" title="primary"></div>
+              <div style="width: 20px; height: 20px; border-radius: 4px; background: #1A3A3A;" title="secondary"></div>
+              <div style="width: 20px; height: 20px; border-radius: 4px; background: #E6A96E;" title="accent"></div>
+              <div style="width: 20px; height: 20px; border-radius: 4px; background: #FAF6F0; border: 1px solid #ddd;" title="background"></div>
+              <div style="width: 20px; height: 20px; border-radius: 4px; background: #2D1810;" title="text"></div>
+            </div>
+            <div style="font-size: 9px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Features</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 2px;">
+              <div style="padding: 2px 4px; border-radius: 2px; background: #16A34A15; font-size: 7px; color: #16A34A; font-weight: 700;">pix ✓</div>
+              <div style="padding: 2px 4px; border-radius: 2px; background: #16A34A15; font-size: 7px; color: #16A34A; font-weight: 700;">cartão ✓</div>
+              <div style="padding: 2px 4px; border-radius: 2px; background: #16A34A15; font-size: 7px; color: #16A34A; font-weight: 700;">cupons ✓</div>
+              <div style="padding: 2px 4px; border-radius: 2px; background: #DC262615; font-size: 7px; color: #DC2626; font-weight: 700;">giftcard ✗</div>
+              <div style="padding: 2px 4px; border-radius: 2px; background: #DC262615; font-size: 7px; color: #DC2626; font-weight: 700;">fidelidade ✗</div>
+            </div>
+          </div>
+          <!-- Casa CAMBORÊ Card -->
+          <div style="flex: 1; background: var(--surface-elevated); border-radius: 12px; padding: 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #4A6741; padding-bottom: 6px; margin-bottom: 6px;">
+              <div style="font-size: 11px; font-weight: 800; color: #4A6741;">Casa CAMBORÊ</div>
+              <div style="padding: 2px 6px; border-radius: 4px; background: #DC262620;">
+                <span style="font-size: 8px; font-weight: 700; color: #DC2626;">Desativada</span>
+              </div>
+            </div>
+            <div style="font-size: 9px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Cores</div>
+            <div style="display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 6px;">
+              <div style="width: 20px; height: 20px; border-radius: 4px; background: #4A6741;" title="primary"></div>
+              <div style="width: 20px; height: 20px; border-radius: 4px; background: #2C1810;" title="secondary"></div>
+              <div style="width: 20px; height: 20px; border-radius: 4px; background: #D4A76A;" title="accent"></div>
+              <div style="width: 20px; height: 20px; border-radius: 4px; background: #FDFBF7; border: 1px solid #ddd;" title="background"></div>
+              <div style="width: 20px; height: 20px; border-radius: 4px; background: #1C2E1A;" title="text"></div>
+            </div>
+            <div style="font-size: 9px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Features</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 2px;">
+              <div style="padding: 2px 4px; border-radius: 2px; background: #16A34A15; font-size: 7px; color: #16A34A; font-weight: 700;">pix ✓</div>
+              <div style="padding: 2px 4px; border-radius: 2px; background: #16A34A15; font-size: 7px; color: #16A34A; font-weight: 700;">cartão ✓</div>
+              <div style="padding: 2px 4px; border-radius: 2px; background: #16A34A15; font-size: 7px; color: #16A34A; font-weight: 700;">giftcard ✓</div>
+              <div style="padding: 2px 4px; border-radius: 2px; background: #16A34A15; font-size: 7px; color: #16A34A; font-weight: 700;">fidelidade ✓</div>
+              <div style="padding: 2px 4px; border-radius: 2px; background: #DC262615; font-size: 7px; color: #DC2626; font-weight: 700;">cupons ✗</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature Flags Table -->
+        <div style="background: var(--surface-elevated); border-radius: 12px; padding: 10px; margin-bottom: 12px;">
+          <div style="font-size: 11px; font-weight: 700; color: var(--text-primary); text-align: center; margin-bottom: 8px;">Comparação de Feature Flags</div>
+          <div style="display: flex; border-bottom: 1px solid var(--border); padding-bottom: 4px; margin-bottom: 4px;">
+            <div style="flex: 1; font-size: 8px; font-weight: 700; color: var(--text-secondary);">Feature</div>
+            <div style="width: 30px; font-size: 8px; font-weight: 700; color: #C8834A; text-align: center;">AERO</div>
+            <div style="width: 30px; font-size: 8px; font-weight: 700; color: #4A6741; text-align: center;">CAMB</div>
+          </div>
+          <div id="brand-flags-table"></div>
+        </div>
+
+        <!-- Switch Brand -->
+        <div style="text-align: center;">
+          <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 8px;">Trocar Marca Ativa (Simulação):</div>
+          <div style="display: flex; gap: 8px; justify-content: center;">
+            <div style="padding: 8px 14px; border-radius: 8px; background: #C8834A; color: #FFF; font-size: 11px; font-weight: 700; cursor: pointer;" onclick="switchBrand('aerostore')">AEROSTORE</div>
+            <div style="padding: 8px 14px; border-radius: 8px; background: #4A6741; color: #FFF; font-size: 11px; font-weight: 700; cursor: pointer;" onclick="switchBrand('casa-cambore')">Casa CAMBORÊ</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   <!-- Theme Info -->
   <div style="margin-top: 24px; padding: 12px; background: var(--surface-elevated); border: 1px solid var(--accent); border-radius: 12px; text-align: center;">
     <div style="font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: var(--accent); text-transform: uppercase;">Tema Ativo</div>
@@ -1792,7 +1890,7 @@
 
   <!-- Footer -->
   <div class="footer">
-    <div class="footer-text">AEROSTORE · Order Lifecycle + Timeline + Tracking + Devolucao · Fase 3.11-A</div>
+    <div class="footer-text">AEROSTORE · Brand Engine + White-Label · Fase 3.11.5</div>
   </div>
 
 </div>
@@ -1840,6 +1938,97 @@
     document.querySelectorAll('.screen-container').forEach(s => s.style.display = 'none');
     document.getElementById('screen-' + s).style.display = 'block';
   }
+
+  // Brand Switch functions
+  let brandThemeMode = 'light';
+  let activeBrand = 'aerostore';
+
+  const brandConfigs = {
+    'aerostore': {
+      displayName: 'AEROSTORE',
+      slug: 'aerostore',
+      currency: 'BRL',
+      locale: 'pt-BR',
+      primaryColor: '#C8834A',
+      enabled: true,
+      statusLabel: 'Ativa',
+      statusColor: '#16A34A',
+    },
+    'casa-cambore': {
+      displayName: 'Casa CAMBORÊ',
+      slug: 'casa-cambore',
+      currency: 'BRL',
+      locale: 'pt-BR',
+      primaryColor: '#4A6741',
+      enabled: false,
+      statusLabel: 'Desativada',
+      statusColor: '#DC2626',
+    }
+  };
+
+  const featureFlagsList = [
+    ['cashback', true, false],
+    ['marketplace', false, false],
+    ['wishlist', true, false],
+    ['retirada', true, false],
+    ['entrega', true, true],
+    ['motoboy', false, true],
+    ['frete', true, true],
+    ['pix', true, true],
+    ['cartao', true, true],
+    ['fidelidade', false, true],
+    ['notificacoes', true, true],
+    ['cupons', true, false],
+    ['giftcard', false, true],
+    ['avaliacoes', true, false],
+  ];
+
+  function renderFlagsTable() {
+    const container = document.getElementById('brand-flags-table');
+    if (!container) return;
+    let html = '';
+    featureFlagsList.forEach(([name, aero, camb]) => {
+      html += '<div style="display: flex; padding: 3px 0; border-bottom: 1px solid var(--border); align-items: center;">';
+      html += '<div style="flex: 1; font-size: 8px; color: var(--text-primary);">' + name + '</div>';
+      html += '<div style="width: 30px; text-align: center; font-size: 10px; font-weight: 700; color: ' + (aero ? '#16A34A' : '#DC2626') + ';">' + (aero ? '✓' : '✗') + '</div>';
+      html += '<div style="width: 30px; text-align: center; font-size: 10px; font-weight: 700; color: ' + (camb ? '#16A34A' : '#DC2626') + ';">' + (camb ? '✓' : '✗') + '</div>';
+      html += '</div>';
+    });
+    container.innerHTML = html;
+  }
+
+  function setBrandTheme(mode) {
+    brandThemeMode = mode;
+    const lightBtn = document.getElementById('brand-theme-light-btn');
+    const darkBtn = document.getElementById('brand-theme-dark-btn');
+    if (mode === 'light') {
+      lightBtn.style.background = '#C8834A';
+      lightBtn.style.color = '#FFF';
+      darkBtn.style.background = 'var(--background)';
+      darkBtn.style.color = 'var(--text-secondary)';
+    } else {
+      darkBtn.style.background = '#1A3A3A';
+      darkBtn.style.color = '#FFF';
+      lightBtn.style.background = 'var(--background)';
+      lightBtn.style.color = 'var(--text-secondary)';
+    }
+  }
+
+  function switchBrand(brandId) {
+    activeBrand = brandId;
+    const config = brandConfigs[brandId];
+    const preview = document.getElementById('brand-active-preview');
+    if (preview) {
+      preview.style.borderLeftColor = config.primaryColor;
+      preview.innerHTML = '<div style="font-size: 16px; font-weight: 800; color: ' + config.primaryColor + ';">' + config.displayName + '</div>' +
+        '<div style="font-size: 10px; color: var(--text-secondary); margin-top: 4px;">' + config.slug + ' · ' + config.currency + ' · ' + config.locale + '</div>' +
+        '<div style="height: 4px; border-radius: 2px; background: ' + config.primaryColor + '; margin-top: 8px;"></div>';
+    }
+    renderFlagsTable();
+  }
+
+  // Initialize
+  renderFlagsTable();
 
   const saved = localStorage.getItem('aerostore-theme');
   if (saved && themes[saved]) setTheme(saved);
