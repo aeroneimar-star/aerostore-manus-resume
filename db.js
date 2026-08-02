@@ -2463,6 +2463,8 @@ async function initializeDatabase() {
   await applyAppAddressSchema({ run, get, all });
   await applyAppFulfillmentSchema({ run, get, all });
   await applyAppOrderSchema({ run, get, all });
+  const { applyAppPaymentSchema } = require("./modules/customers/app-payments/persistence/appPaymentSchema");
+  await applyAppPaymentSchema({ run, get, all });
 
   await ensureSeedData();
   await ensureAiCatalogSeed();

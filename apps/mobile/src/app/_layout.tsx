@@ -41,6 +41,11 @@ function RootLayoutInner() {
         <Stack.Screen name="payment-error" options={{ title: 'Erro', headerBackTitle: 'Pagamento' }} />
         <Stack.Screen name="order-success" options={{ headerShown: false }} />
         <Stack.Screen name="order-error" options={{ headerShown: false }} />
+        <Stack.Screen name="order-list" options={{ title: 'Meus Pedidos', headerBackTitle: 'Voltar' }} />
+        <Stack.Screen name="order-timeline" options={{ title: 'Timeline do Pedido', headerBackTitle: 'Meus Pedidos' }} />
+        <Stack.Screen name="order-tracking" options={{ title: 'Rastreamento', headerBackTitle: 'Meus Pedidos' }} />
+        <Stack.Screen name="order-cancelled" options={{ headerShown: false }} />
+        <Stack.Screen name="order-return" options={{ title: 'Devolucao', headerBackTitle: 'Meus Pedidos' }} />
       </Stack>
     </>
   );

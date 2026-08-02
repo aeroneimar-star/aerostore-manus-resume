@@ -560,6 +560,11 @@
     <button class="screen-btn" onclick="showScreen('payment-confirm')" id="nav-payment-confirm">Confirmar Cartao</button>
     <button class="screen-btn" onclick="showScreen('payment-error-gw')" id="nav-payment-error-gw">Erro Gateway</button>
     <button class="screen-btn" onclick="showScreen('payment-error-expired')" id="nav-payment-error-expired">Erro Expirado</button>
+    <button class="screen-btn" onclick="showScreen('order-list')" id="nav-order-list">Meus Pedidos</button>
+    <button class="screen-btn" onclick="showScreen('order-timeline')" id="nav-order-timeline">Timeline</button>
+    <button class="screen-btn" onclick="showScreen('order-tracking')" id="nav-order-tracking">Rastreamento</button>
+    <button class="screen-btn" onclick="showScreen('order-cancelled')" id="nav-order-cancelled">Cancelado</button>
+    <button class="screen-btn" onclick="showScreen('order-return')" id="nav-order-return">Devolucao</button>
   </div>
 
   <!-- Screens -->
@@ -1465,6 +1470,320 @@
       </div>
     </div>
 
+    <!-- Order List Screen -->
+    <div class="screen-container" id="screen-order-list" style="display:none">
+      <h2 style="font-size: 22px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Meus Pedidos</h2>
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">3 pedidos</p>
+      <!-- Order 1: SHIPPED -->
+      <div style="background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 12px; border: 1px solid var(--border);">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+          <div>
+            <div style="font-size: 16px; font-weight: 700; color: var(--accent);">#AERO-5F6G7H8I</div>
+            <div style="font-size: 12px; color: var(--text-muted);">01/08/2026</div>
+          </div>
+          <div style="background: var(--info-surface); padding: 4px 10px; border-radius: 12px;">
+            <span style="font-size: 12px; font-weight: 600; color: var(--info);">Enviado</span>
+          </div>
+        </div>
+        <div style="display: flex; border-top: 1px solid var(--border); padding-top: 12px;">
+          <div style="flex: 1;"><div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Itens</div><div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">2 itens</div></div>
+          <div style="flex: 1;"><div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Entrega</div><div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Entrega</div></div>
+          <div style="flex: 1;"><div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Total</div><div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">R$ 134,00</div></div>
+        </div>
+        <div style="display: flex; border-top: 1px solid var(--border); padding-top: 12px;">
+          <span style="font-size: 13px; font-weight: 600; color: var(--accent);">Ver detalhes →</span>
+          <span style="font-size: 13px; font-weight: 600; color: var(--info); margin-left: 16px;">Rastrear 🚚</span>
+        </div>
+      </div>
+      <!-- Order 2: DELIVERED -->
+      <div style="background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 12px; border: 1px solid var(--border);">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+          <div>
+            <div style="font-size: 16px; font-weight: 700; color: var(--accent);">#AERO-3C4D5E6F</div>
+            <div style="font-size: 12px; color: var(--text-muted);">28/07/2026</div>
+          </div>
+          <div style="background: rgba(74, 122, 62, 0.1); padding: 4px 10px; border-radius: 12px;">
+            <span style="font-size: 12px; font-weight: 600; color: var(--success);">Entregue</span>
+          </div>
+        </div>
+        <div style="display: flex; border-top: 1px solid var(--border); padding-top: 12px;">
+          <div style="flex: 1;"><div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Itens</div><div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">1 item</div></div>
+          <div style="flex: 1;"><div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Entrega</div><div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Entrega</div></div>
+          <div style="flex: 1;"><div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Total</div><div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">R$ 89,00</div></div>
+        </div>
+        <div style="display: flex; border-top: 1px solid var(--border); padding-top: 12px;">
+          <span style="font-size: 13px; font-weight: 600; color: var(--accent);">Ver detalhes →</span>
+          <span style="font-size: 13px; font-weight: 600; color: var(--warning); margin-left: 16px;">Devolver ↩</span>
+        </div>
+      </div>
+      <!-- Order 3: PAID -->
+      <div style="background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 12px; border: 1px solid var(--border);">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+          <div>
+            <div style="font-size: 16px; font-weight: 700; color: var(--accent);">#AERO-1A2B3C4D</div>
+            <div style="font-size: 12px; color: var(--text-muted);">25/07/2026</div>
+          </div>
+          <div style="background: rgba(74, 122, 62, 0.1); padding: 4px 10px; border-radius: 12px;">
+            <span style="font-size: 12px; font-weight: 600; color: var(--success);">Pago</span>
+          </div>
+        </div>
+        <div style="display: flex; border-top: 1px solid var(--border); padding-top: 12px;">
+          <div style="flex: 1;"><div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Itens</div><div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">2 itens</div></div>
+          <div style="flex: 1;"><div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Entrega</div><div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Retirada</div></div>
+          <div style="flex: 1;"><div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Total</div><div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">R$ 65,00</div></div>
+        </div>
+        <div style="display: flex; border-top: 1px solid var(--border); padding-top: 12px;">
+          <span style="font-size: 13px; font-weight: 600; color: var(--accent);">Ver detalhes →</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Order Timeline Screen -->
+    <div class="screen-container" id="screen-order-timeline" style="display:none">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <div style="font-size: 20px; font-weight: 700; color: var(--accent);">#AERO-1A2B3C4D</div>
+        <div style="background: rgba(59, 123, 160, 0.1); padding: 6px 12px; border-radius: 20px;">
+          <span style="font-size: 13px; font-weight: 600; color: var(--info);">Enviado</span>
+        </div>
+      </div>
+      <!-- Timeline entries -->
+      <div style="padding-left: 18px;">
+        <!-- Entry: Pago -->
+        <div style="display: flex; align-items: flex-start; margin-bottom: 4px;">
+          <div style="width: 36px; height: 36px; border-radius: 18px; background: rgba(74, 122, 62, 0.1); display: flex; align-items: center; justify-content: center; margin-right: 12px; flex-shrink: 0;">
+            <span style="font-size: 14px; font-weight: 700; color: var(--success);">$</span>
+          </div>
+          <div style="flex: 1; padding: 8px 0;">
+            <div style="font-size: 15px; font-weight: 500; color: var(--text-primary);">Pagamento confirmado via PIX</div>
+            <div style="font-size: 12px; color: var(--text-muted);">01/08 10:00</div>
+          </div>
+        </div>
+        <div style="padding-left: 17px; padding-bottom: 4px;"><div style="width: 2px; height: 24px; background: var(--border); border-radius: 1px;"></div></div>
+        <!-- Entry: Reserva (internal) -->
+        <div style="display: flex; align-items: flex-start; margin-bottom: 4px;">
+          <div style="width: 36px; height: 36px; border-radius: 18px; background: rgba(74, 122, 62, 0.1); display: flex; align-items: center; justify-content: center; margin-right: 12px; flex-shrink: 0;">
+            <span style="font-size: 14px; font-weight: 700; color: var(--success);">📦</span>
+          </div>
+          <div style="flex: 1; padding: 8px 0;">
+            <div style="font-size: 15px; font-weight: 500; color: var(--text-primary);">Reserva de estoque consumida</div>
+            <div style="font-size: 12px; color: var(--text-muted);">01/08 10:01</div>
+            <div style="font-size: 11px; font-style: italic; color: var(--text-disabled);">Internal</div>
+          </div>
+        </div>
+        <div style="padding-left: 17px; padding-bottom: 4px;"><div style="width: 2px; height: 24px; background: var(--border); border-radius: 1px;"></div></div>
+        <!-- Entry: Separando (internal) -->
+        <div style="display: flex; align-items: flex-start; margin-bottom: 4px;">
+          <div style="width: 36px; height: 36px; border-radius: 18px; background: rgba(59, 123, 160, 0.1); display: flex; align-items: center; justify-content: center; margin-right: 12px; flex-shrink: 0;">
+            <span style="font-size: 14px; font-weight: 700; color: var(--info);">🔍</span>
+          </div>
+          <div style="flex: 1; padding: 8px 0;">
+            <div style="font-size: 15px; font-weight: 500; color: var(--text-primary);">Separação iniciada no CD</div>
+            <div style="font-size: 12px; color: var(--text-muted);">01/08 11:00</div>
+            <div style="font-size: 11px; font-style: italic; color: var(--text-disabled);">Internal</div>
+          </div>
+        </div>
+        <div style="padding-left: 17px; padding-bottom: 4px;"><div style="width: 2px; height: 24px; background: var(--border); border-radius: 1px;"></div></div>
+        <!-- Entry: Embalado (internal) -->
+        <div style="display: flex; align-items: flex-start; margin-bottom: 4px;">
+          <div style="width: 36px; height: 36px; border-radius: 18px; background: rgba(74, 122, 62, 0.1); display: flex; align-items: center; justify-content: center; margin-right: 12px; flex-shrink: 0;">
+            <span style="font-size: 14px; font-weight: 700; color: var(--success);">📋</span>
+          </div>
+          <div style="flex: 1; padding: 8px 0;">
+            <div style="font-size: 15px; font-weight: 500; color: var(--text-primary);">Pedido embalado</div>
+            <div style="font-size: 12px; color: var(--text-muted);">01/08 12:30</div>
+            <div style="font-size: 11px; font-style: italic; color: var(--text-disabled);">Internal</div>
+          </div>
+        </div>
+        <div style="padding-left: 17px; padding-bottom: 4px;"><div style="width: 2px; height: 24px; background: var(--border); border-radius: 1px;"></div></div>
+        <!-- Entry: Enviado -->
+        <div style="display: flex; align-items: flex-start; margin-bottom: 4px;">
+          <div style="width: 36px; height: 36px; border-radius: 18px; background: rgba(59, 123, 160, 0.1); display: flex; align-items: center; justify-content: center; margin-right: 12px; flex-shrink: 0;">
+            <span style="font-size: 14px; font-weight: 700; color: var(--info);">🚚</span>
+          </div>
+          <div style="flex: 1; padding: 8px 0;">
+            <div style="font-size: 15px; font-weight: 500; color: var(--text-primary);">Pedido enviado via Correios</div>
+            <div style="font-size: 12px; color: var(--text-muted);">01/08 15:00</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Order Tracking Screen -->
+    <div class="screen-container" id="screen-order-tracking" style="display:none">
+      <h2 style="font-size: 20px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">#AERO-1A2B3C4D</h2>
+      <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 20px;">ORD-2026-0001</p>
+      <!-- Tracking Card -->
+      <div style="background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 16px; border: 1px solid var(--border);">
+        <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 4px;">Código de Rastreio</div>
+        <div style="font-size: 20px; font-weight: 700; color: var(--accent);">BR123456789AA</div>
+        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Correios</div>
+        <div style="font-size: 12px; color: var(--info);">https://rastreamento.correios.com.br</div>
+      </div>
+      <!-- Status Banner -->
+      <div style="background: var(--info-surface); border-radius: 14px; padding: 16px; margin-bottom: 20px;">
+        <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--info);">Status</div>
+        <div style="font-size: 18px; font-weight: 700; color: var(--text-primary);">Em Trânsito</div>
+        <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-muted); margin-top: 12px;">Previsão de entrega</div>
+        <div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">05/08/2026</div>
+      </div>
+      <!-- Events -->
+      <h3 style="font-size: 16px; font-weight: 700; color: var(--text-primary); margin-bottom: 16px;">Histórico de Rastreamento</h3>
+      <div style="position: relative;">
+        <div style="display: flex; align-items: flex-start; margin-bottom: 16px;">
+          <div style="width: 10px; height: 10px; border-radius: 5px; background: var(--accent); margin-right: 12px; margin-top: 6px; flex-shrink: 0;"></div>
+          <div style="flex: 1;">
+            <div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Saiu para entrega</div>
+            <div style="font-size: 13px; color: var(--text-secondary);">Agência São Conrado</div>
+            <div style="font-size: 12px; color: var(--text-muted);">02/08 16:00</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: flex-start; margin-bottom: 16px;">
+          <div style="width: 10px; height: 10px; border-radius: 5px; background: var(--border); margin-right: 12px; margin-top: 6px; flex-shrink: 0;"></div>
+          <div style="flex: 1;">
+            <div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Em trânsito - Unidade de Tratamento</div>
+            <div style="font-size: 13px; color: var(--text-secondary);">CD Rio de Janeiro</div>
+            <div style="font-size: 12px; color: var(--text-muted);">02/08 08:00</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: flex-start; margin-bottom: 16px;">
+          <div style="width: 10px; height: 10px; border-radius: 5px; background: var(--border); margin-right: 12px; margin-top: 6px; flex-shrink: 0;"></div>
+          <div style="flex: 1;">
+            <div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Em trânsito para unidade de destino</div>
+            <div style="font-size: 13px; color: var(--text-secondary);">CD São Paulo</div>
+            <div style="font-size: 12px; color: var(--text-muted);">01/08 14:00</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: flex-start;">
+          <div style="width: 10px; height: 10px; border-radius: 5px; background: var(--border); margin-right: 12px; margin-top: 6px; flex-shrink: 0;"></div>
+          <div style="flex: 1;">
+            <div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Objeto postado</div>
+            <div style="font-size: 13px; color: var(--text-secondary);">CD São Paulo</div>
+            <div style="font-size: 12px; color: var(--text-muted);">01/08 10:00</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Order Cancelled Screen -->
+    <div class="screen-container" id="screen-order-cancelled" style="display:none">
+      <div style="text-align: center; padding: 32px 0;">
+        <div style="width: 64px; height: 64px; border-radius: 32px; background: var(--error-surface); display: inline-flex; align-items: center; justify-content: center; margin-bottom: 16px;">
+          <span style="font-size: 28px; font-weight: 700; color: var(--error);">✕</span>
+        </div>
+        <div style="font-size: 22px; font-weight: 700; color: var(--error);">Pedido Cancelado</div>
+        <div style="font-size: 16px; font-weight: 600; color: var(--accent); margin-top: 4px;">#AERO-1A2B3C4D</div>
+      </div>
+      <!-- Cancel Details -->
+      <div style="background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 16px; border: 1px solid var(--border);">
+        <div style="font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 12px;">Detalhes do Cancelamento</div>
+        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(0,0,0,0.04);">
+          <span style="font-size: 13px; color: var(--text-muted);">Pedido</span>
+          <span style="font-size: 13px; font-weight: 500; color: var(--text-primary);">ORD-2026-0001</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(0,0,0,0.04);">
+          <span style="font-size: 13px; color: var(--text-muted);">Motivo</span>
+          <span style="font-size: 13px; font-weight: 500; color: var(--text-primary);">Solicitação do cliente</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; padding: 8px 0;">
+          <span style="font-size: 13px; color: var(--text-muted);">Data</span>
+          <span style="font-size: 13px; font-weight: 500; color: var(--text-primary);">02/08/2026 10:00</span>
+        </div>
+      </div>
+      <!-- Refund -->
+      <div style="background: var(--warning-surface); border-radius: 14px; padding: 16px; margin-bottom: 16px;">
+        <div style="font-size: 15px; font-weight: 700; color: var(--warning); margin-bottom: 12px;">Reembolso</div>
+        <div style="display: flex; align-items: center; margin-bottom: 12px;">
+          <div style="width: 8px; height: 8px; border-radius: 4px; background: var(--warning); margin-right: 8px;"></div>
+          <span style="font-size: 13px; font-weight: 600; color: var(--warning);">Processando reembolso</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(0,0,0,0.04);">
+          <span style="font-size: 13px; color: var(--text-muted);">Valor</span>
+          <span style="font-size: 13px; font-weight: 500; color: var(--text-primary);">R$ 65,00</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(0,0,0,0.04);">
+          <span style="font-size: 13px; color: var(--text-muted);">Método</span>
+          <span style="font-size: 13px; font-weight: 500; color: var(--text-primary);">PIX (mesma chave do pagamento)</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; padding: 8px 0;">
+          <span style="font-size: 13px; color: var(--text-muted);">Prazo</span>
+          <span style="font-size: 13px; font-weight: 500; color: var(--text-primary);">Em até 5 dias úteis</span>
+        </div>
+      </div>
+      <!-- Support -->
+      <div style="background: var(--surface); border-radius: 14px; padding: 16px; text-align: center; border: 1px solid var(--border);">
+        <div style="font-size: 13px; color: var(--text-secondary);">Precisa de ajuda?</div>
+        <div style="font-size: 14px; font-weight: 500; color: var(--accent); margin-top: 4px;">suporte@aerostore.com.br</div>
+      </div>
+      <div style="text-align: center; padding: 8px 0;">
+        <div style="font-size: 12px; font-style: italic; color: var(--text-muted);">Nenhum pagamento adicional foi cobrado.</div>
+      </div>
+    </div>
+
+    <!-- Return Request Screen -->
+    <div class="screen-container" id="screen-order-return" style="display:none">
+      <h2 style="font-size: 20px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Solicitar Devolução</h2>
+      <p style="font-size: 14px; font-weight: 600; color: var(--accent); margin-bottom: 20px;">#AERO-1A2B3C4D</p>
+      <!-- Items -->
+      <div style="background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 16px; border: 1px solid var(--border);">
+        <div style="font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 12px;">Itens do Pedido</div>
+        <div style="display: flex; align-items: center; padding: 10px 0;">
+          <div style="width: 20px; height: 20px; border-radius: 4px; border: 2px solid var(--border); margin-right: 12px;"></div>
+          <div style="flex: 1;">
+            <div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Camiseta Oversized AERO</div>
+            <div style="font-size: 12px; color: var(--text-muted);">PRD-001 | Qtd: 1</div>
+          </div>
+          <div style="font-size: 14px; font-weight: 600; color: var(--text-primary);">R$ 45,00</div>
+        </div>
+        <div style="display: flex; align-items: center; padding: 10px 0; border-top: 1px solid rgba(0,0,0,0.04);">
+          <div style="width: 20px; height: 20px; border-radius: 4px; border: 2px solid var(--border); margin-right: 12px;"></div>
+          <div style="flex: 1;">
+            <div style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Calça Jogger AERO</div>
+            <div style="font-size: 12px; color: var(--text-muted);">PRD-002 | Qtd: 1</div>
+          </div>
+          <div style="font-size: 14px; font-weight: 600; color: var(--text-primary);">R$ 89,00</div>
+        </div>
+      </div>
+      <!-- Reasons -->
+      <div style="background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 16px; border: 1px solid var(--border);">
+        <div style="font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 12px;">Motivo da Devolução</div>
+        <div style="display: flex; align-items: center; padding: 10px 0;">
+          <div style="width: 20px; height: 20px; border-radius: 10px; border: 2px solid var(--accent); display: flex; align-items: center; justify-content: center; margin-right: 12px;">
+            <div style="width: 10px; height: 10px; border-radius: 5px; background: var(--accent);"></div>
+          </div>
+          <span style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Tamanho incorreto</span>
+        </div>
+        <div style="display: flex; align-items: center; padding: 10px 0;">
+          <div style="width: 20px; height: 20px; border-radius: 10px; border: 2px solid var(--border); margin-right: 12px;"></div>
+          <span style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Produto com defeito</span>
+        </div>
+        <div style="display: flex; align-items: center; padding: 10px 0;">
+          <div style="width: 20px; height: 20px; border-radius: 10px; border: 2px solid var(--border); margin-right: 12px;"></div>
+          <span style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Produto errado</span>
+        </div>
+        <div style="display: flex; align-items: center; padding: 10px 0;">
+          <div style="width: 20px; height: 20px; border-radius: 10px; border: 2px solid var(--border); margin-right: 12px;"></div>
+          <span style="font-size: 14px; font-weight: 500; color: var(--text-primary);">Não gostei</span>
+        </div>
+      </div>
+      <!-- Description -->
+      <div style="background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 16px; border: 1px solid var(--border);">
+        <div style="font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 12px;">Descrição (opcional)</div>
+        <div style="background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 10px; padding: 12px; min-height: 80px;">
+          <div style="font-size: 14px; color: var(--text-primary); line-height: 20px;">A calça ficou grande. Solicito troca pelo tamanho M.</div>
+        </div>
+      </div>
+      <!-- Status -->
+      <div style="background: rgba(166, 124, 63, 0.1); border-radius: 14px; padding: 16px; margin-bottom: 16px;">
+        <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-muted);">Status da Devolução</div>
+        <div style="font-size: 18px; font-weight: 700; color: var(--warning);">Solicitada</div>
+        <div style="font-size: 12px; color: var(--text-muted);">#RET-LK9X2M</div>
+      </div>
+      <!-- Submit Button -->
+      <div style="background: var(--accent); color: #FFF; padding: 16px; border-radius: 14px; text-align: center; font-size: 16px; font-weight: 600;">
+        Solicitar Devolução
+      </div>
+    </div>
+
   <!-- Theme Info -->
   <div style="margin-top: 24px; padding: 12px; background: var(--surface-elevated); border: 1px solid var(--accent); border-radius: 12px; text-align: center;">
     <div style="font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: var(--accent); text-transform: uppercase;">Tema Ativo</div>
@@ -1473,7 +1792,7 @@
 
   <!-- Footer -->
   <div class="footer">
-    <div class="footer-text">AEROSTORE · Pagamento + PIX + Confirmar + Erros · Fase 3.10-B</div>
+    <div class="footer-text">AEROSTORE · Order Lifecycle + Timeline + Tracking + Devolucao · Fase 3.11-A</div>
   </div>
 
 </div>

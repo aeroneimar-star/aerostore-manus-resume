@@ -118,6 +118,8 @@ const { createAppCartRouter } = require("./modules/customers/app-cart/appCartRou
 const { createAppAddressRouter } = require("./modules/customers/app-address/appAddressRoutes");
 const { createAppFulfillmentRouter } = require("./modules/customers/app-fulfillment/appFulfillmentRoutes");
 const { createAppOrderRouter } = require("./modules/customers/app-orders/appOrderRoutes");
+const { createAppPaymentRouter } = require("./modules/customers/app-payments/appPaymentRoutes");
+const { MockProvider } = require("./modules/customers/app-payments/providers/mockProvider");
 const { createAppOrderService } = require("./modules/customers/app-orders/appOrderService");
 const { getNotificationService, getNotificationDryRunDefault } = require("./src/notification/NotificationService");
 const { startCashbackReminderScheduler } = require("./src/notification/CashbackScheduler");
@@ -18666,6 +18668,25 @@ const appOrderService = createAppOrderService({
   recordAudit: recordAuditEvent
 });
 app.use("/app/v1/orders", createAppOrderRouter(appOrderService));
+
+const paymentProvider = new MockProvider({ behavior: "PENDING" });
+const paymentRouter = createAppPaymentRouter({
+  dbApi: { run, get, all },
+  provider: paymentProvider,
+  recordAudit: recordAuditEvent,
+  onPaymentApproved: async (paymentId) => {
+    try {
+      const payment = await all("SELECT order_id FROM app_payments WHERE id = ?", [paymentId]);
+      if (payment && payment.length > 0) {
+        await run("UPDATE app_orders SET status = 'PAID' WHERE id = ? AND status IN ('CREATING','AWAITING_PAYMENT')", [payment[0].order_id]);
+      }
+    } catch (err) {
+      console.error("Payment approved handler error:", err.message);
+    }
+  },
+  onPaymentFailed: async (paymentId) => {}
+});
+app.use("/app/v1/payments", paymentRouter.router);
 app.use("/api", authMiddleware);
 app.use("/api", auditSensitiveMutationMiddleware);
 
