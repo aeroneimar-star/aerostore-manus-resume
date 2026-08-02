@@ -35,6 +35,10 @@ function RootLayoutInner() {
         <Stack.Screen name="address-form" options={{ title: 'Endereco', headerBackTitle: 'Enderecos' }} />
         <Stack.Screen name="fulfillment" options={{ title: 'Entrega', headerBackTitle: 'Carrinho' }} />
         <Stack.Screen name="checkout-review" options={{ title: 'Revisao do Pedido', headerBackTitle: 'Entrega' }} />
+        <Stack.Screen name="payment" options={{ title: 'Pagamento', headerBackTitle: 'Revisao' }} />
+        <Stack.Screen name="payment-pix" options={{ title: 'PIX', headerBackTitle: 'Pagamento' }} />
+        <Stack.Screen name="payment-confirm" options={{ title: 'Confirmar', headerBackTitle: 'Pagamento' }} />
+        <Stack.Screen name="payment-error" options={{ title: 'Erro', headerBackTitle: 'Pagamento' }} />
         <Stack.Screen name="order-success" options={{ headerShown: false }} />
         <Stack.Screen name="order-error" options={{ headerShown: false }} />
       </Stack>

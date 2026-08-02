@@ -20,7 +20,12 @@ export default function CheckoutReviewScreen() {
     try {
       const result = await orderClient.createOrder({});
       if (result.data.order.status === "AWAITING_PAYMENT") {
-        router.push({ pathname: '/order-success', params: { orderId: result.data.order.id, orderNumber: result.data.order.orderNumber } } as any);
+        const orderId = result.data.order.id;
+        const amountCents = result.data.order.totalCents || 6500;
+        router.push({
+          pathname: '/payment' as any,
+          params: { orderId, amountCents: String(amountCents) }
+        });
       }
     } catch (err: any) {
       if (err instanceof OrderClientError) {
