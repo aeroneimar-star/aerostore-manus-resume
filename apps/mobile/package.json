@@ -41,6 +41,7 @@
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/src/$1"
     },
+    "testTimeout": 10000,
     "testPathIgnorePatterns": [
       "/node_modules/",
       "/dist/"

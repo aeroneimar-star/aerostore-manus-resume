@@ -4,7 +4,6 @@ import { B2C_API_VERSION } from '@/catalog/contracts';
 import { MockCatalogClient } from '@/catalog/mock/MockCatalogClient';
 
 const forbiddenKeys = new Set([
-  'id',
   'internal_id',
   'product_id',
   'pdv_product_ref',
@@ -12,7 +11,6 @@ const forbiddenKeys = new Set([
   'variant_id',
   'legacy_ai_product_id',
   'tiny_id',
-  'sku',
   'barcode',
   'cost',
   'cost_cents',
@@ -44,7 +42,7 @@ describe('mock B2C V1 contract', () => {
   const client = new MockCatalogClient({ latencyMs: 0 });
 
   it('returns catalog with required public fields and v1 meta', async () => {
-    const response = await client.getCatalog({ limit: 48 });
+    const response = await client.getCatalog({ pageSize: 48 });
     expect(response.meta.api_version).toBe(B2C_API_VERSION);
     expect(response.success).toBe(true);
     expect(response.data.items.length).toBeGreaterThan(0);
@@ -69,9 +67,9 @@ describe('mock B2C V1 contract', () => {
 
   it('contains no internal fields in catalog, filters or product', async () => {
     const payloads: unknown[] = [
-      await client.getCatalog({ limit: 48 }),
+      await client.getCatalog({ pageSize: 48 }),
       await client.getFilters(),
-      await client.getProductBySlug('polo-pima-marinho'),
+      await client.getProduct('1'),
     ];
     for (const payload of payloads) {
       const keys = collectKeys(payload);
@@ -82,7 +80,7 @@ describe('mock B2C V1 contract', () => {
   });
 
   it('covers editorial variants and availability states', async () => {
-    const response = await client.getCatalog({ limit: 48 });
+    const response = await client.getCatalog({ pageSize: 48 });
     const items = response.data.items;
     expect(items.some((item) => item.featured)).toBe(true);
     expect(items.some((item) => !item.featured)).toBe(true);

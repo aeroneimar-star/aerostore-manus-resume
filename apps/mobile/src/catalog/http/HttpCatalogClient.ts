@@ -46,7 +46,7 @@ const isProduct = (value: unknown) => isRecord(value)
   && typeof value.featured === 'boolean' && isAvailability(value.availability)
   && Array.isArray(value.images) && value.images.every(isImage) && Array.isArray(value.variants) && value.variants.every(isVariant)
   && isStringArray(value.colors) && isStringArray(value.sizes) && isString(value.updated_at);
-const isCatalog = (value: unknown): value is B2cCatalogResponse => isRecord(value) && value.success === true && isMeta(value.meta) && isRecord(value.data) && Array.isArray(value.data.items) && value.data.items.every(isItem) && isPagination(value.data.pagination);
+const isCatalog = (value: unknown): value is B2cCatalogResponse => isRecord(value) && value.success === true && isMeta(value.meta) && isRecord(value.data) && Array.isArray(value.data.items) && value.data.items.every(isItem) && isPagination(value.data.pagination) && isRecord(value.data.filters) && Array.isArray(value.data.filters.categories) && value.data.filters.categories.every(isFilter);
 const isCategories = (value: unknown): value is B2cCatalogFiltersResponse => isRecord(value) && value.success === true && isMeta(value.meta) && isRecord(value.data) && Array.isArray(value.data.categories) && value.data.categories.every(isFilter);
 const isProductResponse = (value: unknown): value is B2cProductResponse => isRecord(value) && value.success === true && isMeta(value.meta) && isRecord(value.data) && isProduct(value.data.product);
 

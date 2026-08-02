@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEROSTORE — Catálogo Privado</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Georgia&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #10100F;
+    color: #F4F0E7;
+    font-family: Arial, sans-serif;
+    min-height: 100vh;
+  }
+
+  .safe-area {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 16px 48px;
+  }
+
+  /* Nav */
+  .nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 64px;
+  }
+  .brand {
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: 3.4px;
+    color: #F4F0E7;
+  }
+  .profile-link {
+    color: #E3B18E;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1.5px;
+    padding: 12px 0;
+    cursor: pointer;
+    background: none;
+    border: none;
+  }
+
+  /* Hero */
+  .hero {
+    min-height: 370px;
+    padding-top: 72px;
+    padding-bottom: 48px;
+  }
+  .hero-rule {
+    background: #C48054;
+    height: 2px;
+    width: 64px;
+    margin-bottom: 24px;
+  }
+  .hero-kicker {
+    color: #E3B18E;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2.2px;
+  }
+  .hero-title {
+    color: #F4F0E7;
+    font-family: Georgia, serif;
+    font-size: 52px;
+    letter-spacing: -1.6px;
+    line-height: 57px;
+    margin-top: 16px;
+  }
+  .hero-body {
+    color: #A9A297;
+    font-size: 16px;
+    line-height: 26px;
+    margin-top: 24px;
+    max-width: 520px;
+  }
+
+  /* Filters */
+  .filters {
+    border-top: 1px solid #34332F;
+    border-bottom: 1px solid #34332F;
+    padding: 24px 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 24px;
+  }
+  .filter-label {
+    color: #A9A297;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.8px;
+    margin-bottom: 12px;
+  }
+  .search-input {
+    background: #191918;
+    border: 1px solid #3E3B35;
+    border-radius: 14px;
+    color: #F4F0E7;
+    font-size: 15px;
+    min-height: 52px;
+    padding: 0 16px;
+    width: 100%;
+    font-family: Arial, sans-serif;
+  }
+  .search-input::placeholder {
+    color: #777168;
+  }
+
+  /* Categories */
+  .category-filter {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .category-chip {
+    background: transparent;
+    border: 1px solid #3E3B35;
+    border-radius: 999px;
+    color: #A9A297;
+    font-size: 12px;
+    padding: 8px 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .category-chip:hover {
+    border-color: #C48054;
+    color: #E3B18E;
+  }
+  .category-chip.active {
+    background: #C48054;
+    border-color: #C48054;
+    color: #10100F;
+    font-weight: 700;
+  }
+
+  /* Sort */
+  .sort-filter {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .sort-chip {
+    background: transparent;
+    border: 1px solid #3E3B35;
+    border-radius: 999px;
+    color: #A9A297;
+    font-size: 12px;
+    padding: 8px 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .sort-chip:hover {
+    border-color: #C48054;
+    color: #E3B18E;
+  }
+  .sort-chip.active {
+    background: #C48054;
+    border-color: #C48054;
+    color: #10100F;
+    font-weight: 700;
+  }
+
+  /* Collection Header */
+  .collection-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding-top: 48px;
+    padding-bottom: 24px;
+  }
+  .collection-title {
+    font-family: Georgia, serif;
+    font-size: 34px;
+    color: #F4F0E7;
+  }
+  .collection-count {
+    color: #A9A297;
+    font-size: 12px;
+  }
+
+  /* Grid */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+  }
+
+  /* Product Card */
+  .product-card {
+    background: #191918;
+    border-radius: 14px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    border: 1px solid #2A2A26;
+  }
+  .product-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3);
+  }
+  .product-image {
+    width: 100%;
+    height: 320px;
+    object-fit: cover;
+    display: block;
+  }
+  .product-info {
+    padding: 16px;
+  }
+  .product-title {
+    color: #F4F0E7;
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .product-brand {
+    color: #A9A297;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+  }
+  .product-price {
+    margin-top: 8px;
+  }
+  .product-price-current {
+    color: #E3B18E;
+    font-size: 16px;
+    font-weight: 700;
+  }
+  .product-price-original {
+    color: #777168;
+    font-size: 12px;
+    text-decoration: line-through;
+    margin-left: 8px;
+  }
+  .product-colors {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .color-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid #3E3B35;
+  }
+
+  /* Load More */
+  .load-more {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    margin-top: 32px;
+    min-height: 48px;
+    min-width: 180px;
+    padding: 0 32px;
+    border: 1px solid #F4F0E7;
+    border-radius: 999px;
+    color: #F4F0E7;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    background: transparent;
+    transition: background 0.2s;
+  }
+  .load-more:hover {
+    background: #272621;
+  }
+
+  /* Footer */
+  .footer {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-top: 72px;
+    padding-top: 24px;
+    border-top: 1px solid #34332F;
+  }
+  .footer-mark {
+    color: #C48054;
+    font-family: Georgia, serif;
+    font-size: 32px;
+  }
+  .footer-copy {
+    color: #A9A297;
+    font-size: 11px;
+    line-height: 17px;
+  }
+</style>
+</head>
+<body>
+<div class="safe-area">
+  <!-- Nav -->
+  <nav class="nav">
+    <span class="brand">AEROSTORE</span>
+    <button class="profile-link">MEU PERFIL</button>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-rule"></div>
+    <span class="hero-kicker">CATÁLOGO PRIVADO · ACESSO EXCLUSIVO</span>
+    <h1 class="hero-title">Escolhas que<br>ficam.</h1>
+    <p class="hero-body">A curadoria AEROSTORE agora no seu ritmo. Explore peças, variações e disponibilidade — sem ruído, sem pressa.</p>
+  </section>
+
+  <!-- Filters -->
+  <section class="filters">
+    <div>
+      <span class="filter-label">BUSCAR</span>
+      <input class="search-input" type="text" placeholder="Produto, marca ou código" aria-label="Buscar no catálogo">
+    </div>
+    <div>
+      <span class="filter-label">CATEGORIA</span>
+      <div class="category-filter">
+        <button class="category-chip active">Todas</button>
+        <button class="category-chip">Polos</button>
+        <button class="category-chip">Camisetas</button>
+        <button class="category-chip">Calças</button>
+        <button class="category-chip">Calçados</button>
+        <button class="category-chip">Bermudas</button>
+      </div>
+    </div>
+    <div>
+      <span class="filter-label">ORDENAR</span>
+      <div class="sort-filter">
+        <button class="sort-chip active">Recentes</button>
+        <button class="sort-chip">Menor preço</button>
+        <button class="sort-chip">Maior preço</button>
+        <button class="sort-chip">A–Z</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Collection -->
+  <div class="collection-header">
+    <h2 class="collection-title">Coleção</h2>
+    <span class="collection-count">6 peças</span>
+  </div>
+
+  <!-- Grid -->
+  <div class="grid">
+    <article class="product-card" aria-label="Ver produto Mocassim Couro Caramelo">
+      <img class="product-image" src="https://images.unsplash.com/photo-1549298916-b41d501d3772?auto=format&fit=crop&w=600&q=80" alt="Mocassim Couro Caramelo">
+      <div class="product-info">
+        <h3 class="product-title">Mocassim Couro Caramelo</h3>
+        <span class="product-brand">Osklen · Calçados</span>
+        <div class="product-price">
+          <span class="product-price-current" data-cents="45990">R$ 459,90</span>
+        </div>
+        <div class="product-colors">
+          <span class="color-dot" style="background:#C4956A;"></span>
+          <span class="color-dot" style="background:#2B2B2B;"></span>
+        </div>
+      </div>
+    </article>
+
+    <article class="product-card" aria-label="Ver produto Bermuda Sarja Areia">
+      <img class="product-image" src="https://images.unsplash.com/photo-1473966968600-fa801b869a1a?auto=format&fit=crop&w=600&q=80" alt="Bermuda Sarja Areia">
+      <div class="product-info">
+        <h3 class="product-title">Bermuda Sarja Areia</h3>
+        <span class="product-brand">AEROSTORE · Bermudas</span>
+        <div class="product-price">
+          <span class="product-price-current" data-cents="14990">R$ 149,90</span>
+        </div>
+        <div class="product-colors">
+          <span class="color-dot" style="background:#C4A882;"></span>
+        </div>
+      </div>
+    </article>
+
+    <article class="product-card" aria-label="Ver produto Tênis Nobuck Cognac">
+      <img class="product-image" src="https://images.unsplash.com/photo-1460353581641-37baddab0fa2?auto=format&fit=crop&w=600&q=80" alt="Tênis Nobuck Cognac">
+      <div class="product-info">
+        <h3 class="product-title">Tênis Nobuck Cognac</h3>
+        <span class="product-brand">Osklen · Calçados</span>
+        <div class="product-price">
+          <span class="product-price-current" data-cents="38990">R$ 389,90</span>
+          <span class="product-price-original" data-cents="42990">R$ 429,90</span>
+        </div>
+        <div class="product-colors">
+          <span class="color-dot" style="background:#8B5E3C;"></span>
+          <span class="color-dot" style="background:#3D3D3D;"></span>
+        </div>
+      </div>
+    </article>
+
+    <article class="product-card" aria-label="Ver produto Chino Azul Petróleo">
+      <img class="product-image" src="https://images.unsplash.com/photo-1624378439575-d8705ad7ae80?auto=format&fit=crop&w=600&q=80" alt="Chino Azul Petróleo">
+      <div class="product-info">
+        <h3 class="product-title">Chino Azul Petróleo</h3>
+        <span class="product-brand">AEROSTORE · Calças</span>
+        <div class="product-price">
+          <span class="product-price-current" data-cents="19990">R$ 199,90</span>
+        </div>
+        <div class="product-colors">
+          <span class="color-dot" style="background:#2E5D5E;"></span>
+          <span class="color-dot" style="background:#1B2B2C;"></span>
+        </div>
+      </div>
+    </article>
+  </div>
+
+  <button class="load-more">Carregar mais</button>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <span class="footer-mark">A</span>
+    <span class="footer-copy">Catálogo privado AEROSTORE.<br>Compra disponível em breve.</span>
+  </footer>
+</div>
+</body>
+</html>

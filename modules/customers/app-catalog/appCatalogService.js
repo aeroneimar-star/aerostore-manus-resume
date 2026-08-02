@@ -132,7 +132,9 @@ function createAppCatalogService(options = {}) {
     };
     products.sort(comparators[params.sort]); const total = products.length; const totalPages = Math.max(1, Math.ceil(total / params.pageSize));
     const items = products.slice((params.page - 1) * params.pageSize, params.page * params.pageSize).map(listItemDto);
-    return envelope({ items, pagination: { page: params.page, limit: params.pageSize, total, total_pages: totalPages } });
+    const categoryMap = new Map(); products.forEach((product) => { const current = categoryMap.get(product.category_slug) || { slug: product.category_slug, label: product.category_label, count: 0 }; current.count += 1; categoryMap.set(product.category_slug, current); });
+    const filters = { categories: [...categoryMap.values()].sort((a, b) => a.label.localeCompare(b.label, "pt-BR")) };
+    return envelope({ items, pagination: { page: params.page, limit: params.pageSize, total, total_pages: totalPages }, filters });
   }
 
   async function categories() {
