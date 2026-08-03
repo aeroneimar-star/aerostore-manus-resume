@@ -49,6 +49,7 @@ export interface Order {
   created_at: string;
   updated_at: string;
   expires_at: string | null;
+  expired_at: string | null;
   failed_reason: string | null;
 }
 
@@ -62,6 +63,7 @@ export interface OrderItem {
   effective_unit_price_cents: number;
   line_total_cents: number;
   availability_status: string;
+  product_name?: string;
 }
 
 export interface OrderEvent {

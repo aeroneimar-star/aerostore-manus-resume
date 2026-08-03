@@ -14,15 +14,29 @@
  *   2. releaseReservation: reverte hold (incrementa available_qty,
  *      decrementa reserved_qty), grava movimento RESERVATION_RELEASE.
  *
- * Nenhuma tabela paralela de reserva é criada. O PDV é a fonte da verdade.
+ * Idempotência cumulativa (releaseReservation):
+ * - Chave: RELEASE::<orderId>::<storeId>::<variantId>::TARGET::<hold_quantity_total>
+ * - Permite release parcial: se já existe release de 1 para target 3, libera mais 2.
+ * - Retry com mesmo target: idempotente, não cria outro movimento.
+ * - Chave antiga sem TARGET não é reutilizada.
+ *
+ * Bloqueio de inflação: releaseReservation valida reserved_qty >= quantity
+ * antes de atualizar o saldo. Se inconsistente, retorna
+ * RESERVATION_BALANCE_INCONSISTENT.
+ *
+ * CRUCIAL: releaseReservation NÃO cria saldo.
+ * - Usa getBalance (não ensureBalance).
+ * - Se saldo não existir: INVENTORY_BALANCE_NOT_FOUND.
+ * - Nunca insere linha nova na tabela de saldos.
+ *
+ * Sinal dos movimentos:
+ * - RESERVATION_HOLD: quantity_delta < 0 (negativo obrigatório)
+ * - RESERVATION_RELEASE: quantity_delta > 0 (positivo obrigatório)
+ * - Sinal nulo ou zero: rejeitado
+ * - Não usar Math.abs antes de validar o sinal
  */
 
 const { randomUUID } = require("crypto");
-
-const ALLOWED_MOVEMENT_TYPES = Object.freeze([
-  "RESERVATION_HOLD",
-  "RESERVATION_RELEASE",
-]);
 
 function iso(d) {
   return (d instanceof Date ? d : new Date(d)).toISOString();
@@ -38,8 +52,9 @@ function createInventoryService(options = {}) {
     throw new Error("INVENTORY_SERVICE_DB_REQUIRED");
   }
 
-  async function getBalance(variantId, storeId) {
-    const row = await db.get(
+  async function getBalance(runner, variantId, storeId) {
+    const r = runner || db;
+    const row = await r.get(
       `SELECT id, variant_id, store_id, available_qty, reserved_qty, version, updated_at
        FROM pdv_inventory_balances_v2
        WHERE variant_id = ? AND store_id = ?`,
@@ -51,16 +66,17 @@ function createInventoryService(options = {}) {
     return row;
   }
 
-  async function ensureBalance(variantId, storeId) {
-    const existing = await getBalance(variantId, storeId);
+  async function ensureBalance(runner, variantId, storeId) {
+    const r = runner || db;
+    const existing = await getBalance(r, variantId, storeId);
     if (existing.id) return existing;
     const now = iso(new Date());
-    await db.run(
+    await r.run(
       `INSERT INTO pdv_inventory_balances_v2 (variant_id, store_id, available_qty, reserved_qty, version, updated_at)
        VALUES (?, ?, 0, 0, 1, ?)`,
       [variantId, storeId, now]
     );
-    return getBalance(variantId, storeId);
+    return getBalance(r, variantId, storeId);
   }
 
   /**
@@ -71,6 +87,7 @@ function createInventoryService(options = {}) {
    * - Usa transação (BEGIN/COMMIT) para garantir atomicidade.
    * - Grava movimento RESERVATION_HOLD com idempotency_key UNIQUE.
    * - Se idempotency_key já existe, retorna o movimento existente (idempotente).
+   * - Pode usar ensureBalance conforme contrato (cria saldo se ausente).
    * - Retorna array de { movement_id, reservation_id, store_id, items }.
    */
   async function holdReservation(orderId, items, storeId, idempotencyKey) {
@@ -114,8 +131,7 @@ function createInventoryService(options = {}) {
         const variantId = item.variant_id;
         const quantity = Math.max(1, Math.floor(item.quantity || 1));
 
-        // Obter saldo atual com lock implícito (transação)
-        const balance = await ensureBalance(variantId, storeId);
+        const balance = await ensureBalance(db, variantId, storeId);
         if (balance.available_qty < quantity) {
           await db.run("ROLLBACK");
           throw new Error(`INSUFFICIENT_STOCK: variant=${variantId}, store=${storeId}, requested=${quantity}, available=${balance.available_qty}`);
@@ -126,7 +142,6 @@ function createInventoryService(options = {}) {
         const newVersion = balance.version + 1;
         const movementId = generateId();
 
-        // Atualizar saldo
         await db.run(
           `UPDATE pdv_inventory_balances_v2
            SET available_qty = ?, reserved_qty = ?, version = ?, updated_at = ?
@@ -134,7 +149,6 @@ function createInventoryService(options = {}) {
           [newAvailable, newReserved, newVersion, now, balance.id, balance.version]
         );
 
-        // Verificar se a atualização foi aplicada (caso de concorrência)
         const updated = await db.get(
           `SELECT id FROM pdv_inventory_balances_v2 WHERE id = ? AND version = ?`,
           [balance.id, newVersion]
@@ -144,7 +158,6 @@ function createInventoryService(options = {}) {
           throw new Error(`STOCK_CONCURRENCY_CONFLICT: variant=${variantId}, store=${storeId}`);
         }
 
-        // Gravar movimento
         await db.run(
           `INSERT INTO pdv_inventory_movements_v2
            (id, variant_id, store_id, movement_type, quantity_delta, quantity_before,
@@ -155,7 +168,7 @@ function createInventoryService(options = {}) {
             movementId,
             variantId,
             storeId,
-            -quantity,
+            -quantity, // quantity_delta < 0 (negativo)
             balance.available_qty,
             newAvailable,
             "app_order_shop",
@@ -180,7 +193,6 @@ function createInventoryService(options = {}) {
 
       await db.run("COMMIT");
     } catch (err) {
-      // ROLLBACK já foi feito em caso de erro específico, mas garantir
       try { await db.run("ROLLBACK"); } catch (_) {}
       throw err;
     }
@@ -199,32 +211,114 @@ function createInventoryService(options = {}) {
    *
    * Reverte o hold: incrementa available_qty, decrementa reserved_qty.
    * Grava movimento RESERVATION_RELEASE.
+   *
+   * IDEMPOTÊNCIA CUMULATIVA:
+   * - Chave: RELEASE::<orderId>::<storeId>::<variantId>::TARGET::<hold_quantity_total>
+   * - Permite release parcial: se hold=3 e release_parcial=1, libera mais 2 com target=3.
+   * - Retry com mesmo target: idempotente, não cria outro movimento.
+   * - Não reutiliza chave antiga sem TARGET.
+   *
+   * BLOQUEIO DE INFLAÇÃO:
+   * - Antes do UPDATE, valida reserved_qty >= quantity.
+   * - Se reserved_qty < quantity: retorna RESERVATION_BALANCE_INCONSISTENT.
+   *
+   * RELEASE NÃO CRIA SALDO:
+   * - Usa getBalance (não ensureBalance).
+   * - Se saldo não existir: INVENTORY_BALANCE_NOT_FOUND.
+   *
+   * Runner transacional:
+   * - Se txOpts.db fornecido, TODAS operações usam esse runner.
+   *
+   * Verificação de versão: após UPDATE, verifica se version mudou.
    */
-  async function releaseReservation(orderId, storeId, items) {
+  async function releaseReservation(orderId, storeId, items, txOpts = null) {
     if (!orderId) throw new Error("ORDER_ID_REQUIRED");
     if (!storeId) throw new Error("STORE_ID_REQUIRED");
     if (!Array.isArray(items) || items.length === 0) return { released: false, reason: "NO_ITEMS" };
 
-    const now = iso(new Date());
+    // Runner: se txOpts.db fornecido, usar exclusivamente ele
+    const runner = txOpts?.db || db;
+
+    const results = [];
+    let threwInconsistency = false;
 
     for (const item of items) {
       const variantId = item.variant_id;
       const quantity = Math.max(1, Math.floor(item.quantity || 1));
+      const holdTotal = Math.max(1, Math.floor(item.hold_total || quantity));
 
-      const balance = await ensureBalance(variantId, storeId);
+      // IDEMPOTÊNCIA CUMULATIVA: chave com TARGET
+      // Ex: RELEASE::orderId::storeId::variantId::TARGET::3
+      const releaseKey = `RELEASE::${orderId}::${storeId}::${variantId}::TARGET::${holdTotal}`;
+      const existingRelease = await runner.get(
+        `SELECT id FROM pdv_inventory_movements_v2
+         WHERE idempotency_key = ? AND movement_type = 'RESERVATION_RELEASE'`,
+        [releaseKey]
+      );
+      if (existingRelease) {
+        results.push({ variant_id: variantId, released: false, reason: "ALREADY_RELEASED", idempotent: true });
+        continue;
+      }
+
+      const now = iso(new Date());
+
+      // OBTER SALDO SEM CRIAR (getBalance, não ensureBalance)
+      const balance = await getBalance(runner, variantId, storeId);
+
+      // RELEASE NÃO CRIA SALDO: se não existir, INVENTORY_BALANCE_NOT_FOUND
+      if (!balance.id) {
+        results.push({
+          variant_id: variantId,
+          released: false,
+          reason: "INVENTORY_BALANCE_NOT_FOUND",
+          error: `Balance not found for variant=${variantId}, store=${storeId}`,
+        });
+        threwInconsistency = true;
+        continue;
+      }
+
+      // BLOQUEIO DE INFLAÇÃO: validar reserved_qty >= quantity
+      if (balance.reserved_qty < quantity) {
+        results.push({
+          variant_id: variantId,
+          released: false,
+          reason: "RESERVATION_BALANCE_INCONSISTENT",
+          error: `reserved_qty=${balance.reserved_qty} < quantity=${quantity}`,
+        });
+        threwInconsistency = true;
+        continue;
+      }
+
       const newAvailable = balance.available_qty + quantity;
-      const newReserved = Math.max(0, balance.reserved_qty - quantity);
+      const newReserved = balance.reserved_qty - quantity;
       const newVersion = balance.version + 1;
       const movementId = generateId();
 
-      await db.run(
+      // UPDATE com verificação de versão (conflito concorrente)
+      await runner.run(
         `UPDATE pdv_inventory_balances_v2
          SET available_qty = ?, reserved_qty = ?, version = ?, updated_at = ?
          WHERE id = ? AND version = ?`,
         [newAvailable, newReserved, newVersion, now, balance.id, balance.version]
       );
 
-      await db.run(
+      // Verificar que a versão foi atualizada (detectar conflito)
+      const updated = await runner.get(
+        `SELECT id, version FROM pdv_inventory_balances_v2 WHERE id = ? AND version = ?`,
+        [balance.id, newVersion]
+      );
+      if (!updated) {
+        results.push({
+          variant_id: variantId,
+          released: false,
+          reason: "VERSION_CONFLICT",
+          error: `Balance version changed concurrently for variant=${variantId}, store=${storeId}`,
+        });
+        threwInconsistency = true;
+        continue;
+      }
+
+      await runner.run(
         `INSERT INTO pdv_inventory_movements_v2
          (id, variant_id, store_id, movement_type, quantity_delta, quantity_before,
           quantity_after, origin, reference_type, reference_id, idempotency_key,
@@ -234,25 +328,50 @@ function createInventoryService(options = {}) {
           movementId,
           variantId,
           storeId,
-          quantity,
+          quantity, // quantity_delta > 0 (positivo)
           balance.available_qty,
           newAvailable,
           "app_order_shop",
           orderId,
-          generateId(),
+          releaseKey,
           0,
           "system",
-          JSON.stringify({ order_id: orderId, reason: "release" }),
+          JSON.stringify({ order_id: orderId, reason: "release", hold_total: holdTotal }),
           now,
         ]
       );
+
+      results.push({ variant_id: variantId, released: true, movement_id: movementId });
     }
 
-    return { released: true, order_id: orderId, store_id: storeId };
+    // Se houve inconsistência, o caller (sweepExpiredOrders) deve fazer rollback
+    if (threwInconsistency) {
+      return {
+        released: false,
+        reason: "INCONSISTENT_RELEASE",
+        order_id: orderId,
+        store_id: storeId,
+        results,
+        has_inconsistency: true,
+      };
+    }
+
+    const anyReleased = results.some(r => r.released);
+    const allIdempotent = results.length > 0 && results.every(r => r.idempotent === true);
+    return {
+      released: anyReleased,
+      idempotent: allIdempotent,
+      reason: allIdempotent ? 'ALREADY_RELEASED' : undefined,
+      order_id: orderId,
+      store_id: storeId,
+      results,
+      has_inconsistency: false,
+    };
   }
 
   return {
-    getBalance,
+    getBalance: (variantId, storeId) => getBalance(null, variantId, storeId),
+    ensureBalance: (variantId, storeId) => ensureBalance(null, variantId, storeId),
     holdReservation,
     releaseReservation,
   };

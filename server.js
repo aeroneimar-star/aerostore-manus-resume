@@ -18673,6 +18673,15 @@ try {
     recordAudit: recordAuditEvent,
   });
   app.use("/app/v1", createAppOrderRouter({ express: require("express"), orderService: appOrderService }));
+
+  // Expiry Scheduler — default OFF, só ativa com ORDER_EXPIRY_ENABLED=true
+  const { startExpiryScheduler } = require("./modules/customers/app-orders/orderExpiryScheduler");
+  const expiryScheduler = startExpiryScheduler({
+    db: { run, get, all },
+    inventoryService,
+  });
+  process.on("SIGTERM", () => expiryScheduler.stop());
+  process.on("SIGINT", () => expiryScheduler.stop());
 } catch (orderInitErr) {
   console.error("[server] Falha ao inicializar Order Service:", orderInitErr.message);
 }

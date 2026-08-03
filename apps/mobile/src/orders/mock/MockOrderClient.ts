@@ -101,6 +101,7 @@ export class MockOrderClient implements OrderClient {
       created_at: iso(),
       updated_at: iso(),
       expires_at: iso(-15 * 60 * 1000),
+      expired_at: null,
       failed_reason: null,
     };
 

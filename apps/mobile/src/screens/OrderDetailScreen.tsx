@@ -35,6 +35,7 @@ const EVENT_LABELS: Record<string, string> = {
   PAYMENT_DECLINED: 'Pagamento recusado',
   ORDER_CANCELLED: 'Pedido cancelado',
   ORDER_FAILED: 'Pedido falhou',
+  ORDER_EXPIRED: 'Reserva expirada',
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -181,7 +182,7 @@ export function OrderDetailScreen() {
         {items.map((item, i) => (
           <View key={item.id} style={[styles.itemRow, i > 0 && { borderTopColor: tokens.divider, borderTopWidth: 1, paddingTop: 8, marginTop: 8 }]}>
             <View style={styles.itemInfo}>
-              <Text style={[styles.itemName, { color: tokens.textPrimary }]}>Produto (ID: {item.variant_id})</Text>
+              <Text style={[styles.itemName, { color: tokens.textPrimary }]}>{item.product_name || `Produto (ID: ${item.variant_id})`}</Text>
               <Text style={[styles.itemQty, { color: tokens.textMuted }]}>{item.quantity}x {formatBrl(item.unit_price_cents)}</Text>
             </View>
             <Text style={[styles.itemTotal, { color: tokens.textPrimary }]}>{formatBrl(item.line_total_cents)}</Text>
@@ -224,6 +225,30 @@ export function OrderDetailScreen() {
           ))}
         </View>
       )}
+
+      {/* Expiry info — bloco único, sem duplicação */}
+      {order.status === 'EXPIRED' ? (
+        <View style={[styles.expiredBanner, { backgroundColor: tokens.errorSurface }]}>
+          <Text style={[styles.expiredBannerTitle, { color: tokens.error }]}>Reserva expirada</Text>
+          <Text style={[styles.expiredBannerBody, { color: tokens.error }]}>
+            O prazo da reserva venceu e o estoque foi liberado.
+          </Text>
+          <Text style={[styles.expiredBannerMeta, { color: tokens.textMuted }]}>
+            Reserva válida até {formatDateTime(order.expires_at || '')}
+          </Text>
+          {order.expired_at ? (
+            <Text style={[styles.expiredBannerMeta, { color: tokens.textMuted }]}>
+              Expiração processada em {formatDateTime(order.expired_at)}
+            </Text>
+          ) : null}
+        </View>
+      ) : order.expires_at ? (
+        <View style={[styles.metaRow, { marginTop: 12 }]}>
+          <Text style={[styles.metaText, { color: tokens.textMuted }]}>
+            Reserva válida até {formatDateTime(order.expires_at)}
+          </Text>
+        </View>
+      ) : null}
 
       {/* Created/Updated */}
       <View style={styles.metaRow}>
@@ -288,6 +313,10 @@ const styles = StyleSheet.create({
   eventTime: { fontSize: 12 },
   metaRow: { marginBottom: 12 },
   metaText: { fontSize: 12 },
+  expiredBanner: { padding: 16, borderRadius: 12, marginBottom: 16, marginTop: 12 },
+  expiredBannerTitle: { fontSize: 16, fontWeight: '700', marginBottom: 4 },
+  expiredBannerBody: { fontSize: 13, fontWeight: '500', marginBottom: 8 },
+  expiredBannerMeta: { fontSize: 12, marginBottom: 4 },
   failedCard: { padding: 12, borderRadius: 8, marginBottom: 16 },
   failedText: { fontSize: 13, fontWeight: '500' },
   backButton: { paddingVertical: 12, borderWidth: 1, borderRadius: 8, alignItems: 'center', marginTop: 8 },

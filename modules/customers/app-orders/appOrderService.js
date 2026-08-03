@@ -59,6 +59,14 @@ function createAppOrderService(options = {}) {
 
   const catalogService = options.catalogService || null;
   const recordAudit = options.recordAudit || (async () => null);
+
+  // TTL configurável: inteiro positivo, min 1, max 1440
+  const ttlRaw = process.env.ORDER_RESERVATION_TTL_MINUTES;
+  const ttlMinutes = ttlRaw ? parseInt(ttlRaw, 10) : 30;
+  if (isNaN(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 1440) {
+    throw new Error(`ORDER_RESERVATION_TTL_MINUTES invalid: ${ttlRaw}. Expected integer 1-1440`);
+  }
+
   let orderCounter = 1;
 
   function audit(action, metadata = {}, entityId = "") {
@@ -345,7 +353,7 @@ function createAppOrderService(options = {}) {
           1,
           now,
           now,
-          iso(new Date(Date.now() + 30 * 60 * 1000)), // Expira em 30 min
+          iso(new Date(Date.now() + ttlMinutes * 60 * 1000)), // TTL configurável, padrão 30 min
         ]
       );
 
