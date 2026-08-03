@@ -450,21 +450,36 @@ describe('Orders Expiry E2E — 18 testes obrigatórios', () => {
   });
 
   // ============================================================
-  // T16. Pedido com reservation_ids mas sem movimentos HOLD deve ser recusado
+  // T16. Per-reservation_id: reserva-A tem HOLD, reserva-B não tem → recusado
   // ============================================================
-  it('T16: pedido com reservation_ids mas zero movimentos HOLD deve ser recusado', async () => {
+  it('T16: per-reservation_id — reserva-A tem HOLD mas reserva-B não tem → recusado', async () => {
     const orderId = 'order-t16';
     const past = futureIso(31);
-    await runSql(db, `INSERT OR REPLACE INTO app_carts (id, account_id, status, currency, item_count, subtotal_cents, version, created_at, updated_at) VALUES ('cart-t16', 'account-1', 'CONVERTED', 'BRL', 1, 1000, 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
-    await runSql(db, `INSERT OR REPLACE INTO app_cart_items (id, cart_id, product_id, variant_id, quantity, unit_price_cents, effective_unit_price_cents, line_total_cents, product_snapshot_json, availability_status, version, created_at, updated_at) VALUES ('item-t16', 'cart-t16', 'product-1', 'variant-1', 1, 1000, 1000, 1000, '{"name":"Produto 1"}', 'in_stock', 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
+
+    // Criar 2 variantes
+    await runSql(db, `INSERT OR REPLACE INTO pdv_product_variants (id, product_id, sku, name, created_at) VALUES ('variant-2', 'product-1', 'SKU-002', 'Produto 2', '${NOW_ISO}')`);
+    await runSql(db, `INSERT OR REPLACE INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at) VALUES ('balance-2', 'variant-2', 'vila', 10, 0, 1, '${NOW_ISO}')`);
+
+    // Reserva A: criar HOLD real via holdReservation
+    const holdA = await inventoryService.holdReservation(orderId, [{ variant_id: 'variant-1', quantity: 1 }], 'vila', 'expiry-t16-a');
+
+    // Reserva B: NÃO criar HOLD — apenas usar um fake reservation_id
+    const fakeReservationId = 'fake-reservation-b-t16';
+
+    await runSql(db, `INSERT OR REPLACE INTO app_carts (id, account_id, status, currency, item_count, subtotal_cents, version, created_at, updated_at) VALUES ('cart-t16', 'account-1', 'CONVERTED', 'BRL', 2, 2000, 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
     const snapshotT16 = JSON.stringify({ store_origin_id: 'vila', fulfillment_type: 'DELIVERY' });
-    await runSql(db, `INSERT OR REPLACE INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-T16', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 1000, 1000, 'READY_FOR_PAYMENT', 't16-key', ?, '["fake-reservation-id"]', 1, ?, ?, ?)`, [orderId, snapshotT16, NOW_ISO, NOW_ISO, past]);
+    await runSql(db, `INSERT OR REPLACE INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-T16', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 1000, 1000, 'READY_FOR_PAYMENT', 't16-key', ?, ?, 1, ?, ?, ?)`, [orderId, snapshotT16, JSON.stringify([holdA.reservation_id, fakeReservationId]), NOW_ISO, NOW_ISO, past]);
+
+    // Salvar estado original dos saldos
+    const balanceOrig = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
 
     const sweepResult = await sweepExpiredOrders({ db, inventoryService, now: NOW });
-    // Deve registrar erro porque reservation_ids existem mas nenhum HOLD foi encontrado
+
+    // Deve registrar exatamente 1 erro (reserva-B sem HOLD)
     assert.strictEqual(sweepResult.errors, 1);
-    assert.ok(sweepResult.errors_details.length > 0);
+    assert.strictEqual(sweepResult.errors_details.length, 1);
     assert.strictEqual(sweepResult.errors_details[0].error, 'RESERVATION_MOVEMENTS_NOT_FOUND');
+    assert.strictEqual(sweepResult.errors_details[0].reservation_id, fakeReservationId);
 
     // Pedido deve permanecer READY_FOR_PAYMENT (rollback)
     const order = await getSql(db, `SELECT id, status, expired_at FROM app_orders WHERE id = ?`, [orderId]);
@@ -475,9 +490,15 @@ describe('Orders Expiry E2E — 18 testes obrigatórios', () => {
     const releases = await allSql(db, `SELECT id FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'`, [orderId]);
     assert.strictEqual(releases.length, 0);
 
-    // Nenhum evento ORDER_EXPIRED deve ter sido gravado
+    // Nenhum evento ORDER_EXPIRED
     const events = await allSql(db, `SELECT id FROM app_order_events WHERE order_id = ? AND event_type = 'ORDER_EXPIRED'`, [orderId]);
     assert.strictEqual(events.length, 0);
+
+    // Saldo de variant-1 deve estar inalterado (HOLD de reserva-A ainda válido)
+    const balanceAfter = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    assert.strictEqual(balanceAfter.available_qty, balanceOrig.available_qty);
+    assert.strictEqual(balanceAfter.reserved_qty, balanceOrig.reserved_qty);
+    assert.strictEqual(balanceAfter.version, balanceOrig.version);
   });
 
   // ============================================================
@@ -558,9 +579,9 @@ describe('Orders Expiry E2E — 18 testes obrigatórios', () => {
   });
 
   // ============================================================
-  // T20. Bloqueio de inflação: reserved_qty insuficiente deve recusar release
+  // T20. Validação estrita: release_quantity_total < hold_quantity_total → rollback
   // ============================================================
-  it('T20: bloqueio de inflação — reserved_qty < quantity deve recusar release', async () => {
+  it('T20: validação estrita — reserved_qty < quantity sem RELEASE pré-existente → rollback', async () => {
     const orderId = 'order-t20';
     const past = futureIso(31);
     const snapshot = JSON.stringify({ store_origin_id: 'vila', fulfillment_type: 'DELIVERY' });
@@ -572,25 +593,38 @@ describe('Orders Expiry E2E — 18 testes obrigatórios', () => {
     await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-T20', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 1000, 1000, 'READY_FOR_PAYMENT', 't20-key', ?, ?, 1, ?, ?, ?)`, [orderId, snapshot, JSON.stringify([holdResult.reservation_id]), NOW_ISO, NOW_ISO, past]);
 
     // Corromper: resetar reserved_qty para 0 SEM inserir chave RELEASE (sem idempotência)
+    // Isso causa reserved_qty(0) < quantity(1) no releaseReservation
     await runSql(db, `UPDATE pdv_inventory_balances_v2 SET reserved_qty = 0 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
 
-    // Salvar estado original
-    const balanceBefore = await getSql(db, `SELECT available_qty, reserved_qty FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    // Salvar estado original após corrupção
+    const balanceBefore = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
 
     const sweepResult = await sweepExpiredOrders({ db, inventoryService, now: NOW });
 
-    // Sweep deve registrar erro (inconsistência)
-    assert.ok(sweepResult.errors >= 0, 'Sweep deve tolerar erros');
+    // EXIGIR EXATAMENTE:
+    assert.strictEqual(sweepResult.errors, 1, 'Exatamente 1 erro');
+    assert.strictEqual(sweepResult.errors_details[0].error, 'RELEASE_INCONSISTENCY', 'Erro deve ser RELEASE_INCONSISTENCY');
+    assert.strictEqual(sweepResult.expired, 0, 'Zero pedidos expirados');
+    assert.strictEqual(sweepResult.released, 0, 'Zero pedidos liberados');
 
-    // Pedido deve permanecer READY_FOR_PAYMENT (rollback)
+    // Pedido deve permanecer READY_FOR_PAYMENT
     const order = await getSql(db, `SELECT status, expired_at FROM app_orders WHERE id = ?`, [orderId]);
     assert.strictEqual(order.status, 'READY_FOR_PAYMENT');
     assert.strictEqual(order.expired_at, null);
 
-    // Estoque não deve ter sido inflado
-    const balanceAfter = await getSql(db, `SELECT available_qty, reserved_qty FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
-    assert.strictEqual(balanceAfter.available_qty, balanceBefore.available_qty, 'available_qty não deve mudar');
-    assert.strictEqual(balanceAfter.reserved_qty, balanceBefore.reserved_qty, 'reserved_qty não deve mudar');
+    // Saldo exatamente inalterado
+    const balanceAfter = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    assert.strictEqual(balanceAfter.available_qty, balanceBefore.available_qty, 'available_qty exatamente inalterado');
+    assert.strictEqual(balanceAfter.reserved_qty, balanceBefore.reserved_qty, 'reserved_qty exatamente inalterado');
+    assert.strictEqual(balanceAfter.version, balanceBefore.version, 'version exatamente inalterado');
+
+    // Zero RELEASE
+    const releases = await allSql(db, `SELECT id FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'`, [orderId]);
+    assert.strictEqual(releases.length, 0, 'Zero movimentos RELEASE');
+
+    // Zero ORDER_EXPIRED
+    const events = await allSql(db, `SELECT id FROM app_order_events WHERE order_id = ? AND event_type = 'ORDER_EXPIRED'`, [orderId]);
+    assert.strictEqual(events.length, 0, 'Zero eventos ORDER_EXPIRED');
   });
 
   // ============================================================
@@ -621,104 +655,153 @@ describe('Orders Expiry E2E — 18 testes obrigatórios', () => {
   });
 
   // ============================================================
-  // T22. Fault injection A: erro no UPDATE de saldo (corromper balance antes do sweep)
+  // T22A. Fault injection A: erro no SEGUNDO UPDATE de saldo (2 variantes)
   // ============================================================
-  it('T22A: fault injection — erro no UPDATE de saldo deve fazer rollback integral', async () => {
+  it('T22A: fault injection — erro no segundo UPDATE de saldo deve fazer rollback integral', async () => {
     const orderId = 'order-t22a';
     const past = futureIso(31);
     const snapshot = JSON.stringify({ store_origin_id: 'vila', fulfillment_type: 'DELIVERY' });
 
-    await runSql(db, `INSERT INTO app_carts (id, account_id, status, currency, item_count, subtotal_cents, version, created_at, updated_at) VALUES ('cart-t22a', 'account-1', 'CONVERTED', 'BRL', 1, 1000, 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
-    await runSql(db, `INSERT INTO app_cart_items (id, cart_id, product_id, variant_id, quantity, unit_price_cents, effective_unit_price_cents, line_total_cents, product_snapshot_json, availability_status, version, created_at, updated_at) VALUES ('item-t22a', 'cart-t22a', 'product-1', 'variant-1', 1, 1000, 1000, 1000, '{"name":"Produto 1"}', 'in_stock', 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
+    // Criar segunda variante
+    await runSql(db, `INSERT OR REPLACE INTO pdv_product_variants (id, product_id, sku, name, created_at) VALUES ('variant-2', 'product-1', 'SKU-002', 'Produto 2', '${NOW_ISO}')`);
+    await runSql(db, `INSERT OR REPLACE INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at) VALUES ('balance-2', 'variant-2', 'vila', 8, 0, 1, '${NOW_ISO}')`);
 
-    const holdResult = await inventoryService.holdReservation(orderId, [{ variant_id: 'variant-1', quantity: 1 }], 'vila', 'expiry-t22a');
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-T22A', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 1000, 1000, 'READY_FOR_PAYMENT', 't22a-key', ?, ?, 1, ?, ?, ?)`, [orderId, snapshot, JSON.stringify([holdResult.reservation_id]), NOW_ISO, NOW_ISO, past]);
+    await runSql(db, `INSERT INTO app_carts (id, account_id, status, currency, item_count, subtotal_cents, version, created_at, updated_at) VALUES ('cart-t22a', 'account-1', 'CONVERTED', 'BRL', 2, 2000, 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
+    await runSql(db, `INSERT INTO app_cart_items (id, cart_id, product_id, variant_id, quantity, unit_price_cents, effective_unit_price_cents, line_total_cents, product_snapshot_json, availability_status, version, created_at, updated_at) VALUES ('item-t22a-1', 'cart-t22a', 'product-1', 'variant-1', 1, 1000, 1000, 1000, '{"name":"Produto 1"}', 'in_stock', 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
+    await runSql(db, `INSERT INTO app_cart_items (id, cart_id, product_id, variant_id, quantity, unit_price_cents, effective_unit_price_cents, line_total_cents, product_snapshot_json, availability_status, version, created_at, updated_at) VALUES ('item-t22a-2', 'cart-t22a', 'product-1', 'variant-2', 1, 1000, 1000, 1000, '{"name":"Produto 2"}', 'in_stock', 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
 
-    // Salvar estado original
-    const balanceOrig = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    // Reservar 2 variantes
+    const hold1 = await inventoryService.holdReservation(orderId, [{ variant_id: 'variant-1', quantity: 1 }], 'vila', 'expiry-t22a-1');
+    const hold2 = await inventoryService.holdReservation(orderId, [{ variant_id: 'variant-2', quantity: 1 }], 'vila', 'expiry-t22a-2');
 
-    // Corromper: remover balance para causar erro no UPDATE
-    await runSql(db, `DELETE FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-T22A', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 2000, 2000, 'READY_FOR_PAYMENT', 't22a-key', ?, ?, 1, ?, ?, ?)`, [orderId, snapshot, JSON.stringify([hold1.reservation_id, hold2.reservation_id]), NOW_ISO, NOW_ISO, past]);
 
-    const sweepResult = await sweepExpiredOrders({ db, inventoryService, now: NOW });
+    // Salvar estado original dos saldos
+    const balanceOrig1 = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    const balanceOrig2 = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-2' AND store_id = 'vila'`);
 
-    // Exigir exatamente:
-    assert.strictEqual(sweepResult.errors, 1, 'Deve haver exatamente 1 erro');
+    // Criar inventoryService com proxy que lança erro no segundo UPDATE de saldo
+    const updateCallCount = { count: 0 };
+    const proxyDb = {
+      run: async (sql, params = []) => {
+        if (sql.trim().startsWith('UPDATE pdv_inventory_balances_v2')) {
+          updateCallCount.count++;
+          if (updateCallCount.count === 2) {
+            throw new Error('TEST_UPDATE_FAILURE');
+          }
+        }
+        return db.run(sql, params);
+      },
+      get: (sql, params = []) => db.get(sql, params),
+      all: (sql, params = []) => db.all(sql, params),
+    };
+    const faultInventory = createInventoryService({ dbApi: proxyDb });
+
+    const sweepResult = await sweepExpiredOrders({ db: proxyDb, inventoryService: faultInventory, now: NOW });
+
+    // EXIGIR EXATAMENTE:
+    assert.strictEqual(sweepResult.errors, 1, 'Exatamente 1 erro');
+    assert.strictEqual(sweepResult.expired, 0, 'Zero pedidos expirados');
+    assert.strictEqual(sweepResult.released, 0, 'Zero pedidos liberados');
+
     const order = await getSql(db, `SELECT status, expired_at FROM app_orders WHERE id = ?`, [orderId]);
-    assert.strictEqual(order.status, 'READY_FOR_PAYMENT', 'Status deve ser READY_FOR_PAYMENT');
-    assert.strictEqual(order.expired_at, null, 'expired_at deve ser null');
+    assert.strictEqual(order.status, 'READY_FOR_PAYMENT');
+    assert.strictEqual(order.expired_at, null);
 
-    const balanceAfter = await getSql(db, `SELECT available_qty, reserved_qty FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
-    // Balance foi deletado, após rollback pode não existir ou estar restaurado
-    // O importante é que não houve inflação
-    if (balanceAfter) {
-      assert.ok(balanceAfter.available_qty <= 10, 'available_qty não deve inflar');
-    }
+    // Ambos saldos inalterados
+    const balanceAfter1 = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    const balanceAfter2 = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-2' AND store_id = 'vila'`);
+    assert.strictEqual(balanceAfter1.available_qty, balanceOrig1.available_qty);
+    assert.strictEqual(balanceAfter1.reserved_qty, balanceOrig1.reserved_qty);
+    assert.strictEqual(balanceAfter1.version, balanceOrig1.version);
+    assert.strictEqual(balanceAfter2.available_qty, balanceOrig2.available_qty);
+    assert.strictEqual(balanceAfter2.reserved_qty, balanceOrig2.reserved_qty);
+    assert.strictEqual(balanceAfter2.version, balanceOrig2.version);
 
+    // Zero RELEASE
     const releases = await allSql(db, `SELECT id FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'`, [orderId]);
-    assert.strictEqual(releases.length, 0, '0 movimentos RELEASE');
+    assert.strictEqual(releases.length, 0);
 
+    // Zero ORDER_EXPIRED
     const events = await allSql(db, `SELECT id FROM app_order_events WHERE order_id = ? AND event_type = 'ORDER_EXPIRED'`, [orderId]);
-    assert.strictEqual(events.length, 0, '0 eventos ORDER_EXPIRED');
-
-    // Restaurar balance para outros testes
-    await runSql(db, `INSERT OR REPLACE INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at) VALUES (?, 'variant-1', 'vila', ?, ?, ?, ?)`, [balanceOrig.id, balanceOrig.available_qty, balanceOrig.reserved_qty, balanceOrig.version, NOW_ISO]);
+    assert.strictEqual(events.length, 0);
   });
 
   // ============================================================
-  // T22B. Fault injection B: erro no INSERT RELEASE (UNIQUE constraint)
+  // T22B. Fault injection B: erro no SEGUNDO INSERT RELEASE (2 variantes)
   // ============================================================
-  it('T22B: fault injection — erro no INSERT RELEASE via UNIQUE constraint deve fazer rollback', async () => {
+  it('T22B: fault injection — erro no segundo INSERT RELEASE deve fazer rollback', async () => {
     const orderId = 'order-t22b';
     const past = futureIso(31);
     const snapshot = JSON.stringify({ store_origin_id: 'vila', fulfillment_type: 'DELIVERY' });
 
-    await runSql(db, `INSERT INTO app_carts (id, account_id, status, currency, item_count, subtotal_cents, version, created_at, updated_at) VALUES ('cart-t22b', 'account-1', 'CONVERTED', 'BRL', 1, 1000, 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
-    await runSql(db, `INSERT INTO app_cart_items (id, cart_id, product_id, variant_id, quantity, unit_price_cents, effective_unit_price_cents, line_total_cents, product_snapshot_json, availability_status, version, created_at, updated_at) VALUES ('item-t22b', 'cart-t22b', 'product-1', 'variant-1', 1, 1000, 1000, 1000, '{"name":"Produto 1"}', 'in_stock', 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
+    // Criar segunda variante
+    await runSql(db, `INSERT OR REPLACE INTO pdv_product_variants (id, product_id, sku, name, created_at) VALUES ('variant-3', 'product-1', 'SKU-003', 'Produto 3', '${NOW_ISO}')`);
+    await runSql(db, `INSERT OR REPLACE INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at) VALUES ('balance-3', 'variant-3', 'vila', 8, 0, 1, '${NOW_ISO}')`);
 
-    const holdResult = await inventoryService.holdReservation(orderId, [{ variant_id: 'variant-1', quantity: 1 }], 'vila', 'expiry-t22b');
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-T22B', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 1000, 1000, 'READY_FOR_PAYMENT', 't22b-key', ?, ?, 1, ?, ?, ?)`, [orderId, snapshot, JSON.stringify([holdResult.reservation_id]), NOW_ISO, NOW_ISO, past]);
+    await runSql(db, `INSERT INTO app_carts (id, account_id, status, currency, item_count, subtotal_cents, version, created_at, updated_at) VALUES ('cart-t22b', 'account-1', 'CONVERTED', 'BRL', 2, 2000, 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
+    await runSql(db, `INSERT INTO app_cart_items (id, cart_id, product_id, variant_id, quantity, unit_price_cents, effective_unit_price_cents, line_total_cents, product_snapshot_json, availability_status, version, created_at, updated_at) VALUES ('item-t22b-1', 'cart-t22b', 'product-1', 'variant-1', 1, 1000, 1000, 1000, '{"name":"Produto 1"}', 'in_stock', 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
+    await runSql(db, `INSERT INTO app_cart_items (id, cart_id, product_id, variant_id, quantity, unit_price_cents, effective_unit_price_cents, line_total_cents, product_snapshot_json, availability_status, version, created_at, updated_at) VALUES ('item-t22b-2', 'cart-t22b', 'product-1', 'variant-3', 1, 1000, 1000, 1000, '{"name":"Produto 3"}', 'in_stock', 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
 
-    const balanceOrig = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    // Reservar 2 variantes
+    const hold1 = await inventoryService.holdReservation(orderId, [{ variant_id: 'variant-1', quantity: 1 }], 'vila', 'expiry-t22b-1');
+    const hold2 = await inventoryService.holdReservation(orderId, [{ variant_id: 'variant-3', quantity: 1 }], 'vila', 'expiry-t22b-2');
 
-    // O releaseReservation usa ensureBalance que atualiza o saldo E insere o movimento RELEASE.
-    // Para causar erro real, precisamos que o INSERT RELEASE falhe por UNIQUE constraint.
-    // A idempotency_key do RELEASE é: 'RELEASE::${orderId}::${storeId}::${variant_id}'
-    // Inserir um movimento com a mesma idempotency_key MAS sem a mesma chave UNIQ (variant_id, store_id, idempotency_key)
-    // para que o INSERT falhe.
-    const idempotencyKey = `RELEASE::${orderId}::vila::variant-1`;
-    await runSql(db, `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, origin, reference_type, reference_id, idempotency_key, created_at) VALUES ('pre-release-t22b', 'variant-1', 'vila', 'RESERVATION_RELEASE', 0, 9, 9, 'manual', 'RESERVATION', '${orderId}', '${idempotencyKey}', '${NOW_ISO}')`);
+    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-T22B', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 2000, 2000, 'READY_FOR_PAYMENT', 't22b-key', ?, ?, 1, ?, ?, ?)`, [orderId, snapshot, JSON.stringify([hold1.reservation_id, hold2.reservation_id]), NOW_ISO, NOW_ISO, past]);
 
-    // Salvar estado original do balance
-    const balanceBefore = await getSql(db, `SELECT available_qty, reserved_qty FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    // Salvar estado original
+    const balanceOrig1 = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    const balanceOrig2 = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-3' AND store_id = 'vila'`);
 
-    const sweepResult = await sweepExpiredOrders({ db, inventoryService, now: NOW });
+    // Criar proxy que lança erro no SEGUNDO INSERT de movimento (primeiro RELEASE funciona, segundo falha)
+    const insertCallCount = { count: 0 };
+    const proxyDb = {
+      run: async (sql, params = []) => {
+        if (sql.trim().startsWith('INSERT INTO pdv_inventory_movements_v2')) {
+          insertCallCount.count++;
+          if (insertCallCount.count === 2) {
+            throw new Error('TEST_RELEASE_INSERT_FAILURE');
+          }
+        }
+        return db.run(sql, params);
+      },
+      get: (sql, params = []) => db.get(sql, params),
+      all: (sql, params = []) => db.all(sql, params),
+    };
+    const faultInventory = createInventoryService({ dbApi: proxyDb });
 
-    // O releaseReservation detecta idempotência (chave RELEASE pré-existente) e retorna released=false
-    // O sweep continua e marca EXPIRED porque o release já foi feito por outro processo
-    // O importante é que o estoque não foi inflado (delta=0 no movimento pré-existente)
-    assert.ok(sweepResult.errors === 0 || sweepResult.errors === 1, 'Erros devem ser 0 ou 1');
+    const sweepResult = await sweepExpiredOrders({ db: proxyDb, inventoryService: faultInventory, now: NOW });
+
+    // EXIGIR EXATAMENTE:
+    assert.strictEqual(sweepResult.errors, 1, 'Exatamente 1 erro');
+    assert.strictEqual(sweepResult.expired, 0, 'Zero pedidos expirados');
+    assert.strictEqual(sweepResult.released, 0, 'Zero pedidos liberados');
 
     const order = await getSql(db, `SELECT status, expired_at FROM app_orders WHERE id = ?`, [orderId]);
-    // O pedido pode estar EXPIRED (se release foi idempotente) ou READY_FOR_PAYMENT (se rollback)
+    assert.strictEqual(order.status, 'READY_FOR_PAYMENT');
+    assert.strictEqual(order.expired_at, null);
 
-    const balanceAfter = await getSql(db, `SELECT available_qty, reserved_qty FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
-    // O movimento pré-existente tem delta=0, então não inflou
-    assert.ok(balanceAfter.available_qty <= 10, 'available_qty não deve inflar além de 10');
+    // Ambos saldos inalterados
+    const balanceAfter1 = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    const balanceAfter2 = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-3' AND store_id = 'vila'`);
+    assert.strictEqual(balanceAfter1.available_qty, balanceOrig1.available_qty);
+    assert.strictEqual(balanceAfter1.reserved_qty, balanceOrig1.reserved_qty);
+    assert.strictEqual(balanceAfter2.available_qty, balanceOrig2.available_qty);
+    assert.strictEqual(balanceAfter2.reserved_qty, balanceOrig2.reserved_qty);
 
-    // Verificar que o número de movimentos RELEASE não excedeu 1 (não inflou)
-    const releaseMovements = await allSql(db, `SELECT id, quantity_delta FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'`, [orderId]);
-    const totalReleased = releaseMovements.reduce((sum, m) => sum + Math.abs(m.quantity_delta || 0), 0);
-    assert.ok(totalReleased <= 1, 'Quantidade total liberada não deve exceder 1 (não inflou)');
+    // Zero RELEASE persistido
+    const releases = await allSql(db, `SELECT id FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'`, [orderId]);
+    assert.strictEqual(releases.length, 0);
 
-    // Restaurar balance
-    await runSql(db, `UPDATE pdv_inventory_balances_v2 SET version = ? WHERE variant_id = 'variant-1' AND store_id = 'vila'`, [balanceOrig.version]);
+    // Zero ORDER_EXPIRED
+    const events = await allSql(db, `SELECT id FROM app_order_events WHERE order_id = ? AND event_type = 'ORDER_EXPIRED'`, [orderId]);
+    assert.strictEqual(events.length, 0);
   });
 
   // ============================================================
-  // T22C. Fault injection C: erro no UPDATE app_orders (concorrência externa)
+  // T22C. Fault injection C: erro no UPDATE app_orders
   // ============================================================
-  it('T22C: fault injection — pedido cancelado entre sweep e UPDATE deve manter READY_FOR_PAYMENT', async () => {
+  it('T22C: fault injection — erro no UPDATE app_orders deve fazer rollback integral', async () => {
     const orderId = 'order-t22c';
     const past = futureIso(31);
     const snapshot = JSON.stringify({ store_origin_id: 'vila', fulfillment_type: 'DELIVERY' });
@@ -729,97 +812,231 @@ describe('Orders Expiry E2E — 18 testes obrigatórios', () => {
     const holdResult = await inventoryService.holdReservation(orderId, [{ variant_id: 'variant-1', quantity: 1 }], 'vila', 'expiry-t22c');
     await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-T22C', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 1000, 1000, 'READY_FOR_PAYMENT', 't22c-key', ?, ?, 1, ?, ?, ?)`, [orderId, snapshot, JSON.stringify([holdResult.reservation_id]), NOW_ISO, NOW_ISO, past]);
 
-    const sweepResult = await sweepExpiredOrders({ db, inventoryService, now: NOW });
+    // Salvar estado original
+    const balanceOrig = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
 
-    // Pedido deve estar EXPIRED (sweep bem-sucedido)
-    assert.strictEqual(sweepResult.expired, 1);
-    const order = await getSql(db, `SELECT status, expired_at FROM app_orders WHERE id = ?`, [orderId]);
-    assert.strictEqual(order.status, 'EXPIRED');
-    assert.ok(order.expired_at);
+    // Criar proxy que lança erro no UPDATE de app_orders
+    const proxyDb = {
+      run: async (sql, params = []) => {
+        if (sql.trim().startsWith('UPDATE app_orders')) {
+          throw new Error('TEST_ORDER_UPDATE_FAILURE');
+        }
+        return db.run(sql, params);
+      },
+      get: (sql, params = []) => db.get(sql, params),
+      all: (sql, params = []) => db.all(sql, params),
+    };
+    const faultInventory = createInventoryService({ dbApi: proxyDb });
 
-    // Verificar que estoque foi devolvido
-    const balance = await getSql(db, `SELECT available_qty, reserved_qty FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
-    assert.strictEqual(balance.available_qty, 10, 'available_qty deve ser 10');
-    assert.strictEqual(balance.reserved_qty, 0, 'reserved_qty deve ser 0');
-  });
+    const sweepResult = await sweepExpiredOrders({ db: proxyDb, inventoryService: faultInventory, now: NOW });
 
-  // ============================================================
-  // T22D. Fault injection D: pedido sem reservation_ids deve ser recusado
-  // ============================================================
-  it('T22D: fault injection — pedido com reservation_ids vazio deve ser recusado', async () => {
-    const orderId = 'order-t22d';
-    const past = futureIso(31);
-    const snapshot = JSON.stringify({ store_origin_id: 'vila', fulfillment_type: 'DELIVERY' });
+    // EXIGIR EXATAMENTE:
+    assert.strictEqual(sweepResult.errors, 1, 'Exatamente 1 erro');
+    assert.strictEqual(sweepResult.expired, 0, 'Zero pedidos expirados');
+    assert.strictEqual(sweepResult.released, 0, 'Zero pedidos liberados');
 
-    // Criar pedido com reservation_ids_json = '[]' (array vazio)
-    await runSql(db, `INSERT INTO app_carts (id, account_id, status, currency, item_count, subtotal_cents, version, created_at, updated_at) VALUES ('cart-t22d', 'account-1', 'CONVERTED', 'BRL', 1, 1000, 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
-    await runSql(db, `INSERT INTO app_cart_items (id, cart_id, product_id, variant_id, quantity, unit_price_cents, effective_unit_price_cents, line_total_cents, product_snapshot_json, availability_status, version, created_at, updated_at) VALUES ('item-t22d', 'cart-t22d', 'product-1', 'variant-1', 1, 1000, 1000, 1000, '{"name":"Produto 1"}', 'in_stock', 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
-
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-T22D', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 1000, 1000, 'READY_FOR_PAYMENT', 't22d-key', ?, '[]', 1, ?, ?, ?)`, [orderId, snapshot, NOW_ISO, NOW_ISO, past]);
-
-    // Sweep com reservation_ids vazio deve gerar erro (nenhum HOLD para liberar)
-    const sweepResult = await sweepExpiredOrders({ db, inventoryService, now: NOW });
-
-    // Deve registrar erro porque não há reservas para liberar
-    assert.ok(sweepResult.errors >= 1 || sweepResult.expired === 0, 'Deve haver erro ou zero expirados');
-
-    // Pedido deve permanecer READY_FOR_PAYMENT
     const order = await getSql(db, `SELECT status, expired_at FROM app_orders WHERE id = ?`, [orderId]);
     assert.strictEqual(order.status, 'READY_FOR_PAYMENT');
     assert.strictEqual(order.expired_at, null);
 
-    // Nenhum evento ORDER_EXPIRED
+    // Saldo inalterado
+    const balanceAfter = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    assert.strictEqual(balanceAfter.available_qty, balanceOrig.available_qty);
+    assert.strictEqual(balanceAfter.reserved_qty, balanceOrig.reserved_qty);
+    assert.strictEqual(balanceAfter.version, balanceOrig.version);
+
+    // Zero RELEASE
+    const releases = await allSql(db, `SELECT id FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'`, [orderId]);
+    assert.strictEqual(releases.length, 0);
+
+    // Zero ORDER_EXPIRED
     const events = await allSql(db, `SELECT id FROM app_order_events WHERE order_id = ? AND event_type = 'ORDER_EXPIRED'`, [orderId]);
-    assert.strictEqual(events.length, 0, '0 eventos ORDER_EXPIRED');
+    assert.strictEqual(events.length, 0);
   });
 
   // ============================================================
-  // T23. Concorrência: sweep idempotente (double-sweep)
+  // T22D. Fault injection D: erro no INSERT app_order_events
   // ============================================================
-  it('T23: concorrência — sweep duplo deve ser idempotente (apenas 1 expiração)', async () => {
+  it('T22D: fault injection — erro no INSERT events deve fazer rollback integral', async () => {
+    const orderId = 'order-t22d';
     const past = futureIso(31);
+    const snapshot = JSON.stringify({ store_origin_id: 'vila', fulfillment_type: 'DELIVERY' });
 
-    await seedCart('account-1');
-    const result = await orderService.createOrder('account-1', {
-      fulfillment_type: 'DELIVERY',
-      address_id: 'addr-1',
-      idempotency_key: 'expiry-t23',
-    });
-    const orderId = result.data.id;
-    await runSql(db, `UPDATE app_orders SET expires_at = ? WHERE id = ?`, [past, orderId]);
+    await runSql(db, `INSERT INTO app_carts (id, account_id, status, currency, item_count, subtotal_cents, version, created_at, updated_at) VALUES ('cart-t22d', 'account-1', 'CONVERTED', 'BRL', 1, 1000, 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
+    await runSql(db, `INSERT INTO app_cart_items (id, cart_id, product_id, variant_id, quantity, unit_price_cents, effective_unit_price_cents, line_total_cents, product_snapshot_json, availability_status, version, created_at, updated_at) VALUES ('item-t22d', 'cart-t22d', 'product-1', 'variant-1', 1, 1000, 1000, 1000, '{"name":"Produto 1"}', 'in_stock', 1, ?, ?)`, [NOW_ISO, NOW_ISO]);
 
-    const balanceBefore = await getSql(db, `SELECT available_qty, reserved_qty FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    const holdResult = await inventoryService.holdReservation(orderId, [{ variant_id: 'variant-1', quantity: 1 }], 'vila', 'expiry-t22d');
+    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-T22D', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 1000, 1000, 'READY_FOR_PAYMENT', 't22d-key', ?, ?, 1, ?, ?, ?)`, [orderId, snapshot, JSON.stringify([holdResult.reservation_id]), NOW_ISO, NOW_ISO, past]);
 
-    // Sweep 1 — deve expirar
-    const sweep1 = await sweepExpiredOrders({ db, inventoryService, now: NOW });
-    assert.strictEqual(sweep1.expired, 1, 'Primeiro sweep deve expirar 1 pedido');
-    assert.strictEqual(sweep1.errors, 0, 'Sem erros no primeiro sweep');
+    // Salvar estado original
+    const balanceOrig = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
 
-    // Verificar estado após sweep 1
-    const order1 = await getSql(db, `SELECT status, expired_at FROM app_orders WHERE id = ?`, [orderId]);
-    assert.strictEqual(order1.status, 'EXPIRED');
-    assert.ok(order1.expired_at);
+    // Criar proxy que lança erro no INSERT INTO app_order_events
+    const proxyDb = {
+      run: async (sql, params = []) => {
+        if (sql.trim().startsWith('INSERT INTO app_order_events')) {
+          throw new Error('TEST_EVENTS_INSERT_FAILURE');
+        }
+        return db.run(sql, params);
+      },
+      get: (sql, params = []) => db.get(sql, params),
+      all: (sql, params = []) => db.all(sql, params),
+    };
+    const faultInventory = createInventoryService({ dbApi: proxyDb });
 
-    const balanceAfter1 = await getSql(db, `SELECT available_qty, reserved_qty FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
-    assert.strictEqual(balanceAfter1.reserved_qty, 0, 'reserved_qty deve ser 0');
+    const sweepResult = await sweepExpiredOrders({ db: proxyDb, inventoryService: faultInventory, now: NOW });
 
-    // Sweep 2 — idempotente, não deve expirar novamente
-    const sweep2 = await sweepExpiredOrders({ db, inventoryService, now: NOW });
-    assert.strictEqual(sweep2.expired, 0, 'Segundo sweep deve expirar 0 pedidos');
-    assert.strictEqual(sweep2.errors, 0, 'Sem erros no segundo sweep');
+    // EXIGIR EXATAMENTE:
+    assert.strictEqual(sweepResult.errors, 1, 'Exatamente 1 erro');
+    assert.strictEqual(sweepResult.expired, 0, 'Zero pedidos expirados');
+    assert.strictEqual(sweepResult.released, 0, 'Zero pedidos liberados');
 
-    // Verificar que estoque não foi inflado
-    const balanceAfter2 = await getSql(db, `SELECT available_qty, reserved_qty FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
-    assert.strictEqual(balanceAfter2.available_qty, balanceAfter1.available_qty, 'available_qty não deve mudar no segundo sweep');
-    assert.strictEqual(balanceAfter2.reserved_qty, 0, 'reserved_qty deve permanecer 0');
+    const order = await getSql(db, `SELECT status, expired_at FROM app_orders WHERE id = ?`, [orderId]);
+    assert.strictEqual(order.status, 'READY_FOR_PAYMENT');
+    assert.strictEqual(order.expired_at, null);
 
-    // Verificar que existe exatamente 1 movimento RELEASE
+    // Saldo inalterado
+    const balanceAfter = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    assert.strictEqual(balanceAfter.available_qty, balanceOrig.available_qty);
+    assert.strictEqual(balanceAfter.reserved_qty, balanceOrig.reserved_qty);
+    assert.strictEqual(balanceAfter.version, balanceOrig.version);
+
+    // Zero RELEASE
     const releases = await allSql(db, `SELECT id FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'`, [orderId]);
-    assert.strictEqual(releases.length, 1, 'Exatamente 1 movimento RELEASE');
+    assert.strictEqual(releases.length, 0);
 
-    // Verificar que existe exatamente 1 evento ORDER_EXPIRED
+    // Zero ORDER_EXPIRED
     const events = await allSql(db, `SELECT id FROM app_order_events WHERE order_id = ? AND event_type = 'ORDER_EXPIRED'`, [orderId]);
+    assert.strictEqual(events.length, 0);
+  });
+
+  // ============================================================
+  // T23. Concorrência real: 2 conexões SQLite em arquivo temporário executam sweep simultaneamente
+  // ============================================================
+  it('T23: concorrência real — 2 conexões SQLite em arquivo temporário, sweep simultâneo', async () => {
+    // Importar sqlite3 para criar conexões reais
+    const sqlite3 = require('sqlite3');
+    const path = require('path');
+    const os = require('os');
+    const fs = require('fs');
+
+    // Criar arquivo SQLite temporário
+    const tmpDir = os.tmpdir();
+    const dbFile = path.join(tmpDir, `concurrency-test-${Date.now()}.db`);
+
+    // Criar conexão A (sweep executor)
+    const connectionA = new sqlite3.Database(dbFile);
+    const dbA = {
+      run: (sql, params = []) => new Promise((resolve, reject) => {
+        connectionA.run(sql, params, function(error) { error ? reject(error) : resolve({ changes: this.changes, lastID: this.lastID }); });
+      }),
+      get: (sql, params = []) => new Promise((resolve, reject) => {
+        connectionA.get(sql, params, (error, row) => error ? reject(error) : resolve(row));
+      }),
+      all: (sql, params = []) => new Promise((resolve, reject) => {
+        connectionA.all(sql, params, (error, rows) => error ? reject(error) : resolve(rows));
+      }),
+      close: () => new Promise((resolve, reject) => {
+        connectionA.close((error) => error ? reject(error) : resolve());
+      }),
+    };
+
+    // Criar conexão B (sweep concorrente)
+    const connectionB = new sqlite3.Database(dbFile);
+    const dbB = {
+      run: (sql, params = []) => new Promise((resolve, reject) => {
+        connectionB.run(sql, params, function(error) { error ? reject(error) : resolve({ changes: this.changes, lastID: this.lastID }); });
+      }),
+      get: (sql, params = []) => new Promise((resolve, reject) => {
+        connectionB.get(sql, params, (error, row) => error ? reject(error) : resolve(row));
+      }),
+      all: (sql, params = []) => new Promise((resolve, reject) => {
+        connectionB.all(sql, params, (error, rows) => error ? reject(error) : resolve(rows));
+      }),
+      close: () => new Promise((resolve, reject) => {
+        connectionB.close((error) => error ? reject(error) : resolve());
+      }),
+    };
+
+    const NOW_ISO_CONC = '2026-08-03T00:00:00.000Z';
+
+    // Criar schema mínimo no dbA
+    await dbA.run(`CREATE TABLE IF NOT EXISTS customer_master_records(id TEXT PRIMARY KEY, phone_lookup_hash TEXT, phone_masked TEXT, email_lookup_hash TEXT, email_masked TEXT, version INTEGER NOT NULL DEFAULT 1, updated_at TEXT)`);
+    await dbA.run(`CREATE TABLE IF NOT EXISTS customer_identity_conflict_participants(id TEXT PRIMARY KEY, conflict_id TEXT, participant_type TEXT, participant_id TEXT)`);
+    await dbA.run(`CREATE TABLE IF NOT EXISTS customer_identity_cases(id TEXT PRIMARY KEY, blocking INTEGER)`);
+    await dbA.run(`CREATE TABLE IF NOT EXISTS customer_identity_case_conflicts(case_id TEXT, conflict_id TEXT)`);
+
+    // Criar tabela app_customer_accounts antes dos schemas (FK reference)
+    await dbA.run(`CREATE TABLE IF NOT EXISTS app_customer_accounts(id TEXT PRIMARY KEY, phone_lookup_hash TEXT, phone_masked TEXT, email_lookup_hash TEXT, email_masked TEXT, account_status TEXT, access_status TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT, updated_at TEXT)`);
+    await dbA.run(`INSERT INTO app_customer_accounts(id, phone_lookup_hash, phone_masked, email_lookup_hash, email_masked, account_status, access_status, version, created_at, updated_at) VALUES ('account-1', 'hash-1', '***', '', '', 'ACTIVE', 'APPROVED', 1, ?, ?)`, [NOW_ISO_CONC, NOW_ISO_CONC]);
+
+    await applyAppCustomerAccessSchema(dbA);
+    await applyAppSessionSchema(dbA);
+    await applyAppAddressSchema(dbA);
+    await applyAppCartSchema(dbA);
+    await applyAppFulfillmentSchema(dbA);
+    await applyAppOrderSchema(dbA);
+    await applyAppOrderSchemaV2(dbA);
+
+    // Tabelas PDV
+    await dbA.run(`CREATE TABLE IF NOT EXISTS pdv_product_variants (id TEXT PRIMARY KEY, product_id TEXT NOT NULL, sku TEXT NOT NULL, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT)`);
+    await dbA.run(`CREATE TABLE IF NOT EXISTS pdv_inventory_balances_v2 (id TEXT PRIMARY KEY, variant_id TEXT NOT NULL, store_id TEXT NOT NULL, available_qty INTEGER NOT NULL DEFAULT 0, reserved_qty INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1, updated_at TEXT, UNIQUE(variant_id, store_id))`);
+    await dbA.run(`CREATE TABLE IF NOT EXISTS pdv_inventory_movements_v2 (id TEXT PRIMARY KEY, variant_id TEXT NOT NULL, store_id TEXT NOT NULL, movement_type TEXT NOT NULL, quantity_delta INTEGER NOT NULL, quantity_before INTEGER NOT NULL DEFAULT 0, quantity_after INTEGER NOT NULL DEFAULT 0, origin TEXT, reference_type TEXT, reference_id TEXT, idempotency_key TEXT, actor_user_id TEXT, actor_name TEXT, metadata_json TEXT, created_at TEXT, UNIQUE(variant_id, store_id, idempotency_key))`);
+    await dbA.run(`CREATE TABLE IF NOT EXISTS pdv_product_variants_v2 (id TEXT PRIMARY KEY, product_id TEXT NOT NULL, sku TEXT NOT NULL, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, version INTEGER NOT NULL DEFAULT 1, updated_at TEXT)`);
+
+    // Criar inventário services separados para A e B
+    const inventoryA = createInventoryService({ dbApi: dbA });
+    const inventoryB = createInventoryService({ dbApi: dbB });
+
+    // Configurar busy_timeout para concorrência
+    await dbA.run('PRAGMA busy_timeout = 5000');
+    await dbB.run('PRAGMA busy_timeout = 5000');
+    await dbA.run(`INSERT INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at) VALUES ('conc-bal-1', 'variant-1', 'vila', 10, 0, 1, ?)`, [NOW_ISO_CONC]);
+    await dbA.run(`INSERT INTO pdv_product_variants (id, product_id, sku, name, created_at) VALUES ('variant-1', 'product-1', 'SKU-001', 'Produto', ?)`, [NOW_ISO_CONC]);
+
+    // Criar pedido expirável
+    const orderId = 'order-conc';
+    const past = futureIso(31);
+    const snapshot = JSON.stringify({ store_origin_id: 'vila', fulfillment_type: 'DELIVERY' });
+
+    await dbA.run(`INSERT INTO app_carts (id, account_id, status, currency, item_count, subtotal_cents, version, created_at, updated_at) VALUES ('cart-conc', 'account-1', 'CONVERTED', 'BRL', 1, 1000, 1, ?, ?)`, [NOW_ISO_CONC, NOW_ISO_CONC]);
+    await dbA.run(`INSERT INTO app_cart_items (id, cart_id, product_id, variant_id, quantity, unit_price_cents, effective_unit_price_cents, line_total_cents, product_snapshot_json, availability_status, version, created_at, updated_at) VALUES ('item-conc', 'cart-conc', 'product-1', 'variant-1', 1, 1000, 1000, 1000, '{"name":"Produto 1"}', 'in_stock', 1, ?, ?)`, [NOW_ISO_CONC, NOW_ISO_CONC]);
+
+    const holdResult = await inventoryA.holdReservation(orderId, [{ variant_id: 'variant-1', quantity: 1 }], 'vila', 'expiry-conc');
+    await dbA.run(`INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id, shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, 'ORD-CONC', 'account-1', 'DELIVERY', 'addr-1', NULL, 'flat_rate', 'standard', 0, 'BRL', 1000, 1000, 'READY_FOR_PAYMENT', 'conc-key', ?, ?, 1, ?, ?, ?)`, [orderId, snapshot, JSON.stringify([holdResult.reservation_id]), NOW_ISO_CONC, NOW_ISO_CONC, past]);
+
+    // Executar sweep simultâneo com 2 conexões
+    const results = await Promise.allSettled([
+      sweepExpiredOrders({ db: dbA, inventoryService: inventoryA, now: NOW }),
+      sweepExpiredOrders({ db: dbB, inventoryService: inventoryB, now: NOW }),
+    ]);
+
+    // Pelo menos um deve ter expirado, o outro deve ter falhado (busy ou concorrência)
+    const fulfilled = results.filter(r => r.status === 'fulfilled');
+    const rejected = results.filter(r => r.status === 'rejected');
+
+    const totalExpired = fulfilled.reduce((sum, r) => sum + (r.value?.expired || 0), 0);
+    const totalReleased = fulfilled.reduce((sum, r) => sum + (r.value?.released || 0), 0);
+    const totalErrors = fulfilled.reduce((sum, r) => sum + (r.value?.errors || 0), 0) + rejected.length;
+
+    // Verificar estado final via dbA
+    const order = await dbA.get(`SELECT status, expired_at FROM app_orders WHERE id = ?`, [orderId]);
+    const balance = await dbA.get(`SELECT available_qty, reserved_qty FROM pdv_inventory_balances_v2 WHERE variant_id = 'variant-1' AND store_id = 'vila'`);
+    const releases = await dbA.all(`SELECT id FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'`, [orderId]);
+    const events = await dbA.all(`SELECT id FROM app_order_events WHERE order_id = ? AND event_type = 'ORDER_EXPIRED'`, [orderId]);
+
+    // EXIGIR:
+    assert.strictEqual(order.status, 'EXPIRED', 'Pedido deve estar EXPIRED');
+    assert.ok(order.expired_at, 'expired_at deve existir');
+    assert.strictEqual(balance.reserved_qty, 0, 'reserved_qty deve ser 0');
+    assert.strictEqual(balance.available_qty, 10, 'available_qty deve ser 10');
+    assert.strictEqual(releases.length, 1, 'Exatamente 1 movimento RELEASE');
     assert.strictEqual(events.length, 1, 'Exatamente 1 evento ORDER_EXPIRED');
+
+    // Limpar arquivo temporário
+    dbA.close && await dbA.close();
+    dbB.close && await dbB.close();
+    try { fs.unlinkSync(dbFile); } catch (_) {}
   });
 
   // ============================================================

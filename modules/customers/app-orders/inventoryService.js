@@ -21,6 +21,11 @@
  * Bloqueio de inflação: releaseReservation valida reserved_qty >= quantity
  * antes de atualizar o saldo. Se inconsistente, lança
  * RESERVATION_BALANCE_INCONSISTENT e faz rollback integral.
+ *
+ * CRUCIAL: releaseReservation NÃO cria saldo.
+ * - Usa getBalance (não ensureBalance).
+ * - Se saldo não existir: INVENTORY_BALANCE_NOT_FOUND, rollback.
+ * - Nunca insere linha nova na tabela de saldos.
  */
 
 const { randomUUID } = require("crypto");
@@ -74,6 +79,7 @@ function createInventoryService(options = {}) {
    * - Usa transação (BEGIN/COMMIT) para garantir atomicidade.
    * - Grava movimento RESERVATION_HOLD com idempotency_key UNIQUE.
    * - Se idempotency_key já existe, retorna o movimento existente (idempotente).
+   * - Pode usar ensureBalance conforme contrato (cria saldo se ausente).
    * - Retorna array de { movement_id, reservation_id, store_id, items }.
    */
   async function holdReservation(orderId, items, storeId, idempotencyKey) {
@@ -198,11 +204,17 @@ function createInventoryService(options = {}) {
    * Reverte o hold: incrementa available_qty, decrementa reserved_qty.
    * Grava movimento RESERVATION_RELEASE.
    *
-   * Bloqueio de inflação:
+   * BLOQUEIO DE INFLAÇÃO:
    * - Antes do UPDATE, valida reserved_qty >= quantity.
    * - Se reserved_qty < quantity: lança RESERVATION_BALANCE_INCONSISTENT.
    * - available_qty e reserved_qty NÃO mudam.
    * - Nenhum RELEASE é gravado.
+   *
+   * RELEASE NÃO CRIA SALDO:
+   * - Usa getBalance (não ensureBalance).
+   * - Se saldo não existir: INVENTORY_BALANCE_NOT_FOUND.
+   * - Não insere linha nova na tabela de saldos.
+   * - Rollback integral.
    *
    * Idempotente: usa chave por movimento (orderId + storeId + variantId).
    * Se já foi liberado, retorna sem re-liberar (evita double-release).
@@ -243,8 +255,20 @@ function createInventoryService(options = {}) {
 
       const now = iso(new Date());
 
-      // Obter saldo usando o runner correto
-      const balance = await ensureBalance(runner, variantId, storeId);
+      // OBTER SALDO SEM CRIAR (getBalance, não ensureBalance)
+      const balance = await getBalance(runner, variantId, storeId);
+
+      // RELEASE NÃO CRIA SALDO: se não existir, INVENTORY_BALANCE_NOT_FOUND
+      if (!balance.id) {
+        results.push({
+          variant_id: variantId,
+          released: false,
+          reason: "INVENTORY_BALANCE_NOT_FOUND",
+          error: `Balance not found for variant=${variantId}, store=${storeId}`,
+        });
+        threwInconsistency = true;
+        continue;
+      }
 
       // BLOQUEIO DE INFLAÇÃO: validar reserved_qty >= quantity
       if (balance.reserved_qty < quantity) {

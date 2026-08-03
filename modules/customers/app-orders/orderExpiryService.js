@@ -17,8 +17,13 @@ const { randomUUID } = require("crypto");
  * - Isolamento por conta: expira apenas pedidos da conta solicitada (ou todas)
  * - Relógio: Date.now() (UTC)
  * - Todas reservation_ids processadas com agregação por store_id + variant_id
- * - Se movimentos HOLD ausentes: RESERVATION_MOVEMENTS_NOT_FOUND, rollback
- * - Se falha em QUALQUER passo: ROLLBACK completo (saldo + pedido + evento)
+ * - Per-reservation_id: CADA ID deve ter pelo menos 1 movimento HOLD válido
+ * - Validação de release: release_quantity_total === hold_quantity_total
+ *   - release_quantity_total < hold_quantity_total → PARTIAL_RESERVATION_RELEASE, rollback
+ *   - release_quantity_total > hold_quantity_total → RESERVATION_RELEASE_OVERFLOW, rollback
+ *   - quantity_delta = 0 nunca comprova liberação
+ * - releaseReservation NÃO cria saldo (INVENTORY_BALANCE_NOT_FOUND se ausente)
+ * - Se qualquer passo falhar: ROLLBACK completo (saldo + pedido + evento)
  *
  * API:
  *   sweepExpiredOrders({ db, inventoryService, scope })
@@ -40,14 +45,22 @@ function generateId() {
  * 1. Busca pedidos expiráveis fora de transação (leitura)
  * 2. Para CADA pedido, abre uma transação exclusiva
  * 3. Re-leitura dentro da tx para garantir status atual (concorrência)
- * 4. Carrega TODOS movimentos HOLD de TODOS reservation_ids
- * 5. Se reservation_ids > 0 mas zero movimentos HOLD: RESERVATION_MOVEMENTS_NOT_FOUND
- * 6. Agrega movimentos por store_id + variant_id (soma quantidades)
- * 7. Libera estoque via releaseReservation (runner transacional)
- * 8. Atualiza status para EXPIRED com expired_at
- * 9. Registra evento ORDER_EXPIRED
- * 10. COMMIT — se qualquer passo falhar, ROLLBACK
- * 11. Retorna contagem de sucesso/falha
+ * 4. Para CADA reservation_id:
+ *    a. Busca movimentos RESERVATION_HOLD
+ *    b. Exige pelo menos 1 movimento válido (variant_id, store_id, quantity_delta)
+ *    c. Se nenhum HOLD: RESERVATION_MOVEMENTS_NOT_FOUND, rollback
+ * 5. Agrega movimentos por store_id + variant_id (soma quantidades)
+ * 6. Calcula hold_quantity_total por (orderId + storeId + variantId)
+ * 7. Verifica release_quantity_total já existente (exclui delta=0)
+ *    - release_quantity_total === hold_quantity_total: já liberado, pula
+ *    - release_quantity_total < hold_quantity_total: PARTIAL_RESERVATION_RELEASE, rollback
+ *    - release_quantity_total > hold_quantity_total: RESERVATION_RELEASE_OVERFLOW, rollback
+ * 8. Libera estoque via releaseReservation (runner transacional)
+ *    - releaseReservation NÃO cria saldo (INVENTORY_BALANCE_NOT_FOUND se ausente)
+ * 9. Atualiza status para EXPIRED com expired_at
+ * 10. Registra evento ORDER_EXPIRED
+ * 11. COMMIT — se qualquer passo falhar, ROLLBACK
+ * 12. Retorna contagem de sucesso/falha
  */
 async function sweepExpiredOrders(options = {}) {
   const { db, inventoryService, scope = null, now = new Date() } = options;
@@ -115,7 +128,7 @@ async function sweepExpiredOrders(options = {}) {
         continue;
       }
 
-      // 4. Processar TODAS reservation_ids
+      // 4. Processar TODAS reservation_ids — PER-RESERVATION_ID
       const reservationIds = reRead.reservation_ids_json
         ? JSON.parse(reRead.reservation_ids_json)
         : [];
@@ -134,65 +147,158 @@ async function sweepExpiredOrders(options = {}) {
         continue;
       }
 
-      if (reservationIds.length > 0) {
-        // Carregar TODOS movimentos HOLD de TODOS reservation_ids
-        const allHoldMovements = [];
-        for (const reservationId of reservationIds) {
-          const holdMovements = await db.all(
-            `SELECT variant_id, store_id, quantity_delta
-             FROM pdv_inventory_movements_v2
-             WHERE reference_id = ?
-               AND movement_type = 'RESERVATION_HOLD'`,
-            [reservationId]
-          );
-          allHoldMovements.push(...holdMovements);
-        }
+      // 4a. Para CADA reservation_id: exigir pelo menos 1 movimento HOLD válido
+      const perReservationHoldMovements = []; // [{reservation_id, movements: [...]}]
+      for (const reservationId of reservationIds) {
+        const holdMovements = await db.all(
+          `SELECT variant_id, store_id, quantity_delta
+           FROM pdv_inventory_movements_v2
+           WHERE reference_id = ?
+             AND movement_type = 'RESERVATION_HOLD'`,
+          [reservationId]
+        );
 
-        // 5. Se reservation_ids existem mas nenhum movimento HOLD foi encontrado:
-        //    RESERVATION_MOVEMENTS_NOT_FOUND — rollback, pedido continua READY_FOR_PAYMENT
-        if (allHoldMovements.length === 0) {
+        // Exigir pelo menos um movimento HOLD para este reservation_id
+        if (!holdMovements || holdMovements.length === 0) {
           await db.run("ROLLBACK");
           errorsDetails.push({
             order_id: orderId,
-            phase: "hold_movements_check",
+            reservation_id: reservationId,
+            phase: "per_reservation_hold_check",
             error: "RESERVATION_MOVEMENTS_NOT_FOUND",
-            message: `reservation_ids: ${reservationIds.length} IDs, but zero HOLD movements found`,
+            message: `Reservation ${reservationId} não possui nenhum movimento RESERVATION_HOLD`,
           });
-          continue;
+          // Sair do loop de pedidos — este pedido está com erro
+          stockReleased = null; // marca como erro
+          break;
         }
 
-        // 6. Agregar movimentos por store_id + variant_id
-        //    Somar Math.abs(quantity_delta) de movimentos repetidos
-        const aggregatedMap = new Map();
-        for (const m of allHoldMovements) {
-          const key = `${m.store_id}::${m.variant_id}`;
-          if (aggregatedMap.has(key)) {
-            const existing = aggregatedMap.get(key);
-            existing.quantity_total += Math.abs(m.quantity_delta);
-          } else {
-            aggregatedMap.set(key, {
-              store_id: m.store_id,
-              variant_id: m.variant_id,
-              quantity_total: Math.abs(m.quantity_delta),
+        // Validar variant_id, store_id e quantity_delta para cada movimento
+        for (const m of holdMovements) {
+          if (!m.variant_id || !m.store_id || m.quantity_delta === undefined || m.quantity_delta === null) {
+            await db.run("ROLLBACK");
+            errorsDetails.push({
+              order_id: orderId,
+              reservation_id: reservationId,
+              phase: "movement_validation",
+              error: "INVALID_HOLD_MOVEMENT",
+              message: `Movimento HOLD incompleto: variant_id=${m.variant_id}, store_id=${m.store_id}, delta=${m.quantity_delta}`,
             });
+            stockReleased = null;
+            break;
           }
         }
 
-        // Agrupar por store_id para releaseReservation
-        const itemsByStore = {};
-        for (const [, aggregated] of aggregatedMap) {
-          const sid = aggregated.store_id;
-          if (!itemsByStore[sid]) itemsByStore[sid] = [];
-          itemsByStore[sid].push({
-            variant_id: aggregated.variant_id,
-            quantity: aggregated.quantity_total,
+        if (stockReleased === null) break;
+
+        perReservationHoldMovements.push({
+          reservation_id: reservationId,
+          movements: holdMovements,
+        });
+      }
+
+      // Se houve erro no loop per-reservation_id, pular este pedido
+      if (stockReleased === null) {
+        continue;
+      }
+
+      // 5. Agregar todos os movimentos HOLD por (store_id, variant_id)
+      const allHoldMovements = [];
+      for (const { movements } of perReservationHoldMovements) {
+        allHoldMovements.push(...movements);
+      }
+
+      const aggregatedMap = new Map();
+      for (const m of allHoldMovements) {
+        const key = `${m.store_id}::${m.variant_id}`;
+        if (aggregatedMap.has(key)) {
+          const existing = aggregatedMap.get(key);
+          existing.hold_quantity_total += Math.abs(m.quantity_delta);
+        } else {
+          aggregatedMap.set(key, {
+            store_id: m.store_id,
+            variant_id: m.variant_id,
+            hold_quantity_total: Math.abs(m.quantity_delta),
           });
         }
+      }
 
-        // 7. Liberar estoque por store usando releaseReservation com runner da tx
-        let hasInconsistency = false;
+      // 6. Verificar release_quantity_total já existente por (orderId + storeId + variantId)
+      //    Excluir movimentos com quantity_delta = 0 (não comprovam liberação)
+      const releaseValidationMap = new Map();
+      for (const [key, aggregated] of aggregatedMap) {
+        const { store_id: sid, variant_id: vid } = aggregated;
+        const existingReleases = await db.all(
+          `SELECT quantity_delta FROM pdv_inventory_movements_v2
+           WHERE movement_type = 'RESERVATION_RELEASE'
+             AND reference_id = ?
+             AND variant_id = ?
+             AND store_id = ?
+             AND quantity_delta != 0`,
+          [orderId, vid, sid]
+        );
+
+        const releaseQuantityTotal = (existingReleases || []).reduce(
+          (sum, r) => sum + Math.abs(r.quantity_delta || 0),
+          0
+        );
+
+        releaseValidationMap.set(key, {
+          ...aggregated,
+          release_quantity_total: releaseQuantityTotal,
+        });
+      }
+
+      // 7. Validar release: apenas liberar o que NÃO foi já liberado
+      //    - release_quantity_total === hold_quantity_total: já liberado, pula este store+variant
+      //    - release_quantity_total < hold_quantity_total: liberar a diferença
+      //    - release_quantity_total > hold_quantity_total: RESERVATION_RELEASE_OVERFLOW, rollback
+      let overflowDetected = false;
+      const itemsByStore = {};
+      let hasPendingRelease = false;
+
+      for (const [key, validation] of releaseValidationMap) {
+        const { store_id: sid, variant_id: vid, hold_quantity_total, release_quantity_total } = validation;
+
+        if (release_quantity_total > hold_quantity_total) {
+          overflowDetected = true;
+          errorsDetails.push({
+            order_id: orderId,
+            store_id: sid,
+            variant_id: vid,
+            phase: "release_validation",
+            error: "RESERVATION_RELEASE_OVERFLOW",
+            message: `release_quantity_total(${release_quantity_total}) > hold_quantity_total(${hold_quantity_total})`,
+          });
+        } else if (release_quantity_total < hold_quantity_total) {
+          // Liberar a diferença
+          const qtyToRelease = hold_quantity_total - release_quantity_total;
+          if (!itemsByStore[sid]) itemsByStore[sid] = [];
+          itemsByStore[sid].push({
+            variant_id: vid,
+            quantity: qtyToRelease,
+          });
+          hasPendingRelease = true;
+        }
+        // release_quantity_total === hold_quantity_total: já liberado, não faz nada
+      }
+
+      if (overflowDetected) {
+        await db.run("ROLLBACK");
+        errorsDetails.push({
+          order_id: orderId,
+          phase: "release_validation",
+          error: "RESERVATION_RELEASE_OVERFLOW",
+          message: "Overflow detectado em pelo menos um store+variant",
+        });
+        continue;
+      }
+
+      if (hasPendingRelease) {
+        // 8. Liberar estoque por store usando releaseReservation com runner da tx
         try {
           let anyReleased = false;
+          let inconsistencyFound = false;
           for (const [storeId, items] of Object.entries(itemsByStore)) {
             const releaseResult = await inventoryService.releaseReservation(
               orderId,
@@ -203,10 +309,21 @@ async function sweepExpiredOrders(options = {}) {
             if (releaseResult && releaseResult.released) {
               anyReleased = true;
             }
-            // Se houve inconsistência (reserved_qty < quantity), fazer rollback
+            // Se houve inconsistência, rollback e sair do loop de pedidos
             if (releaseResult && releaseResult.has_inconsistency) {
-              hasInconsistency = true;
+              inconsistencyFound = true;
+              break;
             }
+          }
+          if (inconsistencyFound) {
+            await db.run("ROLLBACK");
+            errorsDetails.push({
+              order_id: orderId,
+              phase: "release_reservation",
+              error: "RELEASE_INCONSISTENCY",
+              message: "Inconsistência detectada durante releaseReservation",
+            });
+            continue;
           }
           stockReleased = anyReleased;
         } catch (releaseErr) {
@@ -218,20 +335,12 @@ async function sweepExpiredOrders(options = {}) {
           });
           continue;
         }
-
-        // Se houve inconsistência no release, rollback antes de marcar EXPIRED
-        if (hasInconsistency) {
-          await db.run("ROLLBACK");
-          errorsDetails.push({
-            order_id: orderId,
-            phase: "release_reservation",
-            error: "RESERVATION_BALANCE_INCONSISTENT",
-          });
-          continue;
-        }
+      } else {
+        // Todos os items já foram liberados (release_quantity_total === hold_quantity_total)
+        stockReleased = true;
       }
 
-      // 8. Atualizar status para EXPIRED com expired_at
+      // 9. Atualizar status para EXPIRED com expired_at
       const orderUpdateResult = await db.run(
         `UPDATE app_orders
          SET status = 'EXPIRED', expired_at = ?, updated_at = ?
@@ -239,7 +348,7 @@ async function sweepExpiredOrders(options = {}) {
         [nowIso, nowIso, orderId]
       );
 
-      // 9. Verificar se a atualização foi aplicada (conflito concorrente)
+      // 10. Verificar se a atualização foi aplicada (conflito concorrente)
       const updated = await db.get(
         `SELECT id, status FROM app_orders WHERE id = ?`,
         [orderId]
@@ -255,7 +364,7 @@ async function sweepExpiredOrders(options = {}) {
         continue;
       }
 
-      // 10. Registrar evento de expiração
+      // 11. Registrar evento de expiração
       const eventId = generateId();
       await db.run(
         `INSERT INTO app_order_events (id, order_id, event_type, details_json, created_at)
@@ -275,7 +384,7 @@ async function sweepExpiredOrders(options = {}) {
         ]
       );
 
-      // 11. COMMIT
+      // 12. COMMIT
       await db.run("COMMIT");
       expiredCount++;
       if (stockReleased) releasedCount++;
