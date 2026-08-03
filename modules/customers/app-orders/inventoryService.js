@@ -15,8 +15,12 @@
  *      decrementa reserved_qty), grava movimento RESERVATION_RELEASE.
  *
  * Idempotência: por movimento individual (orderId + storeId + variantId).
- * Transação: aceita { tx } para rodar dentro de BEGIN/COMMIT externo.
+ * Transação: aceita { db } para rodar dentro de BEGIN/COMMIT externo.
  * Nenhuma tabela paralela de reserva é criada. O PDV é a fonte da verdade.
+ *
+ * Bloqueio de inflação: releaseReservation valida reserved_qty >= quantity
+ * antes de atualizar o saldo. Se inconsistente, lança
+ * RESERVATION_BALANCE_INCONSISTENT e faz rollback integral.
  */
 
 const { randomUUID } = require("crypto");
@@ -35,8 +39,9 @@ function createInventoryService(options = {}) {
     throw new Error("INVENTORY_SERVICE_DB_REQUIRED");
   }
 
-  async function getBalance(variantId, storeId) {
-    const row = await db.get(
+  async function getBalance(runner, variantId, storeId) {
+    const r = runner || db;
+    const row = await r.get(
       `SELECT id, variant_id, store_id, available_qty, reserved_qty, version, updated_at
        FROM pdv_inventory_balances_v2
        WHERE variant_id = ? AND store_id = ?`,
@@ -48,16 +53,17 @@ function createInventoryService(options = {}) {
     return row;
   }
 
-  async function ensureBalance(variantId, storeId) {
-    const existing = await getBalance(variantId, storeId);
+  async function ensureBalance(runner, variantId, storeId) {
+    const r = runner || db;
+    const existing = await getBalance(r, variantId, storeId);
     if (existing.id) return existing;
     const now = iso(new Date());
-    await db.run(
+    await r.run(
       `INSERT INTO pdv_inventory_balances_v2 (variant_id, store_id, available_qty, reserved_qty, version, updated_at)
        VALUES (?, ?, 0, 0, 1, ?)`,
       [variantId, storeId, now]
     );
-    return getBalance(variantId, storeId);
+    return getBalance(r, variantId, storeId);
   }
 
   /**
@@ -111,7 +117,7 @@ function createInventoryService(options = {}) {
         const variantId = item.variant_id;
         const quantity = Math.max(1, Math.floor(item.quantity || 1));
 
-        const balance = await ensureBalance(variantId, storeId);
+        const balance = await ensureBalance(db, variantId, storeId);
         if (balance.available_qty < quantity) {
           await db.run("ROLLBACK");
           throw new Error(`INSUFFICIENT_STOCK: variant=${variantId}, store=${storeId}, requested=${quantity}, available=${balance.available_qty}`);
@@ -192,21 +198,32 @@ function createInventoryService(options = {}) {
    * Reverte o hold: incrementa available_qty, decrementa reserved_qty.
    * Grava movimento RESERVATION_RELEASE.
    *
+   * Bloqueio de inflação:
+   * - Antes do UPDATE, valida reserved_qty >= quantity.
+   * - Se reserved_qty < quantity: lança RESERVATION_BALANCE_INCONSISTENT.
+   * - available_qty e reserved_qty NÃO mudam.
+   * - Nenhum RELEASE é gravado.
+   *
    * Idempotente: usa chave por movimento (orderId + storeId + variantId).
    * Se já foi liberado, retorna sem re-liberar (evita double-release).
    *
-   * Aceita { tx } para rodar dentro de uma transação externa.
-   * Se tx não fornecida, usa db diretamente.
+   * Runner transacional:
+   * - Se txOpts.db fornecido, TODAS operações usam esse runner.
+   * - Nunca usa db da closure quando txOpts.db existe.
+   *
+   * Verificação de versão: após UPDATE, verifica se version mudou
+   * para detectar conflito concorrente.
    */
   async function releaseReservation(orderId, storeId, items, txOpts = null) {
     if (!orderId) throw new Error("ORDER_ID_REQUIRED");
     if (!storeId) throw new Error("STORE_ID_REQUIRED");
     if (!Array.isArray(items) || items.length === 0) return { released: false, reason: "NO_ITEMS" };
 
-    // txOpts pode ser { db: dbConn } para usar em transação externa
+    // Runner: se txOpts.db fornecido, usar exclusivamente ele
     const runner = txOpts?.db || db;
 
     const results = [];
+    let threwInconsistency = false;
 
     for (const item of items) {
       const variantId = item.variant_id;
@@ -225,20 +242,50 @@ function createInventoryService(options = {}) {
       }
 
       const now = iso(new Date());
-      const balance = await ensureBalance.call(null, variantId, storeId);
 
-      // Se não há saldo reservado, registrar o release mesmo assim (idempotente)
+      // Obter saldo usando o runner correto
+      const balance = await ensureBalance(runner, variantId, storeId);
+
+      // BLOQUEIO DE INFLAÇÃO: validar reserved_qty >= quantity
+      if (balance.reserved_qty < quantity) {
+        results.push({
+          variant_id: variantId,
+          released: false,
+          reason: "RESERVATION_BALANCE_INCONSISTENT",
+          error: `reserved_qty=${balance.reserved_qty} < quantity=${quantity}`,
+        });
+        threwInconsistency = true;
+        continue;
+      }
+
       const newAvailable = balance.available_qty + quantity;
-      const newReserved = Math.max(0, balance.reserved_qty - quantity);
+      const newReserved = balance.reserved_qty - quantity;
       const newVersion = balance.version + 1;
       const movementId = generateId();
 
+      // UPDATE com verificação de versão (conflito concorrente)
       await runner.run(
         `UPDATE pdv_inventory_balances_v2
          SET available_qty = ?, reserved_qty = ?, version = ?, updated_at = ?
          WHERE id = ? AND version = ?`,
         [newAvailable, newReserved, newVersion, now, balance.id, balance.version]
       );
+
+      // Verificar que a versão foi atualizada (detectar conflito)
+      const updated = await runner.get(
+        `SELECT id, version FROM pdv_inventory_balances_v2 WHERE id = ? AND version = ?`,
+        [balance.id, newVersion]
+      );
+      if (!updated) {
+        results.push({
+          variant_id: variantId,
+          released: false,
+          reason: "VERSION_CONFLICT",
+          error: `Balance version changed concurrently for variant=${variantId}, store=${storeId}`,
+        });
+        threwInconsistency = true;
+        continue;
+      }
 
       await runner.run(
         `INSERT INTO pdv_inventory_movements_v2
@@ -266,6 +313,18 @@ function createInventoryService(options = {}) {
       results.push({ variant_id: variantId, released: true, movement_id: movementId });
     }
 
+    // Se houve inconsistência, o caller (sweepExpiredOrders) deve fazer rollback
+    if (threwInconsistency) {
+      return {
+        released: false,
+        reason: "INCONSISTENT_RELEASE",
+        order_id: orderId,
+        store_id: storeId,
+        results,
+        has_inconsistency: true,
+      };
+    }
+
     const anyReleased = results.some(r => r.released);
     const allIdempotent = results.length > 0 && results.every(r => r.idempotent === true);
     return {
@@ -275,11 +334,13 @@ function createInventoryService(options = {}) {
       order_id: orderId,
       store_id: storeId,
       results,
+      has_inconsistency: false,
     };
   }
 
   return {
-    getBalance,
+    getBalance: (variantId, storeId) => getBalance(null, variantId, storeId),
+    ensureBalance: (variantId, storeId) => ensureBalance(null, variantId, storeId),
     holdReservation,
     releaseReservation,
   };
