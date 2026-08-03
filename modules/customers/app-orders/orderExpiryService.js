@@ -23,6 +23,10 @@ const { randomUUID } = require("crypto");
  *   - release_quantity_total > hold_quantity_total → RESERVATION_RELEASE_OVERFLOW, rollback
  *   - quantity_delta = 0 nunca comprova liberação
  * - releaseReservation NÃO cria saldo (INVENTORY_BALANCE_NOT_FOUND se ausente)
+ * - Idempotência cumulativa: RELEASE::orderId::storeId::variantId::TARGET::holdTotal
+ * - Sinal dos movimentos: HOLD < 0, RELEASE > 0
+ * - Reservation IDs duplicados: rejeitar com DUPLICATE_RESERVATION_ID
+ * - Validação pós-release: reconsultar HOLD/RELEASE/saldo antes de EXPIRED
  * - Se qualquer passo falhar: ROLLBACK completo (saldo + pedido + evento)
  *
  * API:
@@ -45,22 +49,26 @@ function generateId() {
  * 1. Busca pedidos expiráveis fora de transação (leitura)
  * 2. Para CADA pedido, abre uma transação exclusiva
  * 3. Re-leitura dentro da tx para garantir status atual (concorrência)
- * 4. Para CADA reservation_id:
+ * 4. Validar reservation_ids: rejeitar duplicados (DUPLICATE_RESERVATION_ID)
+ * 5. Para CADA reservation_id:
  *    a. Busca movimentos RESERVATION_HOLD
  *    b. Exige pelo menos 1 movimento válido (variant_id, store_id, quantity_delta)
- *    c. Se nenhum HOLD: RESERVATION_MOVEMENTS_NOT_FOUND, rollback
- * 5. Agrega movimentos por store_id + variant_id (soma quantidades)
- * 6. Calcula hold_quantity_total por (orderId + storeId + variantId)
- * 7. Verifica release_quantity_total já existente (exclui delta=0)
+ *    c. Validar sinal: HOLD quantity_delta < 0
+ *    d. Se nenhum HOLD: RESERVATION_MOVEMENTS_NOT_FOUND, rollback
+ * 6. Agrega movimentos por store_id + variant_id (soma quantidades)
+ * 7. Calcula hold_quantity_total por (orderId + storeId + variantId)
+ * 8. Verifica release_quantity_total já existente (exclui delta=0, delta<0)
  *    - release_quantity_total === hold_quantity_total: já liberado, pula
- *    - release_quantity_total < hold_quantity_total: PARTIAL_RESERVATION_RELEASE, rollback
+ *    - release_quantity_total < hold_quantity_total: liberar a diferença
  *    - release_quantity_total > hold_quantity_total: RESERVATION_RELEASE_OVERFLOW, rollback
- * 8. Libera estoque via releaseReservation (runner transacional)
- *    - releaseReservation NÃO cria saldo (INVENTORY_BALANCE_NOT_FOUND se ausente)
- * 9. Atualiza status para EXPIRED com expired_at
- * 10. Registra evento ORDER_EXPIRED
- * 11. COMMIT — se qualquer passo falhar, ROLLBACK
- * 12. Retorna contagem de sucesso/falha
+ * 9. Libera estoque via releaseReservation (runner transacional, chave TARGET cumulativa)
+ * 10. Validação pós-release: reconsultar HOLD/RELEASE/saldo
+ *     - Se release_total !== hold_total: RELEASE_TOTAL_MISMATCH, rollback
+ *     - Se reserved_qty não reflete liberação: rollback
+ * 11. Atualiza status para EXPIRED com expired_at
+ * 12. Registra evento ORDER_EXPIRED
+ * 13. COMMIT — se qualquer passo falhar, ROLLBACK
+ * 14. Retorna contagem de sucesso/falha
  */
 async function sweepExpiredOrders(options = {}) {
   const { db, inventoryService, scope = null, now = new Date() } = options;
@@ -115,7 +123,6 @@ async function sweepExpiredOrders(options = {}) {
       );
 
       if (!reRead) {
-        // Pedido já foi processado por outro sweep (concorrência) ou status mudou
         await db.run("ROLLBACK");
         continue;
       }
@@ -123,20 +130,18 @@ async function sweepExpiredOrders(options = {}) {
       // Verificar expires_at dentro da tx (pode ter sido atualizado)
       const orderExpiresAt = reRead.expires_at;
       if (orderExpiresAt && orderExpiresAt > nowIso) {
-        // TTL foi renovado, não expirar
         await db.run("ROLLBACK");
         continue;
       }
 
-      // 4. Processar TODAS reservation_ids — PER-RESERVATION_ID
-      const reservationIds = reRead.reservation_ids_json
+      // 4. Processar reservation_ids
+      const rawReservationIds = reRead.reservation_ids_json
         ? JSON.parse(reRead.reservation_ids_json)
         : [];
 
       let stockReleased = false;
 
-      if (reservationIds.length === 0) {
-        // Pedido sem reservas não pode ser expirado com segurança
+      if (rawReservationIds.length === 0) {
         await db.run("ROLLBACK");
         errorsDetails.push({
           order_id: orderId,
@@ -147,8 +152,26 @@ async function sweepExpiredOrders(options = {}) {
         continue;
       }
 
-      // 4a. Para CADA reservation_id: exigir pelo menos 1 movimento HOLD válido
-      const perReservationHoldMovements = []; // [{reservation_id, movements: [...]}]
+      // 4a. Rejeitar reservation_ids duplicados
+      const uniqueIds = new Set(rawReservationIds);
+      if (uniqueIds.size !== rawReservationIds.length) {
+        await db.run("ROLLBACK");
+        errorsDetails.push({
+          order_id: orderId,
+          phase: "duplicate_reservation_check",
+          error: "DUPLICATE_RESERVATION_ID",
+          message: `Pedido ${orderId} possui reservation_ids duplicados`,
+          violations: rawReservationIds.filter((id, idx) => rawReservationIds.indexOf(id) !== idx),
+        });
+        continue;
+      }
+
+      const reservationIds = rawReservationIds;
+
+      // 4b. Para CADA reservation_id: exigir pelo menos 1 movimento HOLD válido
+      const perReservationHoldMovements = [];
+      const orderViolations = []; // todas violações deste pedido (single-error)
+
       for (const reservationId of reservationIds) {
         const holdMovements = await db.all(
           `SELECT variant_id, store_id, quantity_delta
@@ -160,29 +183,33 @@ async function sweepExpiredOrders(options = {}) {
 
         // Exigir pelo menos um movimento HOLD para este reservation_id
         if (!holdMovements || holdMovements.length === 0) {
-          await db.run("ROLLBACK");
-          errorsDetails.push({
-            order_id: orderId,
+          orderViolations.push({
             reservation_id: reservationId,
-            phase: "per_reservation_hold_check",
             error: "RESERVATION_MOVEMENTS_NOT_FOUND",
             message: `Reservation ${reservationId} não possui nenhum movimento RESERVATION_HOLD`,
           });
-          // Sair do loop de pedidos — este pedido está com erro
-          stockReleased = null; // marca como erro
+          stockReleased = null;
           break;
         }
 
         // Validar variant_id, store_id e quantity_delta para cada movimento
         for (const m of holdMovements) {
           if (!m.variant_id || !m.store_id || m.quantity_delta === undefined || m.quantity_delta === null) {
-            await db.run("ROLLBACK");
-            errorsDetails.push({
-              order_id: orderId,
+            orderViolations.push({
               reservation_id: reservationId,
-              phase: "movement_validation",
               error: "INVALID_HOLD_MOVEMENT",
               message: `Movimento HOLD incompleto: variant_id=${m.variant_id}, store_id=${m.store_id}, delta=${m.quantity_delta}`,
+            });
+            stockReleased = null;
+            break;
+          }
+
+          // LOOP 3 — Validar sinal do HOLD: quantity_delta DEVE ser < 0
+          if (typeof m.quantity_delta !== 'number' || m.quantity_delta >= 0) {
+            orderViolations.push({
+              reservation_id: reservationId,
+              error: "INVALID_HOLD_SIGN",
+              message: `HOLD com quantity_delta=${m.quantity_delta} (deve ser < 0)`,
             });
             stockReleased = null;
             break;
@@ -197,8 +224,17 @@ async function sweepExpiredOrders(options = {}) {
         });
       }
 
-      // Se houve erro no loop per-reservation_id, pular este pedido
+      // Se houve violação no loop per-reservation_id, rollback com single-error
       if (stockReleased === null) {
+        await db.run("ROLLBACK");
+        errorsDetails.push({
+          order_id: orderId,
+          phase: "per_reservation_hold_check",
+          error: orderViolations[0].error,
+          reservation_id: orderViolations[0].reservation_id,
+          violations: orderViolations,
+          message: orderViolations[0].message,
+        });
         continue;
       }
 
@@ -224,7 +260,7 @@ async function sweepExpiredOrders(options = {}) {
       }
 
       // 6. Verificar release_quantity_total já existente por (orderId + storeId + variantId)
-      //    Excluir movimentos com quantity_delta = 0 (não comprovam liberação)
+      //    Apenas RELEASE válidos: quantity_delta > 0 (validar sinal)
       const releaseValidationMap = new Map();
       for (const [key, aggregated] of aggregatedMap) {
         const { store_id: sid, variant_id: vid } = aggregated;
@@ -234,12 +270,12 @@ async function sweepExpiredOrders(options = {}) {
              AND reference_id = ?
              AND variant_id = ?
              AND store_id = ?
-             AND quantity_delta != 0`,
+             AND quantity_delta > 0`,
           [orderId, vid, sid]
         );
 
         const releaseQuantityTotal = (existingReleases || []).reduce(
-          (sum, r) => sum + Math.abs(r.quantity_delta || 0),
+          (sum, r) => sum + r.quantity_delta, // positivo, sem Math.abs
           0
         );
 
@@ -250,10 +286,8 @@ async function sweepExpiredOrders(options = {}) {
       }
 
       // 7. Validar release: apenas liberar o que NÃO foi já liberado
-      //    - release_quantity_total === hold_quantity_total: já liberado, pula este store+variant
-      //    - release_quantity_total < hold_quantity_total: liberar a diferença
-      //    - release_quantity_total > hold_quantity_total: RESERVATION_RELEASE_OVERFLOW, rollback
       let overflowDetected = false;
+      const overflowViolations = [];
       const itemsByStore = {};
       let hasPendingRelease = false;
 
@@ -262,34 +296,33 @@ async function sweepExpiredOrders(options = {}) {
 
         if (release_quantity_total > hold_quantity_total) {
           overflowDetected = true;
-          errorsDetails.push({
-            order_id: orderId,
+          overflowViolations.push({
             store_id: sid,
             variant_id: vid,
-            phase: "release_validation",
-            error: "RESERVATION_RELEASE_OVERFLOW",
-            message: `release_quantity_total(${release_quantity_total}) > hold_quantity_total(${hold_quantity_total})`,
+            hold_quantity_total,
+            release_quantity_total,
           });
         } else if (release_quantity_total < hold_quantity_total) {
-          // Liberar a diferença
           const qtyToRelease = hold_quantity_total - release_quantity_total;
           if (!itemsByStore[sid]) itemsByStore[sid] = [];
           itemsByStore[sid].push({
             variant_id: vid,
             quantity: qtyToRelease,
+            hold_total: hold_quantity_total, // passar para chave TARGET cumulativa
           });
           hasPendingRelease = true;
         }
-        // release_quantity_total === hold_quantity_total: já liberado, não faz nada
       }
 
+      // 7a. Se overflow: rollback com single-error (uma entrada com todas as violations)
       if (overflowDetected) {
         await db.run("ROLLBACK");
         errorsDetails.push({
           order_id: orderId,
           phase: "release_validation",
           error: "RESERVATION_RELEASE_OVERFLOW",
-          message: "Overflow detectado em pelo menos um store+variant",
+          violations: overflowViolations,
+          message: `Overflow detectado: release > hold em ${overflowViolations.length} variante(s)`,
         });
         continue;
       }
@@ -340,6 +373,45 @@ async function sweepExpiredOrders(options = {}) {
         stockReleased = true;
       }
 
+      // LOOP 2 — Validação pós-release: reconsultar HOLD/RELEASE/saldo antes de EXPIRED
+      // Somar todos os HOLD válidos (quantity_delta < 0)
+      const postReleaseHoldSum = await db.get(
+        `SELECT COALESCE(SUM(ABS(quantity_delta)), 0) as total_hold
+         FROM pdv_inventory_movements_v2
+         WHERE movement_type = 'RESERVATION_HOLD'
+           AND reference_id IN (${reservationIds.map(() => '?').join(',')})
+           AND quantity_delta < 0`,
+        [...reservationIds]
+      );
+      const postReleaseHoldTotal = postReleaseHoldSum?.total_hold || 0;
+
+      // Somar todos os RELEASE válidos (quantity_delta > 0)
+      const postReleaseRelSum = await db.get(
+        `SELECT COALESCE(SUM(quantity_delta), 0) as total_release
+         FROM pdv_inventory_movements_v2
+         WHERE movement_type = 'RESERVATION_RELEASE'
+           AND reference_id = ?
+           AND quantity_delta > 0`,
+        [orderId]
+      );
+      const postReleaseReleaseTotal = postReleaseRelSum?.total_release || 0;
+
+      // Validar: release_total DEVE ser === hold_total
+      if (postReleaseReleaseTotal !== postReleaseHoldTotal) {
+        await db.run("ROLLBACK");
+        errorsDetails.push({
+          order_id: orderId,
+          phase: "post_release_validation",
+          error: "RELEASE_TOTAL_MISMATCH",
+          violations: [{
+            hold_total: postReleaseHoldTotal,
+            release_total: postReleaseReleaseTotal,
+          }],
+          message: `RELEASE_TOTAL_MISMATCH: hold=${postReleaseHoldTotal}, release=${postReleaseReleaseTotal}`,
+        });
+        continue;
+      }
+
       // 9. Atualizar status para EXPIRED com expired_at
       const orderUpdateResult = await db.run(
         `UPDATE app_orders
@@ -379,6 +451,8 @@ async function sweepExpiredOrders(options = {}) {
             expired_at: nowIso,
             stock_released: stockReleased,
             reservation_ids: reservationIds,
+            hold_total: postReleaseHoldTotal,
+            release_total: postReleaseReleaseTotal,
           }),
           nowIso,
         ]

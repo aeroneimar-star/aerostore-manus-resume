@@ -14,18 +14,26 @@
  *   2. releaseReservation: reverte hold (incrementa available_qty,
  *      decrementa reserved_qty), grava movimento RESERVATION_RELEASE.
  *
- * Idempotência: por movimento individual (orderId + storeId + variantId).
- * Transação: aceita { db } para rodar dentro de BEGIN/COMMIT externo.
- * Nenhuma tabela paralela de reserva é criada. O PDV é a fonte da verdade.
+ * Idempotência cumulativa (releaseReservation):
+ * - Chave: RELEASE::<orderId>::<storeId>::<variantId>::TARGET::<hold_quantity_total>
+ * - Permite release parcial: se já existe release de 1 para target 3, libera mais 2.
+ * - Retry com mesmo target: idempotente, não cria outro movimento.
+ * - Chave antiga sem TARGET não é reutilizada.
  *
  * Bloqueio de inflação: releaseReservation valida reserved_qty >= quantity
- * antes de atualizar o saldo. Se inconsistente, lança
- * RESERVATION_BALANCE_INCONSISTENT e faz rollback integral.
+ * antes de atualizar o saldo. Se inconsistente, retorna
+ * RESERVATION_BALANCE_INCONSISTENT.
  *
  * CRUCIAL: releaseReservation NÃO cria saldo.
  * - Usa getBalance (não ensureBalance).
- * - Se saldo não existir: INVENTORY_BALANCE_NOT_FOUND, rollback.
+ * - Se saldo não existir: INVENTORY_BALANCE_NOT_FOUND.
  * - Nunca insere linha nova na tabela de saldos.
+ *
+ * Sinal dos movimentos:
+ * - RESERVATION_HOLD: quantity_delta < 0 (negativo obrigatório)
+ * - RESERVATION_RELEASE: quantity_delta > 0 (positivo obrigatório)
+ * - Sinal nulo ou zero: rejeitado
+ * - Não usar Math.abs antes de validar o sinal
  */
 
 const { randomUUID } = require("crypto");
@@ -160,7 +168,7 @@ function createInventoryService(options = {}) {
             movementId,
             variantId,
             storeId,
-            -quantity,
+            -quantity, // quantity_delta < 0 (negativo)
             balance.available_qty,
             newAvailable,
             "app_order_shop",
@@ -204,27 +212,24 @@ function createInventoryService(options = {}) {
    * Reverte o hold: incrementa available_qty, decrementa reserved_qty.
    * Grava movimento RESERVATION_RELEASE.
    *
+   * IDEMPOTÊNCIA CUMULATIVA:
+   * - Chave: RELEASE::<orderId>::<storeId>::<variantId>::TARGET::<hold_quantity_total>
+   * - Permite release parcial: se hold=3 e release_parcial=1, libera mais 2 com target=3.
+   * - Retry com mesmo target: idempotente, não cria outro movimento.
+   * - Não reutiliza chave antiga sem TARGET.
+   *
    * BLOQUEIO DE INFLAÇÃO:
    * - Antes do UPDATE, valida reserved_qty >= quantity.
-   * - Se reserved_qty < quantity: lança RESERVATION_BALANCE_INCONSISTENT.
-   * - available_qty e reserved_qty NÃO mudam.
-   * - Nenhum RELEASE é gravado.
+   * - Se reserved_qty < quantity: retorna RESERVATION_BALANCE_INCONSISTENT.
    *
    * RELEASE NÃO CRIA SALDO:
    * - Usa getBalance (não ensureBalance).
    * - Se saldo não existir: INVENTORY_BALANCE_NOT_FOUND.
-   * - Não insere linha nova na tabela de saldos.
-   * - Rollback integral.
-   *
-   * Idempotente: usa chave por movimento (orderId + storeId + variantId).
-   * Se já foi liberado, retorna sem re-liberar (evita double-release).
    *
    * Runner transacional:
    * - Se txOpts.db fornecido, TODAS operações usam esse runner.
-   * - Nunca usa db da closure quando txOpts.db existe.
    *
-   * Verificação de versão: após UPDATE, verifica se version mudou
-   * para detectar conflito concorrente.
+   * Verificação de versão: após UPDATE, verifica se version mudou.
    */
   async function releaseReservation(orderId, storeId, items, txOpts = null) {
     if (!orderId) throw new Error("ORDER_ID_REQUIRED");
@@ -240,9 +245,11 @@ function createInventoryService(options = {}) {
     for (const item of items) {
       const variantId = item.variant_id;
       const quantity = Math.max(1, Math.floor(item.quantity || 1));
+      const holdTotal = Math.max(1, Math.floor(item.hold_total || quantity));
 
-      // Idempotência por movimento individual
-      const releaseKey = `RELEASE::${orderId}::${storeId}::${variantId}`;
+      // IDEMPOTÊNCIA CUMULATIVA: chave com TARGET
+      // Ex: RELEASE::orderId::storeId::variantId::TARGET::3
+      const releaseKey = `RELEASE::${orderId}::${storeId}::${variantId}::TARGET::${holdTotal}`;
       const existingRelease = await runner.get(
         `SELECT id FROM pdv_inventory_movements_v2
          WHERE idempotency_key = ? AND movement_type = 'RESERVATION_RELEASE'`,
@@ -321,7 +328,7 @@ function createInventoryService(options = {}) {
           movementId,
           variantId,
           storeId,
-          quantity,
+          quantity, // quantity_delta > 0 (positivo)
           balance.available_qty,
           newAvailable,
           "app_order_shop",
@@ -329,7 +336,7 @@ function createInventoryService(options = {}) {
           releaseKey,
           0,
           "system",
-          JSON.stringify({ order_id: orderId, reason: "release" }),
+          JSON.stringify({ order_id: orderId, reason: "release", hold_total: holdTotal }),
           now,
         ]
       );
