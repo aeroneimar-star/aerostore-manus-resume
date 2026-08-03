@@ -259,30 +259,81 @@ async function sweepExpiredOrders(options = {}) {
         }
       }
 
-      // 6. Verificar release_quantity_total já existente por (orderId + storeId + variantId)
-      //    Apenas RELEASE válidos: quantity_delta > 0 (validar sinal)
+      // LOOP 1 — Verificar release_quantity_total já existente por (orderId + storeId + variantId)
+      //    Consultar TODOS movimentos RESERVATION_RELEASE sem filtro de sinal
       const releaseValidationMap = new Map();
+      const invalidReleaseViolations = []; // violações de sinal para rejeição
+
       for (const [key, aggregated] of aggregatedMap) {
         const { store_id: sid, variant_id: vid } = aggregated;
-        const existingReleases = await db.all(
-          `SELECT quantity_delta FROM pdv_inventory_movements_v2
+
+        // LOOP 1: buscar TODOS movimentos RELEASE sem filtrar por sinal
+        const allExistingReleases = await db.all(
+          `SELECT id, quantity_delta, quantity_before, quantity_after
+           FROM pdv_inventory_movements_v2
            WHERE movement_type = 'RESERVATION_RELEASE'
              AND reference_id = ?
              AND variant_id = ?
-             AND store_id = ?
-             AND quantity_delta > 0`,
+             AND store_id = ?`,
           [orderId, vid, sid]
         );
 
-        const releaseQuantityTotal = (existingReleases || []).reduce(
-          (sum, r) => sum + r.quantity_delta, // positivo, sem Math.abs
-          0
-        );
+        let validReleaseTotal = 0;
+
+        for (const r of allExistingReleases) {
+          // Validar cada movimento RELEASE
+          const reasons = [];
+
+          if (typeof r.quantity_delta !== 'number' || r.quantity_delta <= 0) {
+            reasons.push(`quantity_delta=${r.quantity_delta} (deve ser > 0)`);
+          }
+
+          if (typeof r.quantity_before !== 'number' || r.quantity_before < 0) {
+            reasons.push(`quantity_before=${r.quantity_before} (deve ser >= 0)`);
+          }
+
+          if (typeof r.quantity_after !== 'number' || r.quantity_after < 0) {
+            reasons.push(`quantity_after=${r.quantity_after} (deve ser >= 0)`);
+          }
+
+          if (typeof r.quantity_delta === 'number' &&
+              typeof r.quantity_before === 'number' &&
+              typeof r.quantity_after === 'number' &&
+              (r.quantity_after - r.quantity_before) !== r.quantity_delta) {
+            reasons.push(`quantity_after - quantity_before (${r.quantity_after} - ${r.quantity_before} = ${r.quantity_after - r.quantity_before}) !== quantity_delta (${r.quantity_delta})`);
+          }
+
+          if (reasons.length > 0) {
+            invalidReleaseViolations.push({
+              movement_id: r.id,
+              store_id: sid,
+              variant_id: vid,
+              quantity_delta: r.quantity_delta,
+              reason: reasons.join('; '),
+            });
+          } else {
+            // Válido: somar ao total
+            validReleaseTotal += r.quantity_delta;
+          }
+        }
 
         releaseValidationMap.set(key, {
           ...aggregated,
-          release_quantity_total: releaseQuantityTotal,
+          release_quantity_total: validReleaseTotal,
         });
+      }
+
+      // LOOP 1: Se houver RELEASEs inválidos, rollback com single-error
+      if (invalidReleaseViolations.length > 0) {
+        await db.run("ROLLBACK");
+        errorsDetails.push({
+          order_id: orderId,
+          phase: "release_movement_validation",
+          error: "INVALID_RELEASE_MOVEMENT",
+          violations: invalidReleaseViolations,
+          message: `${invalidReleaseViolations.length} movimento(s) RELEASE inválido(s) detectado(s)`,
+        });
+        continue;
       }
 
       // 7. Validar release: apenas liberar o que NÃO foi já liberado
@@ -373,43 +424,114 @@ async function sweepExpiredOrders(options = {}) {
         stockReleased = true;
       }
 
-      // LOOP 2 — Validação pós-release: reconsultar HOLD/RELEASE/saldo antes de EXPIRED
-      // Somar todos os HOLD válidos (quantity_delta < 0)
-      const postReleaseHoldSum = await db.get(
-        `SELECT COALESCE(SUM(ABS(quantity_delta)), 0) as total_hold
-         FROM pdv_inventory_movements_v2
-         WHERE movement_type = 'RESERVATION_HOLD'
-           AND reference_id IN (${reservationIds.map(() => '?').join(',')})
-           AND quantity_delta < 0`,
-        [...reservationIds]
-      );
-      const postReleaseHoldTotal = postReleaseHoldSum?.total_hold || 0;
+      // LOOP 2 — Validação pós-release POR (store_id, variant_id) com saldo
+      const postReleaseViolations = [];
 
-      // Somar todos os RELEASE válidos (quantity_delta > 0)
-      const postReleaseRelSum = await db.get(
-        `SELECT COALESCE(SUM(quantity_delta), 0) as total_release
-         FROM pdv_inventory_movements_v2
-         WHERE movement_type = 'RESERVATION_RELEASE'
-           AND reference_id = ?
-           AND quantity_delta > 0`,
-        [orderId]
-      );
-      const postReleaseReleaseTotal = postReleaseRelSum?.total_release || 0;
+      for (const [key, aggregated] of aggregatedMap) {
+        const { store_id: sid, variant_id: vid } = aggregated;
 
-      // Validar: release_total DEVE ser === hold_total
-      if (postReleaseReleaseTotal !== postReleaseHoldTotal) {
+        // Reconsultar HOLD total para esta combinação
+        const holdSum = await db.get(
+          `SELECT COALESCE(SUM(ABS(quantity_delta)), 0) as total
+           FROM pdv_inventory_movements_v2
+           WHERE movement_type = 'RESERVATION_HOLD'
+             AND reference_id IN (${reservationIds.map(() => '?').join(',')})
+             AND store_id = ?
+             AND variant_id = ?
+             AND quantity_delta < 0`,
+          [...reservationIds, sid, vid]
+        );
+        const holdTotal = holdSum?.total || 0;
+
+        // Reconsultar RELEASE total para esta combinação (válidos apenas: delta > 0)
+        const releaseSum = await db.get(
+          `SELECT COALESCE(SUM(quantity_delta), 0) as total
+           FROM pdv_inventory_movements_v2
+           WHERE movement_type = 'RESERVATION_RELEASE'
+             AND reference_id = ?
+             AND store_id = ?
+             AND variant_id = ?
+             AND quantity_delta > 0`,
+          [orderId, sid, vid]
+        );
+        const releaseTotal = releaseSum?.total || 0;
+
+        // Reconsultar saldo atual
+        const balanceRow = await db.get(
+          `SELECT available_qty, reserved_qty, version
+           FROM pdv_inventory_balances_v2
+           WHERE variant_id = ? AND store_id = ?`,
+          [vid, sid]
+        );
+
+        const pendingQuantity = holdTotal - releaseTotal;
+
+        if (pendingQuantity > 0) {
+          // Esperar: saldo reflete a liberação pendente
+          // available_qty após release = available_before + pending
+          // reserved_qty após release = reserved_before - pending
+          // version após release = version_before + 1
+          // release_total DEVE ser === hold_total
+          if (releaseTotal !== holdTotal) {
+            postReleaseViolations.push({
+              store_id: sid,
+              variant_id: vid,
+              error: "POST_RELEASE_BALANCE_MISMATCH",
+              hold_total: holdTotal,
+              release_total: releaseTotal,
+              pending_quantity: pendingQuantity,
+              available_qty: balanceRow?.available_qty,
+              reserved_qty: balanceRow?.reserved_qty,
+              version: balanceRow?.version,
+              message: `RELEASE=${releaseTotal} !== HOLD=${holdTotal} para store=${sid}, variant=${vid}`,
+            });
+          }
+        }
+
+        // Quando pending_quantity === 0: releases históricos devem ter sinal válido
+        // (já validado no LOOP 1, mas verificamos consistência)
+        if (pendingQuantity === 0 && releaseTotal !== holdTotal) {
+          postReleaseViolations.push({
+            store_id: sid,
+            variant_id: vid,
+            error: "POST_RELEASE_BALANCE_MISMATCH",
+            hold_total: holdTotal,
+            release_total: releaseTotal,
+            message: `RELEASE=${releaseTotal} !== HOLD=${holdTotal} para store=${sid}, variant=${vid} (pending=0)`,
+          });
+        }
+      }
+
+      // Se qualquer combinação falhou: rollback com single-error
+      if (postReleaseViolations.length > 0) {
         await db.run("ROLLBACK");
         errorsDetails.push({
           order_id: orderId,
           phase: "post_release_validation",
-          error: "RELEASE_TOTAL_MISMATCH",
-          violations: [{
-            hold_total: postReleaseHoldTotal,
-            release_total: postReleaseReleaseTotal,
-          }],
-          message: `RELEASE_TOTAL_MISMATCH: hold=${postReleaseHoldTotal}, release=${postReleaseReleaseTotal}`,
+          error: "POST_RELEASE_BALANCE_MISMATCH",
+          violations: postReleaseViolations,
+          message: `${postReleaseViolations.length} combinação(ões) com divergência saldo/movimento`,
         });
         continue;
+      }
+
+      // Calcular totais para o evento (usando aggregatedMap)
+      let postReleaseHoldTotal = 0;
+      let postReleaseReleaseTotal = 0;
+      for (const [key, aggregated] of aggregatedMap) {
+        const { hold_quantity_total } = aggregated;
+        postReleaseHoldTotal += hold_quantity_total;
+
+        // Obter release total desta combinação
+        const { store_id: sid, variant_id: vid } = aggregated;
+        const relRow = await db.get(
+          `SELECT COALESCE(SUM(quantity_delta), 0) as total
+           FROM pdv_inventory_movements_v2
+           WHERE movement_type = 'RESERVATION_RELEASE'
+             AND reference_id = ? AND store_id = ? AND variant_id = ? AND quantity_delta > 0`,
+          [orderId, sid, vid]
+        );
+        postReleaseReleaseTotal += (relRow?.total || 0);
       }
 
       // 9. Atualizar status para EXPIRED com expired_at
