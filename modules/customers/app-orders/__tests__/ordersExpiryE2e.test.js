@@ -35,7 +35,7 @@ function futureIso(minutesAgo) {
   return d.toISOString();
 }
 
-describe('Orders Expiry E2E — 42 testes obrigatórios', () => {
+describe('Orders Expiry E2E — 43 testes obrigatórios', () => {
   let db;
   let orderService;
   let fulfillmentService;
@@ -1161,7 +1161,8 @@ describe('Orders Expiry E2E — 42 testes obrigatórios', () => {
 
   // T30 — Retry real da chave TARGET: releaseReservation com hold_total=3, quantity=2
   //   Primeira chamada: released=true, chave RELEASE::orderId::vila::variant-1::TARGET::3
-  //   Segunda chamada: released=false, idempotent=true (ALREADY_RELEASED)
+  //   Segunda chamada: released=false, idempotent=true, reason=ALREADY_RELEASED
+  //   Verificar: chave exata, movimentos inalterados, saldo inalterado
   it('T30: retry real da chave TARGET — segunda chamada idempotente', async () => {
     // Setup: saldo com available=10, reserved=3 (consistente com hold=3)
     await runSql(db, `UPDATE pdv_inventory_balances_v2 SET available_qty=10, reserved_qty=3, version=100, updated_at=? WHERE variant_id='variant-1' AND store_id='vila'`, [NOW_ISO]);
@@ -1201,13 +1202,25 @@ describe('Orders Expiry E2E — 42 testes obrigatórios', () => {
     assert.strictEqual(balance1.available_qty, 12, 'available_qty deve ser 12 (10 + 2)');
     assert.strictEqual(balance1.reserved_qty, 1, 'reserved_qty deve ser 1 (3 - 2)');
 
+    // Verificar que exatamente um movimento RELEASE foi criado com a chave exata
+    const targetKey = `RELEASE::${r.data.id}::vila::variant-1::TARGET::3`;
+    const releasesAfterFirst = await allSql(db, `SELECT id, idempotency_key, quantity_delta FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE' AND variant_id = 'variant-1' AND store_id = 'vila'`, [r.data.id]);
+    assert.strictEqual(releasesAfterFirst.length, 1, 'Exatamente 1 movimento RELEASE após primeira chamada');
+    assert.strictEqual(releasesAfterFirst[0].idempotency_key, targetKey, `Chave deve ser ${targetKey}`);
+
     // Segunda chamada: releaseReservation com mesma chave TARGET::3
-    //   Deve ser idempotente (released=false, idempotent=true)
+    //   Deve ser idempotente (released=false, idempotent=true, reason=ALREADY_RELEASED)
     const result2 = await inventoryService.releaseReservation(
       r.data.id, 'vila', [{ variant_id: 'variant-1', quantity: 2, hold_total: 3 }]
     );
     assert.strictEqual(result2.released, false, 'Segunda chamada deve ser idempotente');
     assert.strictEqual(result2.idempotent, true, 'Segunda chamada deve indicar idempotência');
+    assert.strictEqual(result2.reason, 'ALREADY_RELEASED', 'Razão deve ser ALREADY_RELEASED');
+
+    // Consultar movimentos e exigir quantidade inalterada
+    const releasesAfterSecond = await allSql(db, `SELECT id, idempotency_key, quantity_delta FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE' AND variant_id = 'variant-1' AND store_id = 'vila'`, [r.data.id]);
+    assert.strictEqual(releasesAfterSecond.length, 1, 'Movimentos inalterados após retry');
+    assert.strictEqual(releasesAfterSecond[0].idempotency_key, targetKey, 'Chave inalterada após retry');
 
     // Verificar que saldo NÃO mudou
     const balance2 = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id='variant-1' AND store_id='vila'`);
@@ -1592,12 +1605,13 @@ describe('Orders Expiry E2E — 42 testes obrigatórios', () => {
     assert.strictEqual(releases.length, 0, 'Não deve haver movimentos RELEASE persistidos');
   });
 
-  // T42 — Fault injection via interceptação de POST_RELEASE:
-  //   O releaseReservation faz o UPDATE + INSERT RELEASE com sucesso
-  //   Mas a validação pós-release (POST_RELEASE_BALANCE_MISMATCH) detecta inconsistência
-  //   Sweep: errors=1, expired=0, released=0 (POST_RELEASE_BALANCE_MISMATCH)
-  //   Pedido READY_FOR_PAYMENT, zero RELEASE persistido, zero ORDER_EXPIRED
-  it('T42: fault injection post-release balance mismatch — saldo não reflete release', async () => {
+  // T42 — Fault injection: wrapper do inventoryService que altera saldo APÓS releaseReservation
+  //   1. releaseReservation faz UPDATE + INSERT RELEASE com sucesso
+  //   2. Após released=true, o wrapper altera available_qty (reduz 1 sem movimento)
+  //   3. Validação pós-release detecta POST_RELEASE_BALANCE_MISMATCH
+  //   Sweep: errors=1, expired=0, released=0
+  //   Pedido READY_FOR_PAYMENT, saldo/versão inalterados após rollback
+  it('T42: fault injection post-release balance mismatch — saldo alterado após release', async () => {
     await seedCart('account-1');
     const r = await orderService.createOrder('account-1', {
       fulfillment_type: 'DELIVERY',
@@ -1620,43 +1634,128 @@ describe('Orders Expiry E2E — 42 testes obrigatórios', () => {
     // HOLD de 3
     await runSql(db, `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, origin, reference_type, reference_id, idempotency_key, actor_user_id, actor_name, metadata_json, created_at) VALUES ('m-hold-t42', 'variant-1', 'vila', 'RESERVATION_HOLD', -3, 8, 5, 'app_order_shop', 'RESERVATION', ?, 'key-t42::variant-1', 0, 'system', '{}', ?)`, [reservationId, NOW_ISO]);
 
-    // Fault injection: interceptar db.run para bloquear UPDATE de saldo mas permitir INSERT RELEASE
-    // Isso simula que o releaseReservation cria o RELEASE mas o saldo NÃO é atualizado
-    const originalRun = db.run.bind(db);
-    let interceptedUpdate = false;
-    db.run = async function (sql, params) {
-      if (typeof sql === 'string' && sql.includes('UPDATE pdv_inventory_balances_v2') && sql.includes('SET')) {
-        interceptedUpdate = true;
-        return; // Bloquear UPDATE de saldo — saldo não será atualizado
+    // Salvar estado inicial para comparação pós-rollback
+    const balanceOrig = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id='variant-1' AND store_id='vila'`);
+
+    // Criar wrapper do inventoryService que chama releaseReservation real mas altera saldo depois
+    const originalInventoryService = inventoryService;
+    const fakeInventoryService = {
+      ...originalInventoryService,
+      releaseReservation: async function(orderId, storeId, items, txOpts) {
+        // Chamar releaseReservation real com o mesmo runner
+        const result = await originalInventoryService.releaseReservation(orderId, storeId, items, txOpts);
+        // Após released=true, alterar saldo sem movimento correspondente
+        if (result && result.released) {
+          // Reduzir available_qty em 1 (simulando corrupção de saldo)
+          const bal = await txOpts?.db.get(
+            `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id = ? AND store_id = ?`,
+            ['variant-1', storeId]
+          );
+          if (bal) {
+            await txOpts?.db.run(
+              `UPDATE pdv_inventory_balances_v2 SET available_qty = ?, version = version + 1, updated_at = ? WHERE variant_id = ? AND store_id = ?`,
+              [bal.available_qty - 1, new Date().toISOString(), 'variant-1', storeId]
+            );
+          }
+        }
+        return result;
       }
-      return originalRun(sql, params);
     };
 
     try {
-      const sweepResult = await sweepExpiredOrders({ db, inventoryService, now: new Date(NOW.getTime() + 11 * 60 * 1000) });
-      // O releaseReservation detecta que o UPDATE não mudou a versão → VERSION_CONFLICT
-      // Mas como o UPDATE foi bloqueado, o releaseReservation retorna threwInconsistency=true
-      // O sweep então marca como erro
+      const sweepResult = await sweepExpiredOrders({ db, inventoryService: fakeInventoryService, now: new Date(NOW.getTime() + 11 * 60 * 1000) });
+      // Deve chegar à validação pós-release e detectar POST_RELEASE_BALANCE_MISMATCH
       assert.strictEqual(sweepResult.errors, 1, 'Sweep deve ter 1 erro');
       assert.strictEqual(sweepResult.expired, 0, 'Sweep não deve expirar pedido');
       assert.strictEqual(sweepResult.released, 0, 'Sweep não deve liberar estoque');
+      assert.strictEqual(sweepResult.errors_details[0].error, 'POST_RELEASE_BALANCE_MISMATCH', 'Erro deve ser POST_RELEASE_BALANCE_MISMATCH');
     } finally {
-      db.run = originalRun;
+      // Restaurar inventoryService original
     }
 
-    // Verificar que pedido permanece READY_FOR_PAYMENT
+    // Após rollback: pedido READY_FOR_PAYMENT, saldo/versão inalterados
     const order = await getSql(db, `SELECT id, status, expired_at FROM app_orders WHERE id = ?`, [r.data.id]);
     assert.strictEqual(order.status, 'READY_FOR_PAYMENT', 'Pedido deve permanecer READY_FOR_PAYMENT');
     assert.strictEqual(order.expired_at, null, 'Pedido não deve ter expired_at');
 
-    // Verificar saldo inalterado
+    // Saldo deve estar exatamente como o inicial (rollback reverteu tudo)
     const balance = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id='variant-1' AND store_id='vila'`);
-    assert.strictEqual(balance.available_qty, 5, 'available_qty deve ser 5 (inalterado)');
-    assert.strictEqual(balance.reserved_qty, 3, 'reserved_qty deve ser 3 (inalterado)');
-    assert.strictEqual(balance.version, 10, 'version deve ser 10 (inalterada)');
+    assert.strictEqual(balance.available_qty, balanceOrig.available_qty, 'available_qty inalterado após rollback');
+    assert.strictEqual(balance.reserved_qty, balanceOrig.reserved_qty, 'reserved_qty inalterado após rollback');
+    assert.strictEqual(balance.version, balanceOrig.version, 'version inalterada após rollback');
 
-    // Verificar que não há eventos ORDER_EXPIRED
+    // Zero RELEASE persistido
+    const releases = await allSql(db, `SELECT id FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'`, [r.data.id]);
+    assert.strictEqual(releases.length, 0, 'Zero RELEASE persistido após rollback');
+
+    // Zero ORDER_EXPIRED
     const events = await allSql(db, `SELECT * FROM app_order_events WHERE order_id = ? AND event_type = 'ORDER_EXPIRED'`, [r.data.id]);
-    assert.strictEqual(events.length, 0, 'Não deve haver evento ORDER_EXPIRED');
+    assert.strictEqual(events.length, 0, 'Zero ORDER_EXPIRED após rollback');
+  });
+
+  // T43 — Full release pré-existente com saldo divergente
+  //   Pedido READY_FOR_PAYMENT
+  //   HOLD válido de -2
+  //   RELEASE válido pré-existente de +2 (com quantity_before/after aritmeticamente correto)
+  //   Saldo divergente: available_qty não restaurado, reserved_qty=2
+  //   expires_at vencido
+  //   Exigir: errors=1, expired=0, released=0, error=PREEXISTING_FULL_RELEASE_REQUIRES_RECONCILIATION
+  //   Pedido: status=READY_FOR_PAYMENT, expired_at=null
+  //   Estoque: available_qty inalterado, reserved_qty=2, version inalterada
+  //   Movimentos: nenhum novo RELEASE
+  //   Eventos: zero ORDER_EXPIRED
+  it('T43: full release pré-existente com saldo divergente — reconciliação obrigatória', async () => {
+    await seedCart('account-1');
+    const r = await orderService.createOrder('account-1', {
+      fulfillment_type: 'DELIVERY',
+      address_id: 'addr-1',
+      shipping_provider: 'flat_rate',
+      shipping_service_code: 'standard',
+      shipping_quote_cents: 0,
+      shipping_quote_currency: 'BRL',
+      pickup_store_id: null,
+    });
+
+    const reservationId = r.data.reservation_ids?.[0] || 'res-t43';
+    await runSql(db, `DELETE FROM pdv_inventory_movements_v2 WHERE reference_id = ?`, [reservationId]);
+    await runSql(db, `DELETE FROM pdv_inventory_movements_v2 WHERE reference_id = ?`, [r.data.id]);
+    await runSql(db, `UPDATE app_orders SET snapshot_json = '{"store_origin_id":"vila"}', reservation_ids_json = ?, expires_at = ? WHERE id = ?`, [JSON.stringify([reservationId]), futureIso(10), r.data.id]);
+
+    // Saldo divergente: available=8, reserved=2 (hold=2, mas release de 2 não foi aplicado ao saldo)
+    //   available_qty deveria ser 10 se o release de 2 tivesse sido aplicado
+    await runSql(db, `UPDATE pdv_inventory_balances_v2 SET available_qty=8, reserved_qty=2, version=5, updated_at=? WHERE variant_id='variant-1' AND store_id='vila'`, [NOW_ISO]);
+
+    // HOLD válido de -2
+    await runSql(db, `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, origin, reference_type, reference_id, idempotency_key, actor_user_id, actor_name, metadata_json, created_at) VALUES ('m-hold-t43', 'variant-1', 'vila', 'RESERVATION_HOLD', -2, 10, 8, 'app_order_shop', 'RESERVATION', ?, 'key-t43::variant-1', 0, 'system', '{}', ?)`, [reservationId, NOW_ISO]);
+
+    // RELEASE válido pré-existente de +2 (quantity_before=0, quantity_after=2, aritmeticamente correto)
+    await runSql(db, `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, origin, reference_type, reference_id, idempotency_key, actor_user_id, actor_name, metadata_json, created_at) VALUES ('m-rel-t43-pre', 'variant-1', 'vila', 'RESERVATION_RELEASE', 2, 0, 2, 'app_order_shop', 'RESERVATION', ?, 'key-t43-rel-pre', 0, 'system', '{}', ?)`, [r.data.id, NOW_ISO]);
+
+    // Sweep
+    const sweepResult = await sweepExpiredOrders({ db, inventoryService, now: new Date(NOW.getTime() + 11 * 60 * 1000) });
+    assert.strictEqual(sweepResult.errors, 1, 'Sweep deve ter 1 erro');
+    assert.strictEqual(sweepResult.expired, 0, 'Sweep não deve expirar pedido');
+    assert.strictEqual(sweepResult.released, 0, 'Sweep não deve liberar estoque');
+    assert.strictEqual(sweepResult.errors_details[0].error, 'PREEXISTING_FULL_RELEASE_REQUIRES_RECONCILIATION', 'Erro deve ser PREEXISTING_FULL_RELEASE_REQUIRES_RECONCILIATION');
+
+    // Pedido: status=READY_FOR_PAYMENT, expired_at=null
+    const order = await getSql(db, `SELECT id, status, expired_at FROM app_orders WHERE id = ?`, [r.data.id]);
+    assert.strictEqual(order.status, 'READY_FOR_PAYMENT', 'Pedido deve permanecer READY_FOR_PAYMENT');
+    assert.strictEqual(order.expired_at, null, 'Pedido não deve ter expired_at');
+
+    // Estoque: available_qty inalterado, reserved_qty=2, version inalterada
+    const balance = await getSql(db, `SELECT available_qty, reserved_qty, version FROM pdv_inventory_balances_v2 WHERE variant_id='variant-1' AND store_id='vila'`);
+    assert.strictEqual(balance.available_qty, 8, 'available_qty deve ser 8 (inalterado)');
+    assert.strictEqual(balance.reserved_qty, 2, 'reserved_qty deve ser 2 (inalterado)');
+    assert.strictEqual(balance.version, 5, 'version deve ser 5 (inalterada)');
+
+    // Movimentos: nenhum novo RELEASE
+    const releases = await allSql(db, `SELECT id FROM pdv_inventory_movements_v2 WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'`, [r.data.id]);
+    assert.strictEqual(releases.length, 1, 'Apenas o RELEASE pré-existente deve existir');
+    assert.strictEqual(releases[0].id, 'm-rel-t43-pre', 'O movimento deve ser o pré-existente');
+
+    // Eventos: zero ORDER_EXPIRED
+    const events = await allSql(db, `SELECT * FROM app_order_events WHERE order_id = ? AND event_type = 'ORDER_EXPIRED'`, [r.data.id]);
+    assert.strictEqual(events.length, 0, 'Zero ORDER_EXPIRED');
   });
 });
