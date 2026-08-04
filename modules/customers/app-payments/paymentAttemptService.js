@@ -376,14 +376,27 @@ function createPaymentAttemptService(options = {}) {
     const sanitizedRaw = sanitizeResponse(adapterResult.raw || {});
     const now3 = iso(new Date());
 
-    const updateResult = await db.run(
-      `UPDATE app_payment_attempts
-       SET status = 'PENDING', provider_reference = ?, provider_transaction_nsu = ?,
-           provider_checkout_url = ?, provider_response_sanitized_json = ?,
-           updated_at = ?, version = version + 1
-       WHERE id = ? AND status = 'REQUESTING'`,
-      [providerReference, providerTransactionNsu, checkoutUrl, JSON.stringify(sanitizedRaw), now3, attemptId]
-    );
+    let updateResult;
+    try {
+      updateResult = await db.run(
+        `UPDATE app_payment_attempts
+         SET status = 'PENDING', provider_reference = ?, provider_transaction_nsu = ?,
+             provider_checkout_url = ?, provider_response_sanitized_json = ?,
+             updated_at = ?, version = version + 1
+         WHERE id = ? AND status = 'REQUESTING'`,
+        [providerReference, providerTransactionNsu, checkoutUrl, JSON.stringify(sanitizedRaw), now3, attemptId]
+      );
+    } catch (updateErr) {
+      // UPDATE throw (exceção) → attempt permanece REQUESTING, provider já foi chamado
+      // Retornar RECONCILIATION_REQUIRED para que o retry trate
+      return {
+        success: true,
+        attempt_id: attemptId,
+        attempt: await findExistingAttempt(db, orderId, fingerprint),
+        idempotent: true,
+        reason: "RECONCILIATION_REQUIRED",
+      };
+    }
 
     // Se update falhou (attempt não mais REQUESTING), não re-chamar provider
     if (updateResult.changes === 0) {

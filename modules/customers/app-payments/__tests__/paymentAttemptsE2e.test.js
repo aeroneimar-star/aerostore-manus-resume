@@ -953,30 +953,31 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
   });
 
   // ============================================================
-  // T39. Provider-success/update-failure: attempt permanece REQUESTING
+  // T39. Provider-success/update-failure: UPDATE throws, attempt permanece REQUESTING
   // ============================================================
-  it("T39: provider-success/update-failure deixa attempt REQUESTING", async () => {
+  it("T39: UPDATE SET status='PENDING' throws → attempt REQUESTING, retry RECONCILIATION_REQUIRED", async () => {
     // PROOF REAL: Quando o adapter retorna sucesso mas o UPDATE para marcar attempt como PENDING
-    // falha (changes=0 ou exception), o attempt permanece REQUESTING — não é marcado FAILED.
+    // throw uma exception, o attempt permanece REQUESTING — não é marcado FAILED.
     // Isso prova que:
     // 1. BEGIN IMMEDIATE → validação → INSERT REQUESTING → COMMIT funciona
     // 2. Provider é chamado após COMMIT (success=true)
-    // 3. UPDATE SET status='PENDING' WHERE id=? AND status='REQUESTING' falha
-    // 4. Attempt permanece REQUESTING
-    // 5. Retry retorna RECONCILIATION_REQUIRED sem chamar provider
+    // 3. UPDATE SET status='PENDING' WHERE id=? AND status='REQUESTING' THROWS
+    // 4. Attempt permanece REQUESTING (catch trata como RECONCILIATION_REQUIRED)
+    // 5. Retry retorna RECONCILIATION_REQUIRED sem chamar provider novamente
 
-    // Criar wrapper dbApi que falha no UPDATE SET status = 'PENDING'
+    // Criar wrapper dbApi que faz o UPDATE SET status='PENDING' throw
     let updatePendingCallCount = 0;
+    let updatePendingThrowCount = 0;
     const faultDbApi = {
       _isFaultInjected: true,
       run: async (sql, params = []) => {
         // Interceptar o UPDATE que marca PENDING
-        if (typeof sql === 'string' && sql.includes("SET status = 'PENDING'")) {
+        if (typeof sql === 'string' && sql.includes("SET status = 'PENDING'") && sql.includes("WHERE id = ? AND status = 'REQUESTING'")) {
           updatePendingCallCount++;
           if (updatePendingCallCount === 1) {
-            // Primeira chamada: simular que o UPDATE não casou nenhuma linha (attempt não mais REQUESTING)
-            // Isso é o cenário real: alguém já mudou o status entre COMMIT e UPDATE
-            return { changes: 0 };
+            // Primeira chamada: simular exception real (ex: conexão perdida, lock timeout)
+            updatePendingThrowCount++;
+            return Promise.reject(new Error("TEST_FAULT: UPDATE SET status='PENDING' threw exception (simulated DB lock)"));
           }
         }
         return db.run(sql, params);
@@ -1016,21 +1017,25 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
     });
 
     // Primeira chamada: BEGIN IMMEDIATE → INSERT REQUESTING → COMMIT → provider success
-    // Mas UPDATE SET status='PENDING' retorna changes=0 → RECONCILIATION_REQUIRED
+    // Mas UPDATE SET status='PENDING' THROWS → RECONCILIATION_REQUIRED
     const result1 = await svcT39.createPixAttempt("account-1", "order-t39");
-    assert.ok(result1.success, "First call should succeed (success=true)");
+    assert.ok(result1.success, "First call should succeed (success=true) despite UPDATE throw");
     assert.ok(result1.attempt, "Must have attempt");
+    assert.strictEqual(result1.reason, "RECONCILIATION_REQUIRED", `First call must return RECONCILIATION_REQUIRED, got ${result1.reason}`);
 
-    // PROOF: Attempt permanece REQUESTING (UPDATE não casou)
+    // PROOF: Attempt permanece REQUESTING (UPDATE threw antes de mudar)
     const attempts1 = await allSql(db, "SELECT id, status FROM app_payment_attempts WHERE order_id = 'order-t39'");
     assert.strictEqual(attempts1.length, 1, "Exactly one attempt");
-    assert.strictEqual(attempts1[0].status, "REQUESTING", `Attempt must remain REQUESTING, got ${attempts1[0].status}`);
+    assert.strictEqual(attempts1[0].status, "REQUESTING", `Attempt must remain REQUESTING after UPDATE throw, got ${attempts1[0].status}`);
 
     // PROOF: Provider foi chamado exatamente 1 vez
     assert.strictEqual(providerCallCount, 1, `Provider should be called exactly once, got ${providerCallCount}`);
 
     // PROOF: UPDATE PENDING foi tentado exatamente 1 vez
     assert.strictEqual(updatePendingCallCount, 1, `UPDATE PENDING should be attempted exactly once, got ${updatePendingCallCount}`);
+
+    // PROOF: UPDATE PENDING throw foi executado 1 vez
+    assert.strictEqual(updatePendingThrowCount, 1, `UPDATE PENDING should have thrown exactly once, got ${updatePendingThrowCount}`);
 
     // Segunda chamada: retry — deve encontrar attempt REQUESTING existente
     // e retornar RECONCILIATION_REQUIRED sem chamar provider novamente
@@ -1088,13 +1093,11 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
     assert.strictEqual(attempt.provider_transaction_nsu, "NSU-12345");
   });
 
-  // ============================================================
-  // T41. Lossless migration: v1 data preserved, new columns NULL-safe
-  // ============================================================
   // T41. Lossless migration: v1 data preserved with exact value comparison
   // ============================================================
   it("T41: migration v1→v2 preserva dados exatos e novas colunas são NULL-safe", async () => {
-    // PROOF: Criar tabela v1 separada, aplicar migration, comparar valores exatamente.
+    // PROOF: Criar tabela v1 separada com TODOS os campos preenchidos,
+    // aplicar migration, comparar valores exatamente com strictEqual.
 
     const sqlite3 = require("sqlite3");
     const path = require("path");
@@ -1146,7 +1149,8 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
       await testDb.exec("PRAGMA journal_mode = WAL");
       await testDb.exec("PRAGMA foreign_keys = OFF");
 
-      // Criar tabela v1 (SEM provider_transaction_nsu, SEM reservation_fingerprint)
+      // Criar tabela v1 (com provider_pix_copy_paste, provider_qr_code, reservation_fingerprint,
+      // provider_response_sanitized_json — mas SEM provider_transaction_nsu)
       await testDb.run(`
         CREATE TABLE app_payment_attempts (
           id TEXT PRIMARY KEY,
@@ -1157,9 +1161,13 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
           idempotency_key TEXT NOT NULL UNIQUE,
           provider_reference TEXT,
           provider_checkout_url TEXT,
+          provider_pix_copy_paste TEXT,
+          provider_qr_code TEXT,
           amount_cents INTEGER NOT NULL,
           currency TEXT NOT NULL DEFAULT 'BRL',
           request_fingerprint TEXT NOT NULL,
+          reservation_fingerprint TEXT,
+          provider_response_sanitized_json TEXT,
           failure_code TEXT,
           failure_message_sanitized TEXT,
           expires_at TEXT,
@@ -1169,87 +1177,130 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
         )
       `);
 
-      // Inserir dados v1 com valores conhecidos
+      // Inserir dados v1 com TODOS os valores preenchidos
       const seedData = [
         {
           id: "att-mig-1", order_id: "ord-mig-1", provider: "INFINITEPAY", method: "PIX",
           status: "PENDING", idempotency_key: "PIX::fp1", provider_reference: "INV-001",
-          provider_checkout_url: "https://checkout.example.com/1", amount_cents: 5000,
+          provider_checkout_url: "https://checkout.example.com/1",
+          provider_pix_copy_paste: "00020126580014br.gov.bcb.pix0136e3c1f8b2-copy-paste",
+          provider_qr_code: "data:image/png;base64,iVBORw0-qr-code-img",
+          amount_cents: 5000,
           currency: "BRL", request_fingerprint: "fp1",
+          reservation_fingerprint: "res-fp1",
+          provider_response_sanitized_json: '{"status":"pending","amount":5000}',
           failure_code: null, failure_message_sanitized: null,
           expires_at: null, created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z", version: 1,
         },
         {
           id: "att-mig-2", order_id: "ord-mig-2", provider: "INFINITEPAY", method: "PIX",
-          status: "FAILED", idempotency_key: "PIX::fp2", provider_reference: null,
-          provider_checkout_url: null, amount_cents: 3000,
+          status: "FAILED", idempotency_key: "PIX::fp2", provider_reference: "INV-002",
+          provider_checkout_url: "https://checkout.example.com/2",
+          provider_pix_copy_paste: "00020126580014br.gov.bcb.pix0136a1b2c3d4-copy-paste",
+          provider_qr_code: "data:image/png;base64,iVBORw0-qr-code-img2",
+          amount_cents: 3000,
           currency: "BRL", request_fingerprint: "fp2",
+          reservation_fingerprint: "res-fp2",
+          provider_response_sanitized_json: '{"status":"failed","reason":"timeout"}',
           failure_code: "TIMEOUT", failure_message_sanitized: "Timeout ao consultar provider",
           expires_at: "2024-01-02T00:00:00Z", created_at: "2024-01-01T01:00:00Z", updated_at: "2024-01-01T01:00:00Z", version: 2,
         },
+        // Terceira linha com MESMO provider_reference (para testar que duplicate provider_reference é permitido)
+        {
+          id: "att-mig-3", order_id: "ord-mig-3", provider: "INFINITEPAY", method: "PIX",
+          status: "CREATED", idempotency_key: "PIX::fp3", provider_reference: "INV-002",
+          provider_checkout_url: null,
+          provider_pix_copy_paste: null,
+          provider_qr_code: null,
+          amount_cents: 1000,
+          currency: "BRL", request_fingerprint: "fp3",
+          reservation_fingerprint: null,
+          provider_response_sanitized_json: null,
+          failure_code: null, failure_message_sanitized: null,
+          expires_at: null, created_at: "2024-01-01T02:00:00Z", updated_at: "2024-01-01T02:00:00Z", version: 1,
+        },
       ];
+
+      const insertCols = "id, order_id, provider, method, status, idempotency_key, provider_reference, provider_checkout_url, provider_pix_copy_paste, provider_qr_code, amount_cents, currency, request_fingerprint, reservation_fingerprint, provider_response_sanitized_json, failure_code, failure_message_sanitized, expires_at, created_at, updated_at, version";
+      const insertPlaceholders = new Array(21).fill("?").join(", ");
 
       for (const row of seedData) {
         await testDb.run(
-          `INSERT INTO app_payment_attempts (id, order_id, provider, method, status, idempotency_key, provider_reference, provider_checkout_url, amount_cents, currency, request_fingerprint, failure_code, failure_message_sanitized, expires_at, created_at, updated_at, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [row.id, row.order_id, row.provider, row.method, row.status, row.idempotency_key, row.provider_reference, row.provider_checkout_url, row.amount_cents, row.currency, row.request_fingerprint, row.failure_code, row.failure_message_sanitized, row.expires_at, row.created_at, row.updated_at, row.version]
+          `INSERT INTO app_payment_attempts (${insertCols}) VALUES (${insertPlaceholders})`,
+          [row.id, row.order_id, row.provider, row.method, row.status, row.idempotency_key,
+           row.provider_reference, row.provider_checkout_url, row.provider_pix_copy_paste,
+           row.provider_qr_code, row.amount_cents, row.currency, row.request_fingerprint,
+           row.reservation_fingerprint, row.provider_response_sanitized_json, row.failure_code,
+           row.failure_message_sanitized, row.expires_at, row.created_at, row.updated_at, row.version]
         );
       }
 
       // Salvar snapshot v1 para comparação
       const v1Rows = await testDb.all("SELECT * FROM app_payment_attempts ORDER BY id");
-      assert.strictEqual(v1Rows.length, 2, "Should have 2 v1 rows");
+      assert.strictEqual(v1Rows.length, 3, "Should have 3 v1 rows");
 
-      // PROOF: Verificar que provider_transaction_nsu NÃO existe antes da migration
+      // PROOF: provider_transaction_nsu NÃO existe antes
       const v1Cols = await testDb.all("PRAGMA table_info(app_payment_attempts)");
       const v1ColNames = v1Cols.map(c => c.name);
       assert.ok(!v1ColNames.includes("provider_transaction_nsu"), "provider_transaction_nsu must NOT exist before migration");
-      assert.ok(!v1ColNames.includes("reservation_fingerprint"), "reservation_fingerprint must NOT exist before migration");
 
       // Aplicar migration
       const migrationResult = await applyAppPaymentAttemptSchema(testDb);
       assert.ok(migrationResult.migrated, "Migration should report migrated=true");
       assert.strictEqual(migrationResult.from_version, "v1", "Should report from_version=v1");
 
-      // PROOF: Verificar colunas v2 adicionadas
-      const v2Cols = await testDb.all("PRAGMA table_info(app_payment_attempts)");
-      const v2ColNames = v2Cols.map(c => c.name);
-      assert.ok(v2ColNames.includes("provider_transaction_nsu"), "provider_transaction_nsu must exist after migration");
-      assert.ok(v2ColNames.includes("reservation_fingerprint"), "reservation_fingerprint must exist after migration");
-      assert.ok(v2ColNames.includes("provider_pix_copy_paste"), "provider_pix_copy_paste must exist after migration");
-      assert.ok(v2ColNames.includes("provider_qr_code"), "provider_qr_code must exist after migration");
-
-      // PROOF: Comparar valores v1 EXATOS linha por linha
+      // PROOF: Comparar valores v1 EXATOS linha por linha com strictEqual
       const v2Rows = await testDb.all("SELECT * FROM app_payment_attempts ORDER BY id");
-      assert.strictEqual(v2Rows.length, 2, "Row count must be preserved exactly");
+      assert.strictEqual(v2Rows.length, 3, "Row count must be preserved exactly");
+
+      const allV1Cols = ["id", "order_id", "provider", "method", "status", "idempotency_key",
+        "provider_reference", "provider_checkout_url", "provider_pix_copy_paste",
+        "provider_qr_code", "amount_cents", "currency", "request_fingerprint",
+        "reservation_fingerprint", "provider_response_sanitized_json", "failure_code",
+        "failure_message_sanitized", "expires_at", "created_at", "updated_at", "version"];
 
       for (let i = 0; i < v1Rows.length; i++) {
         const v1 = v1Rows[i];
         const v2 = v2Rows[i];
-        // Comparar TODAS as colunas v1
-        const v1OnlyCols = ["id", "order_id", "provider", "method", "status", "idempotency_key",
-          "provider_reference", "provider_checkout_url", "amount_cents", "currency",
-          "request_fingerprint", "failure_code", "failure_message_sanitized",
-          "expires_at", "created_at", "updated_at", "version"];
-        for (const col of v1OnlyCols) {
-          assert.strictEqual(v2[col], v1[col], `${col} must be preserved exactly for row ${i}: expected ${JSON.stringify(v1[col])}, got ${JSON.stringify(v2[col])}`);
+        for (const col of allV1Cols) {
+          assert.strictEqual(v2[col], v1[col],
+            `${col} must be preserved exactly for row ${i}: expected ${JSON.stringify(v1[col])}, got ${JSON.stringify(v2[col])}`);
         }
       }
 
-      // PROOF: Novas colunas v2 são NULL (sem valor default)
+      // PROOF: provider_reference duplicado é PERMITIDO após migration
+      const dupProvRef = await testDb.all("SELECT id, provider_reference FROM app_payment_attempts WHERE provider_reference = 'INV-002'");
+      assert.strictEqual(dupProvRef.length, 2, "Two rows with same provider_reference must be allowed after migration");
+
+      // PROOF: Novas colunas v2 são NULL para dados antigos
       for (const row of v2Rows) {
-        assert.strictEqual(row.provider_transaction_nsu, null, `provider_transaction_nsu must be NULL for ${row.id}`);
-        assert.strictEqual(row.reservation_fingerprint, null, `reservation_fingerprint must be NULL for ${row.id}`);
-        assert.strictEqual(row.provider_pix_copy_paste, null, `provider_pix_copy_paste must be NULL for ${row.id}`);
-        assert.strictEqual(row.provider_qr_code, null, `provider_qr_code must be NULL for ${row.id}`);
+        assert.strictEqual(row.provider_transaction_nsu, null,
+          `provider_transaction_nsu must be NULL for ${row.id}`);
       }
 
-      // PROOF: Índices v2 existem
-      const indexes = await testDb.all("PRAGMA index_list(app_payment_attempts)");
-      const indexNames = indexes.map(idx => idx.name);
-      assert.ok(indexNames.includes("idx_payment_attempts_order_fingerprint"), "UNIQUE index on (order_id, request_fingerprint) must exist");
-      assert.ok(indexNames.includes("idx_payment_attempts_order"), "Index on order_id must exist");
-      assert.ok(indexNames.includes("idx_payment_attempts_fingerprint"), "Index on request_fingerprint must exist");
+      // PROOF: Nenhuma tabela _v2 restante
+      const tempTable = await testDb.get("SELECT name FROM sqlite_master WHERE type='table' AND name='_app_payment_attempts_v2'");
+      assert.ok(!tempTable, "No _app_payment_attempts_v2 table should remain after migration");
+
+      // PROOF: idempotency_key duplicada é BLOQUEADA
+      await assert.rejects(
+        () => testDb.run(
+          "INSERT INTO app_payment_attempts (id, order_id, idempotency_key, amount_cents, request_fingerprint, created_at, updated_at, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          ["att-dup-1", "ord-dup-1", "PIX::fp1", 1000, "fp-dup", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 1]
+        ),
+        { message: /UNIQUE/i },
+        "idempotency_key duplicate must be blocked"
+      );
+
+      // PROOF: order_id + request_fingerprint duplicado é BLOQUEADO
+      await assert.rejects(
+        () => testDb.run(
+          "INSERT INTO app_payment_attempts (id, order_id, idempotency_key, amount_cents, request_fingerprint, created_at, updated_at, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          ["att-dup-2", "ord-mig-1", "PIX::fp-dup", 1000, "fp1", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 1]
+        ),
+        { message: /UNIQUE/i },
+        "order_id + request_fingerprint duplicate must be blocked"
+      );
 
       // PROOF: Idempotência — segunda execução detecta v2 e não faz nada
       const migrationResult2 = await applyAppPaymentAttemptSchema(testDb);
@@ -1258,7 +1309,7 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
 
       // Dados ainda intactos após idempotent call
       const v3Rows = await testDb.all("SELECT * FROM app_payment_attempts ORDER BY id");
-      assert.strictEqual(v3Rows.length, 2, "Row count must be preserved after idempotent migration");
+      assert.strictEqual(v3Rows.length, 3, "Row count must be preserved after idempotent migration");
 
     } finally {
       await testDb.close();
@@ -1273,7 +1324,8 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
   // ============================================================
   it("T42: migration rollback preserva dados v1 quando falha no meio", async () => {
     // PROOF: Simular falha durante a migration injetando um wrapper que
-    // interfere no runner.run() após o BEGIN IMMEDIATE.
+    // falha no INSERT SELECT que copia os dados para a tabela temporária.
+    // NÃO criar _app_payment_attempts_v2 antecipadamente.
     // A migration deve fazer ROLLBACK e preservar a tabela v1 original.
 
     const sqlite3 = require("sqlite3");
@@ -1283,9 +1335,14 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
 
     const tmpFile = path.join(os.tmpdir(), `migration-rollback-t42-${Date.now()}.db`);
 
-    function wrapConn(conn) {
-      return {
+    function wrapConn(conn, failOnInsertSelect = false) {
+      let insertSelectBlocked = false;
+      const runner = {
         run: (sql, params = []) => new Promise((resolve, reject) => {
+          // Se failOnInsertSelect e o SQL é o INSERT SELECT, rejeitar
+          if (failOnInsertSelect && /INSERT\s+INTO\s+_app_payment_attempts_v2/i.test(sql) && /INSERT\s+INTO\s+_app_payment_attempts_v2.*SELECT.*FROM\s+app_payment_attempts/is.test(sql)) {
+            return reject(new Error("TEST_FAULT: INSERT SELECT failed during migration"));
+          }
           conn.run(sql, params, function (err) {
             if (err) reject(err);
             else resolve({ changes: this.changes, lastID: this.lastID });
@@ -1316,16 +1373,17 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
           });
         }),
       };
+      return runner;
     }
 
     const conn = new sqlite3.Database(tmpFile);
-    const testDb = wrapConn(conn);
+    const testDb = wrapConn(conn, true);
 
     try {
       await testDb.exec("PRAGMA journal_mode = WAL");
       await testDb.exec("PRAGMA foreign_keys = OFF");
 
-      // Criar tabela v1
+      // Criar tabela v1 (schema completo v1)
       await testDb.run(`
         CREATE TABLE app_payment_attempts (
           id TEXT PRIMARY KEY,
@@ -1335,35 +1393,44 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
           status TEXT NOT NULL DEFAULT 'CREATED',
           idempotency_key TEXT NOT NULL UNIQUE,
           provider_reference TEXT,
+          provider_checkout_url TEXT,
+          provider_pix_copy_paste TEXT,
+          provider_qr_code TEXT,
           amount_cents INTEGER NOT NULL,
           currency TEXT NOT NULL DEFAULT 'BRL',
           request_fingerprint TEXT NOT NULL,
+          reservation_fingerprint TEXT,
+          provider_response_sanitized_json TEXT,
+          failure_code TEXT,
+          failure_message_sanitized TEXT,
+          expires_at TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           version INTEGER NOT NULL DEFAULT 1
         )
       `);
 
-      // Inserir dado v1
+      // Inserir dados v1
       await testDb.run(
-        `INSERT INTO app_payment_attempts (id, order_id, provider, method, status, idempotency_key, amount_cents, currency, request_fingerprint, created_at, updated_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ["att-rollback-1", "ord-rollback-1", "INFINITEPAY", "PIX", "PENDING", "PIX::rb1", 5000, "BRL", "rb1", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 1]
+        `INSERT INTO app_payment_attempts (id, order_id, provider, method, status, idempotency_key, provider_reference, amount_cents, currency, request_fingerprint, created_at, updated_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ["att-rollback-1", "ord-rollback-1", "INFINITEPAY", "PIX", "PENDING", "PIX::rb1", "INV-RB-1", 5000, "BRL", "rb1", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 1]
+      );
+      await testDb.run(
+        `INSERT INTO app_payment_attempts (id, order_id, provider, method, status, idempotency_key, provider_reference, amount_cents, currency, request_fingerprint, created_at, updated_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ["att-rollback-2", "ord-rollback-2", "INFINITEPAY", "PIX", "CREATED", "PIX::rb2", null, 3000, "BRL", "rb2", "2024-01-01T01:00:00Z", "2024-01-01T01:00:00Z", 1]
       );
 
       // Snapshot antes da migration
-      const beforeCount = await testDb.all("SELECT count(*) as cnt FROM app_payment_attempts");
-      assert.strictEqual(beforeCount[0].cnt, 1, "Should have 1 row before migration");
+      const beforeRows = await testDb.all("SELECT * FROM app_payment_attempts ORDER BY id");
+      assert.strictEqual(beforeRows.length, 2, "Should have 2 rows before migration");
 
-      // Injetar falha: criar uma tabela com o mesmo nome da tabela v2 temporária
-      // para forçar erro de "table already exists" no meio da migration
-      await testDb.run(`
-        CREATE TABLE _app_payment_attempts_v2 (
-          id TEXT PRIMARY KEY, dummy TEXT NOT NULL
-        )
-      `);
+      // PROOF: Nenhuma tabela _v2 antes da migration
+      const noV2Before = await testDb.get("SELECT name FROM sqlite_master WHERE type='table' AND name='_app_payment_attempts_v2'");
+      assert.ok(!noV2Before, "No _app_payment_attempts_v2 should exist before migration");
 
-      // Tentar migration — deve falhar e fazer ROLLBACK
+      // Tentar migration — o wrapper falha no INSERT SELECT
       const { applyAppPaymentAttemptSchema } = require("../persistence/appPaymentAttemptSchema");
       let migrationErr = null;
       try {
@@ -1372,25 +1439,33 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
         migrationErr = e;
       }
 
-      // PROOF: Migration deve ter falhado
+      // PROOF: Migration deve ter falhado com MIGRATION_V1_TO_V2_FAILED
       assert.ok(migrationErr, "Migration should have failed");
-      assert.ok(migrationErr.message.includes("MIGRATION_V1_TO_V2_FAILED"), `Expected MIGRATION_V1_TO_V2_FAILED, got: ${migrationErr.message}`);
+      assert.ok(migrationErr.message.includes("MIGRATION_V1_TO_V2_FAILED"),
+        `Expected MIGRATION_V1_TO_V2_FAILED, got: ${migrationErr.message}`);
 
-      // PROOF: Tabela v1 original deve estar intacta
-      const afterCount = await testDb.all("SELECT count(*) as cnt FROM app_payment_attempts");
-      assert.strictEqual(afterCount[0].cnt, 1, "Row count must be preserved after failed migration");
+      // PROOF: ROLLBACK executado — tabela v1 original intacta
+      const afterRows = await testDb.all("SELECT * FROM app_payment_attempts ORDER BY id");
+      assert.strictEqual(afterRows.length, 2, "Row count must be preserved after failed migration");
 
-      const row = await testDb.get("SELECT id, order_id, status, amount_cents FROM app_payment_attempts WHERE id = ?", ["att-rollback-1"]);
-      assert.ok(row, "Original row must still exist");
-      assert.strictEqual(row.id, "att-rollback-1");
-      assert.strictEqual(row.order_id, "ord-rollback-1");
-      assert.strictEqual(row.status, "PENDING");
-      assert.strictEqual(row.amount_cents, 5000);
+      // PROOF: Dados originais idênticos
+      for (let i = 0; i < beforeRows.length; i++) {
+        assert.strictEqual(afterRows[i].id, beforeRows[i].id, `Row ${i} id must match`);
+        assert.strictEqual(afterRows[i].order_id, beforeRows[i].order_id, `Row ${i} order_id must match`);
+        assert.strictEqual(afterRows[i].status, beforeRows[i].status, `Row ${i} status must match`);
+        assert.strictEqual(afterRows[i].amount_cents, beforeRows[i].amount_cents, `Row ${i} amount_cents must match`);
+        assert.strictEqual(afterRows[i].provider_reference, beforeRows[i].provider_reference, `Row ${i} provider_reference must match`);
+      }
 
-      // PROOF: provider_transaction_nsu NÃO deve existir (migration não completou)
+      // PROOF: Nenhuma tabela _app_payment_attempts_v2 restante
+      const noV2After = await testDb.get("SELECT name FROM sqlite_master WHERE type='table' AND name='_app_payment_attempts_v2'");
+      assert.ok(!noV2After, "No _app_payment_attempts_v2 table should remain after rollback");
+
+      // PROOF: Nenhuma coluna v2 adicionada parcialmente
       const cols = await testDb.all("PRAGMA table_info(app_payment_attempts)");
       const colNames = cols.map(c => c.name);
-      assert.ok(!colNames.includes("provider_transaction_nsu"), "provider_transaction_nsu must NOT exist after failed migration");
+      assert.ok(!colNames.includes("provider_transaction_nsu"),
+        "provider_transaction_nsu must NOT exist after failed migration");
 
     } finally {
       await testDb.close();
