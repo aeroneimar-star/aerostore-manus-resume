@@ -7,6 +7,7 @@ const {
   isTerminalState,
   isPayableStatus,
 } = require("./paymentAttemptStates");
+const { createReservationIntegrityService } = require("../app-orders/reservationIntegrityService");
 
 const FEATURE_FLAG = "INFINITEPAY_SHOP_PIX_ENABLED";
 const PIX_ONLY_FLAG = "INFINITEPAY_CHECKOUT_PIX_ONLY_CONFIRMED";
@@ -41,6 +42,7 @@ function createPaymentAttemptService(options = {}) {
   const db = options.dbApi;
   const infinitePayAdapter = options.infinitePayAdapter;
   const getInfinitePayHandle = options.getInfinitePayHandle || (() => process.env.INFINITEPAY_HANDLE || "");
+  const reservationIntegrityService = options.reservationIntegrityService || createReservationIntegrityService();
 
   if (!db) {
     throw new Error("DB_API_REQUIRED for paymentAttemptService");
@@ -91,8 +93,8 @@ function createPaymentAttemptService(options = {}) {
   // ============================================================
   // VALIDAÇÃO DO PEDIDO COM AUTORIZAÇÃO POR CONTA
   // ============================================================
-  async function validateOrder(accountId, orderId) {
-    const order = await db.get(
+  async function validateOrder(runner, accountId, orderId) {
+    const order = await runner.get(
       `SELECT id, account_id, status, total_cents, currency, expires_at,
               reservation_ids_json, version, snapshot_json
        FROM app_orders WHERE id = ?`,
@@ -100,23 +102,13 @@ function createPaymentAttemptService(options = {}) {
     );
 
     if (!order) {
-      throw new PaymentAttemptError(
-        "ORDER_NOT_FOUND",
-        "Pedido não encontrado.",
-        { status: 404 }
-      );
+      throw new PaymentAttemptError("ORDER_NOT_FOUND", "Pedido não encontrado.", { status: 404 });
     }
 
-    // Autorização por conta: não revelar se pertence a outra conta
     if (order.account_id !== accountId) {
-      throw new PaymentAttemptError(
-        "ORDER_NOT_FOUND",
-        "Pedido não encontrado.",
-        { status: 404 }
-      );
+      throw new PaymentAttemptError("ORDER_NOT_FOUND", "Pedido não encontrado.", { status: 404 });
     }
 
-    // Status deve ser READY_FOR_PAYMENT
     if (!isPayableStatus(order.status)) {
       throw new PaymentAttemptError(
         "ORDER_NOT_PAYABLE",
@@ -125,7 +117,6 @@ function createPaymentAttemptService(options = {}) {
       );
     }
 
-    // Expiração
     if (order.expires_at && new Date(order.expires_at) <= new Date()) {
       throw new PaymentAttemptError(
         "ORDER_EXPIRED",
@@ -134,16 +125,10 @@ function createPaymentAttemptService(options = {}) {
       );
     }
 
-    // Total vem exclusivamente do backend
     if (!order.total_cents || order.total_cents <= 0) {
-      throw new PaymentAttemptError(
-        "ORDER_TOTAL_INVALID",
-        "Pedido não possui total válido.",
-        { status: 400 }
-      );
+      throw new PaymentAttemptError("ORDER_TOTAL_INVALID", "Pedido não possui total válido.", { status: 400 });
     }
 
-    // Currency = BRL
     if (order.currency !== "BRL") {
       throw new PaymentAttemptError(
         "ORDER_TOTAL_INVALID",
@@ -156,94 +141,12 @@ function createPaymentAttemptService(options = {}) {
   }
 
   // ============================================================
-  // VALIDAÇÃO REAL DE RESERVA (reutiliza lógica de Phase 3.7)
-  // ============================================================
-  async function validateReservationIntegrity(order) {
-    let reservationIds = [];
-    try {
-      reservationIds = JSON.parse(order.reservation_ids_json || "[]");
-    } catch {
-      reservationIds = [];
-    }
-
-    if (reservationIds.length === 0) {
-      throw new PaymentAttemptError(
-        "ORDER_RESERVATION_INVALID",
-        "Pedido não possui reservas de estoque.",
-        { status: 400 }
-      );
-    }
-
-    // Verificar cada reservation_id: existe e tem HOLD válido
-    const errors = [];
-    let totalHoldByStoreVariant = {};
-
-    for (const resId of reservationIds) {
-      if (!resId || typeof resId !== "string") {
-        errors.push("reservation_id inválido");
-        continue;
-      }
-
-      const movement = await db.get(
-        `SELECT id, reservation_id, movement_type, quantity_delta, store_id, variant_id,
-                order_id, created_at
-         FROM reservation_movements WHERE reservation_id = ? ORDER BY created_at ASC`,
-        [resId]
-      );
-
-      if (!movement) {
-        errors.push(`reservation_id ${resId} não encontrado`);
-        continue;
-      }
-
-      // Deve ser HOLD (quantity_delta < 0)
-      if (movement.movement_type !== "RESERVATION_HOLD") {
-        errors.push(`reservation_id ${resId} não é HOLD`);
-        continue;
-      }
-
-      if (movement.quantity_delta >= 0) {
-        errors.push(`reservation_id ${resId} tem delta >= 0`);
-        continue;
-      }
-
-      // Verificar saldo: reserved_qty deve suportar a quantidade reservada
-      const balance = await db.get(
-        `SELECT id, reserved_qty FROM inventory_balance
-         WHERE store_id = ? AND variant_id = ?`,
-        [movement.store_id, movement.variant_id]
-      );
-
-      if (balance) {
-        const absDelta = Math.abs(movement.quantity_delta);
-        if (balance.reserved_qty < absDelta) {
-          errors.push(`saldo insuficiente para reserva ${resId}`);
-        }
-      }
-
-      // Agregar total HOLD por store+variant
-      const key = `${movement.store_id}::${movement.variant_id}`;
-      totalHoldByStoreVariant[key] = (totalHoldByStoreVariant[key] || 0) + Math.abs(movement.quantity_delta);
-    }
-
-    if (errors.length > 0) {
-      throw new PaymentAttemptError(
-        "ORDER_RESERVATION_INVALID",
-        "Reservas inválidas detectadas.",
-        { status: 400, details: { errors: errors.slice(0, 5) } }
-      );
-    }
-
-    return { reservationIds, totalHoldByStoreVariant };
-  }
-
-  // ============================================================
   // IDEMPOTÊNCIA — Consulta de attempt existente
   // ============================================================
-  async function findExistingAttempt(orderId, fingerprint) {
-    const row = await db.get(
+  async function findExistingAttempt(runner, orderId, fingerprint) {
+    const row = await runner.get(
       `SELECT id, status, request_fingerprint, amount_cents, provider_reference,
-              provider_checkout_url, idempotency_key, created_at, updated_at
+              provider_transaction_nsu, provider_checkout_url, idempotency_key, created_at, updated_at
        FROM app_payment_attempts
        WHERE order_id = ? AND request_fingerprint = ?
        ORDER BY created_at DESC LIMIT 1`,
@@ -253,68 +156,140 @@ function createPaymentAttemptService(options = {}) {
   }
 
   // ============================================================
-  // CRIAÇÃO DE PAYMENT ATTEMPT — Fluxo atomic local-first
+  // CRIAÇÃO DE PAYMENT ATTEMPT — Fluxo atomic local-first com BEGIN IMMEDIATE
   // ============================================================
   async function createPixAttempt(accountId, orderId, params = {}) {
     ensureFeatureEnabled();
     ensurePixOnlyConfirmed();
     const handle = ensureAdapterConfigured();
 
-    // 1. Validar pedido com autorização por conta
-    const order = await validateOrder(accountId, orderId);
+    // Transação curta: BEGIN IMMEDIATE → validação local → INSERT → COMMIT
+    // Somente após COMMIT chama o provider
+    let commitResult = null;
+    let commitError = null;
+    let attemptId = generateId();
+    let now = iso(new Date());
+    let idempotencyKey = "";
+    let fingerprint = "";
+    let amountCents = 0;
+    let reservationFingerprint = "";
 
-    // 2. Validar integridade da reserva (real, não apenas JSON não vazio)
-    const { reservationIds, totalHoldByStoreVariant } = await validateReservationIntegrity(order);
-
-    // 3. Nenhum valor do app substitui o total
-    const amountCents = order.total_cents;
-
-    // 4. Gerar fingerprint determinístico INCLUINDO snapshot/version da reserva
-    const fingerprint = generateFingerprint({
-      order_id: order.id,
-      order_version: order.version,
-      amount_cents: amountCents,
-      currency: order.currency,
-      method: "PIX",
-      reservation_version: reservationIds.sort().join("::"),
-    });
-
-    // 5. Chave idempotência determinística: PIX::<fingerprint>
-    const idempotencyKey = `PIX::${fingerprint}`;
-
-    // 6. Verificar se já existe tentativa PENDING/REQUESTING para este pedido com fingerprint diferente
-    const existingActiveAttempt = await db.get(
-      `SELECT id, request_fingerprint, amount_cents, status FROM app_payment_attempts
-       WHERE order_id = ? AND status IN ('PENDING', 'REQUESTING')
-       ORDER BY created_at DESC LIMIT 1`,
-      [orderId]
-    );
-    if (existingActiveAttempt && existingActiveAttempt.request_fingerprint !== fingerprint) {
-      throw new PaymentAttemptError(
-        "PAYMENT_IDEMPOTENCY_CONFLICT",
-        "Fingerprint incompatível com tentativa existente.",
-        { status: 409 }
-      );
-    }
-
-    // 7. Tentar INSERT local com REQUESTING (atomic local-first)
-    const attemptId = generateId();
-    const now = iso(new Date());
-
-    let insertResult;
     try {
-      insertResult = await db.run(
+      await db.run("BEGIN IMMEDIATE");
+
+      // 1. Reler pedido por id + account_id dentro da transação
+      const order = await validateOrder(db, accountId, orderId);
+      amountCents = order.total_cents;
+
+      // 2. Validar reserva usando o service compartilhado (tabelas reais PDV)
+      const reservationResult = await reservationIntegrityService.validateReservationIntegrity(db, order);
+
+      // 4. Fingerprint real de reserva
+      fingerprint = generateFingerprint({
+        order_id: order.id,
+        order_version: order.version,
+        total_cents: amountCents,
+        currency: order.currency,
+        method: "PIX",
+        reservation_fingerprint: reservationResult.reservationFingerprint,
+      });
+      reservationFingerprint = reservationResult.reservationFingerprint;
+
+      // Idempotency key determinística
+      idempotencyKey = `PIX::${fingerprint}`;
+
+      // 5. Verificar attempt existente com mesmo fingerprint
+      const existing = await findExistingAttempt(db, orderId, fingerprint);
+      if (existing) {
+        // Já existe attempt com mesmo fingerprint — rollback e retornar existente
+        await db.run("ROLLBACK");
+
+        // Se está REQUESTING: falha antes do provider → RECONCILIATION_REQUIRED
+        if (existing.status === "REQUESTING") {
+          return {
+            success: true,
+            attempt: existing,
+            idempotent: true,
+            reason: "RECONCILIATION_REQUIRED",
+          };
+        }
+
+        // Se está FAILED: retornar o FAILED existente, não criar novo
+        if (existing.status === "FAILED") {
+          return {
+            success: true,
+            attempt: existing,
+            idempotent: true,
+            reason: "EXISTING_FAILED_ATTEMPT",
+          };
+        }
+
+        return {
+          success: true,
+          attempt: existing,
+          idempotent: true,
+          reason: "EXISTING_ATTEMPT_FOUND",
+        };
+      }
+
+      // 6. Verificar conflito: attempt ativo com fingerprint diferente
+      const existingActiveAttempt = await db.get(
+        `SELECT id, request_fingerprint, status FROM app_payment_attempts
+         WHERE order_id = ? AND status IN ('PENDING', 'REQUESTING')
+         ORDER BY created_at DESC LIMIT 1`,
+        [orderId]
+      );
+      if (existingActiveAttempt && existingActiveAttempt.request_fingerprint !== fingerprint) {
+        await db.run("ROLLBACK");
+        throw new PaymentAttemptError(
+          "PAYMENT_IDEMPOTENCY_CONFLICT",
+          "Fingerprint incompatível com tentativa existente.",
+          { status: 409 }
+        );
+      }
+
+      // 7. Inserir REQUESTING dentro da transação
+      await db.run(
         `INSERT INTO app_payment_attempts
          (id, order_id, provider, method, status, idempotency_key, amount_cents, currency,
-          request_fingerprint, expires_at, created_at, updated_at, version)
-         VALUES (?, ?, 'INFINITEPAY', 'PIX', 'REQUESTING', ?, ?, 'BRL', ?, NULL, ?, ?, 1)`,
-        [attemptId, orderId, idempotencyKey, amountCents, fingerprint, now, now]
+          request_fingerprint, reservation_fingerprint, expires_at, created_at, updated_at, version)
+         VALUES (?, ?, 'INFINITEPAY', 'PIX', 'REQUESTING', ?, ?, 'BRL', ?, ?, NULL, ?, ?, 1)`,
+        [attemptId, orderId, idempotencyKey, amountCents, fingerprint, reservationResult.reservationFingerprint, now, now]
       );
+
+      // 8. COMMIT — transação fechada antes de chamar o provider
+      await db.run("COMMIT");
+      commitResult = true;
     } catch (err) {
-      // Constraint UNIQUE violada: retry idêntico
+      if (commitResult) throw err; // já commitou, erro é do provider
+
+      // Tentativa de rollback
+      try {
+        await db.run("ROLLBACK");
+      } catch (rbErr) {
+        // ignore double rollback
+      }
+
+      // UNIQUE constraint violada → attempt já existe
       if (err.message && (err.message.includes("UNIQUE") || err.message.includes("unique"))) {
-        const existing = await findExistingAttempt(orderId, fingerprint);
+        const existing = await findExistingAttempt(db, orderId, fingerprint);
         if (existing) {
+          if (existing.status === "REQUESTING") {
+            return {
+              success: true,
+              attempt: existing,
+              idempotent: true,
+              reason: "RECONCILIATION_REQUIRED",
+            };
+          }
+          if (existing.status === "FAILED") {
+            return {
+              success: true,
+              attempt: existing,
+              idempotent: true,
+              reason: "EXISTING_FAILED_ATTEMPT",
+            };
+          }
           return {
             success: true,
             attempt: existing,
@@ -323,35 +298,51 @@ function createPaymentAttemptService(options = {}) {
           };
         }
       }
+
       throw err;
     }
 
-    // 7. Somente o vencedor chama o provider
-    // 8. Atualizar attempt com resposta do provider
-    const adapterResult = await infinitePayAdapter.createPixPayment({
-      handle,
-      order_nsu: orderId,
-      items: [{
-        quantity: 1,
-        price: amountCents,
-        description: `Pedido ${orderId}`,
-      }],
-      amount_cents: amountCents,
-    });
+    // ============================================================
+    // Somente após COMMIT chama o provider (transação já fechada)
+    // ============================================================
+    let adapterResult;
+    try {
+      adapterResult = await infinitePayAdapter.createPixPayment({
+        handle,
+        order_nsu: orderId,
+        items: [{
+          quantity: 1,
+          price: amountCents,
+          description: `Pedido ${orderId}`,
+        }],
+        amount_cents: amountCents,
+      });
+    } catch (adapterErr) {
+      // Falha na chamada ao provider → attempt permanece REQUESTING
+      // Retornar RECONCILIATION_REQUIRED para que o retry trate
+      return {
+        success: true,
+        attempt_id: attemptId,
+        attempt: await findExistingAttempt(db, orderId, fingerprint),
+        idempotent: true,
+        reason: "RECONCILIATION_REQUIRED",
+      };
+    }
 
-    // 9. Processar resposta do adapter
+    // Processar resposta do adapter
     if (!adapterResult.success) {
-      // Falha: atualizar para FAILED com lock otimista
+      // Falha no provider → atualizar para FAILED
       const sanitized = sanitizeResponse(adapterResult.details || adapterResult);
       const failureCode = adapterResult.error || "INFINITEPAY_API_ERROR";
       const failureMessage = sanitizeFailureMessage(adapterResult.message || "Erro desconhecido");
+      const now2 = iso(new Date());
 
-      const updateResult = await db.run(
+      await db.run(
         `UPDATE app_payment_attempts
          SET status = 'FAILED', failure_code = ?, failure_message_sanitized = ?,
              provider_response_sanitized_json = ?, updated_at = ?, version = version + 1
          WHERE id = ? AND status = 'REQUESTING'`,
-        [failureCode, failureMessage, JSON.stringify(sanitized), now, attemptId]
+        [failureCode, failureMessage, JSON.stringify(sanitized), now2, attemptId]
       );
 
       return {
@@ -362,29 +353,27 @@ function createPaymentAttemptService(options = {}) {
       };
     }
 
-    // 10. Validar contrato PIX: capture_method deve ser pix
-    // 11. NÃO marcar como PAID nesta fase — usar REVIEW_REQUIRED
-    // 12. provider_pix_copy_paste deve permanecer NULL
-    // 13. URL só em provider_checkout_url
-    // 14. provider_reference: NULL-safe (não string vazia)
+    // Atualizar para PENDING com provider_reference NULL-safe e transaction_nsu
     const providerReference = adapterResult.invoice_slug || null;
+    const providerTransactionNsu = adapterResult.raw?.transaction_nsu || adapterResult.transaction_nsu || null;
     const checkoutUrl = adapterResult.url || "";
     const sanitizedRaw = sanitizeResponse(adapterResult.raw || {});
+    const now3 = iso(new Date());
 
     const updateResult = await db.run(
       `UPDATE app_payment_attempts
-       SET status = 'PENDING', provider_reference = ?, provider_checkout_url = ?,
-           provider_response_sanitized_json = ?, updated_at = ?, version = version + 1
+       SET status = 'PENDING', provider_reference = ?, provider_transaction_nsu = ?,
+           provider_checkout_url = ?, provider_response_sanitized_json = ?,
+           updated_at = ?, version = version + 1
        WHERE id = ? AND status = 'REQUESTING'`,
-      [providerReference, checkoutUrl, JSON.stringify(sanitizedRaw), now, attemptId]
+      [providerReference, providerTransactionNsu, checkoutUrl, JSON.stringify(sanitizedRaw), now3, attemptId]
     );
 
     // Se update falhou (attempt não mais REQUESTING), não re-chamar provider
     if (updateResult.changes === 0) {
-      // Tentativa concorrente já atualizou — reconciliação necessária
       return {
         success: true,
-        attempt: await findExistingAttempt(orderId, fingerprint),
+        attempt: await findExistingAttempt(db, orderId, fingerprint),
         idempotent: true,
         reason: "RECONCILIATION_REQUIRED",
       };
@@ -400,11 +389,13 @@ function createPaymentAttemptService(options = {}) {
         status: "PENDING",
         idempotency_key: idempotencyKey,
         provider_reference: providerReference,
+        provider_transaction_nsu: providerTransactionNsu,
         provider_checkout_url: checkoutUrl,
         provider_pix_copy_paste: null,
         amount_cents: amountCents,
         currency: "BRL",
         request_fingerprint: fingerprint,
+        reservation_fingerprint: reservationFingerprint,
       },
     };
   }
@@ -442,11 +433,21 @@ function createPaymentAttemptService(options = {}) {
       };
     }
 
+    // Se REQUESTING: não consultar provider, retornar RECONCILIATION_REQUIRED
+    if (attempt.status === "REQUESTING") {
+      return {
+        success: true,
+        attempt,
+        from_cache: false,
+        reason: "RECONCILIATION_REQUIRED",
+      };
+    }
+
     // Consultar provider
     const statusResult = await infinitePayAdapter.getPixPaymentStatus({
       handle,
       order_nsu: attempt.order_id,
-      transaction_nsu: attempt.provider_reference || "",
+      transaction_nsu: attempt.provider_transaction_nsu || "",
       slug: attempt.provider_reference || "",
     });
 
@@ -461,25 +462,7 @@ function createPaymentAttemptService(options = {}) {
     // Contrato PIX: validações
     const rawCaptureMethod = (statusResult.raw?.capture_method || "").toLowerCase();
     const rawAmount = statusResult.amount || statusResult.raw?.amount || 0;
-
-    // capture_method diferente de pix → REVIEW_REQUIRED
-    if (rawCaptureMethod && rawCaptureMethod !== "pix") {
-      // credit_card ou outro → REVIEW_REQUIRED
-      const sanitized = sanitizeResponse(statusResult.raw || {});
-      await db.run(
-        `UPDATE app_payment_attempts
-         SET status = 'REVIEW_REQUIRED', provider_response_sanitized_json = ?,
-             updated_at = ?, version = version + 1
-         WHERE id = ? AND status NOT IN ('PAID', 'EXPIRED', 'CANCELLED')`,
-        [JSON.stringify(sanitized), iso(new Date()), attemptId]
-      );
-      return {
-        success: true,
-        attempt: { ...attempt, status: "REVIEW_REQUIRED" },
-        from_cache: false,
-        review_reason: `capture_method_inesperado: ${rawCaptureMethod}`,
-      };
-    }
+    const now = iso(new Date());
 
     // capture_method ausente → REVIEW_REQUIRED
     if (!rawCaptureMethod) {
@@ -489,7 +472,7 @@ function createPaymentAttemptService(options = {}) {
          SET status = 'REVIEW_REQUIRED', provider_response_sanitized_json = ?,
              updated_at = ?, version = version + 1
          WHERE id = ? AND status NOT IN ('PAID', 'EXPIRED', 'CANCELLED')`,
-        [JSON.stringify(sanitized), iso(new Date()), attemptId]
+        [JSON.stringify(sanitized), now, attemptId]
       );
       return {
         success: true,
@@ -499,15 +482,51 @@ function createPaymentAttemptService(options = {}) {
       };
     }
 
-    // amount deve coincidir exatamente com amount_cents do attempt
-    if (rawAmount && rawAmount !== attempt.amount_cents) {
+    // capture_method diferente de pix → REVIEW_REQUIRED
+    if (rawCaptureMethod !== "pix") {
       const sanitized = sanitizeResponse(statusResult.raw || {});
       await db.run(
         `UPDATE app_payment_attempts
          SET status = 'REVIEW_REQUIRED', provider_response_sanitized_json = ?,
              updated_at = ?, version = version + 1
          WHERE id = ? AND status NOT IN ('PAID', 'EXPIRED', 'CANCELLED')`,
-        [JSON.stringify(sanitized), iso(new Date()), attemptId]
+        [JSON.stringify(sanitized), now, attemptId]
+      );
+      return {
+        success: true,
+        attempt: { ...attempt, status: "REVIEW_REQUIRED" },
+        from_cache: false,
+        review_reason: `capture_method_inesperado: ${rawCaptureMethod}`,
+      };
+    }
+
+    // amount ausente → REVIEW_REQUIRED
+    if (!rawAmount) {
+      const sanitized = sanitizeResponse(statusResult.raw || {});
+      await db.run(
+        `UPDATE app_payment_attempts
+         SET status = 'REVIEW_REQUIRED', provider_response_sanitized_json = ?,
+             updated_at = ?, version = version + 1
+         WHERE id = ? AND status NOT IN ('PAID', 'EXPIRED', 'CANCELLED')`,
+        [JSON.stringify(sanitized), now, attemptId]
+      );
+      return {
+        success: true,
+        attempt: { ...attempt, status: "REVIEW_REQUIRED" },
+        from_cache: false,
+        review_reason: "amount_ausente",
+      };
+    }
+
+    // amount diferente de amount_cents → REVIEW_REQUIRED
+    if (rawAmount !== attempt.amount_cents) {
+      const sanitized = sanitizeResponse(statusResult.raw || {});
+      await db.run(
+        `UPDATE app_payment_attempts
+         SET status = 'REVIEW_REQUIRED', provider_response_sanitized_json = ?,
+             updated_at = ?, version = version + 1
+         WHERE id = ? AND status NOT IN ('PAID', 'EXPIRED', 'CANCELLED')`,
+        [JSON.stringify(sanitized), now, attemptId]
       );
       return {
         success: true,
@@ -517,7 +536,7 @@ function createPaymentAttemptService(options = {}) {
       };
     }
 
-    // order_nsu deve coincidir com order_id
+    // order_nsu diferente → REVIEW_REQUIRED
     const rawOrderNsu = statusResult.raw?.order_nsu || "";
     if (rawOrderNsu && rawOrderNsu !== attempt.order_id) {
       const sanitized = sanitizeResponse(statusResult.raw || {});
@@ -526,7 +545,7 @@ function createPaymentAttemptService(options = {}) {
          SET status = 'REVIEW_REQUIRED', provider_response_sanitized_json = ?,
              updated_at = ?, version = version + 1
          WHERE id = ? AND status NOT IN ('PAID', 'EXPIRED', 'CANCELLED')`,
-        [JSON.stringify(sanitized), iso(new Date()), attemptId]
+        [JSON.stringify(sanitized), now, attemptId]
       );
       return {
         success: true,
@@ -536,18 +555,28 @@ function createPaymentAttemptService(options = {}) {
       };
     }
 
+    // Persistir transaction_nsu quando retornado
+    const transactionNsu = statusResult.raw?.transaction_nsu || null;
+    if (transactionNsu && transactionNsu !== attempt.provider_transaction_nsu) {
+      await db.run(
+        `UPDATE app_payment_attempts
+         SET provider_transaction_nsu = ?, updated_at = ?, version = version + 1
+         WHERE id = ?`,
+        [transactionNsu, now, attemptId]
+      );
+    }
+
     // Nesta fase: mesmo paid=true, capture_method=pix, amount correto
     // → REVIEW_REQUIRED (confirmação definitiva ficará para webhook/conciliação)
     // provider_pix_copy_paste permanece NULL
     // O pedido nunca deve ser marcado PAID nesta fase
-
     const sanitized = sanitizeResponse(statusResult.raw || {});
     await db.run(
       `UPDATE app_payment_attempts
        SET status = 'REVIEW_REQUIRED', provider_response_sanitized_json = ?,
            updated_at = ?, version = version + 1
        WHERE id = ? AND status NOT IN ('PAID', 'EXPIRED', 'CANCELLED')`,
-      [JSON.stringify(sanitized), iso(new Date()), attemptId]
+      [JSON.stringify(sanitized), now, attemptId]
     );
 
     return {
@@ -561,24 +590,19 @@ function createPaymentAttemptService(options = {}) {
   // LISTAR ATTEMPTS POR PEDIDO COM AUTORIZAÇÃO
   // ============================================================
   async function listAttemptsByOrder(accountId, orderId) {
-    // Verificar que o pedido pertence à conta
     const order = await db.get(
       `SELECT id FROM app_orders WHERE id = ? AND account_id = ?`,
       [orderId, accountId]
     );
 
     if (!order) {
-      throw new PaymentAttemptError(
-        "ORDER_NOT_FOUND",
-        "Pedido não encontrado.",
-        { status: 404 }
-      );
+      throw new PaymentAttemptError("ORDER_NOT_FOUND", "Pedido não encontrado.", { status: 404 });
     }
 
     const rows = await db.all(
       `SELECT id, order_id, provider, method, status, idempotency_key,
-              provider_reference, provider_checkout_url, amount_cents, currency,
-              request_fingerprint, failure_code, failure_message_sanitized,
+              provider_reference, provider_transaction_nsu, provider_checkout_url, amount_cents, currency,
+              request_fingerprint, reservation_fingerprint, failure_code, failure_message_sanitized,
               expires_at, created_at, updated_at, version
        FROM app_payment_attempts WHERE order_id = ?
        ORDER BY created_at DESC`,

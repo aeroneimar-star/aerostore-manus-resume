@@ -1,7 +1,7 @@
 -- AEROSTORE SHOP — Payment Attempt Schema v2
 -- Persistência local de tentativas de pagamento PIX via InfinitePay.
 -- Sem credenciais, sem dados sensíveis, sem respostas brutas.
--- Constraint UNIQUE em (order_id, request_fingerprint) para idempotência determinística.
+-- Alinhado com tabelas reais do PDV: pdv_inventory_movements_v2, pdv_inventory_balances_v2.
 
 CREATE TABLE IF NOT EXISTS app_payment_attempts (
   id TEXT PRIMARY KEY,
@@ -11,12 +11,14 @@ CREATE TABLE IF NOT EXISTS app_payment_attempts (
   status TEXT NOT NULL DEFAULT 'CREATED',
   idempotency_key TEXT NOT NULL UNIQUE,
   provider_reference TEXT,
+  provider_transaction_nsu TEXT,
   provider_checkout_url TEXT,
   provider_pix_copy_paste TEXT,
   provider_qr_code TEXT,
   amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
   currency TEXT NOT NULL DEFAULT 'BRL',
   request_fingerprint TEXT NOT NULL,
+  reservation_fingerprint TEXT,
   provider_response_sanitized_json TEXT,
   failure_code TEXT,
   failure_message_sanitized TEXT,
