@@ -36,6 +36,7 @@ function RootLayoutInner() {
         <Stack.Screen name="fulfillment" options={{ title: 'Entrega', headerBackTitle: 'Carrinho' }} />
         <Stack.Screen name="orders" options={{ title: 'Meus Pedidos', headerBackTitle: 'Voltar' }} />
         <Stack.Screen name="order/[id]" options={{ title: 'Pedido', headerBackTitle: 'Pedidos' }} />
+        <Stack.Screen name="payment/checkout" options={{ title: 'Pagamento PIX', headerBackTitle: 'Pedidos' }} />
       </Stack>
     </>
   );

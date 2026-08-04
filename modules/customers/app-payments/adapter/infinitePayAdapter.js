@@ -183,6 +183,10 @@ function createInfinitePayAdapter(options = {}) {
         installments: body.installments,
         capture_method: body.capture_method,
         status: body.status || "",
+        order_nsu: body.order_nsu || params.order_nsu || "",
+        transaction_nsu: body.transaction_nsu || body.nsu || "",
+        receipt_url: body.receipt_url || "",
+        invoice_slug: body.invoice_slug || body.slug || "",
         raw: body,
       };
     } catch (err) {
