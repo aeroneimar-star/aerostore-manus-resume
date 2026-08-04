@@ -42,11 +42,24 @@ function createPaymentAttemptService(options = {}) {
   const db = options.dbApi;
   const infinitePayAdapter = options.infinitePayAdapter;
   const getInfinitePayHandle = options.getInfinitePayHandle || (() => process.env.INFINITEPAY_HANDLE || "");
-  const transactionRunner = options.transactionRunner || null;
   const reservationIntegrityService = options.reservationIntegrityService || createReservationIntegrityService();
 
   if (!db) {
     throw new Error("DB_API_REQUIRED for paymentAttemptService");
+  }
+
+  // Singleton transactionRunner: compartilhar entre todos os services
+  // que usam o mesmo dbApi, para evitar interleaving de transações.
+  const { createTransactionRunner } = require("./transactionRunner");
+  // Usar cache global por dbApi para garantir singleton entre services
+  const _runnerCache = global.__transactionRunnerCache || (global.__transactionRunnerCache = new WeakMap());
+  let transactionRunner = options.transactionRunner || null;
+  if (!transactionRunner) {
+    // Criar runner compartilhado pelo dbApi
+    if (!_runnerCache.has(db)) {
+      _runnerCache.set(db, createTransactionRunner(db));
+    }
+    transactionRunner = _runnerCache.get(db);
   }
 
   // ============================================================
@@ -164,126 +177,90 @@ function createPaymentAttemptService(options = {}) {
     ensurePixOnlyConfirmed();
     const handle = ensureAdapterConfigured();
 
-    // Transação curta: BEGIN IMMEDIATE → validação local → INSERT → COMMIT
+    // Transação serializada via transactionRunner (singleton por dbApi)
+    // BEGIN IMMEDIATE → validação local → INSERT → COMMIT
     // Somente após COMMIT chama o provider
-    let commitResult = null;
-    let commitError = null;
     let attemptId = generateId();
     let now = iso(new Date());
     let idempotencyKey = "";
     let fingerprint = "";
     let amountCents = 0;
     let reservationFingerprint = "";
+    let existingResult = null;
 
     try {
-      await db.run("BEGIN IMMEDIATE");
+      existingResult = await transactionRunner.withImmediateTransaction(async (runner) => {
+        // 1. Reler pedido por id + account_id dentro da transação
+        const order = await validateOrder(runner, accountId, orderId);
+        amountCents = order.total_cents;
 
-      // 1. Reler pedido por id + account_id dentro da transação
-      const order = await validateOrder(db, accountId, orderId);
-      amountCents = order.total_cents;
+        // 2. Validar reserva usando o service compartilhado (tabelas reais PDV)
+        let reservationResult;
+        try {
+          reservationResult = await reservationIntegrityService.validateReservationIntegrity(runner, order);
+        } catch (integrityErr) {
+          if (integrityErr instanceof ReservationIntegrityError) {
+            throw new PaymentAttemptError(
+              integrityErr.code,
+              integrityErr.message,
+              { status: 400, details: integrityErr.details }
+            );
+          }
+          throw integrityErr;
+        }
 
-      // 2. Validar reserva usando o service compartilhado (tabelas reais PDV)
-      let reservationResult;
-      try {
-        reservationResult = await reservationIntegrityService.validateReservationIntegrity(db, order);
-      } catch (integrityErr) {
-        if (integrityErr instanceof ReservationIntegrityError) {
+        // 4. Fingerprint real de reserva
+        fingerprint = generateFingerprint({
+          order_id: order.id,
+          order_version: order.version,
+          total_cents: amountCents,
+          currency: order.currency,
+          method: "PIX",
+          reservation_fingerprint: reservationResult.reservationFingerprint,
+        });
+        reservationFingerprint = reservationResult.reservationFingerprint;
+
+        // Idempotency key determinística
+        idempotencyKey = `PIX::${fingerprint}`;
+
+        // 5. Verificar attempt existente com mesmo fingerprint
+        const existing = await findExistingAttempt(runner, orderId, fingerprint);
+        if (existing) {
+          // Já existe attempt com mesmo fingerprint — retornar existente (callback retorna, runner faz commit)
+          return { type: "existing", attempt: existing };
+        }
+
+        // 6. Verificar conflito: attempt ativo com fingerprint diferente
+        const existingActiveAttempt = await runner.get(
+          `SELECT id, request_fingerprint, status FROM app_payment_attempts
+           WHERE order_id = ? AND status IN ('PENDING', 'REQUESTING')
+           ORDER BY created_at DESC LIMIT 1`,
+          [orderId]
+        );
+        if (existingActiveAttempt && existingActiveAttempt.request_fingerprint !== fingerprint) {
           throw new PaymentAttemptError(
-            integrityErr.code,
-            integrityErr.message,
-            { status: 400, details: integrityErr.details }
+            "PAYMENT_IDEMPOTENCY_CONFLICT",
+            "Fingerprint incompatível com tentativa existente.",
+            { status: 409 }
           );
         }
-        throw integrityErr;
-      }
 
-      // 4. Fingerprint real de reserva
-      fingerprint = generateFingerprint({
-        order_id: order.id,
-        order_version: order.version,
-        total_cents: amountCents,
-        currency: order.currency,
-        method: "PIX",
-        reservation_fingerprint: reservationResult.reservationFingerprint,
-      });
-      reservationFingerprint = reservationResult.reservationFingerprint;
-
-      // Idempotency key determinística
-      idempotencyKey = `PIX::${fingerprint}`;
-
-      // 5. Verificar attempt existente com mesmo fingerprint
-      const existing = await findExistingAttempt(db, orderId, fingerprint);
-      if (existing) {
-        // Já existe attempt com mesmo fingerprint — rollback e retornar existente
-        await db.run("ROLLBACK");
-
-        // Se está REQUESTING: falha antes do provider → RECONCILIATION_REQUIRED
-        if (existing.status === "REQUESTING") {
-          return {
-            success: true,
-            attempt: existing,
-            idempotent: true,
-            reason: "RECONCILIATION_REQUIRED",
-          };
-        }
-
-        // Se está FAILED: retornar o FAILED existente, não criar novo
-        if (existing.status === "FAILED") {
-          return {
-            success: true,
-            attempt: existing,
-            idempotent: true,
-            reason: "EXISTING_FAILED_ATTEMPT",
-          };
-        }
-
-        return {
-          success: true,
-          attempt: existing,
-          idempotent: true,
-          reason: "EXISTING_ATTEMPT_FOUND",
-        };
-      }
-
-      // 6. Verificar conflito: attempt ativo com fingerprint diferente
-      const existingActiveAttempt = await db.get(
-        `SELECT id, request_fingerprint, status FROM app_payment_attempts
-         WHERE order_id = ? AND status IN ('PENDING', 'REQUESTING')
-         ORDER BY created_at DESC LIMIT 1`,
-        [orderId]
-      );
-      if (existingActiveAttempt && existingActiveAttempt.request_fingerprint !== fingerprint) {
-        await db.run("ROLLBACK");
-        throw new PaymentAttemptError(
-          "PAYMENT_IDEMPOTENCY_CONFLICT",
-          "Fingerprint incompatível com tentativa existente.",
-          { status: 409 }
+        // 7. Inserir REQUESTING dentro da transação
+        await runner.run(
+          `INSERT INTO app_payment_attempts
+           (id, order_id, provider, method, status, idempotency_key, amount_cents, currency,
+            request_fingerprint, reservation_fingerprint, expires_at, created_at, updated_at, version)
+           VALUES (?, ?, 'INFINITEPAY', 'PIX', 'REQUESTING', ?, ?, 'BRL', ?, ?, NULL, ?, ?, 1)`,
+          [attemptId, orderId, idempotencyKey, amountCents, fingerprint, reservationResult.reservationFingerprint, now, now]
         );
-      }
 
-      // 7. Inserir REQUESTING dentro da transação
-      await db.run(
-        `INSERT INTO app_payment_attempts
-         (id, order_id, provider, method, status, idempotency_key, amount_cents, currency,
-          request_fingerprint, reservation_fingerprint, expires_at, created_at, updated_at, version)
-         VALUES (?, ?, 'INFINITEPAY', 'PIX', 'REQUESTING', ?, ?, 'BRL', ?, ?, NULL, ?, ?, 1)`,
-        [attemptId, orderId, idempotencyKey, amountCents, fingerprint, reservationResult.reservationFingerprint, now, now]
-      );
-
-      // 8. COMMIT — transação fechada antes de chamar o provider
-      await db.run("COMMIT");
-      commitResult = true;
+        // 8. COMMIT — transação fechada antes de chamar o provider
+        await runner.commit();
+        return { type: "created", attemptId };
+      });
     } catch (err) {
-      if (commitResult) throw err; // já commitou, erro é do provider
-
-      // Tentativa de rollback
-      try {
-        await db.run("ROLLBACK");
-      } catch (rbErr) {
-        // ignore double rollback
-      }
-
-      // UNIQUE constraint violada → attempt já existe
+      if (err instanceof PaymentAttemptError) throw err;
+      // UNIQUE constraint violada → attempt já existe (race condition)
       if (err.message && (err.message.includes("UNIQUE") || err.message.includes("unique"))) {
         const existing = await findExistingAttempt(db, orderId, fingerprint);
         if (existing) {
@@ -311,8 +288,34 @@ function createPaymentAttemptService(options = {}) {
           };
         }
       }
-
       throw err;
+    }
+
+    // Processar resultado da transação
+    if (existingResult && existingResult.type === "existing") {
+      const existing = existingResult.attempt;
+      if (existing.status === "REQUESTING") {
+        return {
+          success: true,
+          attempt: existing,
+          idempotent: true,
+          reason: "RECONCILIATION_REQUIRED",
+        };
+      }
+      if (existing.status === "FAILED") {
+        return {
+          success: true,
+          attempt: existing,
+          idempotent: true,
+          reason: "EXISTING_FAILED_ATTEMPT",
+        };
+      }
+      return {
+        success: true,
+        attempt: existing,
+        idempotent: true,
+        reason: "EXISTING_ATTEMPT_FOUND",
+      };
     }
 
     // ============================================================

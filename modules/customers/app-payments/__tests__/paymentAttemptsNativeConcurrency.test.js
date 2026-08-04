@@ -222,21 +222,43 @@ describe("Payment Attempts — Native Concurrency (sqlite3, two connections)", (
       service2.createPixAttempt("acc1", "ord1"),
     ]);
 
-    // Count total attempts across both connections
+    // PROOF: Exactly one attempt row in the shared file
     const rows1 = await db1.all("SELECT count(*) as cnt FROM app_payment_attempts");
     const rows2 = await db2.all("SELECT count(*) as cnt FROM app_payment_attempts");
-
     assert.strictEqual(rows1[0].cnt, 1, "Exactly one attempt row in db1");
-    assert.strictEqual(rows2[0].cnt, 1, "Exactly one attempt row in db2");
+    assert.strictEqual(rows2[0].cnt, 1, "Exactly one attempt row in db2 (shared file)");
 
-    // At most 2 provider calls
-    assert.ok(callLog.count <= 2, `At most 2 provider calls, got ${callLog.count}`);
+    // PROOF: The single attempt is in a terminal-safe state
+    const attempt = await db1.get("SELECT id, status, order_id, amount_cents FROM app_payment_attempts");
+    assert.ok(attempt, "Attempt must exist");
+    assert.strictEqual(attempt.order_id, "ord1", "Attempt must reference correct order");
+    assert.strictEqual(attempt.amount_cents, 1000, "Amount must match order total");
+    // Status should be PENDING (successful provider call) or FAILED (timeout)
+    assert.ok(
+      ["PENDING", "FAILED", "REQUESTING"].includes(attempt.status),
+      `Attempt status should be PENDING/FAILED/REQUESTING, got ${attempt.status}`
+    );
 
-    // At least one succeeded
+    // PROOF: Provider was called exactly once (only the winner calls)
+    assert.strictEqual(callLog.count, 1, `Exactly one provider call, got ${callLog.count}`);
+
+    // PROOF: At least one fulfilled, and the rejected one has a safe conflict code
     const fulfilled = [r1, r2].filter(r => r.status === "fulfilled");
     assert.ok(fulfilled.length >= 1, "At least one attempt should succeed");
+    if (fulfilled.length === 2) {
+      // Both fulfilled: one is the winner, one is idempotent return
+      const reasons = [r1.value?.reason, r2.value?.reason];
+      const allowedIdempotent = [
+        "RECONCILIATION_REQUIRED",
+        "EXISTING_ATTEMPT_FOUND",
+        "EXISTING_FAILED_ATTEMPT",
+      ];
+      assert.ok(
+        reasons.some(r => allowedIdempotent.includes(r)),
+        `At least one should be idempotent, got reasons: ${reasons.join(", ")}`
+      );
+    }
 
-    // The rejected one should have a safe conflict code
     const rejected = [r1, r2].filter(r => r.status === "rejected");
     if (rejected.length > 0) {
       const code = rejected[0].reason?.code || "";
@@ -250,9 +272,9 @@ describe("Payment Attempts — Native Concurrency (sqlite3, two connections)", (
       assert.ok(allowedCodes.includes(code), `Rejection code should be safe conflict, got: ${code}`);
     }
 
-    // Zero undue order version change
+    // PROOF: Zero undue order version change
     const order1 = await db1.get("SELECT version FROM app_orders WHERE id = ?", ["ord1"]);
-    assert.ok(order1 && order1.version >= 1, "Order version must be intact");
+    assert.ok(order1 && order1.version === 1, `Order version must be exactly 1, got ${order1?.version}`);
   });
 
   it("T_NATIVE_02 — database integrity after fresh seed", async () => {
@@ -274,6 +296,12 @@ describe("Payment Attempts — Native Concurrency (sqlite3, two connections)", (
   it("T_NATIVE_03 — BEGIN IMMEDIATE blocks second connection with SQLITE_BUSY", async () => {
     const { db1, db2, conn1, conn2, service1 } = global.__test_concurrency__;
 
+    // PROOF: WAL mode and busy_timeout=0 are configured
+    const walMode = await db1.get("PRAGMA journal_mode");
+    assert.strictEqual(walMode.journal_mode, "wal", "Database must be in WAL mode");
+    const busyTimeout = await db1.get("PRAGMA busy_timeout");
+    assert.strictEqual(busyTimeout.timeout, 0, "busy_timeout must be 0 (immediate SQLITE_BUSY)");
+
     // First create an attempt via service so we have at least one row
     const result = await service1.createPixAttempt("acc1", "ord1");
     assert.ok(result.success, "Attempt creation should succeed");
@@ -282,7 +310,7 @@ describe("Payment Attempts — Native Concurrency (sqlite3, two connections)", (
     const countBefore = await db1.all("SELECT count(*) as cnt FROM app_payment_attempts");
     assert.ok(countBefore[0].cnt >= 1, `At least one attempt must exist before lock test, got ${countBefore[0].cnt}`);
 
-    // Start a BEGIN IMMEDIATE transaction on db1 (raw connection)
+    // PROOF: BEGIN IMMEDIATE on conn1 acquires a RESERVED lock
     await new Promise((resolve, reject) => {
       conn1.run("BEGIN IMMEDIATE", (err) => {
         if (err) reject(err);
@@ -290,7 +318,11 @@ describe("Payment Attempts — Native Concurrency (sqlite3, two connections)", (
       });
     });
 
-    // Try a concurrent write on db2 — must fail with SQLITE_BUSY
+    // PROOF: conn2 can still READ (WAL allows concurrent readers)
+    const readResult = await db2.get("SELECT count(*) as cnt FROM app_payment_attempts");
+    assert.ok(readResult.cnt >= 1, "Concurrent READ should succeed in WAL mode");
+
+    // PROOF: conn2 CANNOT WRITE — must fail with SQLITE_BUSY
     let busyError = null;
     try {
       await new Promise((resolve, reject) => {
@@ -308,12 +340,16 @@ describe("Payment Attempts — Native Concurrency (sqlite3, two connections)", (
       busyError = err;
     }
 
-    // MUST fail with SQLITE_BUSY — not silently succeed
+    // PROOF: SQLITE_BUSY with exact code 5 (SQLITE_BUSY constant)
     assert.ok(busyError, "Second connection write must have been blocked");
     assert.ok(
-      busyError.code === "SQLITE_BUSY" || busyError.message.includes("busy") || busyError.message.includes("locked"),
+      busyError.code === "SQLITE_BUSY" || busyError.code === "SQLITE_BUSY_LOCKED",
       `Expected SQLITE_BUSY, got: ${busyError.message} (code: ${busyError.code})`
     );
+
+    // PROOF: The blocked INSERT did NOT succeed — row count unchanged
+    const countDuringLock = await db1.all("SELECT count(*) as cnt FROM app_payment_attempts");
+    assert.strictEqual(countDuringLock[0].cnt, countBefore[0].cnt, "No new rows during lock");
 
     // Rollback db1 transaction
     await new Promise((resolve, reject) => {
@@ -323,9 +359,97 @@ describe("Payment Attempts — Native Concurrency (sqlite3, two connections)", (
       });
     });
 
-    // DB must still be functional after
+    // PROOF: DB is functional after lock release
     const countAfter = await db1.all("SELECT count(*) as cnt FROM app_payment_attempts");
     assert.ok(countAfter[0].cnt >= 1, `At least one attempt must exist after lock test, got ${countAfter[0].cnt}`);
+  });
+
+  // ============================================================
+  // T_NATIVE_04 — Two services sharing the same dbApi get the same transactionRunner
+  // ============================================================
+  it("T_NATIVE_04 — singleton transactionRunner shared between two services", async () => {
+    const { db1 } = global.__test_concurrency__;
+    const { createPaymentAttemptService } = require("../paymentAttemptService");
+    const { createInfinitePayAdapter } = require("../adapter/infinitePayAdapter");
+    const { createFakeTransport } = require("../adapter/fakeTransport");
+
+    // Clear any cached runner for db1
+    if (global.__transactionRunnerCache) {
+      global.__transactionRunnerCache.delete(db1);
+    }
+
+    // Create two services with the SAME dbApi — they should share the same transactionRunner
+    const svc1 = createPaymentAttemptService({
+      dbApi: db1,
+      infinitePayAdapter: createInfinitePayAdapter({ httpTransport: createFakeTransport().call, timeoutMs: 5000 }),
+      getInfinitePayHandle: () => "test-handle",
+    });
+    const svc2 = createPaymentAttemptService({
+      dbApi: db1, // same dbApi
+      infinitePayAdapter: createInfinitePayAdapter({ httpTransport: createFakeTransport().call, timeoutMs: 5000 }),
+      getInfinitePayHandle: () => "test-handle",
+    });
+
+    // Both services should have resolved the same transactionRunner from the cache
+    // We can't directly access transactionRunner from the service closure, but
+    // we can verify serialization: if they share the runner, concurrent calls
+    // will be serialized (not interleaved).
+
+    // Create two orders for this test
+    const now = new Date().toISOString();
+    const future = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
+    await db1.run(
+      `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, currency, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at)
+       VALUES (?, ?, ?, 'DELIVERY', 'addr-1', ?, ?, 'BRL', ?, ?, '{"store_origin_id":"vila"}', ?, ?, ?, ?, ?)`,
+      ["ord-svc1", "svc1", "acc1", 2000, 2000, "READY_FOR_PAYMENT", "key-svc1", '["res-svc1"]', 1, now, now, future]
+    );
+    await db1.run(
+      `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, currency, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at)
+       VALUES (?, ?, ?, 'DELIVERY', 'addr-1', ?, ?, 'BRL', ?, ?, '{"store_origin_id":"vila"}', ?, ?, ?, ?, ?)`,
+      ["ord-svc2", "svc2", "acc1", 3000, 3000, "READY_FOR_PAYMENT", "key-svc2", '["res-svc2"]', 1, now, now, future]
+    );
+
+    // Seed holds and balances for both orders
+    await db1.run(
+      `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, reference_type, reference_id, idempotency_key, created_at)
+       VALUES (?, 'var-2', 'vila', 'RESERVATION_HOLD', -1, 1, 0, 'RESERVATION', 'res-svc1', 'idem-svc1', ?)`,
+      ["mv-svc1", now]
+    );
+    await db1.run(
+      `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, reference_type, reference_id, idempotency_key, created_at)
+       VALUES (?, 'var-3', 'vila', 'RESERVATION_HOLD', -1, 1, 0, 'RESERVATION', 'res-svc2', 'idem-svc2', ?)`,
+      ["mv-svc2", now]
+    );
+    await db1.run(
+      `INSERT INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at)
+       VALUES (?, 'var-2', 'vila', 10, 1, 1, ?)`,
+      ["bal-svc1", now]
+    );
+    await db1.run(
+      `INSERT INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at)
+       VALUES (?, 'var-3', 'vila', 10, 1, 1, ?)`,
+      ["bal-svc2", now]
+    );
+
+    // Concurrent calls — both should succeed because they are serialized by the shared runner
+    const [r1, r2] = await Promise.allSettled([
+      svc1.createPixAttempt("acc1", "ord-svc1"),
+      svc2.createPixAttempt("acc1", "ord-svc2"),
+    ]);
+
+    // Both should succeed
+    assert.strictEqual(r1.status, "fulfilled", `svc1 should succeed, got: ${r1.status} ${r1.reason?.code || r1.reason?.message}`);
+    assert.strictEqual(r2.status, "fulfilled", `svc2 should succeed, got: ${r2.status} ${r2.reason?.code || r2.reason?.message}`);
+
+    // Verify two distinct attempts exist
+    const attempts = await db1.all("SELECT id, order_id FROM app_payment_attempts WHERE order_id IN (?, ?)", ["ord-svc1", "ord-svc2"]);
+    assert.strictEqual(attempts.length, 2, "Both attempts should exist");
+
+    // Verify order_ids are distinct
+    const orderIds = attempts.map(a => a.order_id);
+    assert.ok(orderIds.includes("ord-svc1"), "ord-svc1 attempt must exist");
+    assert.ok(orderIds.includes("ord-svc2"), "ord-svc2 attempt must exist");
   });
 
   after(async () => {
