@@ -7,7 +7,7 @@ const {
   isTerminalState,
   isPayableStatus,
 } = require("./paymentAttemptStates");
-const { createReservationIntegrityService } = require("../app-orders/reservationIntegrityService");
+const { createReservationIntegrityService, ReservationIntegrityError } = require("../app-orders/reservationIntegrityService");
 
 const FEATURE_FLAG = "INFINITEPAY_SHOP_PIX_ENABLED";
 const PIX_ONLY_FLAG = "INFINITEPAY_CHECKOUT_PIX_ONLY_CONFIRMED";
@@ -42,6 +42,7 @@ function createPaymentAttemptService(options = {}) {
   const db = options.dbApi;
   const infinitePayAdapter = options.infinitePayAdapter;
   const getInfinitePayHandle = options.getInfinitePayHandle || (() => process.env.INFINITEPAY_HANDLE || "");
+  const transactionRunner = options.transactionRunner || null;
   const reservationIntegrityService = options.reservationIntegrityService || createReservationIntegrityService();
 
   if (!db) {
@@ -182,7 +183,19 @@ function createPaymentAttemptService(options = {}) {
       amountCents = order.total_cents;
 
       // 2. Validar reserva usando o service compartilhado (tabelas reais PDV)
-      const reservationResult = await reservationIntegrityService.validateReservationIntegrity(db, order);
+      let reservationResult;
+      try {
+        reservationResult = await reservationIntegrityService.validateReservationIntegrity(db, order);
+      } catch (integrityErr) {
+        if (integrityErr instanceof ReservationIntegrityError) {
+          throw new PaymentAttemptError(
+            integrityErr.code,
+            integrityErr.message,
+            { status: 400, details: integrityErr.details }
+          );
+        }
+        throw integrityErr;
+      }
 
       // 4. Fingerprint real de reserva
       fingerprint = generateFingerprint({

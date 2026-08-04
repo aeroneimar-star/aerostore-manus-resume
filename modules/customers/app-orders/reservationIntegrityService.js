@@ -40,6 +40,21 @@
  *   }
  */
 
+/**
+ * ReservationIntegrityError — Exported for error mapping in HTTP routes.
+ * Routes can check: err instanceof ReservationIntegrityError
+ * to map to proper HTTP status (400) and functional error codes.
+ */
+class ReservationIntegrityError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.code = code;
+    this.details = details;
+    this.name = "ReservationIntegrityError";
+    this.status = 400; // all reservation integrity errors are client errors
+  }
+}
+
 function createReservationIntegrityService() {
   /**
    * validateReservationIntegrity — Valida reservas de um pedido.
@@ -47,18 +62,9 @@ function createReservationIntegrityService() {
    * @param {object} runner - db ou db.transaction()
    * @param {object} order - { id, status, reservation_ids_json, snapshot_json }
    * @returns {object} { reservationIds, totalHoldByStoreVariant, reservationFingerprint }
-   * @throws {PaymentAttemptError} com código adequado
+   * @throws {ReservationIntegrityError} com código adequado
    */
   async function validateReservationIntegrity(runner, order) {
-    const ReservationIntegrityError = class extends Error {
-      constructor(code, message, details = {}) {
-        super(message);
-        this.code = code;
-        this.details = details;
-        this.name = "ReservationIntegrityError";
-      }
-    };
-
     if (!order.reservation_ids_json || order.reservation_ids_json.trim() === "" || order.reservation_ids_json === "[]") {
       throw new ReservationIntegrityError("ORDER_RESERVATION_INVALID", "Reservas inválidas ou ausentes.");
     }
@@ -101,7 +107,6 @@ function createReservationIntegrityService() {
       }
 
       for (const hold of holds) {
-        // 4. Validação de cada HOLD
         if (hold.movement_type !== "RESERVATION_HOLD") {
           throw new ReservationIntegrityError("ORDER_RESERVATION_INVALID", "Movimento não é RESERVATION_HOLD.");
         }
@@ -116,8 +121,6 @@ function createReservationIntegrityService() {
         }
 
         allHolds.push(hold);
-
-        // 5. Agregar por store_id + variant_id
         const key = `${hold.store_id}::${hold.variant_id}`;
         const existing = storeVariantHoldMap.get(key) || { holdTotal: 0, holdDetails: [] };
         existing.holdTotal += Math.abs(hold.quantity_delta);
@@ -230,4 +233,4 @@ function createReservationIntegrityService() {
   return { validateReservationIntegrity };
 }
 
-module.exports = { createReservationIntegrityService };
+module.exports = { createReservationIntegrityService, ReservationIntegrityError };

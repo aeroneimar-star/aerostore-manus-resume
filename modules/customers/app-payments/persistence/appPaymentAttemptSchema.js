@@ -134,8 +134,10 @@ async function applyAppPaymentAttemptSchema(connection) {
 
     // 2. Mapear colunas v1 disponíveis
     const v1Cols = ["id", "order_id", "provider", "method", "status", "idempotency_key",
-      "provider_reference", "provider_checkout_url", "amount_cents", "currency",
-      "request_fingerprint", "provider_response_sanitized_json", "failure_code",
+      "provider_reference", "provider_checkout_url", "provider_pix_copy_paste",
+      "provider_qr_code", "amount_cents", "currency",
+      "request_fingerprint", "reservation_fingerprint",
+      "provider_response_sanitized_json", "failure_code",
       "failure_message_sanitized", "expires_at", "created_at", "updated_at", "version"];
 
     const availableCols = v1Cols.filter(c => columnSet.has(c));

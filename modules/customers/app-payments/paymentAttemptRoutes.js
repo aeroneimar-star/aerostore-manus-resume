@@ -11,13 +11,14 @@
  */
 
 const { PaymentAttemptError } = require("./paymentAttemptService");
+const { ReservationIntegrityError } = require("../app-orders/reservationIntegrityService");
 
 function sendSuccess(res, statusCode, data) {
   res.status(statusCode).json({ ok: true, data });
 }
 
 function sendError(res, err) {
-  if (err instanceof PaymentAttemptError) {
+  if (err instanceof PaymentAttemptError || err instanceof ReservationIntegrityError) {
     res.status(err.status).json({
       ok: false,
       error: {
