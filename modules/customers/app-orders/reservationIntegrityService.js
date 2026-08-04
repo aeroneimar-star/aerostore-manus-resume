@@ -157,13 +157,31 @@ function createReservationIntegrityService() {
       }
     }
 
-    // Agregar releases por store_id + variant_id
+    // 7b. Agregar releases por store_id + variant_id e detectar RELEASE sem HOLD
+    const releaseWithoutHoldViolations = [];
     for (const rel of (releases || [])) {
       const key = `${rel.store_id}::${rel.variant_id}`;
       const entry = storeVariantHoldMap.get(key);
       if (entry) {
         entry.releaseTotal = (entry.releaseTotal || 0) + rel.quantity_delta;
+      } else {
+        // RELEASE para store/variant sem HOLD correspondente — erro de integridade
+        releaseWithoutHoldViolations.push({
+          store_id: rel.store_id,
+          variant_id: rel.variant_id,
+          quantity_delta: rel.quantity_delta,
+          message: `RELEASE para store=${rel.store_id}, variant=${rel.variant_id} sem HOLD correspondente`,
+        });
       }
+    }
+
+    // RELEASE sem HOLD é erro de integridade — não pode ser silenciosamente ignorado
+    if (releaseWithoutHoldViolations.length > 0) {
+      throw new ReservationIntegrityError(
+        "RELEASE_WITHOUT_HOLD",
+        `${releaseWithoutHoldViolations.length} movimento(s) RELEASE sem HOLD correspondente detectado(s).`,
+        { violations: releaseWithoutHoldViolations }
+      );
     }
 
     // 8-12. Validar hold vs release e saldo
