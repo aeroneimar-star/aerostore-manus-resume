@@ -178,9 +178,9 @@ function createReservationIntegrityService() {
     // RELEASE sem HOLD é erro de integridade — não pode ser silenciosamente ignorado
     if (releaseWithoutHoldViolations.length > 0) {
       throw new ReservationIntegrityError(
-        "RELEASE_WITHOUT_HOLD",
+        "ORDER_RESERVATION_INVALID",
         `${releaseWithoutHoldViolations.length} movimento(s) RELEASE sem HOLD correspondente detectado(s).`,
-        { violations: releaseWithoutHoldViolations }
+        { reason: "RELEASE_WITHOUT_HOLD", violations: releaseWithoutHoldViolations }
       );
     }
 

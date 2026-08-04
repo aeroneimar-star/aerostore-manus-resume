@@ -929,12 +929,13 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
 
       const body = await response.json();
 
-      // PROOF: HTTP 400 ok=false com RELEASE_WITHOUT_HOLD
+      // PROOF: HTTP 400 ok=false com ORDER_RESERVATION_INVALID (code público) e details.reason=RELEASE_WITHOUT_HOLD
       assert.strictEqual(response.status, 400, `Expected HTTP 400, got ${response.status}`);
       assert.strictEqual(body.ok, false, "Response ok must be false");
       assert.ok(body.error, "Error must be present");
-      assert.strictEqual(body.error.code, "RELEASE_WITHOUT_HOLD", `Expected RELEASE_WITHOUT_HOLD, got ${body.error.code}`);
+      assert.strictEqual(body.error.code, "ORDER_RESERVATION_INVALID", `Expected ORDER_RESERVATION_INVALID, got ${body.error.code}`);
       assert.ok(body.error.details, "Details must be present");
+      assert.strictEqual(body.error.details.reason, "RELEASE_WITHOUT_HOLD", "details.reason must be RELEASE_WITHOUT_HOLD");
       assert.ok(
         body.error.details.violations && Array.isArray(body.error.details.violations),
         "Violations array must be present in details"
@@ -955,31 +956,51 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
   // T39. Provider-success/update-failure: attempt permanece REQUESTING
   // ============================================================
   it("T39: provider-success/update-failure deixa attempt REQUESTING", async () => {
-    // PROOF: Quando o adapter retorna sucesso mas a chamada ao provider falha (exception),
-    // o attempt inserido durante BEGIN IMMEDIATE permanece REQUESTING — não é marcado FAILED.
-    // Isso é crítico: uma falha de rede após o INSERT não deve perder o attempt.
+    // PROOF REAL: Quando o adapter retorna sucesso mas o UPDATE para marcar attempt como PENDING
+    // falha (changes=0 ou exception), o attempt permanece REQUESTING — não é marcado FAILED.
+    // Isso prova que:
+    // 1. BEGIN IMMEDIATE → validação → INSERT REQUESTING → COMMIT funciona
+    // 2. Provider é chamado após COMMIT (success=true)
+    // 3. UPDATE SET status='PENDING' WHERE id=? AND status='REQUESTING' falha
+    // 4. Attempt permanece REQUESTING
+    // 5. Retry retorna RECONCILIATION_REQUIRED sem chamar provider
 
-    // Criar adapter que simula falha APÓS retornar dados de sucesso (simula network error)
-    let callCount = 0;
-    const faultInjectionTransport = async (req) => {
-      callCount++;
-      if (callCount === 1) {
-        // Primeira chamada: retornar sucesso do provider
-        return {
-          ok: true,
-          status: 200,
-          data: {
-            url: "https://checkout.infinitepay.io/test-link-t39",
-            invoice_slug: `INV-T39-${Date.now()}`,
-          },
-        };
-      }
-      // Segunda chamada (idempotent retry): network error
-      throw new Error("ECONNRESET — network error simulating provider timeout");
+    // Criar wrapper dbApi que falha no UPDATE SET status = 'PENDING'
+    let updatePendingCallCount = 0;
+    const faultDbApi = {
+      _isFaultInjected: true,
+      run: async (sql, params = []) => {
+        // Interceptar o UPDATE que marca PENDING
+        if (typeof sql === 'string' && sql.includes("SET status = 'PENDING'")) {
+          updatePendingCallCount++;
+          if (updatePendingCallCount === 1) {
+            // Primeira chamada: simular que o UPDATE não casou nenhuma linha (attempt não mais REQUESTING)
+            // Isso é o cenário real: alguém já mudou o status entre COMMIT e UPDATE
+            return { changes: 0 };
+          }
+        }
+        return db.run(sql, params);
+      },
+      get: (sql, params = []) => db.get(sql, params),
+      all: (sql, params = []) => db.all(sql, params),
+    };
+
+    // Provider sempre retorna sucesso
+    let providerCallCount = 0;
+    const successTransport = async (req) => {
+      providerCallCount++;
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          url: "https://checkout.infinitepay.io/test-link-t39",
+          invoice_slug: `INV-T39-${Date.now()}`,
+        },
+      };
     };
 
     const adapter = createInfinitePayAdapter({
-      httpTransport: faultInjectionTransport,
+      httpTransport: successTransport,
       timeoutMs: 5000,
     });
 
@@ -989,39 +1010,45 @@ describe("Payment Attempts Integration (WASM) — Phase 3.13-C hardening", () =>
     await runSql(db, `UPDATE pdv_inventory_balances_v2 SET reserved_qty = 1 WHERE variant_id = 'var-1' AND store_id = 'vila'`);
 
     const svcT39 = createPaymentAttemptService({
-      dbApi: db,
+      dbApi: faultDbApi,
       infinitePayAdapter: adapter,
       getInfinitePayHandle: () => "test-handle",
     });
 
-    // Primeira chamada: provider sucesso → attempt vai para PENDING
+    // Primeira chamada: BEGIN IMMEDIATE → INSERT REQUESTING → COMMIT → provider success
+    // Mas UPDATE SET status='PENDING' retorna changes=0 → RECONCILIATION_REQUIRED
     const result1 = await svcT39.createPixAttempt("account-1", "order-t39");
-    assert.ok(result1.success, "First call should succeed");
-    const firstAttemptId = result1.attempt?.id;
-    assert.ok(firstAttemptId, "Must have attempt ID");
+    assert.ok(result1.success, "First call should succeed (success=true)");
+    assert.ok(result1.attempt, "Must have attempt");
 
-    // Verificar que o attempt foi criado como PENDING
-    const attempt1 = await getSql(db, "SELECT id, status, provider_reference FROM app_payment_attempts WHERE id = ?", [firstAttemptId]);
-    assert.ok(attempt1, "Attempt must exist after first call");
-    assert.strictEqual(attempt1.status, "PENDING", `First attempt should be PENDING, got ${attempt1.status}`);
+    // PROOF: Attempt permanece REQUESTING (UPDATE não casou)
+    const attempts1 = await allSql(db, "SELECT id, status FROM app_payment_attempts WHERE order_id = 'order-t39'");
+    assert.strictEqual(attempts1.length, 1, "Exactly one attempt");
+    assert.strictEqual(attempts1[0].status, "REQUESTING", `Attempt must remain REQUESTING, got ${attempts1[0].status}`);
 
-    // Segunda chamada: mesma ordem — deve encontrar attempt existente PENDING
-    // e retornar idempotent (não criar duplicado)
+    // PROOF: Provider foi chamado exatamente 1 vez
+    assert.strictEqual(providerCallCount, 1, `Provider should be called exactly once, got ${providerCallCount}`);
+
+    // PROOF: UPDATE PENDING foi tentado exatamente 1 vez
+    assert.strictEqual(updatePendingCallCount, 1, `UPDATE PENDING should be attempted exactly once, got ${updatePendingCallCount}`);
+
+    // Segunda chamada: retry — deve encontrar attempt REQUESTING existente
+    // e retornar RECONCILIATION_REQUIRED sem chamar provider novamente
     const result2 = await svcT39.createPixAttempt("account-1", "order-t39");
-    assert.ok(result2.success, "Second call should succeed");
-    assert.ok(result2.idempotent, "Second call should be idempotent");
-    assert.ok(
-      ["EXISTING_ATTEMPT_FOUND", "RECONCILIATION_REQUIRED"].includes(result2.reason),
-      `Reason should be idempotent, got: ${result2.reason}`
-    );
+    assert.ok(result2.success, "Retry should succeed");
+    assert.ok(result2.idempotent, "Retry should be idempotent");
+    assert.strictEqual(result2.reason, "RECONCILIATION_REQUIRED", `Retry reason must be RECONCILIATION_REQUIRED, got ${result2.reason}`);
 
-    // PROOF: Exatamente 1 attempt na tabela (sem duplicação)
-    const attempts = await allSql(db, "SELECT id, status, order_id FROM app_payment_attempts WHERE order_id = 'order-t39'");
-    assert.strictEqual(attempts.length, 1, `Exactly one attempt for order-t39, got ${attempts.length}`);
-    assert.strictEqual(attempts[0].status, "PENDING", "Attempt should remain PENDING");
+    // PROOF: Provider NÃO foi chamado novamente (sem duplicação)
+    assert.strictEqual(providerCallCount, 1, `Provider must still be called exactly once after retry, got ${providerCallCount}`);
 
-    // PROOF: Provider foi chamado apenas 1 vez (não retry após sucesso)
-    assert.strictEqual(callCount, 1, `Provider should be called exactly once, got ${callCount}`);
+    // PROOF: Ainda exatamente 1 linha
+    const attempts2 = await allSql(db, "SELECT id, status FROM app_payment_attempts WHERE order_id = 'order-t39'");
+    assert.strictEqual(attempts2.length, 1, "Still exactly one attempt after retry");
+    assert.strictEqual(attempts2[0].status, "REQUESTING", "Attempt must still be REQUESTING after retry");
+
+    // PROOF: Total final de chamadas ao provider = 1
+    assert.strictEqual(providerCallCount, 1, "Total final provider calls must be exactly 1");
   });
 
   // ============================================================

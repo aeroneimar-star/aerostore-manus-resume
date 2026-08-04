@@ -35,6 +35,7 @@ function createTransactionRunner(dbApi) {
     let locked = true;
     let committed = false;
     let rolledBack = false;
+    let commitHandled = false;
 
     const runner = {
       run: async (sql, params = []) => {
@@ -62,11 +63,26 @@ function createTransactionRunner(dbApi) {
         try {
           await dbApi.run("COMMIT");
           committed = true;
-          return true;
-        } finally {
           locked = false;
+          return true;
+        } catch (commitErr) {
+          // COMMIT falhou — ROLLBACK da transação atual ANTES de liberar a fila
+          // Isso garante que:
+          // 1. A fila NÃO é liberada até sabermos que o COMMIT falhou
+          // 2. ROLLBACK é executado na transação CORRETA (a que falhou)
+          // 3. A próxima fila só executa após o ROLLBACK
+          locked = false;
+          rolledBack = true;
+          commitHandled = true; // signal to catch block: don't double-rollback
+          try {
+            await dbApi.run("ROLLBACK");
+          } catch (rbErr) {
+            // ignore: connection may already be clean after failed COMMIT
+          }
+          throw commitErr; // rethrow the original COMMIT error
+        } finally {
           activeTransaction = null;
-          processQueue();
+          processQueue(); // ONLY release queue after COMMIT success or ROLLBACK
         }
       },
       rollback: async () => {
@@ -115,31 +131,37 @@ function createTransactionRunner(dbApi) {
       return new Promise((resolve, reject) => {
         const enqueue = () => {
           activeTransaction = { pending: true };
+          let currentRunner = null;
           resolve(
             (async () => {
               try {
                 await dbApi.run("BEGIN IMMEDIATE");
-                const runner = exclusiveRunner();
-                const result = await callback(runner);
-                if (!runner.isCommitted() && !runner.isRolledBack()) {
+                currentRunner = exclusiveRunner();
+                const result = await callback(currentRunner);
+                if (!currentRunner.isCommitted() && !currentRunner.isRolledBack()) {
                   // Se o callback não fez commit nem rollback, commitar automaticamente
                   try {
-                    await runner.commit();
+                    await currentRunner.commit();
                   } catch (commitErr) {
-                    try { await runner.rollback(); } catch (rbErr) { /* ignore */ }
+                    // commit() já fez ROLLBACK internamente se falhou, não tentar outro
                     throw commitErr;
                   }
                 }
                 return result;
               } catch (err) {
-                if (activeTransaction) {
-                  try {
-                    await dbApi.run("ROLLBACK");
-                  } catch (rbErr) {
-                    // ignore double rollback
+                // Se o runner já fez ROLLBACK internamente (commit falhou), NÃO tentar outro ROLLBACK.
+                // commit() já liberou a fila via processQueue(). O activeTransaction pode ser
+                // da próxima transação na fila (tx2), e fazer ROLLBACK aqui destruiria tx2.
+                if (currentRunner && !currentRunner.isRolledBack()) {
+                  if (activeTransaction) {
+                    try {
+                      await dbApi.run("ROLLBACK");
+                    } catch (rbErr) {
+                      // ignore double rollback or "no transaction active" errors
+                    }
+                    activeTransaction = null;
+                    processQueue();
                   }
-                  activeTransaction = null;
-                  processQueue();
                 }
                 throw err;
               }

@@ -89,13 +89,22 @@ async function applyAppPaymentAttemptSchema(connection) {
   const columns = await getColumnNames(tableName);
   const columnSet = new Set(columns);
 
-  // Já em v2? (provider_transaction_nsu existe)
-  if (columnSet.has("provider_transaction_nsu")) {
-    // Garantir índices v2
-    if (!(await indexExists("idx_payment_attempts_order_fingerprint"))) {
-      await runner.run(
-        `CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_attempts_order_fingerprint ON ${tableName}(order_id, request_fingerprint)`
-      );
+  // Já em v2? Validação completa: colunas v2 + índice v2
+  // provider_transaction_nsu deve existir E o índice unique(order_id, request_fingerprint) deve existir
+  const v2Columns = ["provider_transaction_nsu", "request_fingerprint", "reservation_fingerprint"];
+  const allV2ColsPresent = v2Columns.every(c => columnSet.has(c));
+  const v2IndexPresent = await indexExists("idx_payment_attempts_order_fingerprint");
+
+  if (allV2ColsPresent && v2IndexPresent) {
+    // Garantir todos os índices v2 (caso algum tenha sido dropado)
+    const indices = [
+      "CREATE INDEX IF NOT EXISTS idx_payment_attempts_order ON " + tableName + "(order_id)",
+      "CREATE INDEX IF NOT EXISTS idx_payment_attempts_fingerprint ON " + tableName + "(request_fingerprint)",
+      "CREATE INDEX IF NOT EXISTS idx_payment_attempts_status ON " + tableName + "(status) WHERE status IN ('PENDING', 'REQUESTING')",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_attempts_order_fingerprint ON " + tableName + "(order_id, request_fingerprint)",
+    ];
+    for (const idx of indices) {
+      await runner.run(idx);
     }
     return { migrated: false, from_version: "v2" };
   }

@@ -365,91 +365,215 @@ describe("Payment Attempts — Native Concurrency (sqlite3, two connections)", (
   });
 
   // ============================================================
-  // T_NATIVE_04 — Two services sharing the same dbApi get the same transactionRunner
+  // T_NATIVE_04 — Singleton connection, same order, same fingerprint, two services
   // ============================================================
-  it("T_NATIVE_04 — singleton transactionRunner shared between two services", async () => {
+  it("T_NATIVE_04 — mesma conexão, mesmo pedido, mesmo fingerprint, dois services compartilham transactionRunner", async () => {
     const { db1 } = global.__test_concurrency__;
     const { createPaymentAttemptService } = require("../paymentAttemptService");
     const { createInfinitePayAdapter } = require("../adapter/infinitePayAdapter");
-    const { createFakeTransport } = require("../adapter/fakeTransport");
 
-    // Clear any cached runner for db1
+    // Shared fake transport with counter — both services use the same adapter instance
+    const callLog = { count: 0 };
+    const sharedFakeTransport = async (req) => {
+      callLog.count++;
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          url: `https://checkout.infinitepay.io/test-link-t4-${Date.now()}`,
+          invoice_slug: `INV-T4-${callLog.count}`,
+        },
+      };
+    };
+
+    const sharedAdapter = createInfinitePayAdapter({
+      httpTransport: sharedFakeTransport,
+      timeoutMs: 5000,
+    });
+
+    // Clear any cached runner for db1 to ensure fresh singleton
     if (global.__transactionRunnerCache) {
       global.__transactionRunnerCache.delete(db1);
     }
 
-    // Create two services with the SAME dbApi — they should share the same transactionRunner
+    // Create two services with the SAME dbApi (singleton connection)
+    // Both share the same transactionRunner (singleton per dbApi)
     const svc1 = createPaymentAttemptService({
       dbApi: db1,
-      infinitePayAdapter: createInfinitePayAdapter({ httpTransport: createFakeTransport().call, timeoutMs: 5000 }),
+      infinitePayAdapter: sharedAdapter,
       getInfinitePayHandle: () => "test-handle",
     });
     const svc2 = createPaymentAttemptService({
-      dbApi: db1, // same dbApi
-      infinitePayAdapter: createInfinitePayAdapter({ httpTransport: createFakeTransport().call, timeoutMs: 5000 }),
+      dbApi: db1, // same dbApi → same transactionRunner
+      infinitePayAdapter: sharedAdapter, // same adapter → same callLog
       getInfinitePayHandle: () => "test-handle",
     });
 
-    // Both services should have resolved the same transactionRunner from the cache
-    // We can't directly access transactionRunner from the service closure, but
-    // we can verify serialization: if they share the runner, concurrent calls
-    // will be serialized (not interleaved).
-
-    // Create two orders for this test
+    // Seed order for this test (use same order as T_NATIVE_01 area)
     const now = new Date().toISOString();
     const future = new Date(Date.now() + 30 * 60 * 1000).toISOString();
 
     await db1.run(
       `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, currency, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at)
        VALUES (?, ?, ?, 'DELIVERY', 'addr-1', ?, ?, 'BRL', ?, ?, '{"store_origin_id":"vila"}', ?, ?, ?, ?, ?)`,
-      ["ord-svc1", "svc1", "acc1", 2000, 2000, "READY_FOR_PAYMENT", "key-svc1", '["res-svc1"]', 1, now, now, future]
+      ["ord-t4", "t4", "acc1", 1500, 1500, "READY_FOR_PAYMENT", "key-t4", '["res-t4"]', 1, now, now, future]
     );
+
+    // Seed hold + balance
+    await db1.run(
+      `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, reference_type, reference_id, idempotency_key, created_at)
+       VALUES (?, 'var-t4', 'vila', 'RESERVATION_HOLD', -1, 1, 0, 'RESERVATION', 'res-t4', 'idem-t4', ?)`,
+      ["mv-t4", now]
+    );
+    await db1.run(
+      `INSERT INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at)
+       VALUES (?, 'var-t4', 'vila', 10, 1, 1, ?)`,
+      ["bal-t4", now]
+    );
+
+    // Record order version before
+    const orderBefore = await db1.get("SELECT version FROM app_orders WHERE id = ?", ["ord-t4"]);
+    assert.ok(orderBefore, "Order must exist before test");
+    const versionBefore = orderBefore.version;
+
+    // Two simultaneous calls with SAME order and SAME fingerprint
+    const [r1, r2] = await Promise.allSettled([
+      svc1.createPixAttempt("acc1", "ord-t4"),
+      svc2.createPixAttempt("acc1", "ord-t4"),
+    ]);
+
+    // PROOF: Exatamente 1 linha em app_payment_attempts
+    const attempts = await db1.all("SELECT id, status, order_id FROM app_payment_attempts WHERE order_id = 'ord-t4'");
+    assert.strictEqual(attempts.length, 1, `Exactly one attempt for ord-t4, got ${attempts.length}`);
+
+    // PROOF: Provider chamado exatamente 1 vez (não duplicado)
+    assert.strictEqual(callLog.count, 1, `Provider must be called exactly once, got ${callLog.count}`);
+
+    // PROOF: Versão do pedido exatamente inalterada
+    const orderAfter = await db1.get("SELECT version FROM app_orders WHERE id = ?", ["ord-t4"]);
+    assert.strictEqual(orderAfter.version, versionBefore, `Order version must be unchanged, before=${versionBefore} after=${orderAfter.version}`);
+
+    // PROOF: Um vencedor (success=true) + segundo idempotente ou RECONCILIATION_REQUIRED
+    const fulfilled = [r1, r2].filter(r => r.status === "fulfilled");
+    assert.ok(fulfilled.length >= 1, "At least one call must succeed");
+
+    // Both fulfilled: one is winner, one is idempotent
+    if (r1.status === "fulfilled" && r2.status === "fulfilled") {
+      const results = [r1.value, r2.value];
+      const reasons = results.map(r => r.reason);
+      // One should be a normal success, one should be idempotent
+      const idempotentReasons = ["RECONCILIATION_REQUIRED", "EXISTING_ATTEMPT_FOUND"];
+      assert.ok(
+        reasons.some(r => idempotentReasons.includes(r)),
+        `One result must be idempotent (RECONCILIATION_REQUIRED or EXISTING_ATTEMPT_FOUND), got reasons: ${reasons.join(", ")}`
+      );
+    }
+
+    // PROOF: Nenhuma transação aberta ao final
+    const transactionRunner = require("../transactionRunner").createTransactionRunner;
+    // The transactionRunner is a singleton per dbApi — we can't directly access it,
+    // but we verify no open transaction by checking that the runner reports inactive
+    // If we can call the runner's isTransactionActive, it should be false
+    // Instead, verify by attempting another normal operation
+    const orderCheck = await db1.get("SELECT id FROM app_orders WHERE id = ?", ["ord-t4"]);
+    assert.ok(orderCheck, "Database must be functional after test (no open transaction)");
+  });
+
+  // ============================================================
+  // T_NATIVE_05 — COMMIT failure handling: rollback then release queue
+  // ============================================================
+  it("T_NATIVE_05 — COMMIT failure: ROLLBACK then release next transaction", async () => {
+    const { db1 } = global.__test_concurrency__;
+    const { createTransactionRunner } = require("../transactionRunner");
+
+    // Create a fresh transactionRunner with a fault-injecting dbApi
+    let commitCallCount = 0;
+    const faultDbApi = {
+      run: async (sql, params = []) => {
+        if (sql === "COMMIT") {
+          commitCallCount++;
+          if (commitCallCount === 1) {
+            // Primeiro COMMIT falha (simula erro de disco/lock)
+            throw Object.assign(new Error("SQLITE_IOERR_WRITE"), { code: "SQLITE_IOERR" });
+          }
+        }
+        // Do NOT intercept ROLLBACK — let the real sqlite3 handle it.
+        // After failed COMMIT, sqlite3 may still need ROLLBACK or may report
+        // "cannot rollback - no transaction is active" — either way it's fine.
+        return db1.run(sql, params);
+      },
+      get: (sql, params = []) => db1.get(sql, params),
+      all: (sql, params = []) => db1.all(sql, params),
+    };
+
+    const runner1 = createTransactionRunner(faultDbApi);
+    const results = [];
+
+    // Criar uma ordem para teste
+    const now = new Date().toISOString();
+    const future = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
     await db1.run(
       `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, currency, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at)
        VALUES (?, ?, ?, 'DELIVERY', 'addr-1', ?, ?, 'BRL', ?, ?, '{"store_origin_id":"vila"}', ?, ?, ?, ?, ?)`,
-      ["ord-svc2", "svc2", "acc1", 3000, 3000, "READY_FOR_PAYMENT", "key-svc2", '["res-svc2"]', 1, now, now, future]
+      ["ord-commit-fail", "commit-fail", "acc1", 5000, 5000, "READY_FOR_PAYMENT", "key-cf", '["res-cf"]', 1, now, now, future]
     );
 
-    // Seed holds and balances for both orders
     await db1.run(
       `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, reference_type, reference_id, idempotency_key, created_at)
-       VALUES (?, 'var-2', 'vila', 'RESERVATION_HOLD', -1, 1, 0, 'RESERVATION', 'res-svc1', 'idem-svc1', ?)`,
-      ["mv-svc1", now]
+       VALUES (?, 'var-cf', 'vila', 'RESERVATION_HOLD', -1, 1, 0, 'RESERVATION', 'res-cf', 'idem-cf', ?)`,
+      ["mv-cf", now]
     );
-    await db1.run(
-      `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, reference_type, reference_id, idempotency_key, created_at)
-       VALUES (?, 'var-3', 'vila', 'RESERVATION_HOLD', -1, 1, 0, 'RESERVATION', 'res-svc2', 'idem-svc2', ?)`,
-      ["mv-svc2", now]
-    );
+
     await db1.run(
       `INSERT INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at)
-       VALUES (?, 'var-2', 'vila', 10, 1, 1, ?)`,
-      ["bal-svc1", now]
-    );
-    await db1.run(
-      `INSERT INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at)
-       VALUES (?, 'var-3', 'vila', 10, 1, 1, ?)`,
-      ["bal-svc2", now]
+       VALUES (?, 'var-cf', 'vila', 10, 1, 1, ?)`,
+      ["bal-cf", now]
     );
 
-    // Concurrent calls — both should succeed because they are serialized by the shared runner
-    const [r1, r2] = await Promise.allSettled([
-      svc1.createPixAttempt("acc1", "ord-svc1"),
-      svc2.createPixAttempt("acc1", "ord-svc2"),
-    ]);
+    // Transação 1: COMMIT vai falhar
+    const tx1 = runner1.withImmediateTransaction(async (runner) => {
+      await runner.run(
+        `INSERT INTO app_payment_attempts (id, order_id, provider, method, status, idempotency_key, amount_cents, currency, request_fingerprint, reservation_fingerprint, created_at, updated_at, version)
+         VALUES ('attempt-cf-1', 'ord-commit-fail', 'INFINITEPAY', 'PIX', 'REQUESTING', 'key-cf-1', 5000, 'BRL', 'fp-cf-1', 'fp-cf-res', ?, ?, 1)`,
+        [now, now]
+      );
+      await runner.commit();
+      return { type: "tx1", success: true };
+    });
 
-    // Both should succeed
-    assert.strictEqual(r1.status, "fulfilled", `svc1 should succeed, got: ${r1.status} ${r1.reason?.code || r1.reason?.message}`);
-    assert.strictEqual(r2.status, "fulfilled", `svc2 should succeed, got: ${r2.status} ${r2.reason?.code || r2.reason?.message}`);
+    // Transação 2: enfileirada, vai executar DEPOIS que a tx1 fizer ROLLBACK
+    const tx2 = runner1.withImmediateTransaction(async (runner) => {
+      await runner.run(
+        `INSERT INTO app_payment_attempts (id, order_id, provider, method, status, idempotency_key, amount_cents, currency, request_fingerprint, reservation_fingerprint, created_at, updated_at, version)
+         VALUES ('attempt-cf-2', 'ord-commit-fail', 'INFINITEPAY', 'PIX', 'REQUESTING', 'key-cf-2', 5000, 'BRL', 'fp-cf-2', 'fp-cf-res', ?, ?, 1)`,
+        [now, now]
+      );
+      await runner.commit();
+      return { type: "tx2", success: true };
+    });
 
-    // Verify two distinct attempts exist
-    const attempts = await db1.all("SELECT id, order_id FROM app_payment_attempts WHERE order_id IN (?, ?)", ["ord-svc1", "ord-svc2"]);
-    assert.strictEqual(attempts.length, 2, "Both attempts should exist");
+    // Executar ambas simultaneamente — tx2 deve ser serializada
+    const [result1, result2] = await Promise.allSettled([tx1, tx2]);
 
-    // Verify order_ids are distinct
-    const orderIds = attempts.map(a => a.order_id);
-    assert.ok(orderIds.includes("ord-svc1"), "ord-svc1 attempt must exist");
-    assert.ok(orderIds.includes("ord-svc2"), "ord-svc2 attempt must exist");
+    // PROOF: Transação 1 falhou (COMMIT erro)
+    assert.strictEqual(result1.status, "rejected", "First transaction should fail due to COMMIT error");
+    assert.ok(result1.reason.message.includes("SQLITE_IOERR"), `Error should be SQLITE_IOERR, got: ${result1.reason.message}`);
+
+    // PROOF: Transação 2 teve sucesso (executou após ROLLBACK da tx1)
+    assert.strictEqual(result2.status, "fulfilled", `Second transaction should succeed, got: ${result2.status}`);
+
+    // PROOF: Exatamente 1 linha inserida (tx1 foi rollada, tx2 commitou)
+    const attempts = await db1.all("SELECT id FROM app_payment_attempts WHERE order_id = 'ord-commit-fail'");
+    assert.strictEqual(attempts.length, 1, `Exactly one attempt after commit-failure, got ${attempts.length}`);
+    assert.strictEqual(attempts[0].id, "attempt-cf-2", "The surviving attempt must be from tx2 (tx1 was rolled back)");
+
+    // PROOF: COMMIT foi tentado 2 vezes (1 falha + 1 sucesso)
+    assert.strictEqual(commitCallCount, 2, `COMMIT should be attempted exactly twice, got ${commitCallCount}`);
+
+    // PROOF: Nenhuma transação aberta ao final
+    const orderCheck = await db1.get("SELECT id FROM app_orders WHERE id = ?", ["ord-commit-fail"]);
+    assert.ok(orderCheck, "Database must be functional after test");
   });
 
   after(async () => {

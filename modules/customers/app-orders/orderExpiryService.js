@@ -671,16 +671,18 @@ function mapIntegrityError(integrityErr, orderId) {
         },
       };
 
-    case "RELEASE_WITHOUT_HOLD":
-      return {
-        error: "RELEASE_WITHOUT_HOLD",
-        extra: {
-          phase: "release_without_hold_check",
-          violations: details.violations || [],
-        },
-      };
-
     case "ORDER_RESERVATION_INVALID": {
+      // Check if this is a RELEASE_WITHOUT_HOLD error (new contract)
+      // The reservationIntegrityService uses ORDER_RESERVATION_INVALID with details.reason=RELEASE_WITHOUT_HOLD
+      if (details.reason === "RELEASE_WITHOUT_HOLD") {
+        return {
+          error: "RELEASE_WITHOUT_HOLD",
+          extra: {
+            phase: "release_without_hold_check",
+            violations: details.violations || [],
+          },
+        };
+      }
       // O validator retorna mensagens genéricas; precisamos mapear para os códigos
       // específicos esperados pelo sweep.
       const msg = integrityErr.message || "";
