@@ -1,6 +1,7 @@
--- AEROSTORE SHOP — Payment Attempt Schema v1
+-- AEROSTORE SHOP — Payment Attempt Schema v2
 -- Persistência local de tentativas de pagamento PIX via InfinitePay.
 -- Sem credenciais, sem dados sensíveis, sem respostas brutas.
+-- Constraint UNIQUE em (order_id, request_fingerprint) para idempotência determinística.
 
 CREATE TABLE IF NOT EXISTS app_payment_attempts (
   id TEXT PRIMARY KEY,
@@ -9,7 +10,7 @@ CREATE TABLE IF NOT EXISTS app_payment_attempts (
   method TEXT NOT NULL DEFAULT 'PIX',
   status TEXT NOT NULL DEFAULT 'CREATED',
   idempotency_key TEXT NOT NULL UNIQUE,
-  provider_reference TEXT UNIQUE,
+  provider_reference TEXT,
   provider_checkout_url TEXT,
   provider_pix_copy_paste TEXT,
   provider_qr_code TEXT,
@@ -29,3 +30,7 @@ CREATE TABLE IF NOT EXISTS app_payment_attempts (
 CREATE INDEX IF NOT EXISTS idx_payment_attempts_order ON app_payment_attempts(order_id);
 CREATE INDEX IF NOT EXISTS idx_payment_attempts_fingerprint ON app_payment_attempts(request_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_payment_attempts_status ON app_payment_attempts(status) WHERE status IN ('PENDING', 'REQUESTING');
+
+-- Constraint determinística: um pedido + fingerprint = uma tentativa
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_attempts_order_fingerprint
+  ON app_payment_attempts(order_id, request_fingerprint);

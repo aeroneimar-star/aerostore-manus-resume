@@ -4,18 +4,20 @@ const crypto = require("crypto");
 /**
  * Gera fingerprint determinístico para idempotência.
  *
- * Combinação: order_id + amount_cents + currency + method + snapshot/version
+ * Combinação: order_id + order_version + total_cents + currency + method + reservation_ids
+ *
+ * NÃO inclui Date.now() — o fingerprint deve ser 100% determinístico
+ * para que retry idêntico gere o mesmo fingerprint.
  *
  * O fingerprint é hash SHA-256 em hex, truncado para 32 caracteres.
- * Garante que retry idêntico gera o mesmo fingerprint.
  */
 function generateFingerprint(params = {}) {
   const {
     order_id,
+    order_version,
     amount_cents,
     currency,
     method,
-    order_version,
     reservation_version,
   } = params;
 
@@ -25,10 +27,10 @@ function generateFingerprint(params = {}) {
 
   const normalized = [
     String(order_id).toUpperCase(),
+    String(order_version || ""),
     String(Math.round(Number(amount_cents) || 0)),
     String(currency || "BRL").toUpperCase(),
     String(method || "PIX").toUpperCase(),
-    String(order_version || ""),
     String(reservation_version || ""),
   ].join("::");
 

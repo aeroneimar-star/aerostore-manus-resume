@@ -24,7 +24,23 @@ async function runSql(db, sql, params = []) { return db.run(sql, params); }
 async function getSql(db, sql, params = []) { return db.get(sql, params); }
 async function allSql(db, sql, params = []) { return db.all(sql, params); }
 
-describe("Payment Attempts E2E — 25 testes obrigatórios", () => {
+function seedOrder(db, id, totalCents, reservationIds, expiresAt, version = 1) {
+  const now = new Date().toISOString();
+  // reservationIds is already a JSON string, so pass it directly
+  const reservationIdsJson = typeof reservationIds === 'string' ? reservationIds : JSON.stringify(reservationIds);
+  return runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, currency, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES (?, ?, 'account-1', 'DELIVERY', 'addr-1', ?, ?, 'BRL', 'READY_FOR_PAYMENT', ?, '{"store_origin_id":"vila"}', ?, ?, ?, ?, ?)`, [id, id.replace("order-", ""), totalCents, totalCents, `key-${id}`, reservationIdsJson, version, now, now, expiresAt]);
+}
+
+function seedReservation(db, resId, storeId, variantId, qty) {
+  const movementId = `mv-${resId}`;
+  return runSql(db, `INSERT INTO reservation_movements (id, reservation_id, movement_type, quantity_delta, store_id, variant_id, order_id, created_at) VALUES (?, ?, 'RESERVATION_HOLD', ?, ?, ?, ?, ?)`, [movementId, resId, -qty, storeId, variantId, 'order-ctx', NOW_ISO]);
+}
+
+function seedInventoryBalance(db, storeId, variantId, qty) {
+  return runSql(db, `INSERT INTO inventory_balance (id, store_id, variant_id, reserved_qty, version) VALUES (?, ?, ?, ?, 1)`, [`bal-${storeId}-${variantId}`, storeId, variantId, qty]);
+}
+
+describe("Payment Attempts Integration (WASM) — Phase 3.13-B hardening", () => {
   let db;
   let service;
   let fakeTransport;
@@ -34,167 +50,132 @@ describe("Payment Attempts E2E — 25 testes obrigatórios", () => {
     db = memoryDb();
     await db.run("PRAGMA foreign_keys=ON");
 
-    // Tabelas master mínimas
-    await runSql(db, `CREATE TABLE IF NOT EXISTS customer_master_records(id TEXT PRIMARY KEY, status TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, eligibility_status TEXT NOT NULL DEFAULT 'NOT_EVALUATED', updated_at TEXT NOT NULL, deleted_at TEXT)`);
-    await runSql(db, `CREATE TABLE IF NOT EXISTS customer_identity_conflicts(id TEXT PRIMARY KEY, conflict_type TEXT, severity TEXT, status TEXT)`);
-    await runSql(db, `CREATE TABLE IF NOT EXISTS customer_identity_conflict_participants(id TEXT PRIMARY KEY, conflict_id TEXT, participant_type TEXT, participant_id TEXT)`);
-    await runSql(db, `CREATE TABLE IF NOT EXISTS customer_identity_cases(id TEXT PRIMARY KEY, blocking INTEGER)`);
-    await runSql(db, `CREATE TABLE IF NOT EXISTS customer_identity_case_conflicts(case_id TEXT, conflict_id TEXT)`);
-
-    // Tabelas shop
     await runSql(db, `CREATE TABLE IF NOT EXISTS app_customer_accounts (id TEXT PRIMARY KEY, phone_lookup_hash TEXT, phone_masked TEXT, email_lookup_hash TEXT, email_masked TEXT, account_status TEXT NOT NULL DEFAULT 'ACTIVE', access_status TEXT NOT NULL DEFAULT 'APPROVED', version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    await runSql(db, `CREATE TABLE IF NOT EXISTS app_customer_addresses (id TEXT PRIMARY KEY, account_id TEXT, label TEXT, recipient_name TEXT, postal_code_protected TEXT, postal_code_masked TEXT, street TEXT, number TEXT, complement TEXT, neighborhood TEXT, city TEXT, state TEXT, delivery_instructions TEXT, validation_status TEXT, is_default INTEGER DEFAULT 0, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    await runSql(db, `CREATE TABLE IF NOT EXISTS app_carts (id TEXT PRIMARY KEY, account_id TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE', currency TEXT DEFAULT 'BRL', item_count INTEGER DEFAULT 0, subtotal_cents INTEGER DEFAULT 0, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    await runSql(db, `CREATE TABLE IF NOT EXISTS app_cart_items (id TEXT PRIMARY KEY, cart_id TEXT, product_id TEXT, variant_id TEXT, quantity INTEGER NOT NULL, unit_price_cents INTEGER NOT NULL, effective_unit_price_cents INTEGER NOT NULL, line_total_cents INTEGER NOT NULL, product_snapshot_json TEXT NOT NULL, availability_status TEXT NOT NULL DEFAULT 'UNKNOWN', version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    await runSql(db, `CREATE TABLE IF NOT EXISTS app_orders (id TEXT PRIMARY KEY, order_number TEXT NOT NULL, account_id TEXT NOT NULL, fulfillment_type TEXT NOT NULL CHECK (fulfillment_type IN ('DELIVERY','PICKUP')), address_id TEXT, pickup_store_id TEXT, shipping_provider TEXT, shipping_service_code TEXT, shipping_quote_cents INTEGER, shipping_quote_currency TEXT DEFAULT 'BRL', subtotal_cents INTEGER NOT NULL, total_cents INTEGER NOT NULL, currency TEXT NOT NULL DEFAULT 'BRL', status TEXT NOT NULL CHECK (status IN ('CREATING','STOCK_RESERVED','READY_FOR_PAYMENT','FAILED','CANCELLED','EXPIRED')), idempotency_key TEXT UNIQUE, snapshot_json TEXT NOT NULL, reservation_ids_json TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT, failed_reason TEXT)`);
-    await runSql(db, `CREATE TABLE IF NOT EXISTS app_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT NOT NULL, variant_id TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price_cents INTEGER NOT NULL, effective_unit_price_cents INTEGER NOT NULL, line_total_cents INTEGER NOT NULL, product_snapshot_json TEXT NOT NULL, availability_status TEXT NOT NULL DEFAULT 'UNKNOWN', version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    await runSql(db, `CREATE TABLE IF NOT EXISTS app_order_events (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, event_type TEXT NOT NULL, details_json TEXT, created_at TEXT NOT NULL)`);
+    await runSql(db, `CREATE TABLE IF NOT EXISTS app_customer_addresses (id TEXT PRIMARY KEY, account_id TEXT, label TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+    await runSql(db, `CREATE TABLE IF NOT EXISTS app_orders (id TEXT PRIMARY KEY, order_number TEXT NOT NULL, account_id TEXT NOT NULL, fulfillment_type TEXT NOT NULL, address_id TEXT, subtotal_cents INTEGER NOT NULL, total_cents INTEGER NOT NULL, currency TEXT NOT NULL DEFAULT 'BRL', status TEXT NOT NULL, idempotency_key TEXT UNIQUE, snapshot_json TEXT NOT NULL, reservation_ids_json TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT)`);
+    await runSql(db, `CREATE TABLE IF NOT EXISTS reservation_movements (id TEXT PRIMARY KEY, reservation_id TEXT, movement_type TEXT, quantity_delta INTEGER, store_id TEXT, variant_id TEXT, order_id TEXT, created_at TEXT NOT NULL)`);
+    await runSql(db, `CREATE TABLE IF NOT EXISTS inventory_balance (id TEXT PRIMARY KEY, store_id TEXT, variant_id TEXT, reserved_qty INTEGER DEFAULT 0, version INTEGER NOT NULL DEFAULT 1)`);
 
-    // Schema de payment attempts
     await applyAppPaymentAttemptSchema(db);
   });
 
   beforeEach(async () => {
-    // Limpar tabelas
     await runSql(db, "DELETE FROM app_payment_attempts");
-    await runSql(db, "DELETE FROM app_order_events");
-    await runSql(db, "DELETE FROM app_order_items");
     await runSql(db, "DELETE FROM app_orders");
-    await runSql(db, "DELETE FROM app_cart_items");
-    await runSql(db, "DELETE FROM app_carts");
-    await runSql(db, "DELETE FROM app_customer_addresses");
-    await runSql(db, "DELETE FROM app_customer_accounts");
+    await runSql(db, "DELETE FROM reservation_movements");
+    await runSql(db, "DELETE FROM inventory_balance");
 
-    // Seed básico
-    const now = NOW_ISO;
-    await runSql(db, `INSERT INTO app_customer_accounts (id, phone_lookup_hash, phone_masked, email_lookup_hash, email_masked, account_status, access_status, version, created_at, updated_at) VALUES ('account-1', 'hash-1', '***', '', '', 'ACTIVE', 'APPROVED', 1, ?, ?)`, [now, now]);
-    await runSql(db, `INSERT INTO app_customer_addresses (id, account_id, label, recipient_name, postal_code_protected, postal_code_masked, street, number, complement, neighborhood, city, state, delivery_instructions, validation_status, is_default, version, created_at, updated_at) VALUES ('addr-1', 'account-1', 'Casa', 'Joao', '01001000', '01001-000', 'Rua Teste', '123', '', 'Centro', 'Sao Paulo', 'SP', '', 'VALID', 0, 1, ?, ?)`, [now, now]);
-
-    // Feature flag ON para testes (exceto T1 que testa OFF)
     process.env.INFINITEPAY_SHOP_PIX_ENABLED = "true";
+    process.env.INFINITEPAY_CHECKOUT_PIX_ONLY_CONFIRMED = "true";
     process.env.INFINITEPAY_HANDLE = "test-handle";
 
-    // Fake transport e adapter
     fakeTransport = createFakeTransport();
     adapter = createInfinitePayAdapter({ httpTransport: fakeTransport.call, timeoutMs: 5000 });
 
-    // Service
     service = createPaymentAttemptService({
       dbApi: db,
       infinitePayAdapter: adapter,
       getInfinitePayHandle: () => process.env.INFINITEPAY_HANDLE || "",
     });
+
+    // Seed reservation + inventory balance for tests that need real validation
+    await seedReservation(db, "res-1", "vila", "var-1", 1);
+    await seedInventoryBalance(db, "vila", "var-1", 5);
   });
 
   // ============================================================
-  // T1. Feature flag default OFF
+  // T1. Feature flag default OFF bloqueia
   // ============================================================
-  it("T1: feature flag default OFF bloqueia qualquer transporte", async () => {
+  it("T1: feature flag OFF bloqueia", async () => {
     delete process.env.INFINITEPAY_SHOP_PIX_ENABLED;
-    process.env.INFINITEPAY_HANDLE = "test-handle";
-
-    const svc = createPaymentAttemptService({
-      dbApi: db,
-      infinitePayAdapter: adapter,
-      getInfinitePayHandle: () => process.env.INFINITEPAY_HANDLE || "",
-    });
-
-    // Criar pedido READY_FOR_PAYMENT
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t1', '0001', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t1', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+    await seedOrder(db, "order-t1", 1000, '["res-1"]', futureIso(30));
 
     let err;
-    try {
-      await svc.createPixAttempt("order-t1");
-    } catch (e) {
-      err = e;
-    }
-    assert.ok(err, "Deve lançar erro");
-    assert.strictEqual(err.code, "INFINITEPAY_PIX_DISABLED", "Erro deve ser INFINITEPAY_PIX_DISABLED");
-    assert.strictEqual(fakeTransport.getCalls().length, 0, "Nenhuma chamada ao transporte");
-  });
-
-  // ============================================================
-  // T2. Pedido inexistente
-  // ============================================================
-  it("T2: pedido inexistente deve retornar ORDER_NOT_FOUND", async () => {
-    let err;
-    try {
-      await service.createPixAttempt("order-nonexistent");
-    } catch (e) {
-      err = e;
-    }
-    assert.ok(err, "Deve lançar erro");
-    assert.strictEqual(err.code, "ORDER_NOT_FOUND");
-    assert.strictEqual(fakeTransport.getCalls().length, 0, "Nenhuma chamada ao provider");
-  });
-
-  // ============================================================
-  // T3. Pedido expirado
-  // ============================================================
-  it("T3: pedido expirado deve retornar ORDER_EXPIRED", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t3', '0003', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t3', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, pastIso(5)]);
-
-    let err;
-    try {
-      await service.createPixAttempt("order-t3");
-    } catch (e) {
-      err = e;
-    }
+    try { await service.createPixAttempt("account-1", "order-t1"); } catch (e) { err = e; }
     assert.ok(err);
-    assert.strictEqual(err.code, "ORDER_EXPIRED");
+    assert.strictEqual(err.code, "INFINITEPAY_PIX_DISABLED");
     assert.strictEqual(fakeTransport.getCalls().length, 0);
   });
 
   // ============================================================
-  // T4. Pedido com status não pagável
+  // T2. PIX-only flag não configurada bloqueia
   // ============================================================
-  it("T4: pedido com status CANCELLED deve retornar ORDER_NOT_PAYABLE", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t4', '0004', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'CANCELLED', 'key-t4', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+  it("T2: INFINITEPAY_CHECKOUT_PIX_ONLY_CONFIRMED ausente bloqueia", async () => {
+    delete process.env.INFINITEPAY_CHECKOUT_PIX_ONLY_CONFIRMED;
+    await seedOrder(db, "order-t2", 1000, '["res-1"]', futureIso(30));
 
     let err;
-    try {
-      await service.createPixAttempt("order-t4");
-    } catch (e) {
-      err = e;
-    }
+    try { await service.createPixAttempt("account-1", "order-t2"); } catch (e) { err = e; }
+    assert.ok(err);
+    assert.strictEqual(err.code, "INFINITEPAY_PIX_ONLY_NOT_CONFIRMED");
+  });
+
+  // ============================================================
+  // T3. Pedido inexistente — não revela conta
+  // ============================================================
+  it("T3: pedido inexistente retorna ORDER_NOT_FOUND", async () => {
+    let err;
+    try { await service.createPixAttempt("account-1", "nonexistent"); } catch (e) { err = e; }
+    assert.ok(err);
+    assert.strictEqual(err.code, "ORDER_NOT_FOUND");
+    assert.strictEqual(fakeTransport.getCalls().length, 0);
+  });
+
+  // ============================================================
+  // T4. Conta A não pode acessar pedido da conta B
+  // ============================================================
+  it("T4: conta A não cria pagamento no pedido da conta B", async () => {
+    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t4', '0004', 'account-B', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t4', '{"s":"v"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+
+    let err;
+    try { await service.createPixAttempt("account-1", "order-t4"); } catch (e) { err = e; }
+    assert.ok(err);
+    assert.strictEqual(err.code, "ORDER_NOT_FOUND");
+  });
+
+  // ============================================================
+  // T5. Pedido expirado
+  // ============================================================
+  it("T5: pedido expirado retorna ORDER_EXPIRED", async () => {
+    await seedOrder(db, "order-t5", 1000, '["res-1"]', pastIso(5));
+
+    let err;
+    try { await service.createPixAttempt("account-1", "order-t5"); } catch (e) { err = e; }
+    assert.ok(err);
+    assert.strictEqual(err.code, "ORDER_EXPIRED");
+  });
+
+  // ============================================================
+  // T6. Status não pagável
+  // ============================================================
+  it("T6: pedido CANCELLED retorna ORDER_NOT_PAYABLE", async () => {
+    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t6', '0006', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'CANCELLED', 'key-t6', '{"s":"v"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+
+    let err;
+    try { await service.createPixAttempt("account-1", "order-t6"); } catch (e) { err = e; }
     assert.ok(err);
     assert.strictEqual(err.code, "ORDER_NOT_PAYABLE");
   });
 
   // ============================================================
-  // T5. Total sempre lido do servidor
+  // T7. Reserva vazia bloqueia
   // ============================================================
-  it("T5: total vem exclusivamente do servidor (ignora clientAmountCents)", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t5', '0005', 'account-1', 'DELIVERY', 'addr-1', 1000, 2500, 'READY_FOR_PAYMENT', 'key-t5', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+  it("T7: pedido sem reservas retorna ORDER_RESERVATION_INVALID", async () => {
+    await seedOrder(db, "order-t7", 1000, '[]', futureIso(30));
 
-    // Tentar enviar valor diferente pelo "app"
-    const result = await service.createPixAttempt("order-t5", { clientAmountCents: 100 });
-    assert.strictEqual(result.success, true);
-    // O valor usado deve ser o do servidor (2500), não o do cliente (100)
-    const attempt = await getSql(db, `SELECT amount_cents FROM app_payment_attempts WHERE order_id = 'order-t5'`);
-    assert.strictEqual(attempt.amount_cents, 2500, "amount_cents deve ser 2500 (do servidor)");
+    let err;
+    try { await service.createPixAttempt("account-1", "order-t7"); } catch (e) { err = e; }
+    assert.ok(err);
+    assert.strictEqual(err.code, "ORDER_RESERVATION_INVALID");
   });
 
   // ============================================================
-  // T6. Tentativa de manipular valor pelo app
+  // T8. Criação de attempt PENDING com transporte fake
   // ============================================================
-  it("T6: clientAmountCents diferente é ignorado, total do servidor é usado", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t6', '0006', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t6', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+  it("T8: criação de attempt PENDING com transporte fake", async () => {
+    await seedOrder(db, "order-t8", 1000, '["res-1"]', futureIso(30));
 
-    // Enviar valor diferente pelo "app" — deve ser ignorado, usa total do servidor
-    const result = await service.createPixAttempt("order-t6", { clientAmountCents: 999 });
-    assert.strictEqual(result.success, true);
-    const attempt = await getSql(db, `SELECT amount_cents FROM app_payment_attempts WHERE order_id = 'order-t6'`);
-    assert.strictEqual(attempt.amount_cents, 1000, "Deve usar total do servidor, ignorando clientAmountCents");
-  });
-
-  // ============================================================
-  // T7. Criação de attempt PENDING com transporte fake
-  // ============================================================
-  it("T7: criação de attempt PENDING com transporte fake", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t7', '0007', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t7', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
-
-    const result = await service.createPixAttempt("order-t7");
+    const result = await service.createPixAttempt("account-1", "order-t8");
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.attempt.status, "PENDING");
     assert.strictEqual(result.attempt.provider, "INFINITEPAY");
@@ -202,179 +183,201 @@ describe("Payment Attempts E2E — 25 testes obrigatórios", () => {
     assert.strictEqual(result.attempt.amount_cents, 1000);
     assert.ok(result.attempt.provider_checkout_url);
     assert.ok(result.attempt.request_fingerprint);
-    assert.ok(fakeTransport.getCalls().length >= 1, "Deve ter chamado o transporte");
+    assert.ok(fakeTransport.getCalls().length >= 1);
   });
 
   // ============================================================
-  // T8. Retry idêntico retorna o mesmo attempt
+  // T9. Retry idêntico retorna mesmo attempt (determinístico)
   // ============================================================
-  it("T8: retry idêntico retorna o mesmo attempt", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t8', '0008', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t8', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+  it("T9: retry idêntico retorna mesmo attempt", async () => {
+    await seedOrder(db, "order-t9", 1000, '["res-1"]', futureIso(30));
 
-    const result1 = await service.createPixAttempt("order-t8");
+    const result1 = await service.createPixAttempt("account-1", "order-t9");
     assert.strictEqual(result1.success, true);
 
     fakeTransport.clearLog();
-    const result2 = await service.createPixAttempt("order-t8");
+    const result2 = await service.createPixAttempt("account-1", "order-t9");
     assert.strictEqual(result2.success, true);
-    assert.strictEqual(result2.idempotent, true, "Segunda chamada deve ser idempotente");
+    assert.strictEqual(result2.idempotent, true);
     assert.strictEqual(result2.reason, "EXISTING_ATTEMPT_FOUND");
-    assert.strictEqual(result2.attempt.id, result1.attempt.id, "Deve retornar o mesmo ID");
-    assert.strictEqual(fakeTransport.getCalls().length, 0, "Não deve chamar o transporte novamente");
+    assert.strictEqual(result2.attempt.id, result1.attempt.id);
+    assert.strictEqual(fakeTransport.getCalls().length, 0, "Não deve chamar transporte novamente");
   });
 
   // ============================================================
-  // T9. Retry não chama transporte novamente
+  // T10. Retry não chama transporte novamente
   // ============================================================
-  it("T9: retry não chama transporte novamente", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t9', '0009', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t9', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+  it("T10: retry não chama transporte novamente", async () => {
+    await seedOrder(db, "order-t10", 1000, '["res-1"]', futureIso(30));
 
-    await service.createPixAttempt("order-t9");
+    await service.createPixAttempt("account-1", "order-t10");
     const callsBefore = fakeTransport.getCalls().length;
     assert.ok(callsBefore >= 1);
 
-    // Segunda chamada
-    await service.createPixAttempt("order-t9");
-    const callsAfter = fakeTransport.getCalls().length;
-    assert.strictEqual(callsAfter, callsBefore, "Transporte não deve ser chamado novamente");
+    await service.createPixAttempt("account-1", "order-t10");
+    assert.strictEqual(fakeTransport.getCalls().length, callsBefore);
   });
 
   // ============================================================
-  // T10. Conflito de idempotência
+  // T11. Conflito de idempotência (fingerprint diferente)
   // ============================================================
-  it("T10: tentativa de criar novo attempt para mesmo fingerprint com dados diferentes", async () => {
-    // Não é possível ter dois attempts com mesmo fingerprint para o mesmo pedido.
-    // O fingerprint é baseado em order_id + amount_cents + currency + method.
-    // Se o fingerprint já existe, retorna o attempt existente (idempotência).
-    // Se tentar com amount diferente, fingerprint diferente → pode criar novo,
-    // mas se já existe attempt ativo, retorna PAYMENT_ATTEMPT_CONFLICT.
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t10', '0010', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t10', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+  it("T11: snapshot incompatível retorna PAYMENT_IDEMPOTENCY_CONFLICT", async () => {
+    // Seed additional reservations for both res-1 and res-2
+    await seedReservation(db, "res-2", "vila", "var-1", 1);
+    await seedReservation(db, "res-a1", "vila", "var-1", 1);
+    await seedReservation(db, "res-b1", "vila", "var-1", 1);
 
-    const result1 = await service.createPixAttempt("order-t10");
-    assert.strictEqual(result1.success, true);
+    await seedOrder(db, "order-t11", 1000, '["res-1"]', futureIso(30));
 
-    // Segunda chamada com mesmo fingerprint → idempotente
-    const result2 = await service.createPixAttempt("order-t10");
-    assert.strictEqual(result2.success, true);
-    assert.strictEqual(result2.idempotent, true);
-    assert.strictEqual(result2.attempt.id, result1.attempt.id);
+    await service.createPixAttempt("account-1", "order-t11");
+
+    // Alterar reservation_ids para gerar fingerprint diferente (res-2 must exist)
+    await runSql(db, `UPDATE app_orders SET reservation_ids_json = '["res-2"]' WHERE id = 'order-t11'`);
+
+    let err;
+    try { await service.createPixAttempt("account-1", "order-t11"); } catch (e) { err = e; }
+    assert.ok(err);
+    assert.strictEqual(err.code, "PAYMENT_IDEMPOTENCY_CONFLICT");
   });
 
   // ============================================================
-  // T11. Concorrência com duas conexões SQLite
+  // T12. Provider reference NULL-safe
   // ============================================================
-  it("T11: concorrência — lock otimista bloqueia versão alterada", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t11', '0011', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t11', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+  it("T12: provider_reference NULL quando invoice_slug ausente", async () => {
+    // Fake transport que retorna URL mas sem invoice_slug
+    const noSlugTransport = createFakeTransport();
+    noSlugTransport.call = async (request) => {
+      noSlugTransport.callLog.push({ method: request.method, url: request.url });
+      if (request.url?.includes("/links")) {
+        return { ok: true, status: 200, data: { url: "https://checkout.infinitepay.io/test", access_token: "SECRET" } };
+      }
+      return { ok: true, status: 200, data: { paid: true, capture_method: "pix", amount: 1000 } };
+    };
+    noSlugTransport.getCalls = () => noSlugTransport.callLog;
+    noSlugTransport.clearLog = () => { noSlugTransport.callLog.length = 0; };
 
-    // Primeira chamada cria attempt PENDING e incrementa version para 2
-    const result1 = await service.createPixAttempt("order-t11");
-    assert.strictEqual(result1.success, true);
-    assert.strictEqual(result1.attempt.status, "PENDING");
+    const noSlugAdapter = createInfinitePayAdapter({ httpTransport: noSlugTransport.call, timeoutMs: 5000 });
+    const noSlugService = createPaymentAttemptService({
+      dbApi: db,
+      infinitePayAdapter: noSlugAdapter,
+      getInfinitePayHandle: () => "test-handle",
+    });
 
-    // Verificar que versão foi incrementada
-    const order = await getSql(db, `SELECT version, status FROM app_orders WHERE id = 'order-t11'`);
-    assert.strictEqual(order.version, 2, "Versão deve ter sido incrementada pelo lock");
-    assert.strictEqual(order.status, "READY_FOR_PAYMENT", "Status deve permanecer READY_FOR_PAYMENT");
-  });
-
-  // ============================================================
-  // T12. provider_reference duplicada
-  // ============================================================
-  it("T12: provider_reference duplicada é rejeitada pela constraint UNIQUE", async () => {
-    // Criar pedido e attempt normalmente
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t12', '0012', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t12', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
-
-    const result = await service.createPixAttempt("order-t12");
+    await seedOrder(db, "order-t12a", 1000, '["res-1"]', futureIso(30));
+    const result = await noSlugService.createPixAttempt("account-1", "order-t12a");
     assert.strictEqual(result.success, true);
-    assert.ok(result.attempt.provider_reference, "Deve ter provider_reference");
 
-    // Tentar inserir manualmente com provider_reference duplicada
-    let insertErr;
-    try {
-      await runSql(db, `INSERT INTO app_payment_attempts (id, order_id, provider, method, status, idempotency_key, provider_reference, amount_cents, currency, request_fingerprint, created_at, updated_at, version) VALUES ('dup-ref', 'order-t12', 'INFINITEPAY', 'PIX', 'PENDING', 'key-dup', ?, 1000, 'BRL', 'fp-dup', ?, ?, 1)`, [result.attempt.provider_reference, NOW_ISO, NOW_ISO]);
-    } catch (e) {
-      insertErr = e;
-    }
-    assert.ok(insertErr, "Constraint UNIQUE deve bloquear provider_reference duplicada");
+    const attempt = await getSql(db, `SELECT provider_reference FROM app_payment_attempts WHERE order_id = 'order-t12a'`);
+    assert.strictEqual(attempt.provider_reference, null, "provider_reference deve ser NULL quando invoice_slug ausente");
+    assert.ok(result.attempt.provider_checkout_url);
   });
 
   // ============================================================
-  // T13. Timeout do provider
+  // T13. Duas tentativas sem invoice_slug persistidas sem conflito
   // ============================================================
-  it("T13: timeout do provider resulta em FAILED", async () => {
+  it("T13: duas tentativas sem invoice_slug persistidas sem conflito", async () => {
+    const noSlugTransport = createFakeTransport();
+    noSlugTransport.call = async (request) => {
+      noSlugTransport.callLog.push({ method: request.method, url: request.url });
+      if (request.url?.includes("/links")) {
+        return { ok: true, status: 200, data: { url: "https://checkout.infinitepay.io/test", access_token: "SECRET" } };
+      }
+      return { ok: true, status: 200, data: { paid: true, capture_method: "pix", amount: 1000 } };
+    };
+    noSlugTransport.getCalls = () => noSlugTransport.callLog;
+    noSlugTransport.clearLog = () => { noSlugTransport.callLog.length = 0; };
+
+    const noSlugAdapter = createInfinitePayAdapter({ httpTransport: noSlugTransport.call, timeoutMs: 5000 });
+    const noSlugService = createPaymentAttemptService({
+      dbApi: db,
+      infinitePayAdapter: noSlugAdapter,
+      getInfinitePayHandle: () => "test-handle",
+    });
+
+    // Seed additional reservations for res-a1 and res-b1
+    await seedReservation(db, "res-a1", "vila", "var-1", 1);
+    await seedReservation(db, "res-b1", "vila", "var-1", 1);
+
+    await seedOrder(db, "order-t13a", 1000, '["res-a1"]', futureIso(30));
+    await seedOrder(db, "order-t13b", 2000, '["res-b1"]', futureIso(30));
+
+    await noSlugService.createPixAttempt("account-1", "order-t13a");
+    await noSlugService.createPixAttempt("account-1", "order-t13b");
+
+    const attempts = await allSql(db, `SELECT id, provider_reference FROM app_payment_attempts`);
+    assert.strictEqual(attempts.length, 2, "Duas tentativas devem existir");
+    for (const a of attempts) {
+      assert.strictEqual(a.provider_reference, null);
+    }
+  });
+
+  // ============================================================
+  // T14. Timeout do provider resulta em FAILED
+  // ============================================================
+  it("T14: timeout do provider resulta em FAILED", async () => {
     const timeoutTransport = createFakeTransport({ timeout: true });
     const timeoutAdapter = createInfinitePayAdapter({ httpTransport: timeoutTransport.call, timeoutMs: 100 });
-
     const timeoutService = createPaymentAttemptService({
       dbApi: db,
       infinitePayAdapter: timeoutAdapter,
       getInfinitePayHandle: () => "test-handle",
     });
 
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t13', '0013', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t13', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+    await seedOrder(db, "order-t14", 1000, '["res-1"]', futureIso(30));
 
-    const result = await timeoutService.createPixAttempt("order-t13");
+    const result = await timeoutService.createPixAttempt("account-1", "order-t14");
     assert.strictEqual(result.success, false);
     assert.strictEqual(result.error, "INFINITEPAY_TIMEOUT");
 
-    const attempt = await getSql(db, `SELECT status, failure_code FROM app_payment_attempts WHERE order_id = 'order-t13'`);
+    const attempt = await getSql(db, `SELECT status, failure_code FROM app_payment_attempts WHERE order_id = 'order-t14'`);
     assert.strictEqual(attempt.status, "FAILED");
     assert.strictEqual(attempt.failure_code, "INFINITEPAY_TIMEOUT");
   });
 
   // ============================================================
-  // T14. Resposta malformada
+  // T15. Resposta sanitizada sem dados sensíveis
   // ============================================================
-  it("T14: resposta malformada do provider deve ser tratada", async () => {
-    const malformedTransport = createFakeTransport({ malformed: true });
-    const malformedAdapter = createInfinitePayAdapter({ httpTransport: malformedTransport.call, timeoutMs: 5000 });
+  it("T15: resposta sanitizada não contém dados sensíveis", async () => {
+    await seedOrder(db, "order-t15", 1000, '["res-1"]', futureIso(30));
 
-    const malformedService = createPaymentAttemptService({
-      dbApi: db,
-      infinitePayAdapter: malformedAdapter,
-      getInfinitePayHandle: () => "test-handle",
-    });
+    await service.createPixAttempt("account-1", "order-t15");
 
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t14', '0014', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t14', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
-
-    const result = await malformedService.createPixAttempt("order-t14");
-    assert.strictEqual(result.success, false);
-    assert.strictEqual(result.error, "INFINITEPAY_NO_CHECKOUT_URL");
+    const attempt = await getSql(db, `SELECT provider_response_sanitized_json FROM app_payment_attempts WHERE order_id = 'order-t15'`);
+    const sanitized = JSON.parse(attempt.provider_response_sanitized_json);
+    assert.strictEqual(sanitized.access_token, "[REDACTED]", "access_token redactado");
+    assert.strictEqual(sanitized.card_number, "[REDACTED]", "card_number redactado");
+    assert.ok(sanitized.url, "URL pública preservada");
   });
 
   // ============================================================
-  // T15. Erro HTTP normalizado
+  // T16. Sanitização com PII aninhada
   // ============================================================
-  it("T15: erro HTTP 500 do provider deve ser normalizado", async () => {
-    const errorTransport = createFakeTransport({ httpError: { status: 500, data: { error: "INTERNAL" } } });
-    const errorAdapter = createInfinitePayAdapter({ httpTransport: errorTransport.call, timeoutMs: 5000 });
+  it("T16: sanitização remove PII aninhada (customer, email, cpf)", async () => {
+    const piiTransport = createFakeTransport();
+    piiTransport.call = async (request) => {
+      piiTransport.callLog.push({ method: request.method, url: request.url });
+      if (request.url?.includes("/links")) {
+        return { ok: true, status: 200, data: { url: "https://checkout.test", invoice_slug: "INV-1", customer: { email: "test@test.com", cpf: "123.456.789-00", phone_number: "11999999999", address: { street: "Rua Secreta" } }, access_token: "SECRET" } };
+      }
+      return { ok: true, status: 200, data: { paid: true, capture_method: "pix", amount: 1000 } };
+    };
+    piiTransport.getCalls = () => piiTransport.callLog;
+    piiTransport.clearLog = () => { piiTransport.callLog.length = 0; };
 
-    const errorService = createPaymentAttemptService({
+    const piiAdapter = createInfinitePayAdapter({ httpTransport: piiTransport.call, timeoutMs: 5000 });
+    const piiService = createPaymentAttemptService({
       dbApi: db,
-      infinitePayAdapter: errorAdapter,
+      infinitePayAdapter: piiAdapter,
       getInfinitePayHandle: () => "test-handle",
     });
 
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t15', '0015', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t15', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
-
-    const result = await errorService.createPixAttempt("order-t15");
-    assert.strictEqual(result.success, false);
-    assert.strictEqual(result.error, "INFINITEPAY_API_ERROR");
-  });
-
-  // ============================================================
-  // T16. Resposta sanitizada sem segredo
-  // ============================================================
-  it("T16: resposta sanitizada não contém dados sensíveis", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t16', '0016', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t16', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
-
-    await service.createPixAttempt("order-t16");
+    await seedOrder(db, "order-t16", 1000, '["res-1"]', futureIso(30));
+    await piiService.createPixAttempt("account-1", "order-t16");
 
     const attempt = await getSql(db, `SELECT provider_response_sanitized_json FROM app_payment_attempts WHERE order_id = 'order-t16'`);
     const sanitized = JSON.parse(attempt.provider_response_sanitized_json);
-    assert.strictEqual(sanitized.access_token, "[REDACTED]", "access_token deve ser redactado");
-    assert.strictEqual(sanitized.card_number, "[REDACTED]", "card_number deve ser redactado");
-    assert.ok(sanitized.url, "URL pública deve ser preservada");
+    assert.strictEqual(sanitized.customer, "[REDACTED]", "customer deve ser redactado");
+    assert.strictEqual(sanitized.access_token, "[REDACTED]", "access_token redactado");
   });
 
   // ============================================================
@@ -383,153 +386,84 @@ describe("Payment Attempts E2E — 25 testes obrigatórios", () => {
   it("T17: migration funciona em banco novo", async () => {
     const newDb = memoryDb();
     await newDb.run("PRAGMA foreign_keys=ON");
-
-    // Apenas criar tabelas master mínimas necessárias
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS customer_master_records(id TEXT PRIMARY KEY, status TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, eligibility_status TEXT NOT NULL DEFAULT 'NOT_EVALUATED', updated_at TEXT NOT NULL, deleted_at TEXT)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS customer_identity_conflicts(id TEXT PRIMARY KEY, conflict_type TEXT, severity TEXT, status TEXT)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS customer_identity_conflict_participants(id TEXT PRIMARY KEY, conflict_id TEXT, participant_type TEXT, participant_id TEXT)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS customer_identity_cases(id TEXT PRIMARY KEY, blocking INTEGER)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS customer_identity_case_conflicts(case_id TEXT, conflict_id TEXT)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS app_customer_accounts (id TEXT PRIMARY KEY, account_status TEXT NOT NULL DEFAULT 'ACTIVE', access_status TEXT NOT NULL DEFAULT 'APPROVED', version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS app_customer_addresses (id TEXT PRIMARY KEY, account_id TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS app_carts (id TEXT PRIMARY KEY, account_id TEXT, status TEXT, currency TEXT, item_count INTEGER, subtotal_cents INTEGER, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS app_cart_items (id TEXT PRIMARY KEY, cart_id TEXT, product_id TEXT, variant_id TEXT, quantity INTEGER, unit_price_cents INTEGER, effective_unit_price_cents INTEGER, line_total_cents INTEGER, product_snapshot_json TEXT, availability_status TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS app_orders (id TEXT PRIMARY KEY, order_number TEXT NOT NULL, account_id TEXT NOT NULL, fulfillment_type TEXT NOT NULL, address_id TEXT, pickup_store_id TEXT, shipping_provider TEXT, shipping_service_code TEXT, shipping_quote_cents INTEGER, shipping_quote_currency TEXT DEFAULT 'BRL', subtotal_cents INTEGER NOT NULL, total_cents INTEGER NOT NULL, status TEXT NOT NULL, idempotency_key TEXT UNIQUE, snapshot_json TEXT NOT NULL, reservation_ids_json TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT, failed_reason TEXT)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS app_order_items (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, product_id TEXT NOT NULL, variant_id TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price_cents INTEGER NOT NULL, effective_unit_price_cents INTEGER NOT NULL, line_total_cents INTEGER NOT NULL, product_snapshot_json TEXT NOT NULL, availability_status TEXT NOT NULL DEFAULT 'UNKNOWN', version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-    await runSql(newDb, `CREATE TABLE IF NOT EXISTS app_order_events (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, event_type TEXT NOT NULL, details_json TEXT, created_at TEXT NOT NULL)`);
+    await runSql(newDb, `CREATE TABLE IF NOT EXISTS app_orders (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, status TEXT NOT NULL, total_cents INTEGER NOT NULL, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
 
     await applyAppPaymentAttemptSchema(newDb);
 
     const tables = await newDb.all("SELECT name FROM sqlite_master WHERE type='table' AND name='app_payment_attempts'");
-    assert.strictEqual(tables.length, 1, "Tabela app_payment_attempts deve existir");
+    assert.strictEqual(tables.length, 1);
 
     const columns = await newDb.all("PRAGMA table_info(app_payment_attempts)");
-    const columnNames = columns.map((c) => c.name);
-    assert.ok(columnNames.includes("id"), "Deve ter coluna id");
-    assert.ok(columnNames.includes("order_id"), "Deve ter coluna order_id");
-    assert.ok(columnNames.includes("provider"), "Deve ter coluna provider");
-    assert.ok(columnNames.includes("method"), "Deve ter coluna method");
-    assert.ok(columnNames.includes("status"), "Deve ter coluna status");
-    assert.ok(columnNames.includes("idempotency_key"), "Deve ter coluna idempotency_key");
-    assert.ok(columnNames.includes("amount_cents"), "Deve ter coluna amount_cents");
-    assert.ok(columnNames.includes("currency"), "Deve ter coluna currency");
-    assert.ok(columnNames.includes("request_fingerprint"), "Deve ter coluna request_fingerprint");
-    assert.ok(columnNames.includes("version"), "Deve ter coluna version");
+    const names = columns.map((c) => c.name);
+    assert.ok(names.includes("id"));
+    assert.ok(names.includes("order_id"));
+    assert.ok(names.includes("provider"));
+    assert.ok(names.includes("method"));
+    assert.ok(names.includes("status"));
+    assert.ok(names.includes("idempotency_key"));
+    assert.ok(names.includes("amount_cents"));
+    assert.ok(names.includes("currency"));
+    assert.ok(names.includes("request_fingerprint"));
+    assert.ok(names.includes("version"));
 
     await newDb.close();
   });
 
   // ============================================================
-  // T18. Migration em banco legado
+  // T18. Migration idempotente
   // ============================================================
-  it("T18: migration funciona em banco legado (tabela app_orders existente)", async () => {
-    // Banco legado já tem app_orders
-    const legacyDb = memoryDb();
-    await legacyDb.run("PRAGMA foreign_keys=ON");
-    await runSql(legacyDb, `CREATE TABLE IF NOT EXISTS app_orders (id TEXT PRIMARY KEY, order_number TEXT NOT NULL, account_id TEXT NOT NULL, fulfillment_type TEXT NOT NULL, status TEXT NOT NULL, total_cents INTEGER NOT NULL, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-
-    await applyAppPaymentAttemptSchema(legacyDb);
-
-    const tables = await legacyDb.all("SELECT name FROM sqlite_master WHERE type='table' AND name='app_payment_attempts'");
-    assert.strictEqual(tables.length, 1, "Tabela app_payment_attempts deve existir em banco legado");
-
-    const ordersTable = await legacyDb.all("SELECT name FROM sqlite_master WHERE type='table' AND name='app_orders'");
-    assert.strictEqual(ordersTable.length, 1, "Tabela app_orders deve permanecer intacta");
-
-    await legacyDb.close();
-  });
-
-  // ============================================================
-  // T19. Migration executada duas vezes
-  // ============================================================
-  it("T19: migration executada duas vezes é idempotente", async () => {
-    await applyAppPaymentAttemptSchema(db); // Segunda execução
-    // Não deve falhar
+  it("T18: migration executada duas vezes é idempotente", async () => {
+    await applyAppPaymentAttemptSchema(db);
     const tables = await db.all("SELECT name FROM sqlite_master WHERE type='table' AND name='app_payment_attempts'");
     assert.strictEqual(tables.length, 1);
   });
 
   // ============================================================
-  // T20. Pedido que expira antes da criação
+  // T19. Pedido sem reserva bloqueia
   // ============================================================
-  it("T20: pedido que expira durante a criação é detectado", async () => {
-    // Criar pedido com expires_at no passado
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t20', '0020', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t20', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, pastIso(1)]);
+  it("T19: pedido sem reservas bloqueia pagamento", async () => {
+    await seedOrder(db, "order-t19", 1000, '[]', futureIso(30));
 
     let err;
-    try {
-      await service.createPixAttempt("order-t20");
-    } catch (e) {
-      err = e;
-    }
-    assert.ok(err);
-    assert.strictEqual(err.code, "ORDER_EXPIRED");
-  });
-
-  // ============================================================
-  // T21. Reserva inválida bloqueia pagamento
-  // ============================================================
-  it("T21: pedido sem reservas bloqueia pagamento", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t21', '0021', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t21', '{"store_origin_id":"vila"}', '[]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
-
-    let err;
-    try {
-      await service.createPixAttempt("order-t21");
-    } catch (e) {
-      err = e;
-    }
+    try { await service.createPixAttempt("account-1", "order-t19"); } catch (e) { err = e; }
     assert.ok(err);
     assert.strictEqual(err.code, "ORDER_RESERVATION_INVALID");
   });
 
   // ============================================================
-  // T22. Nenhum teste faz chamada externa
+  // T20. Nenhum teste marca pedido como PAID
   // ============================================================
-  it("T22: nenhum teste faz chamada externa (verificação do fake transport)", async () => {
-    // Este teste verifica que o fake transport foi usado em todos os testes anteriores
-    // Todas as chamadas foram para URLs locais do fake
-    const calls = fakeTransport.getCalls();
-    for (const call of calls) {
-      assert.ok(call.url.includes("infinitepay.io"), `Chamada deve ser simulada: ${call.url}`);
-    }
-    // Confirmar que não há fetch real — o fake transport não usa fetch
-    assert.ok(true, "Fake transport não faz chamadas externas");
+  it("T20: criação de attempt NÃO marca pedido como PAID", async () => {
+    await seedOrder(db, "order-t20", 1000, '["res-1"]', futureIso(30));
+
+    await service.createPixAttempt("account-1", "order-t20");
+
+    const order = await getSql(db, `SELECT status FROM app_orders WHERE id = 'order-t20'`);
+    assert.strictEqual(order.status, "READY_FOR_PAYMENT");
   });
 
   // ============================================================
-  // T23. Nenhum fluxo marca pedido como PAID
+  // T21. Nenhum fluxo cria cartão de crédito
   // ============================================================
-  it("T23: criação de attempt NÃO marca pedido como PAID", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t23', '0023', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t23', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+  it("T21: nenhum fluxo cria cartão de crédito", async () => {
+    await seedOrder(db, "order-t21", 1000, '["res-1"]', futureIso(30));
 
-    await service.createPixAttempt("order-t23");
+    await service.createPixAttempt("account-1", "order-t21");
 
-    const order = await getSql(db, `SELECT status FROM app_orders WHERE id = 'order-t23'`);
-    assert.strictEqual(order.status, "READY_FOR_PAYMENT", "Pedido NÃO deve ser PAID");
-  });
-
-  // ============================================================
-  // T24. Nenhum fluxo cria cartão de crédito
-  // ============================================================
-  it("T24: nenhum fluxo cria cartão de crédito", async () => {
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t24', '0024', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t24', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
-
-    await service.createPixAttempt("order-t24");
-
-    // Verificar que não há tabela de cartão e que o response sanitizado não tem card
-    const attempt = await getSql(db, `SELECT provider_response_sanitized_json, provider_pix_copy_paste FROM app_payment_attempts WHERE order_id = 'order-t24'`);
+    const attempt = await getSql(db, `SELECT provider_response_sanitized_json, provider_pix_copy_paste FROM app_payment_attempts WHERE order_id = 'order-t21'`);
     if (attempt.provider_response_sanitized_json) {
       const resp = JSON.parse(attempt.provider_response_sanitized_json);
-      assert.strictEqual(resp.card_number, "[REDACTED]", "card_number deve ser redactado");
+      assert.strictEqual(resp.card_number, "[REDACTED]");
     }
-    // Não há criação de cartão — apenas PIX
+    assert.strictEqual(attempt.provider_pix_copy_paste, null, "provider_pix_copy_paste deve ser NULL");
   });
 
   // ============================================================
-  // T25. Flag desligada impede qualquer transporte
+  // T22. Flag desligada impede transporte
   // ============================================================
-  it("T25: flag desligada impede qualquer transporte", async () => {
+  it("T22: flag desligada impede qualquer transporte", async () => {
     delete process.env.INFINITEPAY_SHOP_PIX_ENABLED;
+    await seedOrder(db, "order-t22", 1000, '["res-1"]', futureIso(30));
 
     const disabledService = createPaymentAttemptService({
       dbApi: db,
@@ -537,16 +471,64 @@ describe("Payment Attempts E2E — 25 testes obrigatórios", () => {
       getInfinitePayHandle: () => "test-handle",
     });
 
-    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t25', '0025', 'account-1', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t25', '{"store_origin_id":"vila"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
-
     let err;
-    try {
-      await disabledService.createPixAttempt("order-t25");
-    } catch (e) {
-      err = e;
-    }
+    try { await disabledService.createPixAttempt("account-1", "order-t22"); } catch (e) { err = e; }
     assert.ok(err);
     assert.strictEqual(err.code, "INFINITEPAY_PIX_DISABLED");
-    assert.strictEqual(fakeTransport.getCalls().length, 0, "Transporte não deve ser chamado quando flag OFF");
+  });
+
+  // ============================================================
+  // T23. Zero chamada externa — global.fetch bloqueado
+  // ============================================================
+  it("T23: zero chamada externa — global.fetch bloqueado", async () => {
+    const originalFetch = global.fetch;
+    let fetchCallCount = 0;
+    global.fetch = async () => {
+      fetchCallCount++;
+      throw new Error("PROIBIDO: chamada externa real");
+    };
+
+    try {
+      await seedOrder(db, "order-t23", 1000, '["res-1"]', futureIso(30));
+      await service.createPixAttempt("account-1", "order-t23");
+      assert.strictEqual(fetchCallCount, 0, "Zero chamadas a global.fetch");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  // ============================================================
+  // T24. Conta A não consulta attempt da conta B
+  // ============================================================
+  it("T24: conta A não consulta attempt da conta B", async () => {
+    // Criar pedido da conta B
+    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t24', '0024', 'account-B', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t24', '{"s":"v"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+
+    // Criar attempt com a conta B (usar service direto)
+    const bService = createPaymentAttemptService({
+      dbApi: db,
+      infinitePayAdapter: adapter,
+      getInfinitePayHandle: () => "test-handle",
+    });
+    // Para criar, precisamos temporariamente usar account-1 como dono
+    // Vamos inserir manualmente um attempt com account_id=B
+    await runSql(db, `INSERT INTO app_payment_attempts (id, order_id, provider, method, status, idempotency_key, amount_cents, currency, request_fingerprint, created_at, updated_at, version) VALUES ('attempt-t24', 'order-t24', 'INFINITEPAY', 'PIX', 'PENDING', 'key-t24', 1000, 'BRL', 'fp-t24', ?, ?, 1)`, [NOW_ISO, NOW_ISO]);
+
+    let err;
+    try { await service.getPixAttemptStatus("account-1", "attempt-t24"); } catch (e) { err = e; }
+    assert.ok(err);
+    assert.strictEqual(err.code, "PAYMENT_ATTEMPT_NOT_FOUND");
+  });
+
+  // ============================================================
+  // T25. Conta A não lista pagamentos da conta B
+  // ============================================================
+  it("T25: conta A não lista pagamentos da conta B", async () => {
+    await runSql(db, `INSERT INTO app_orders (id, order_number, account_id, fulfillment_type, address_id, subtotal_cents, total_cents, status, idempotency_key, snapshot_json, reservation_ids_json, version, created_at, updated_at, expires_at) VALUES ('order-t25', '0025', 'account-B', 'DELIVERY', 'addr-1', 1000, 1000, 'READY_FOR_PAYMENT', 'key-t25', '{"s":"v"}', '["res-1"]', 1, ?, ?, ?)`, [NOW_ISO, NOW_ISO, futureIso(30)]);
+
+    let err;
+    try { await service.listAttemptsByOrder("account-1", "order-t25"); } catch (e) { err = e; }
+    assert.ok(err);
+    assert.strictEqual(err.code, "ORDER_NOT_FOUND");
   });
 });

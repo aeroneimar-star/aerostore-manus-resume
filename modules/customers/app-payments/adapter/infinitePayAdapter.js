@@ -15,6 +15,9 @@
  *
  * Erros normalizados:
  *   { code, message, details }
+ *
+ * NOTA: O adapter NÃO valida PIX-only — isso é feito no service layer.
+ * O adapter apenas expõe os dados brutos do provider.
  */
 
 const INFINITEPAY_BASE_URL = "https://api.checkout.infinitepay.io";
@@ -104,7 +107,7 @@ function createInfinitePayAdapter(options = {}) {
         success: true,
         provider: "infinitepay",
         url,
-        invoice_slug: body.invoice_slug || body.slug || "",
+        invoice_slug: body.invoice_slug || body.slug || null,
         order_nsu: built.payload.order_nsu,
         amount_cents: params.amount_cents || 0,
         raw: body,

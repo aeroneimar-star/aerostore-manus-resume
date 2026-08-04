@@ -27,7 +27,8 @@ async function applyAppPaymentAttemptSchema(connection) {
         err.message &&
         (err.message.includes("duplicate column") ||
          err.message.includes("already exists") ||
-         err.message.includes("UNIQUE constraint"))
+         err.message.includes("UNIQUE constraint") ||
+         err.message.includes("UNIQUE index"))
       ) {
         continue;
       }

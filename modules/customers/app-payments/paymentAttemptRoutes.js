@@ -6,6 +6,8 @@
  * POST /app/v1/orders/:id/pay — Cria tentativa PIX
  * GET  /app/v1/payments/:id/status — Consulta status
  * GET  /app/v1/orders/:id/payments — Lista tentativas
+ *
+ * Todas as rotas exigem accountId e ok=false para erros.
  */
 
 const { PaymentAttemptError } = require("./paymentAttemptService");
@@ -63,12 +65,20 @@ function createPaymentAttemptRouter(options = {}) {
         });
       }
       const orderId = req.params.id;
-      const result = await service.createPixAttempt(orderId, {
-        clientAmountCents: req.body?.amount_cents,
-        expires_at: req.body?.expires_at,
-      });
-      const statusCode = result.success ? 201 : 400;
-      sendSuccess(res, statusCode, result);
+      // NÃO aceita expires_at do cliente — deriva do pedido/provider
+      const result = await service.createPixAttempt(accountId, orderId, {});
+      // Sempre retorna ok=true para sucesso, ok=false para falha
+      if (result.success) {
+        res.status(201).json({ ok: true, data: result });
+      } else {
+        res.status(400).json({
+          ok: false,
+          error: {
+            code: result.error,
+            message: result.message,
+          },
+        });
+      }
     } catch (err) {
       sendError(res, err);
     }
@@ -85,8 +95,18 @@ function createPaymentAttemptRouter(options = {}) {
         });
       }
       const attemptId = req.params.id;
-      const result = await service.getPixAttemptStatus(attemptId);
-      sendSuccess(res, 200, result);
+      const result = await service.getPixAttemptStatus(accountId, attemptId);
+      if (result.success) {
+        res.status(200).json({ ok: true, data: result });
+      } else {
+        res.status(result.statusCode || 400).json({
+          ok: false,
+          error: {
+            code: result.error || "STATUS_CHECK_FAILED",
+            message: result.message || "Falha ao consultar status",
+          },
+        });
+      }
     } catch (err) {
       sendError(res, err);
     }
@@ -103,8 +123,18 @@ function createPaymentAttemptRouter(options = {}) {
         });
       }
       const orderId = req.params.id;
-      const result = await service.listAttemptsByOrder(orderId);
-      sendSuccess(res, 200, result);
+      const result = await service.listAttemptsByOrder(accountId, orderId);
+      if (result.success) {
+        res.status(200).json({ ok: true, data: result });
+      } else {
+        res.status(400).json({
+          ok: false,
+          error: {
+            code: result.error,
+            message: result.message,
+          },
+        });
+      }
     } catch (err) {
       sendError(res, err);
     }
