@@ -1,6 +1,7 @@
 "use strict";
 
 const { randomUUID } = require("crypto");
+const { createReservationIntegrityService, ReservationIntegrityError } = require("./reservationIntegrityService");
 
 /**
  * orderExpiryService — Responsável por expirar pedidos não pagos
@@ -26,7 +27,20 @@ const { randomUUID } = require("crypto");
  * - Snapshot pré-release por store+variant (item 1)
  * - Validação pós-release com 4 igualdades por store+variant (item 2)
  * - Full release pré-existente bloqueado (item 3)
+ * - RELEASE sem HOLD correspondente: rejeitar com RELEASE_WITHOUT_HOLD
  * - Se qualquer passo falhar: ROLLBACK completo
+ *
+ * VALIDAÇÃO DE RESERVA: delegada ao reservationIntegrityService (compartilhado
+ * com paymentAttemptService). Mantém single source of truth para:
+ *   - reservation_ids_json parsing + validação
+ *   - Duplicate reservation ID detection
+ *   - HOLD signal validation (quantity_delta < 0)
+ *   - HOLD completeness (store_id, variant_id)
+ *   - RELEASE signal validation (quantity_delta > 0, before >= 0, after >= 0, arithmetic)
+ *   - RELEASE-without-HOLD detection
+ *   - Hold vs release overflow detection
+ *   - Full release pre-existing detection
+ *   - Balance existence + reserved_qty >= pending
  *
  * API:
  *   sweepExpiredOrders({ db, inventoryService, scope })
@@ -48,39 +62,28 @@ function generateId() {
  * 1. Busca pedidos expiráveis fora de transação (leitura)
  * 2. Para CADA pedido, abre uma transação exclusiva
  * 3. Re-leitura dentro da tx para garantir status atual (concorrência)
- * 4. Validar reservation_ids: rejeitar duplicados (DUPLICATE_RESERVATION_ID)
- * 5. Para CADA reservation_id:
- *    a. Busca movimentos RESERVATION_HOLD
- *    b. Exige pelo menos 1 movimento válido (variant_id, store_id, quantity_delta)
- *    c. Validar sinal: HOLD quantity_delta < 0
- *    d. Se nenhum HOLD: RESERVATION_MOVEMENTS_NOT_FOUND, rollback
- * 6. Agrega movimentos por store_id + variant_id (soma quantidades)
- * 7. LOOP 1: Verifica release_quantity_total já existente por (orderId + storeId + variantId)
- *    - Consultar TODOS movimentos RESERVATION_RELEASE sem filtro de sinal
- *    - Validar cada movimento: delta > 0, quantity_before >= 0, quantity_after >= 0
- *    - release_quantity_total === hold_quantity_total: FULL RELEASE PRÉ-EXISTENTE
- *      → PREEXISTING_FULL_RELEASE_REQUIRES_RECONCILIATION, rollback
- *    - release_quantity_total > hold_quantity_total: RESERVATION_RELEASE_OVERFLOW, rollback
- *    - release_quantity_total < hold_quantity_total: liberar a diferença
- * 8. ITEM 1 — SNAPSHOT PRÉ-RELEASE por store+variant:
+ * 4. Delega validação de reserva ao reservationIntegrityService (shared validator)
+ *    → ReservationIntegrityError mapeada para rollback + errors_details
+ * 5. Converte resultado do validator em releaseValidationMap para fluxo de release
+ * 6. ITEM 1 — SNAPSHOT PRÉ-RELEASE por store+variant:
  *    - hold_total, release_total_before, pending_quantity
  *    - available_qty_before, reserved_qty_before, version_before
  *    - Se saldo não existe: INVENTORY_BALANCE_NOT_FOUND, rollback
  *    - Se reserved_qty_before < pending_quantity: RESERVATION_BALANCE_INCONSISTENT, rollback
- * 9. Libera estoque via releaseReservation (runner transacional, chave TARGET cumulativa)
- * 10. ITEM 2 — VALIDAÇÃO PÓS-RELEASE REAL:
- *     - Reler: release_total_after, available_qty_after, reserved_qty_after, version_after
- *     - Exigir TODAS as 4 igualdades (quando pending_quantity > 0):
- *       a) release_total_after === hold_total
- *       b) release_total_after === release_total_before + pending_quantity
- *       c) available_qty_after === available_qty_before + pending_quantity
- *       d) reserved_qty_after === reserved_qty_before - pending_quantity
- *       e) version_after === version_before + 1
- *     - POST_RELEASE_BALANCE_MISMATCH com valores before/after, rollback
- * 11. Atualiza status para EXPIRED com expired_at
- * 12. Registra evento ORDER_EXPIRED
- * 13. COMMIT — se qualquer passo falhar, ROLLBACK
- * 14. Retorna contagem de sucesso/falha
+ * 7. Libera estoque via releaseReservation (runner transacional, chave TARGET cumulativa)
+ * 8. ITEM 2 — VALIDAÇÃO PÓS-RELEASE REAL:
+ *    - Reler: release_total_after, available_qty_after, reserved_qty_after, version_after
+ *    - Exigir TODAS as 4 igualdades (quando pending_quantity > 0):
+ *      a) release_total_after === hold_total
+ *      b) release_total_after === release_total_before + pending_quantity
+ *      c) available_qty_after === available_qty_before + pending_quantity
+ *      d) reserved_qty_after === reserved_qty_before - pending_quantity
+ *      e) version_after === version_before + 1
+ *    - POST_RELEASE_BALANCE_MISMATCH com valores before/after, rollback
+ * 9. Atualiza status para EXPIRED com expired_at
+ * 10. Registra evento ORDER_EXPIRED
+ * 11. COMMIT — se qualquer passo falhar, ROLLBACK
+ * 12. Retorna contagem de sucesso/falha
  */
 async function sweepExpiredOrders(options = {}) {
   const { db, inventoryService, scope = null, now = new Date() } = options;
@@ -92,6 +95,9 @@ async function sweepExpiredOrders(options = {}) {
   if (!inventoryService || typeof inventoryService.releaseReservation !== "function") {
     throw new Error("SWEEP_INVENTORY_SERVICE_REQUIRED");
   }
+
+  // Shared validator — delegação ao reservationIntegrityService
+  const reservationIntegrityService = options.reservationIntegrityService || createReservationIntegrityService();
 
   const nowIso = iso(now);
   const errorsDetails = [];
@@ -146,233 +152,119 @@ async function sweepExpiredOrders(options = {}) {
         continue;
       }
 
-      // 4. Processar reservation_ids
-      const rawReservationIds = reRead.reservation_ids_json
-        ? JSON.parse(reRead.reservation_ids_json)
-        : [];
+      // 4. DELEGAÇÃO: validar reserva usando reservationIntegrityService (shared validator)
+      //    Substitui o bloco duplicado de validação que existia nas linhas 149-417.
+      let validation;
+      let overflowAllViolations = null;
+      try {
+        validation = await reservationIntegrityService.validateReservationIntegrity(db, reRead);
+      } catch (integrityErr) {
+        // Para overflow: precisamos coletar TODAS as violações (não apenas a primeira)
+        // O validator lança na primeira overflow; precisamos re-consultar o DB
+        if (integrityErr instanceof ReservationIntegrityError &&
+            integrityErr.code === "ORDER_RESERVATION_INVALID" &&
+            integrityErr.message.toLowerCase().includes("release total")) {
+          // Re-consultar DB para coletar todas as overflow violations
+          try {
+            const rawReservationIds = reRead.reservation_ids_json ? JSON.parse(reRead.reservation_ids_json) : [];
+            const allHolds = await db.all(
+              `SELECT variant_id, store_id, quantity_delta
+               FROM pdv_inventory_movements_v2
+               WHERE reference_id IN (${rawReservationIds.map(() => '?').join(',')})
+                 AND movement_type = 'RESERVATION_HOLD'
+                 AND quantity_delta < 0`,
+              rawReservationIds
+            );
+            const holdAgg = {};
+            for (const h of allHolds) {
+              const key = `${h.store_id}::${h.variant_id}`;
+              if (!holdAgg[key]) holdAgg[key] = { hold_quantity_total: 0, store_id: h.store_id, variant_id: h.variant_id };
+              holdAgg[key].hold_quantity_total += Math.abs(h.quantity_delta);
+            }
+            const allReleases = await db.all(
+              `SELECT variant_id, store_id, quantity_delta
+               FROM pdv_inventory_movements_v2
+               WHERE reference_id = ? AND movement_type = 'RESERVATION_RELEASE'
+                 AND quantity_delta > 0`,
+              [orderId]
+            );
+            const releaseAgg = {};
+            for (const r of allReleases) {
+              const key = `${r.store_id}::${r.variant_id}`;
+              if (!releaseAgg[key]) releaseAgg[key] = { release_quantity_total: 0, store_id: r.store_id, variant_id: r.variant_id };
+              releaseAgg[key].release_quantity_total += r.quantity_delta;
+            }
+            const allViolations = [];
+            for (const [key, hold] of Object.entries(holdAgg)) {
+              const rel = releaseAgg[key] || { release_quantity_total: 0 };
+              if (rel.release_quantity_total > hold.hold_quantity_total) {
+                allViolations.push({
+                  store_id: hold.store_id,
+                  variant_id: hold.variant_id,
+                  hold_quantity_total: hold.hold_quantity_total,
+                  release_quantity_total: rel.release_quantity_total,
+                });
+              }
+            }
+            if (allViolations.length > 0) {
+              overflowAllViolations = allViolations;
+            }
+          } catch (overflowErr) {
+            // Fallback: usar violation empty
+          }
+        }
 
+        await db.run("ROLLBACK");
+        if (integrityErr instanceof ReservationIntegrityError) {
+          // Mapear códigos do validator para os códigos esperados pelo sweep
+          const mappedError = mapIntegrityError(integrityErr, orderId);
+          errorsDetails.push({
+            order_id: orderId,
+            phase: "reservation_validation",
+            error: mappedError.error,
+            ...mappedError.extra,
+            violations: overflowAllViolations || mappedError.extra.violations || [],
+            message: integrityErr.message,
+          });
+          continue;
+        }
+        // Erro não mapeável (ex: db connection error)
+        errorsDetails.push({
+          order_id: orderId,
+          phase: "sweep",
+          error: integrityErr.message,
+        });
+        continue;
+      }
+
+      const { reservationIds, totalHoldByStoreVariant } = validation;
+
+      // 5. Verificar se há reservations vazias após validação (edge case)
       let stockReleased = false;
 
-      if (rawReservationIds.length === 0) {
+      if (!reservationIds || reservationIds.length === 0) {
         await db.run("ROLLBACK");
         errorsDetails.push({
           order_id: orderId,
           phase: "reservation_check",
           error: "NO_RESERVATIONS_FOUND",
-          message: `Pedido ${orderId} sem reservation_ids`,
+          message: `Pedido ${orderId} sem reservation_ids válidas`,
         });
         continue;
       }
 
-      // 4a. Rejeitar reservation_ids duplicados
-      const uniqueIds = new Set(rawReservationIds);
-      if (uniqueIds.size !== rawReservationIds.length) {
-        await db.run("ROLLBACK");
-        errorsDetails.push({
-          order_id: orderId,
-          phase: "duplicate_reservation_check",
-          error: "DUPLICATE_RESERVATION_ID",
-          message: `Pedido ${orderId} possui reservation_ids duplicados`,
-          violations: rawReservationIds.filter((id, idx) => rawReservationIds.indexOf(id) !== idx),
-        });
-        continue;
-      }
-
-      const reservationIds = rawReservationIds;
-
-      // 4b. Para CADA reservation_id: exigir pelo menos 1 movimento HOLD válido
-      const perReservationHoldMovements = [];
-      const orderViolations = [];
-
-      for (const reservationId of reservationIds) {
-        const holdMovements = await db.all(
-          `SELECT variant_id, store_id, quantity_delta
-           FROM pdv_inventory_movements_v2
-           WHERE reference_id = ?
-             AND movement_type = 'RESERVATION_HOLD'`,
-          [reservationId]
-        );
-
-        if (!holdMovements || holdMovements.length === 0) {
-          orderViolations.push({
-            reservation_id: reservationId,
-            error: "RESERVATION_MOVEMENTS_NOT_FOUND",
-            message: `Reservation ${reservationId} não possui nenhum movimento RESERVATION_HOLD`,
-          });
-          stockReleased = null;
-          break;
-        }
-
-        for (const m of holdMovements) {
-          if (!m.variant_id || !m.store_id || m.quantity_delta === undefined || m.quantity_delta === null) {
-            orderViolations.push({
-              reservation_id: reservationId,
-              error: "INVALID_HOLD_MOVEMENT",
-              message: `Movimento HOLD incompleto: variant_id=${m.variant_id}, store_id=${m.store_id}, delta=${m.quantity_delta}`,
-            });
-            stockReleased = null;
-            break;
-          }
-
-          // Validar sinal do HOLD: quantity_delta DEVE ser < 0
-          if (typeof m.quantity_delta !== 'number' || m.quantity_delta >= 0) {
-            orderViolations.push({
-              reservation_id: reservationId,
-              error: "INVALID_HOLD_SIGN",
-              message: `HOLD com quantity_delta=${m.quantity_delta} (deve ser < 0)`,
-            });
-            stockReleased = null;
-            break;
-          }
-        }
-
-        if (stockReleased === null) break;
-
-        perReservationHoldMovements.push({
-          reservation_id: reservationId,
-          movements: holdMovements,
-        });
-      }
-
-      // Se houve violação no loop per-reservation_id, rollback com single-error
-      if (stockReleased === null) {
-        await db.run("ROLLBACK");
-        errorsDetails.push({
-          order_id: orderId,
-          phase: "per_reservation_hold_check",
-          error: orderViolations[0].error,
-          reservation_id: orderViolations[0].reservation_id,
-          violations: orderViolations,
-          message: orderViolations[0].message,
-        });
-        continue;
-      }
-
-      // 5. Agregar todos os movimentos HOLD por (store_id, variant_id)
-      const allHoldMovements = [];
-      for (const { movements } of perReservationHoldMovements) {
-        allHoldMovements.push(...movements);
-      }
-
-      const aggregatedMap = new Map();
-      for (const m of allHoldMovements) {
-        const key = `${m.store_id}::${m.variant_id}`;
-        if (aggregatedMap.has(key)) {
-          const existing = aggregatedMap.get(key);
-          existing.hold_quantity_total += Math.abs(m.quantity_delta);
-        } else {
-          aggregatedMap.set(key, {
-            store_id: m.store_id,
-            variant_id: m.variant_id,
-            hold_quantity_total: Math.abs(m.quantity_delta),
-          });
-        }
-      }
-
-      // LOOP 1 — Verificar release_quantity_total já existente por (orderId + storeId + variantId)
-      // Consultar TODOS movimentos RESERVATION_RELEASE sem filtro de sinal
+      // 6. Construir releaseValidationMap a partir do resultado do validator
+      //    O validator retorna totalHoldByStoreVariant = { "store::variant": { holdTotal, releaseTotal, pending } }
       const releaseValidationMap = new Map();
-      const invalidReleaseViolations = [];
-
-      for (const [key, aggregated] of aggregatedMap) {
-        const { store_id: sid, variant_id: vid } = aggregated;
-
-        const allExistingReleases = await db.all(
-          `SELECT id, quantity_delta, quantity_before, quantity_after
-           FROM pdv_inventory_movements_v2
-           WHERE movement_type = 'RESERVATION_RELEASE'
-             AND reference_id = ?
-             AND variant_id = ?
-             AND store_id = ?`,
-          [orderId, vid, sid]
-        );
-
-        let validReleaseTotal = 0;
-
-        for (const r of allExistingReleases) {
-          const reasons = [];
-
-          if (typeof r.quantity_delta !== 'number' || r.quantity_delta <= 0) {
-            reasons.push(`quantity_delta=${r.quantity_delta} (deve ser > 0)`);
-          }
-
-          if (typeof r.quantity_before !== 'number' || r.quantity_before < 0) {
-            reasons.push(`quantity_before=${r.quantity_before} (deve ser >= 0)`);
-          }
-
-          if (typeof r.quantity_after !== 'number' || r.quantity_after < 0) {
-            reasons.push(`quantity_after=${r.quantity_after} (deve ser >= 0)`);
-          }
-
-          if (typeof r.quantity_delta === 'number' &&
-              typeof r.quantity_before === 'number' &&
-              typeof r.quantity_after === 'number' &&
-              (r.quantity_after - r.quantity_before) !== r.quantity_delta) {
-            reasons.push(`quantity_after - quantity_before (${r.quantity_after} - ${r.quantity_before} = ${r.quantity_after - r.quantity_before}) !== quantity_delta (${r.quantity_delta})`);
-          }
-
-          if (reasons.length > 0) {
-            invalidReleaseViolations.push({
-              movement_id: r.id,
-              store_id: sid,
-              variant_id: vid,
-              quantity_delta: r.quantity_delta,
-              reason: reasons.join('; '),
-            });
-          } else {
-            validReleaseTotal += r.quantity_delta;
-          }
-        }
-
+      for (const [key, entry] of Object.entries(totalHoldByStoreVariant)) {
+        const [storeId, variantId] = key.split("::");
         releaseValidationMap.set(key, {
-          ...aggregated,
-          release_quantity_total: validReleaseTotal,
+          store_id: storeId,
+          variant_id: variantId,
+          hold_quantity_total: entry.holdTotal,
+          release_quantity_total: entry.releaseTotal,
+          pending: entry.pending,
         });
-      }
-
-      // LOOP 1: Se houver RELEASEs inválidos, rollback com single-error
-      if (invalidReleaseViolations.length > 0) {
-        await db.run("ROLLBACK");
-        errorsDetails.push({
-          order_id: orderId,
-          phase: "release_movement_validation",
-          error: "INVALID_RELEASE_MOVEMENT",
-          violations: invalidReleaseViolations,
-          message: `${invalidReleaseViolations.length} movimento(s) RELEASE inválido(s) detectado(s)`,
-        });
-        continue;
-      }
-
-      // ITEM 3 — FULL RELEASE PRÉ-EXISTENTE
-      // Se release_total_before === hold_total enquanto status = READY_FOR_PAYMENT
-      let fullReleasePreExisting = false;
-      const fullReleaseViolations = [];
-
-      for (const [key, validation] of releaseValidationMap) {
-        const { store_id: sid, variant_id: vid, hold_quantity_total, release_quantity_total } = validation;
-
-        if (release_quantity_total === hold_quantity_total && hold_quantity_total > 0) {
-          fullReleasePreExisting = true;
-          fullReleaseViolations.push({
-            store_id: sid,
-            variant_id: vid,
-            hold_total: hold_quantity_total,
-            release_total: release_quantity_total,
-            message: `RELEASE=${release_quantity_total} === HOLD=${hold_quantity_total} para store=${sid}, variant=${vid} mas pedido ainda READY_FOR_PAYMENT`,
-          });
-        }
-      }
-
-      if (fullReleasePreExisting) {
-        await db.run("ROLLBACK");
-        errorsDetails.push({
-          order_id: orderId,
-          phase: "preexisting_full_release",
-          error: "PREEXISTING_FULL_RELEASE_REQUIRES_RECONCILIATION",
-          violations: fullReleaseViolations,
-          message: `Pedido ${orderId} com release completo mas status READY_FOR_PAYMENT — requer reconciliação`,
-        });
-        continue;
       }
 
       // 7. Validar release: apenas liberar o que NÃO foi já liberado
@@ -381,8 +273,8 @@ async function sweepExpiredOrders(options = {}) {
       const itemsByStore = {};
       let hasPendingRelease = false;
 
-      for (const [key, validation] of releaseValidationMap) {
-        const { store_id: sid, variant_id: vid, hold_quantity_total, release_quantity_total } = validation;
+      for (const [key, entry] of releaseValidationMap) {
+        const { store_id: sid, variant_id: vid, hold_quantity_total, release_quantity_total } = entry;
 
         if (release_quantity_total > hold_quantity_total) {
           overflowDetected = true;
@@ -417,11 +309,10 @@ async function sweepExpiredOrders(options = {}) {
       }
 
       // ITEM 1 — SNAPSHOT PRÉ-RELEASE por store+variant
-      // Capturar saldo ANTES de chamar releaseReservation
-      const preReleaseSnapshots = new Map(); // key -> { hold_total, release_total_before, pending, available_before, reserved_before, version_before }
+      const preReleaseSnapshots = new Map();
 
-      for (const [key, validation] of releaseValidationMap) {
-        const { store_id: sid, variant_id: vid, hold_quantity_total, release_quantity_total } = validation;
+      for (const [key, entry] of releaseValidationMap) {
+        const { store_id: sid, variant_id: vid, hold_quantity_total, release_quantity_total } = entry;
         const pendingQuantity = hold_quantity_total - release_quantity_total;
 
         // Se não há liberação pendente para esta combinação, pular snapshot
@@ -756,6 +647,144 @@ async function sweepExpiredOrders(options = {}) {
     errors: errorsDetails.length,
     errors_details: errorsDetails,
   };
+}
+
+/**
+ * mapIntegrityError — Mapeia ReservationIntegrityError codes para os codes
+ * esperados pelo sweepExpiredOrders error contract.
+ *
+ * O reservationIntegrityService usa seus próprios códigos; o sweep precisa
+ * dos códigos originais (INVALID_HOLD_SIGN, INVALID_RELEASE_MOVEMENT, etc.)
+ * para que os testes de regressão continuem passando.
+ */
+function mapIntegrityError(integrityErr, orderId) {
+  const code = integrityErr.code;
+  const details = integrityErr.details || {};
+
+  switch (code) {
+    case "DUPLICATE_RESERVATION_ID":
+      return {
+        error: "DUPLICATE_RESERVATION_ID",
+        extra: {
+          phase: "duplicate_reservation_check",
+          violations: details.violations || [],
+        },
+      };
+
+    case "ORDER_RESERVATION_INVALID": {
+      // Check if this is a RELEASE_WITHOUT_HOLD error (new contract)
+      // The reservationIntegrityService uses ORDER_RESERVATION_INVALID with details.reason=RELEASE_WITHOUT_HOLD
+      if (details.reason === "RELEASE_WITHOUT_HOLD") {
+        return {
+          error: "RELEASE_WITHOUT_HOLD",
+          extra: {
+            phase: "release_without_hold_check",
+            violations: details.violations || [],
+          },
+        };
+      }
+      // O validator retorna mensagens genéricas; precisamos mapear para os códigos
+      // específicos esperados pelo sweep.
+      const msg = integrityErr.message || "";
+      const violations = details.violations || [];
+
+      // RELEASE validation: mensagens que contêm "RELEASE" e referência a delta/before/after
+      if (msg.includes("RELEASE") && (msg.includes("quantity_delta") || msg.includes("quantity_before") || msg.includes("quantity_after") || msg.includes("inconsistente"))) {
+        return {
+          error: "INVALID_RELEASE_MOVEMENT",
+          extra: {
+            phase: "release_movement_validation",
+            violations,
+          },
+        };
+      }
+      // Release overflow: release > hold
+      // The validator message uses "Release total" (capital R) or "release total"
+      if (msg.toLowerCase().includes("release total") && msg.toLowerCase().includes("hold total")) {
+        return {
+          error: "RESERVATION_RELEASE_OVERFLOW",
+          extra: {
+            phase: "release_validation",
+            violations: [], // Will be populated by sweep's own overflow check below
+          },
+        };
+      }
+      // HOLD validation: mensagens que contêm "HOLD" mas não "RELEASE"
+      if (msg.includes("HOLD") && msg.includes("quantity_delta")) {
+        return {
+          error: "INVALID_HOLD_SIGN",
+          extra: {
+            phase: "per_reservation_hold_check",
+            violations,
+          },
+        };
+      }
+      // Missing HOLD movements: "Reserva <resId> sem movimentos HOLD válidos."
+      if (msg.includes("sem movimentos HOLD válidos")) {
+        const resIdMatch = msg.match(/Reserva\s+(\S+)\s+sem/);
+        const resId = resIdMatch ? resIdMatch[1] : undefined;
+        return {
+          error: "RESERVATION_MOVEMENTS_NOT_FOUND",
+          extra: {
+            phase: "per_reservation_hold_check",
+            reservation_id: resId,
+            violations,
+          },
+        };
+      }
+      if (msg.includes("Reservation ID") || msg.includes("reservation_ids_json")) {
+        return {
+          error: "ORDER_RESERVATION_INVALID",
+          extra: {
+            phase: "reservation_validation",
+            violations,
+          },
+        };
+      }
+      // Fallback: usar ORDER_RESERVATION_INVALID genérico
+      return {
+        error: "ORDER_RESERVATION_INVALID",
+        extra: {
+          phase: "reservation_validation",
+          violations,
+        },
+      };
+    }
+
+    case "PREEXISTING_FULL_RELEASE_REQUIRES_RECONCILIATION":
+      return {
+        error: "PREEXISTING_FULL_RELEASE_REQUIRES_RECONCILIATION",
+        extra: {
+          phase: "preexisting_full_release",
+          violations: details.violations || [],
+        },
+      };
+
+    case "INVENTORY_BALANCE_NOT_FOUND":
+      return {
+        error: "INVENTORY_BALANCE_NOT_FOUND",
+        extra: {
+          phase: "pre_release_snapshot",
+        },
+      };
+
+    case "INVENTORY_BALANCE_INSUFFICIENT":
+      return {
+        error: "RESERVATION_BALANCE_INCONSISTENT",
+        extra: {
+          phase: "pre_release_snapshot",
+        },
+      };
+
+    default:
+      return {
+        error: code,
+        extra: {
+          phase: "reservation_validation",
+          violations: details.violations || [],
+        },
+      };
+  }
 }
 
 module.exports = { sweepExpiredOrders };
