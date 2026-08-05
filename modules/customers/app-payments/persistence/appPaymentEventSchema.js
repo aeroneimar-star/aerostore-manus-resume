@@ -13,7 +13,7 @@
  *   payment_attempt_id         TEXT
  *   provider_reference         TEXT
  *   provider_transaction_nsu   TEXT
- *   request_hash               TEXT
+ *   request_hash               TEXT NOT NULL
  *   payload_sanitized_json     TEXT
  *   processing_status          TEXT NOT NULL DEFAULT 'RECEIVED'
  *   failure_code               TEXT
@@ -35,6 +35,8 @@
  *   - cria segunda movimentação de venda.
  */
 
+const { createHash } = require("crypto");
+
 const COLUMNS = [
   { name: "id", type: "TEXT", primaryKey: true, notNull: true },
   { name: "provider", type: "TEXT", notNull: true },
@@ -43,7 +45,7 @@ const COLUMNS = [
   { name: "payment_attempt_id", type: "TEXT" },
   { name: "provider_reference", type: "TEXT" },
   { name: "provider_transaction_nsu", type: "TEXT" },
-  { name: "request_hash", type: "TEXT" },
+  { name: "request_hash", type: "TEXT", notNull: true },
   { name: "payload_sanitized_json", type: "TEXT" },
   { name: "processing_status", type: "TEXT", notNull: true },
   { name: "failure_code", type: "TEXT" },
@@ -78,10 +80,16 @@ const INDEXES = [
   },
 ];
 
+/**
+ * computeRequestHash — Hash canônico determinístico para idempotência.
+ *
+ * Inclui: provider, event_type, provider_reference, order_id.
+ * NUNCA retorna null.
+ */
 function computeRequestHash(provider, eventType, providerReference, orderId) {
-  const { createHash } = require("crypto");
-  const input = `${provider}|${eventType}|${providerReference || ""}|${orderId || ""}`;
-  return createHash("sha256").update(input).digest("hex");
+  const input = `${provider || ""}|${eventType || ""}|${providerReference || ""}|${orderId || ""}`;
+  const hash = createHash("sha256").update(input).digest("hex");
+  return hash;
 }
 
 function createPaymentEventSchema(options = {}) {
@@ -91,18 +99,20 @@ function createPaymentEventSchema(options = {}) {
   }
 
   function isSchemaReady() {
-    // Verificar se a tabela existe com todos os campos esperados
     const tableInfo = db.prepare ? db.prepare("PRAGMA table_info(app_payment_events)").all() : null;
     if (!tableInfo) {
-      // Try sync call via exec
       return false;
     }
     const existingColumns = new Set(tableInfo.map(c => c.name));
     return COLUMNS.every(col => existingColumns.has(col.name));
   }
 
+  /**
+   * ensureSchema — Cria tabela e índices SEM engolir erros.
+   * request_hash é NOT NULL.
+   */
   async function ensureSchema() {
-    // Usar o padrão de migration com CREATE TABLE IF NOT EXISTS
+    // Criar tabela (sem IF NOT EXISTS — queremos falhar se algo está errado)
     const createTableSQL = `
       CREATE TABLE IF NOT EXISTS app_payment_events (
         id TEXT PRIMARY KEY,
@@ -112,7 +122,7 @@ function createPaymentEventSchema(options = {}) {
         payment_attempt_id TEXT,
         provider_reference TEXT,
         provider_transaction_nsu TEXT,
-        request_hash TEXT,
+        request_hash TEXT NOT NULL,
         payload_sanitized_json TEXT,
         processing_status TEXT NOT NULL DEFAULT 'RECEIVED',
         failure_code TEXT,
@@ -125,14 +135,10 @@ function createPaymentEventSchema(options = {}) {
       )
     `;
 
-    // Executar criação da tabela
-    try {
-      await db.run(createTableSQL);
-    } catch (e) {
-      // Table may already exist — acceptable
-    }
+    // Não engolir falha de criação de tabela
+    await db.run(createTableSQL);
 
-    // Criar índices (IF NOT EXISTS)
+    // Criar índices (sem engolir erros)
     const createIndexes = [
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_app_payment_events_request_hash ON app_payment_events(request_hash, provider)`,
       `CREATE INDEX IF NOT EXISTS idx_app_payment_events_order ON app_payment_events(order_id)`,
@@ -141,11 +147,7 @@ function createPaymentEventSchema(options = {}) {
     ];
 
     for (const sql of createIndexes) {
-      try {
-        await db.run(sql);
-      } catch (e) {
-        // Index may already exist — acceptable
-      }
+      await db.run(sql);
     }
   }
 
@@ -158,4 +160,4 @@ function createPaymentEventSchema(options = {}) {
   };
 }
 
-module.exports = { createPaymentEventSchema, computeRequestHash: null };
+module.exports = { createPaymentEventSchema, computeRequestHash };

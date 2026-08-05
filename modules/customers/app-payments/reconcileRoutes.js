@@ -4,121 +4,71 @@
  * reconcileRoutes — Endpoints de reconciliação manual e consulta de status.
  *
  * POST /app/v1/payment-attempts/:id/reconcile
- *   - Autenticado (accountId)
+ *   - Autenticado via req.user (middleware existente)
  *   - Consulta payment_check
  *   - Valida 7 condições
  *   - Finaliza atomicamente
  *
  * GET /app/v1/payment-attempts/:id/status
- *   - Autenticado (accountId)
+ *   - Autenticado via req.user (middleware existente)
  *   - Retorna estado público seguro
  *   - NUNCA retorna payload bruto do provider
+ *
+ * Contrato HTTP:
+ *   SUCESSO: { ok: true, data: ... }
+ *   ERRO:    { ok: false, error: { code, message, details } }
+ *
+ * Autenticação: usar exclusivamente req.user.id ou req.user.accountId
+ * (middleware existente). Sem fallback por query string.
  */
 
+const express = require("express");
 const { ReconciliationError } = require("./infinitePayReconciliationService");
 
 function sendSuccess(res, data = {}) {
-  res.status(200).json({ ok: true, ...data });
+  res.status(200).json({ ok: true, data });
 }
 
-function sendError(res, err) {
-  const code = err.code || "INTERNAL_ERROR";
-  const status = err.status || 500;
+function sendError(res, code, message, status = 500, details = null) {
   res.status(status).json({
     ok: false,
     error: {
       code,
-      message: err.message || "Erro interno",
+      message,
+      ...(details ? { details } : {}),
     },
   });
 }
 
-function extractAccountId(req) {
-  // Bearer token → accountId (mesmo padrão de paymentAttemptRoutes)
-  const authHeader = req.headers?.authorization || "";
-  if (authHeader.startsWith("Bearer ")) {
-    return authHeader.slice(7).trim();
-  }
-  // Fallback: query param (teste)
-  return req.query?.account_id || null;
-}
-
 function createReconcileRouter(options = {}) {
+  const { Router } = options.express || express;
   const reconciliationService = options.reconciliationService;
   if (!reconciliationService) {
     throw new Error("RECONCILIATION_SERVICE_REQUIRED for reconcileRouter");
   }
 
-  const routes = [];
+  const router = new Router();
 
-  function post(path, handler) {
-    routes.push({ method: "POST", path, handler });
+  /**
+   * extractAccountId — Usa exclusivamente req.user.id ou req.user.accountId.
+   * NUNCA usa fallback por query string.
+   */
+  function extractAccountId(req) {
+    if (req.user && req.user.id) return req.user.id;
+    if (req.user && req.user.accountId) return req.user.accountId;
+    return null;
   }
 
-  function get(path, handler) {
-    routes.push({ method: "GET", path, handler });
-  }
-
-  // Register routes
-  post("/app/v1/payment-attempts/:id/reconcile", handleReconcile);
-  get("/app/v1/payment-attempts/:id/status", handleGetStatus);
-
-  function handle(req, res, next) {
-    const url = req.url || "";
-    const method = (req.method || "GET").toUpperCase();
-
-    for (const route of routes) {
-      // Parse params from route pattern
-      const params = matchRoute(route.path, url);
-      if (params && route.method === method) {
-        req.params = { ...req.params, ...params };
-        return Promise.resolve()
-          .then(() => route.handler(req, res, next))
-          .catch(err => sendError(res, err));
-      }
-    }
-
-    if (next) {
-      next();
-    } else {
-      res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Rota não encontrada" } });
-    }
-  }
-
-  function matchRoute(pattern, url) {
-    const patternParts = pattern.split("/");
-    const urlParts = (url.split("?")[0]).split("/");
-
-    if (patternParts.length !== urlParts.length) return null;
-
-    const params = {};
-    for (let i = 0; i < patternParts.length; i++) {
-      if (patternParts[i].startsWith(":")) {
-        params[patternParts[i].slice(1)] = urlParts[i];
-      } else if (patternParts[i] !== urlParts[i]) {
-        return null;
-      }
-    }
-    return params;
-  }
-
-  async function handleReconcile(req, res) {
+  // POST /app/v1/payment-attempts/:id/reconcile
+  router.post("/app/v1/payment-attempts/:id/reconcile", async (req, res) => {
     const accountId = extractAccountId(req);
     if (!accountId) {
-      return sendError(res, {
-        code: "ACCOUNT_ID_REQUIRED",
-        message: "account_id obrigatório",
-        status: 401,
-      });
+      return sendError(res, "UNAUTHORIZED", "Autenticação necessária", 401);
     }
 
-    const attemptId = req.params?.id;
+    const attemptId = req.params.id;
     if (!attemptId) {
-      return sendError(res, {
-        code: "ATTEMPT_ID_REQUIRED",
-        message: "ID da tentativa obrigatório",
-        status: 400,
-      });
+      return sendError(res, "ATTEMPT_ID_REQUIRED", "ID da tentativa obrigatório", 400);
     }
 
     try {
@@ -126,34 +76,23 @@ function createReconcileRouter(options = {}) {
       sendSuccess(res, result);
     } catch (err) {
       if (err instanceof ReconciliationError) {
-        sendError(res, err);
+        sendError(res, err.code, err.message, err.status || 400, err.details);
       } else {
-        sendError(res, {
-          code: "INTERNAL_ERROR",
-          message: err.message || "Erro interno",
-          status: 500,
-        });
+        sendError(res, "INTERNAL_ERROR", err.message || "Erro interno", 500);
       }
     }
-  }
+  });
 
-  async function handleGetStatus(req, res) {
+  // GET /app/v1/payment-attempts/:id/status
+  router.get("/app/v1/payment-attempts/:id/status", async (req, res) => {
     const accountId = extractAccountId(req);
     if (!accountId) {
-      return sendError(res, {
-        code: "ACCOUNT_ID_REQUIRED",
-        message: "account_id obrigatório",
-        status: 401,
-      });
+      return sendError(res, "UNAUTHORIZED", "Autenticação necessária", 401);
     }
 
-    const attemptId = req.params?.id;
+    const attemptId = req.params.id;
     if (!attemptId) {
-      return sendError(res, {
-        code: "ATTEMPT_ID_REQUIRED",
-        message: "ID da tentativa obrigatório",
-        status: 400,
-      });
+      return sendError(res, "ATTEMPT_ID_REQUIRED", "ID da tentativa obrigatório", 400);
     }
 
     try {
@@ -161,18 +100,14 @@ function createReconcileRouter(options = {}) {
       sendSuccess(res, result);
     } catch (err) {
       if (err instanceof ReconciliationError) {
-        sendError(res, err);
+        sendError(res, err.code, err.message, err.status || 400, err.details);
       } else {
-        sendError(res, {
-          code: "INTERNAL_ERROR",
-          message: err.message || "Erro interno",
-          status: 500,
-        });
+        sendError(res, "INTERNAL_ERROR", err.message || "Erro interno", 500);
       }
     }
-  }
+  });
 
-  return { handle, routes };
+  return router;
 }
 
 module.exports = { createReconcileRouter };

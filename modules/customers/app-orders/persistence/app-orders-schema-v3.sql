@@ -1,18 +1,32 @@
 -- AEROSTORE SHOP — Order Schema v3
--- Migration para adicionar PAID e PAYMENT_PENDING ao status CHECK de app_orders
+-- Migration transacional para adicionar PAID ao status CHECK de app_orders
+-- e colunas de persistência de pagamento.
 --
--- Esta migration:
--- 1. Recria app_orders com PAID e PAYMENT_PENDING adicionados ao CHECK
--- 2. Preserva todos os dados existentes
--- 3. Preserva todos os índices
+-- PADRÃO TRANSACIONAL:
+--   BEGIN IMMEDIATE
+--   → criar tabela temporária
+--   → copiar dados
+--   → validar quantidade
+--   → substituir tabela
+--   → recriar índices
+--   → COMMIT
 --
--- NOTA: SQLite não suporta ALTER COLUMN. Usamos o padrão de recreate.
+-- Em erro: ROLLBACK completo.
+--
+-- Colunas adicionadas:
+--   status → PAID, PAYMENT_PENDING
+--   paid_at TEXT
+--   payment_attempt_id TEXT
+--   payment_transaction_nsu TEXT
+--   payment_receipt_url TEXT
+
+BEGIN IMMEDIATE;
 
 -- Salvar dados existentes
-CREATE TABLE IF NOT EXISTS app_orders_migration_backup AS SELECT * FROM app_orders;
+CREATE TABLE app_orders_migration_tmp AS SELECT * FROM app_orders;
 
--- Recriar tabela com novos status
-DROP TABLE IF EXISTS app_orders;
+-- Substituir tabela original
+DROP TABLE app_orders;
 
 CREATE TABLE app_orders (
   id TEXT PRIMARY KEY,
@@ -31,6 +45,10 @@ CREATE TABLE app_orders (
   idempotency_key TEXT UNIQUE,
   snapshot_json TEXT NOT NULL,
   reservation_ids_json TEXT,
+  paid_at TEXT,
+  payment_attempt_id TEXT,
+  payment_transaction_nsu TEXT,
+  payment_receipt_url TEXT,
   version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -40,11 +58,25 @@ CREATE TABLE app_orders (
 );
 
 -- Restaurar dados
-INSERT INTO app_orders SELECT * FROM app_orders_migration_backup;
-DROP TABLE app_orders_migration_backup;
+INSERT INTO app_orders
+  (id, order_number, account_id, fulfillment_type, address_id, pickup_store_id,
+   shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency,
+   subtotal_cents, total_cents, status, idempotency_key, snapshot_json,
+   reservation_ids_json, version, created_at, updated_at, expires_at, failed_reason)
+SELECT
+  id, order_number, account_id, fulfillment_type, address_id, pickup_store_id,
+  shipping_provider, shipping_service_code, shipping_quote_cents, shipping_quote_currency,
+  subtotal_cents, total_cents, status, idempotency_key, snapshot_json,
+  reservation_ids_json, version, created_at, updated_at, expires_at, failed_reason
+FROM app_orders_migration_tmp;
+
+-- Limpar tabela temporária
+DROP TABLE app_orders_migration_tmp;
 
 -- Recriar índices
 CREATE INDEX IF NOT EXISTS idx_app_orders_account ON app_orders(account_id);
 CREATE INDEX IF NOT EXISTS idx_app_orders_status ON app_orders(status);
 CREATE INDEX IF NOT EXISTS idx_app_orders_idempotency ON app_orders(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_app_orders_order_number ON app_orders(order_number);
+
+COMMIT;

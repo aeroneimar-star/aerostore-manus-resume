@@ -18686,6 +18686,89 @@ try {
   console.error("[server] Falha ao inicializar Order Service:", orderInitErr.message);
 }
 
+// ─── Shop PIX Payment Routes — pagamento PIX via InfinitePay ──────────────
+// Gate: INFINITEPAY_SHOP_PIX_ENABLED=false por padrão
+(async function initPix() {
+try {
+  const { createPaymentAttemptRouter } = require("./modules/customers/app-payments/paymentAttemptRoutes");
+  const { createWebhookRouter } = require("./modules/customers/app-payments/webhookRoutes");
+  const { createReconcileRouter } = require("./modules/customers/app-payments/reconcileRoutes");
+  const { createInfinitePayReconciliationService } = require("./modules/customers/app-payments/infinitePayReconciliationService");
+  const { createPaymentEventProcessor } = require("./modules/customers/app-payments/paymentEventProcessor");
+  const { applyAppOrderSchemaV3 } = require("./modules/customers/app-orders/persistence/appOrderSchemaV3");
+  const { createPaymentEventSchema } = require("./modules/customers/app-payments/persistence/appPaymentEventSchema");
+
+  // Aplicar migration v3 (PAID status + colunas de pagamento)
+  const v3Result = await applyAppOrderSchemaV3({ run, get, all });
+  if (v3Result.migrated) {
+    console.log("[server] App Order Schema v3 aplicado:", v3Result.reason);
+  }
+
+  // Garantir tabela app_payment_events
+  const eventSchema = createPaymentEventSchema({ db: { run, get, all } });
+  await eventSchema.ensureSchema();
+
+  // Criar serviço de reconciliação (usa inventoryService existente)
+  const reconciliationService = createInfinitePayReconciliationService({
+    dbApi: { run, get, all },
+    infinitePayAdapter: null, // Será injetado quando o adapter estiver disponível
+    getInfinitePayHandle,
+    getRedirectUrl: getInfinitePayRedirectUrl,
+    getWebhookUrl: getInfinitePayWebhookUrl,
+    inventoryService: typeof inventoryService !== 'undefined' ? inventoryService : null,
+  });
+
+  // Criar service de tentativas de pagamento (referência para o router)
+  const { createPaymentAttemptService } = require("./modules/customers/app-payments/paymentAttemptService");
+  const paymentAttemptService = createPaymentAttemptService({
+    dbApi: { run, get, all },
+    infinitePayAdapter: null,
+    getInfinitePayHandle,
+  });
+
+  // Montar routers
+  const pixPaymentRouter = createPaymentAttemptRouter({
+    express: require("express"),
+    paymentService: paymentAttemptService,
+  });
+  app.use("/app/v1", pixPaymentRouter);
+
+  const reconcileRouter = createReconcileRouter({
+    express: require("express"),
+    reconciliationService,
+  });
+  app.use("/app/v1", reconcileRouter);
+
+  // Webhook (público, sem auth — roteado em /webhooks)
+  const webhookRouter = createWebhookRouter({
+    express: require("express"),
+    reconciliationService,
+  });
+  app.use("/", webhookRouter);
+
+  // Worker de processamento de eventos (polling durável)
+  const eventProcessor = createPaymentEventProcessor({
+    db: { run, get, all },
+    reconciliationService,
+    pollIntervalMs: 10000,
+  });
+  const workerResult = eventProcessor.start();
+  if (workerResult.started) {
+    console.log("[server] PIX Event Worker iniciado (polling 10s)");
+  } else {
+    console.log("[server] PIX Event Worker não iniciado:", workerResult.reason);
+  }
+  process.on("SIGTERM", () => eventProcessor.stop());
+  process.on("SIGINT", () => eventProcessor.stop());
+
+  // Expor serviço para testes
+  global.__pixReconciliationService = reconciliationService;
+  global.__pixEventProcessor = eventProcessor;
+} catch (pixInitErr) {
+  console.error("[server] Falha ao inicializar PIX Payment Service:", pixInitErr.message);
+}
+})();
+
 app.use("/api", authMiddleware);
 app.use("/api", auditSensitiveMutationMiddleware);
 

@@ -97,13 +97,22 @@ async function setupTables(db) {
     role TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)`);
   await db.run(`CREATE TABLE IF NOT EXISTS app_orders (
     id TEXT PRIMARY KEY, order_number TEXT NOT NULL, account_id TEXT NOT NULL,
-    fulfillment_type TEXT NOT NULL, subtotal_cents INTEGER NOT NULL, total_cents INTEGER NOT NULL,
-    status TEXT NOT NULL, idempotency_key TEXT NOT NULL, snapshot_json TEXT NOT NULL DEFAULT '{}',
+    fulfillment_type TEXT NOT NULL, address_id TEXT, pickup_store_id TEXT,
+    shipping_provider TEXT, shipping_service_code TEXT,
+    shipping_quote_cents INTEGER, shipping_quote_currency TEXT DEFAULT 'BRL',
+    subtotal_cents INTEGER NOT NULL, total_cents INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'BRL',
+    status TEXT NOT NULL, idempotency_key TEXT, snapshot_json TEXT NOT NULL DEFAULT '{}',
+    reservation_ids_json TEXT,
     failed_reason TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    expires_at TEXT,
     FOREIGN KEY (account_id) REFERENCES app_customer_accounts(id))`);
   await db.run(`CREATE TABLE IF NOT EXISTS app_order_events (
     id TEXT PRIMARY KEY, order_id TEXT NOT NULL, event_type TEXT NOT NULL,
     details_json TEXT, created_at TEXT NOT NULL, FOREIGN KEY (order_id) REFERENCES app_orders(id))`);
+  // Apply v3 migration for PAID status support
+  const { applyAppOrderSchemaV3 } = require("../../app-orders/persistence/appOrderSchemaV3");
+  await applyAppOrderSchemaV3(db);
 }
 
 async function createService(db, adapterOverrides = {}) {

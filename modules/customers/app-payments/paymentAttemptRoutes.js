@@ -4,12 +4,18 @@
  * paymentAttemptRoutes — Rotas REST para pagamento PIX via InfinitePay.
  *
  * POST /app/v1/orders/:id/pay — Cria tentativa PIX
- * GET  /app/v1/payments/:id/status — Consulta status
+ * GET  /app/v1/payment-attempts/:id/status — Consulta status
  * GET  /app/v1/orders/:id/payments — Lista tentativas
  *
- * Todas as rotas exigem accountId e ok=false para erros.
+ * Todas as rotas exigem req.user (middleware existente).
+ * Sem fallback por query string.
+ *
+ * Contrato HTTP:
+ *   SUCESSO: { ok: true, data: ... }
+ *   ERRO:    { ok: false, error: { code, message, details } }
  */
 
+const express = require("express");
 const { PaymentAttemptError } = require("./paymentAttemptService");
 const { ReservationIntegrityError } = require("../app-orders/reservationIntegrityService");
 
@@ -24,7 +30,7 @@ function sendError(res, err) {
       error: {
         code: err.code,
         message: err.message,
-        details: err.details,
+        ...(err.details ? { details: err.details } : {}),
       },
     });
   } else {
@@ -39,7 +45,7 @@ function sendError(res, err) {
 }
 
 function createPaymentAttemptRouter(options = {}) {
-  const { Router } = options.express || require("express");
+  const { Router } = options.express || express;
   const router = new Router();
   const service = options.paymentService;
 
@@ -47,12 +53,14 @@ function createPaymentAttemptRouter(options = {}) {
     throw new Error("PAYMENT_SERVICE_REQUIRED");
   }
 
+  /**
+   * extractAccountId — Usa exclusivamente req.user.id ou req.user.accountId.
+   * NUNCA usa fallback por query string.
+   */
   function extractAccountId(req) {
-    const auth = req.headers?.authorization;
-    if (!auth || !auth.startsWith("Bearer ")) {
-      return null;
-    }
-    return req.user?.id || req.user?.accountId || null;
+    if (req.user && req.user.id) return req.user.id;
+    if (req.user && req.user.accountId) return req.user.accountId;
+    return null;
   }
 
   // POST /app/v1/orders/:id/pay — Criar tentativa PIX
@@ -66,9 +74,7 @@ function createPaymentAttemptRouter(options = {}) {
         });
       }
       const orderId = req.params.id;
-      // NÃO aceita expires_at do cliente — deriva do pedido/provider
       const result = await service.createPixAttempt(accountId, orderId, {});
-      // Sempre retorna ok=true para sucesso, ok=false para falha
       if (result.success) {
         res.status(201).json({ ok: true, data: result });
       } else {
@@ -85,8 +91,8 @@ function createPaymentAttemptRouter(options = {}) {
     }
   });
 
-  // GET /app/v1/payments/:id/status — Consultar status
-  router.get("/payments/:id/status", async (req, res) => {
+  // GET /app/v1/payment-attempts/:id/status — Consultar status
+  router.get("/app/v1/payment-attempts/:id/status", async (req, res) => {
     try {
       const accountId = extractAccountId(req);
       if (!accountId) {

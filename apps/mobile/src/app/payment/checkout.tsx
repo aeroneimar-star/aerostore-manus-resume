@@ -35,6 +35,7 @@ export default function PIXCheckoutScreen() {
     setError('');
     try {
       const response = await paymentClient.createPaymentAttempt(params.orderId);
+      // Contrato: { ok: true, data: { attempt: PaymentAttempt } }
       const attemptData = response.data.attempt;
       setAttempt(attemptData);
       setState('ready');
@@ -48,16 +49,24 @@ export default function PIXCheckoutScreen() {
         setState('expired');
         return;
       }
+      if (pErr.code === 'UNAUTHORIZED') {
+        setError('Sessão expirada. Faça login novamente.');
+        setState('error');
+        return;
+      }
       setError(pErr.message || 'Erro ao criar tentativa de pagamento.');
       setState('error');
     }
   }, [params.orderId, paymentClient]);
 
   const openCheckout = useCallback(async () => {
-    if (!attempt?.checkout_url) return;
+    if (!attempt) return;
+    // Mapear checkout_url → provider_checkout_url
+    const checkoutUrl = attempt.provider_checkout_url || attempt.checkout_url;
+    if (!checkoutUrl) return;
     setState('opening');
     try {
-      await Linking.openURL(attempt.checkout_url);
+      await Linking.openURL(checkoutUrl);
       setState('waiting');
     } catch {
       setError('Não foi possível abrir o checkout. Verifique sua conexão.');
@@ -301,7 +310,7 @@ export default function PIXCheckoutScreen() {
         </View>
       )}
 
-      {state === 'ready' && attempt?.checkout_url && (
+      {state === 'ready' && (attempt?.provider_checkout_url || attempt?.checkout_url) && (
         <>
           <Pressable
             style={[styles.primaryButton, { backgroundColor: tokens.accent }]}
@@ -358,24 +367,24 @@ const styles = StyleSheet.create({
   centerContent: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 },
   centerText: { marginTop: 16, fontSize: 16, fontWeight: '600' },
   sectionTitle: { fontSize: 20, fontWeight: '700', letterSpacing: 2, marginBottom: 20 },
-  successSymbol: { fontSize: 48, marginBottom: 16, fontWeight: '300' },
-  successTitle: { fontSize: 18, fontWeight: '600', marginBottom: 8, textAlign: 'center' },
-  successBody: { fontSize: 14, textAlign: 'center', marginBottom: 24 },
-  errorSymbol: { fontSize: 48, marginBottom: 16, fontWeight: '300' },
-  errorTitle: { fontSize: 18, fontWeight: '600', marginBottom: 8, textAlign: 'center' },
-  errorBody: { fontSize: 14, textAlign: 'center', marginBottom: 24 },
-  retryButton: { paddingHorizontal: 24, paddingVertical: 12, borderWidth: 1, borderRadius: 6 },
-  retryText: { fontSize: 14, fontWeight: '600' },
-  infoCard: { padding: 16, borderRadius: 12, borderWidth: 1, marginBottom: 16 },
-  infoRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  infoLabel: { fontSize: 13 },
-  infoValue: { fontSize: 13, fontWeight: '500' },
-  primaryButton: { paddingVertical: 14, borderRadius: 8, alignItems: 'center', marginBottom: 8 },
-  primaryButtonText: { fontSize: 15, fontWeight: '600' },
-  secondaryButton: { paddingVertical: 12, borderWidth: 1, borderRadius: 8, alignItems: 'center', marginBottom: 8 },
+  successSymbol: { fontSize: 64, fontWeight: '700', marginBottom: 16 },
+  successTitle: { fontSize: 20, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
+  successBody: { fontSize: 14, lineHeight: 20, marginBottom: 24, textAlign: 'center' },
+  errorSymbol: { fontSize: 64, fontWeight: '700', marginBottom: 16 },
+  errorTitle: { fontSize: 20, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
+  errorBody: { fontSize: 14, lineHeight: 20, marginBottom: 24, textAlign: 'center' },
+  infoCard: { borderRadius: 12, padding: 16, borderWidth: 1, marginBottom: 20 },
+  infoRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
+  infoLabel: { fontSize: 13, fontWeight: '500' },
+  infoValue: { fontSize: 14, fontWeight: '600' },
+  primaryButton: { borderRadius: 10, paddingVertical: 14, alignItems: 'center', marginBottom: 12 },
+  primaryButtonText: { fontSize: 16, fontWeight: '700' },
+  retryButton: { borderRadius: 10, paddingVertical: 14, alignItems: 'center', borderWidth: 2 },
+  retryText: { fontSize: 16, fontWeight: '600' },
+  hint: { fontSize: 12, textAlign: 'center', marginTop: 8 },
+  waitingCard: { borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 16 },
+  waitingText: { fontSize: 14, fontWeight: '500', marginTop: 12 },
+  secondaryButton: { borderRadius: 10, paddingVertical: 12, alignItems: 'center', borderWidth: 1, marginBottom: 10 },
   secondaryButtonText: { fontSize: 14, fontWeight: '600' },
-  hint: { fontSize: 12, textAlign: 'center', marginTop: 4, marginBottom: 16 },
-  waitingCard: { padding: 16, borderRadius: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 16 },
-  waitingText: { fontSize: 14, fontWeight: '500' },
   pollingNote: { fontSize: 11, textAlign: 'center', marginTop: 8 },
 });

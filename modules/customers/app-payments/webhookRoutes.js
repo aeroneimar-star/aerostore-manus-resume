@@ -13,10 +13,14 @@
  *
  * Autenticação: sem auth (webhook é público do provider).
  * Opcional: validação de assinatura HMAC (futura).
+ *
+ * Contrato HTTP:
+ *   SUCESSO: { ok: true, ...data }
+ *   ERRO:    { ok: false, error: { code, message, details } }
  */
 
-const { createInfinitePayReconciliationService, ReconciliationError } = require("./infinitePayReconciliationService");
-const { sanitizeResponse, sanitizeFailureMessage } = require("./sanitizeResponse");
+const express = require("express");
+const { createHash } = require("crypto");
 
 const WEBHOOK_ENABLED_FLAG = "INFINITEPAY_WEBHOOK_ENABLED";
 
@@ -24,14 +28,13 @@ function sendSuccess(res, data = {}) {
   res.status(200).json({ ok: true, ...data });
 }
 
-function sendError(res, err) {
-  const code = err.code || "INTERNAL_ERROR";
-  const status = err.status || 500;
+function sendError(res, code, message, status = 400, details = null) {
   res.status(status).json({
     ok: false,
     error: {
       code,
-      message: err.message || "Erro interno",
+      message,
+      ...(details ? { details } : {}),
     },
   });
 }
@@ -40,103 +43,86 @@ function isWebhookEnabled() {
   return process.env[WEBHOOK_ENABLED_FLAG] === "true";
 }
 
+/**
+ * computeWebhookRequestHash — Hash canônico para idempotência do webhook.
+ * Inclui: provider, event_type, order_nsu, transaction_nsu, invoice_slug,
+ *         capture_method, amount, paid_amount, paid
+ * NUNCA retorna null.
+ */
+function computeWebhookRequestHash(body) {
+  const input = [
+    "INFINITEPAY",
+    body.event_type || "PAYMENT_UPDATED",
+    body.order_nsu || "",
+    body.transaction_nsu || "",
+    body.invoice_slug || "",
+    (body.capture_method || "").toLowerCase(),
+    String(body.amount || 0),
+    String(body.paid_amount || 0),
+    String(Boolean(body.paid)),
+  ].join("|");
+  return createHash("sha256").update(input).digest("hex");
+}
+
 function createWebhookRouter(options = {}) {
+  const { Router } = options.express || express;
   const reconciliationService = options.reconciliationService;
   if (!reconciliationService) {
     throw new Error("RECONCILIATION_SERVICE_REQUIRED for webhookRouter");
   }
 
-  function router() {
-    // Simple express-like router interface
-    const routes = [];
+  const router = new Router();
 
-    function post(path, handler) {
-      routes.push({ method: "POST", path, handler });
-    }
-
-    function get(path, handler) {
-      routes.push({ method: "GET", path, handler });
-    }
-
-    function handle(req, res, next) {
-      const url = req.url || "";
-      const method = (req.method || "GET").toUpperCase();
-      const matched = routes.find(r => {
-        if (r.method !== method) return false;
-        if (r.path.endsWith("*")) {
-          return url.startsWith(r.path.slice(0, -1));
-        }
-        // Simple path matching
-        return url === r.path || url.startsWith(r.path + "?");
-      });
-
-      if (matched) {
-        Promise.resolve()
-          .then(() => matched.handler(req, res, next))
-          .catch(err => {
-            sendError(res, err);
-          });
-      } else if (next) {
-        next();
-      } else {
-        res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Rota não encontrada" } });
-      }
-    }
-
-    // Register routes
-    post("/webhooks/infinitepay", handleInfinitePayWebhook);
-    post("/webhooks/infinitepay*", handleInfinitePayWebhook);
-
-    return { handle, routes };
-  }
-
-  async function handleInfinitePayWebhook(req, res) {
-    // Gate: flag must be enabled
+  router.post("/webhooks/infinitepay", async (req, res) => {
+    // Gate: flag deve estar habilitada
     if (!isWebhookEnabled()) {
       return sendSuccess(res, {
         message: "Webhook desabilitado. Configure INFINITEPAY_WEBHOOK_ENABLED=true.",
       });
     }
 
-    // Validate content-type
+    // Validar content-type
     const contentType = req.headers["content-type"] || "";
     if (!contentType.includes("application/json")) {
-      return sendError(res, {
-        code: "INVALID_CONTENT_TYPE",
-        message: "Content-Type deve ser application/json",
-        status: 400,
-      });
+      return sendError(res, "INVALID_CONTENT_TYPE", "Content-Type deve ser application/json", 400);
     }
 
-    // Parse body
-    let body;
-    try {
-      body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
-    } catch (e) {
-      return sendError(res, {
-        code: "INVALID_JSON",
-        message: "Payload JSON inválido",
-        status: 400,
-      });
+    // Body já parseado pelo express.json()
+    const body = req.body;
+    if (!body || typeof body !== "object") {
+      return sendError(res, "INVALID_PAYLOAD", "Payload inválido", 400);
     }
 
-    // Delegate to reconciliation service
+    // order_nsu obrigatório para localizar pedido
+    const orderNsu = body.order_nsu || "";
+    if (!orderNsu) {
+      return sendError(res, "MISSING_ORDER_NSU", "order_nsu obrigatório no webhook", 400);
+    }
+
+    // Calcular request_hash para idempotência
+    const requestHash = computeWebhookRequestHash(body);
+
+    // Delegar ao serviço de reconciliação (o service calcula o hash internamente)
     try {
       const result = await reconciliationService.handleWebhook(body);
-      res.status(result.statusCode || 200).json({
-        ok: result.success,
-        ...result,
-      });
-    } catch (err) {
-      sendError(res, err);
-    }
-  }
 
-  const r = router();
-  return {
-    handle: r.handle,
-    isWebhookEnabled,
-  };
+      if (result.success) {
+        return sendSuccess(res, result);
+      } else {
+        return sendError(res, result.error || "WEBHOOK_FAILED", result.message || "Falha no webhook", result.statusCode || 400);
+      }
+    } catch (err) {
+      const code = err.code || "INTERNAL_ERROR";
+      const status = err.status || 500;
+      return sendError(res, code, err.message || "Erro interno", status);
+    }
+  });
+
+  return router;
 }
 
-module.exports = { createWebhookRouter };
+module.exports = {
+  createWebhookRouter,
+  computeWebhookRequestHash,
+  isWebhookEnabled,
+};

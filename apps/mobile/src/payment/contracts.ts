@@ -6,7 +6,8 @@ export type PaymentAttemptStatus =
   | 'PAID'
   | 'DECLINED'
   | 'CANCELLED'
-  | 'EXPIRED';
+  | 'EXPIRED'
+  | 'REVIEW_REQUIRED';
 
 export type PaymentErrorCode =
   | 'UNAUTHORIZED'
@@ -19,7 +20,9 @@ export type PaymentErrorCode =
   | 'INTERNAL_ERROR'
   | 'INVALID_RESPONSE'
   | 'NETWORK_ERROR'
-  | 'TIMEOUT_ERROR';
+  | 'TIMEOUT_ERROR'
+  | 'PAYMENT_ATTEMPT_NOT_FOUND'
+  | 'PAYMENT_RECONCILIATION_REQUIRED';
 
 export interface PaymentApiMeta {
   api_version: typeof PAYMENT_API_VERSION;
@@ -31,8 +34,9 @@ export interface PaymentAttempt {
   status: PaymentAttemptStatus;
   amount_cents: number;
   currency: string;
-  method: 'pix';
-  checkout_url: string | null;
+  method: 'PIX';
+  provider: 'INFINITEPAY';
+  provider_checkout_url: string | null;
   provider_reference: string | null;
   provider_transaction_nsu: string | null;
   receipt_url: string | null;
@@ -41,16 +45,25 @@ export interface PaymentAttempt {
   expires_at: string | null;
 }
 
+/**
+ * CreatePaymentAttemptResponse — Contrato ok/data.
+ * O campo data.attempt contém a tentativa recém-criada.
+ * O campo data.data.attempt.provider_checkout_url é a URL do checkout InfinitePay.
+ */
 export interface CreatePaymentAttemptResponse {
-  success: true;
+  ok: true;
   data: {
     attempt: PaymentAttempt;
   };
   meta: PaymentApiMeta;
 }
 
+/**
+ * GetPaymentAttemptResponse — Contrato ok/data.
+ * data contém a tentativa com status atualizado.
+ */
 export interface GetPaymentAttemptResponse {
-  success: true;
+  ok: true;
   data: PaymentAttempt;
   meta: PaymentApiMeta;
 }
