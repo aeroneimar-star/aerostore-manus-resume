@@ -369,11 +369,159 @@ function createInventoryService(options = {}) {
     };
   }
 
+  /**
+   * finalizeSale — Converte reserva em venda confirmada.
+   *
+   * DECREMENTA reserved_qty para 0 (ou parcial) para a(s) variante(s)
+   * do pedido, criando movimento SALE com quantity_delta NEGATIVO.
+   *
+   * Semelhante ao releaseReservation, mas:
+   *   - available_qty NÃO muda (já estava decrementado no HOLD)
+   *   - reserved_qty DECREMENTA (venda confirmada)
+   *   - Movimento SALE (não RESERVATION_RELEASE)
+   *
+   * Idempotência:
+   *   Chave: SALE::<orderId>::<storeId>::<variantId>::TARGET::<hold_quantity_total>
+   */
+  async function finalizeSale(orderId, storeId, items, txOpts = null) {
+    if (!orderId) throw new Error("ORDER_ID_REQUIRED");
+    if (!storeId) throw new Error("STORE_ID_REQUIRED");
+    if (!Array.isArray(items) || items.length === 0) return { finalized: false, reason: "NO_ITEMS" };
+
+    const runner = txOpts?.db || db;
+    const results = [];
+    let threwInconsistency = false;
+
+    for (const item of items) {
+      const variantId = item.variant_id;
+      const quantity = Math.max(1, Math.floor(item.quantity || 1));
+      const holdTotal = Math.max(1, Math.floor(item.hold_total || quantity));
+
+      // IDEMPOTÊNCIA CUMULATIVA: chave com TARGET
+      const saleKey = `SALE::${orderId}::${storeId}::${variantId}::TARGET::${holdTotal}`;
+      const existingSale = await runner.get(
+        `SELECT id FROM pdv_inventory_movements_v2
+         WHERE idempotency_key = ? AND movement_type = 'SALE'`,
+        [saleKey]
+      );
+      if (existingSale) {
+        results.push({ variant_id: variantId, finalized: false, reason: "ALREADY_FINALIZED", idempotent: true });
+        continue;
+      }
+
+      const now = iso(new Date());
+
+      // OBTER SALDO SEM CRIAR
+      const balance = await getBalance(runner, variantId, storeId);
+      if (!balance.id) {
+        results.push({
+          variant_id: variantId,
+          finalized: false,
+          reason: "INVENTORY_BALANCE_NOT_FOUND",
+          error: `Balance not found for variant=${variantId}, store=${storeId}`,
+        });
+        threwInconsistency = true;
+        continue;
+      }
+
+      // BLOQUEIO DE INFLAÇÃO: validar reserved_qty >= quantity
+      if (balance.reserved_qty < quantity) {
+        results.push({
+          variant_id: variantId,
+          finalized: false,
+          reason: "RESERVATION_BALANCE_INCONSISTENT",
+          error: `reserved_qty=${balance.reserved_qty} < quantity=${quantity}`,
+        });
+        threwInconsistency = true;
+        continue;
+      }
+
+      const newReserved = balance.reserved_qty - quantity;
+      // available_qty NÃO muda — já foi decrementado no HOLD
+      const newVersion = balance.version + 1;
+      const movementId = generateId();
+
+      // UPDATE com verificação de versão
+      await runner.run(
+        `UPDATE pdv_inventory_balances_v2
+         SET available_qty = ?, reserved_qty = ?, version = ?, updated_at = ?
+         WHERE id = ? AND version = ?`,
+        [balance.available_qty, newReserved, newVersion, now, balance.id, balance.version]
+      );
+
+      // Verificar que a versão foi atualizada
+      const updated = await runner.get(
+        `SELECT id, version FROM pdv_inventory_balances_v2 WHERE id = ? AND version = ?`,
+        [balance.id, newVersion]
+      );
+      if (!updated) {
+        results.push({
+          variant_id: variantId,
+          finalized: false,
+          reason: "VERSION_CONFLICT",
+          error: `Balance version changed concurrently for variant=${variantId}, store=${storeId}`,
+        });
+        threwInconsistency = true;
+        continue;
+      }
+
+      // Criar movimento SALE (quantity_delta NEGATIVO = decrementa reserved)
+      await runner.run(
+        `INSERT INTO pdv_inventory_movements_v2
+         (id, variant_id, store_id, movement_type, quantity_delta, quantity_before,
+          quantity_after, origin, reference_type, reference_id, idempotency_key,
+          actor_user_id, actor_name, metadata_json, created_at)
+         VALUES (?, ?, ?, 'SALE', ?, ?, ?, ?, 'ORDER', ?, ?, ?, ?, ?, ?)`,
+        [
+          movementId,
+          variantId,
+          storeId,
+          -quantity, // quantity_delta NEGATIVO (decrementa reserved)
+          balance.available_qty,
+          balance.available_qty, // available não muda
+          "app_order_shop",
+          orderId,
+          saleKey,
+          0,
+          "system",
+          JSON.stringify({ order_id: orderId, reason: "payment_confirmed", hold_total: holdTotal }),
+          now,
+        ]
+      );
+
+      results.push({ variant_id: variantId, finalized: true, movement_id: movementId });
+    }
+
+    if (threwInconsistency) {
+      return {
+        finalized: false,
+        reason: "INCONSISTENT_SALE",
+        order_id: orderId,
+        store_id: storeId,
+        results,
+        has_inconsistency: true,
+      };
+    }
+
+    const anyFinalized = results.some(r => r.finalized);
+    const allIdempotent = results.length > 0 && results.every(r => r.idempotent === true);
+    return {
+      finalized: anyFinalized,
+      idempotent: allIdempotent,
+      reason: allIdempotent ? 'ALREADY_FINALIZED' : undefined,
+      order_id: orderId,
+      store_id: storeId,
+      results,
+      has_inconsistency: false,
+    };
+  }
+
   return {
     getBalance: (variantId, storeId) => getBalance(null, variantId, storeId),
     ensureBalance: (variantId, storeId) => ensureBalance(null, variantId, storeId),
     holdReservation,
     releaseReservation,
+    finalizeSale,
   };
 }
 

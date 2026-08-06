@@ -94,6 +94,9 @@ function createPaymentAttemptService(options = {}) {
     return handle;
   }
 
+  const getRedirectUrl = options.getRedirectUrl || (() => process.env.INFINITEPAY_REDIRECT_URL || "");
+  const getWebhookUrl = options.getWebhookUrl || (() => process.env.INFINITEPAY_WEBHOOK_URL || "");
+
   function ensurePixOnlyConfirmed() {
     if (!isPixOnlyConfirmed()) {
       throw new PaymentAttemptError(
@@ -323,6 +326,10 @@ function createPaymentAttemptService(options = {}) {
     // ============================================================
     let adapterResult;
     try {
+      // Configuração de URLs via variáveis de ambiente (nunca hardcoded)
+      const redirectUrl = getRedirectUrl();
+      const webhookUrl = getWebhookUrl();
+
       adapterResult = await infinitePayAdapter.createPixPayment({
         handle,
         order_nsu: orderId,
@@ -332,6 +339,8 @@ function createPaymentAttemptService(options = {}) {
           description: `Pedido ${orderId}`,
         }],
         amount_cents: amountCents,
+        redirect_url: redirectUrl || undefined,
+        webhook_url: webhookUrl || undefined,
       });
     } catch (adapterErr) {
       // Falha na chamada ao provider → attempt permanece REQUESTING
