@@ -20,13 +20,23 @@
  *   failure_message_sanitized  TEXT
  *   received_at                TEXT NOT NULL
  *   processed_at               TEXT
+ *   retry_count                INTEGER NOT NULL DEFAULT 0
+ *   lock_token                 TEXT
+ *   locked_at                  TEXT
+ *   lock_expires_at            TEXT
  *   created_at                 TEXT NOT NULL
  *   updated_at                 TEXT NOT NULL
  *   version                    INTEGER NOT NULL DEFAULT 1
  *
  * Idempotência determinística:
- *   request_hash = SHA-256(provider + event_type + provider_reference + order_id)
+ *   request_hash = SHA-256(provider + "|" + event_type + "|" + provider_reference + "|" + order_id)
  *   UNIQUE INDEX em (request_hash, provider)
+ *
+ * Worker columns (claim/lock/retry):
+ *   retry_count: incrementado no claim, limita retentativas
+ *   lock_token: UUID único, NULL quando livre
+ *   locked_at: timestamp do lock
+ *   lock_expires_at: timestamp de expiração do lock (2min)
  *
  * Um mesmo evento repetido (mesmo request_hash) nunca:
  *   - cria nova tentativa;
@@ -52,6 +62,10 @@ const COLUMNS = [
   { name: "failure_message_sanitized", type: "TEXT" },
   { name: "received_at", type: "TEXT", notNull: true },
   { name: "processed_at", type: "TEXT" },
+  { name: "retry_count", type: "INTEGER", notNull: true },
+  { name: "lock_token", type: "TEXT" },
+  { name: "locked_at", type: "TEXT" },
+  { name: "lock_expires_at", type: "TEXT" },
   { name: "created_at", type: "TEXT", notNull: true },
   { name: "updated_at", type: "TEXT", notNull: true },
   { name: "version", type: "INTEGER", notNull: true },
@@ -76,6 +90,16 @@ const INDEXES = [
   {
     name: "idx_app_payment_events_provider_ref",
     columns: ["provider_reference"],
+    unique: false,
+  },
+  {
+    name: "idx_app_payment_events_status",
+    columns: ["processing_status", "received_at"],
+    unique: false,
+  },
+  {
+    name: "idx_app_payment_events_lock",
+    columns: ["processing_status", "lock_expires_at"],
     unique: false,
   },
 ];
@@ -110,9 +134,9 @@ function createPaymentEventSchema(options = {}) {
   /**
    * ensureSchema — Cria tabela e índices SEM engolir erros.
    * request_hash é NOT NULL.
+   * Inclui worker columns: retry_count, lock_token, locked_at, lock_expires_at.
    */
   async function ensureSchema() {
-    // Criar tabela (sem IF NOT EXISTS — queremos falhar se algo está errado)
     const createTableSQL = `
       CREATE TABLE IF NOT EXISTS app_payment_events (
         id TEXT PRIMARY KEY,
@@ -129,25 +153,58 @@ function createPaymentEventSchema(options = {}) {
         failure_message_sanitized TEXT,
         received_at TEXT NOT NULL,
         processed_at TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        lock_token TEXT,
+        locked_at TEXT,
+        lock_expires_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         version INTEGER NOT NULL DEFAULT 1
       )
     `;
 
-    // Não engolir falha de criação de tabela
     await db.run(createTableSQL);
 
-    // Criar índices (sem engolir erros)
     const createIndexes = [
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_app_payment_events_request_hash ON app_payment_events(request_hash, provider)`,
       `CREATE INDEX IF NOT EXISTS idx_app_payment_events_order ON app_payment_events(order_id)`,
       `CREATE INDEX IF NOT EXISTS idx_app_payment_events_attempt ON app_payment_events(payment_attempt_id)`,
       `CREATE INDEX IF NOT EXISTS idx_app_payment_events_provider_ref ON app_payment_events(provider_reference)`,
+      `CREATE INDEX IF NOT EXISTS idx_app_payment_events_status ON app_payment_events(processing_status, received_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_app_payment_events_lock ON app_payment_events(processing_status, lock_expires_at)`,
     ];
 
     for (const sql of createIndexes) {
       await db.run(sql);
+    }
+
+    // Migration: adicionar worker columns se tabela já existia
+    await addWorkerColumnsIfNeeded();
+  }
+
+  /**
+   * addWorkerColumnsIfNeeded — Adiciona retry_count, lock_token, locked_at, lock_expires_at
+   * à tabela existente se forem faltar (migration forward).
+   */
+  async function addWorkerColumnsIfNeeded() {
+    const tableInfo = await db.all("PRAGMA table_info(app_payment_events)");
+    const existingColumns = new Set(tableInfo.map(c => c.name));
+    const workerColumns = ["retry_count", "lock_token", "locked_at", "lock_expires_at"];
+
+    for (const col of workerColumns) {
+      if (!existingColumns.has(col)) {
+        try {
+          let alterSQL = `ALTER TABLE app_payment_events ADD COLUMN ${col} `;
+          if (col === "retry_count") {
+            alterSQL += "INTEGER NOT NULL DEFAULT 0";
+          } else {
+            alterSQL += "TEXT";
+          }
+          await db.run(alterSQL);
+        } catch {
+          // Coluna pode já existir (race condition) — ignorar
+        }
+      }
     }
   }
 
@@ -157,6 +214,7 @@ function createPaymentEventSchema(options = {}) {
     computeRequestHash,
     isSchemaReady,
     ensureSchema,
+    addWorkerColumnsIfNeeded,
   };
 }
 

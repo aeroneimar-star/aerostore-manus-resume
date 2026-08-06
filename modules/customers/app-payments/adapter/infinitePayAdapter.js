@@ -176,12 +176,13 @@ function createInfinitePayAdapter(options = {}) {
       const body = response.data || {};
       return {
         success: true,
-        provider: "infinitepay",
-        paid: body.paid === true || body.success === true,
+        provider: "INFINITEPAY",
+        paid: body.paid === true,
         amount: body.amount,
         paid_amount: body.paid_amount,
         installments: body.installments,
         capture_method: body.capture_method,
+        method: body.capture_method === "pix" ? "PIX" : "UNKNOWN",
         status: body.status || "",
         order_nsu: body.order_nsu || params.order_nsu || "",
         transaction_nsu: body.transaction_nsu || body.nsu || "",

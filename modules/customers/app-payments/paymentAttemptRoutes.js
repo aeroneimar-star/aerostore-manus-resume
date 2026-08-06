@@ -3,16 +3,18 @@
 /**
  * paymentAttemptRoutes — Rotas REST para pagamento PIX via InfinitePay.
  *
- * POST /app/v1/orders/:id/pay — Cria tentativa PIX
- * GET  /app/v1/payment-attempts/:id/status — Consulta status
- * GET  /app/v1/orders/:id/payments — Lista tentativas
+ * Rotas internas SEM /app/v1 (o prefixo é adicionado no server.js via app.use).
+ *
+ * POST /orders/:id/pay — Cria tentativa PIX
+ * GET  /payment-attempts/:id — Consulta status (leitura local, NÃO chama provider)
+ * GET  /orders/:id/payments — Lista tentativas
  *
  * Todas as rotas exigem req.user (middleware existente).
- * Sem fallback por query string.
  *
  * Contrato HTTP:
- *   SUCESSO: { ok: true, data: ... }
- *   ERRO:    { ok: false, error: { code, message, details } }
+ *   POST /orders/:id/pay          → { ok: true, data: { attempt: PaymentAttempt } }
+ *   GET  /payment-attempts/:id    → { ok: true, data: PaymentAttempt }
+ *   GET  /orders/:id/payments     → { ok: true, data: { attempts: PaymentAttempt[] } }
  */
 
 const express = require("express");
@@ -63,7 +65,7 @@ function createPaymentAttemptRouter(options = {}) {
     return null;
   }
 
-  // POST /app/v1/orders/:id/pay — Criar tentativa PIX
+  // POST /orders/:id/pay — Criar tentativa PIX
   router.post("/orders/:id/pay", async (req, res) => {
     try {
       const accountId = extractAccountId(req);
@@ -76,7 +78,8 @@ function createPaymentAttemptRouter(options = {}) {
       const orderId = req.params.id;
       const result = await service.createPixAttempt(accountId, orderId, {});
       if (result.success) {
-        res.status(201).json({ ok: true, data: result });
+        // Contrato exato: { ok: true, data: { attempt: PaymentAttempt } }
+        res.status(201).json({ ok: true, data: { attempt: result.attempt } });
       } else {
         res.status(400).json({
           ok: false,
@@ -91,8 +94,8 @@ function createPaymentAttemptRouter(options = {}) {
     }
   });
 
-  // GET /app/v1/payment-attempts/:id/status — Consultar status
-  router.get("/app/v1/payment-attempts/:id/status", async (req, res) => {
+  // GET /payment-attempts/:id — Consultar status (leitura local)
+  router.get("/payment-attempts/:id", async (req, res) => {
     try {
       const accountId = extractAccountId(req);
       if (!accountId) {
@@ -104,7 +107,8 @@ function createPaymentAttemptRouter(options = {}) {
       const attemptId = req.params.id;
       const result = await service.getPixAttemptStatus(accountId, attemptId);
       if (result.success) {
-        res.status(200).json({ ok: true, data: result });
+        // Contrato exato: { ok: true, data: PaymentAttempt }
+        res.status(200).json({ ok: true, data: result.attempt });
       } else {
         res.status(result.statusCode || 400).json({
           ok: false,
@@ -119,7 +123,7 @@ function createPaymentAttemptRouter(options = {}) {
     }
   });
 
-  // GET /app/v1/orders/:id/payments — Listar tentativas
+  // GET /orders/:id/payments — Listar tentativas
   router.get("/orders/:id/payments", async (req, res) => {
     try {
       const accountId = extractAccountId(req);
@@ -132,7 +136,7 @@ function createPaymentAttemptRouter(options = {}) {
       const orderId = req.params.id;
       const result = await service.listAttemptsByOrder(accountId, orderId);
       if (result.success) {
-        res.status(200).json({ ok: true, data: result });
+        res.status(200).json({ ok: true, data: { attempts: result.attempts || [] } });
       } else {
         res.status(400).json({
           ok: false,

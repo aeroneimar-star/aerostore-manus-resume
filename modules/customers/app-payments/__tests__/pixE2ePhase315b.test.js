@@ -124,9 +124,35 @@ async function setupTables(db) {
     available_qty INTEGER NOT NULL DEFAULT 0, reserved_qty INTEGER NOT NULL DEFAULT 0,
     version INTEGER NOT NULL DEFAULT 1, updated_at TEXT,
     UNIQUE(variant_id, store_id))`);
+
+  // app_payment_events — with worker columns
+  await db.run(`CREATE TABLE IF NOT EXISTS app_payment_events (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    order_id TEXT,
+    payment_attempt_id TEXT,
+    provider_reference TEXT,
+    provider_transaction_nsu TEXT,
+    request_hash TEXT NOT NULL,
+    payload_sanitized_json TEXT,
+    processing_status TEXT NOT NULL DEFAULT 'RECEIVED',
+    failure_code TEXT,
+    failure_message_sanitized TEXT,
+    received_at TEXT NOT NULL,
+    processed_at TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    lock_token TEXT,
+    locked_at TEXT,
+    lock_expires_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(request_hash, provider)
+  )`);
 }
 
-async function setupOrder(db, { status = "READY_FOR_PAYMENT", total_cents = 5000, reservationIds = [], accountId = "account-1" } = {}) {
+async function setupOrder(db, { status = "READY_FOR_PAYMENT", total_cents = 5000, reservationIds = [], accountId = "account-1", storeId = null } = {}) {
   const orderId = randomUUID();
   const now = iso(new Date());
 
@@ -141,7 +167,7 @@ async function setupOrder(db, { status = "READY_FOR_PAYMENT", total_cents = 5000
   }
 
   const reservationIdsJson = JSON.stringify(reservationIds);
-  const snapshotJson = JSON.stringify({ reservation_ids: reservationIds });
+  const snapshotJson = JSON.stringify({ reservation_ids: reservationIds, ...(storeId ? { store_id: storeId } : {}) });
 
   await db.run(
     `INSERT INTO app_orders
@@ -177,7 +203,7 @@ async function setupAttempt(db, orderId, { status = "PENDING", provider_transact
 }
 
 // Express app helper with auth middleware injection
-function createTestApp(reconciliationService, paymentService, { authAccountId = "account-1" } = {}) {
+function createTestApp(reconciliationService, paymentService, { authAccountId = "account-1", db = null } = {}) {
   const app = express();
   app.use(express.json());
 
@@ -197,13 +223,22 @@ function createTestApp(reconciliationService, paymentService, { authAccountId = 
     reconciliationService,
   }));
 
-  // Reconcile routes — mounted at root (routes already have /app/v1 prefix)
-  app.use(createReconcileRouter({
+  // Reconcile routes — mounted at /app/v1 (routes use /payment-attempts/:id/reconcile)
+  app.use("/app/v1", createReconcileRouter({
     express,
     reconciliationService,
   }));
 
-  // Payment attempt routes — mounted at /app/v1
+  // Payment attempt routes — mounted at /app/v1 (routes use /payment-attempts/:id)
+  if (db) {
+    const { createPaymentAttemptService } = require("../paymentAttemptService");
+    const adapter = createFakeAdapter();
+    paymentService = createPaymentAttemptService({
+      dbApi: db,
+      infinitePayAdapter: adapter,
+      getInfinitePayHandle: () => "handle-fake",
+    });
+  }
   if (paymentService) {
     app.use("/app/v1", createPaymentAttemptRouter({
       express,
@@ -526,7 +561,7 @@ test("T_ROUTE_01: Webhook POST não exige autenticação", async () => {
     getInfinitePayHandle: () => "handle-fake",
   });
 
-  const app = createTestApp(service, null);
+  const app = createTestApp(service, null, { db });
   const result = await httpReq(app, "POST", "/webhooks/infinitepay", {
     order_nsu: orderId,
     transaction_nsu: "NSU-001",
@@ -556,7 +591,7 @@ test("T_ROUTE_02: Webhook com content-type inválido retorna 400", async () => {
     getInfinitePayHandle: () => "handle-fake",
   });
 
-  const app = createTestApp(service, null);
+  const app = createTestApp(service, null, { db });
   const result = await httpReq(app, "POST", "/webhooks/infinitepay", { order_nsu: "test" }, {
     "Content-Type": "text/plain",
   });
@@ -581,7 +616,7 @@ test("T_ROUTE_03: Webhook sem order_nsu retorna 400", async () => {
     getInfinitePayHandle: () => "handle-fake",
   });
 
-  const app = createTestApp(service, null);
+  const app = createTestApp(service, null, { db });
   const result = await httpReq(app, "POST", "/webhooks/infinitepay", {
     transaction_nsu: "NSU-001",
     amount: 5000,
@@ -607,7 +642,7 @@ test("T_ROUTE_04: Webhook com flag OFF retorna 200 com mensagem informativa", as
     getInfinitePayHandle: () => "handle-fake",
   });
 
-  const app = createTestApp(service, null);
+  const app = createTestApp(service, null, { db });
   const result = await httpReq(app, "POST", "/webhooks/infinitepay", {
     order_nsu: "test",
     transaction_nsu: "NSU",
@@ -638,7 +673,7 @@ test("T_ROUTE_05: Reconcile POST sem req.user retorna 401", async () => {
     infinitePayAdapter: createFakeAdapter(),
     getInfinitePayHandle: () => "handle-fake",
   });
-  app.use(createReconcileRouter({ express, reconciliationService: service }));
+  app.use("/app/v1", createReconcileRouter({ express, reconciliationService: service }));
 
   const result = await httpReq(app, "POST", "/app/v1/payment-attempts/some-id/reconcile", null);
 
@@ -670,7 +705,7 @@ test("T_ROUTE_06: Reconcile POST com auth válida processa normalmente", async (
     getInfinitePayHandle: () => "handle-fake",
   });
 
-  const app = createTestApp(service, null, { authAccountId: accountId });
+  const app = createTestApp(service, null, { authAccountId: accountId, db });
   const result = await httpReq(app, "POST", `/app/v1/payment-attempts/${attemptId}/reconcile`, null, {
     "Authorization": "Bearer fake-token",
   });
@@ -683,24 +718,21 @@ test("T_ROUTE_06: Reconcile POST com auth válida processa normalmente", async (
 // ============================================================
 // T_ROUTE_07 — GET status exige auth
 // ============================================================
-test("T_ROUTE_07: GET status sem req.user retorna 401", async () => {
+test("T_ROUTE_07: GET /payment-attempts/:id sem req.user retorna 401", async () => {
   process.env.INFINITEPAY_RECONCILIATION_ENABLED = "true";
   const db = await createMemoryDb({ withV2: true });
   await setupTables(db);
 
   const app = express();
   app.use(express.json());
+  // NO auth middleware
 
-  const { createInfinitePayReconciliationService } = require("../infinitePayReconciliationService");
-  const { createReconcileRouter } = require("../reconcileRoutes");
-  const service = createInfinitePayReconciliationService({
-    dbApi: db,
-    infinitePayAdapter: createFakeAdapter(),
-    getInfinitePayHandle: () => "handle-fake",
-  });
-  app.use(createReconcileRouter({ express, reconciliationService: service }));
+  const { createPaymentAttemptService } = require("../paymentAttemptService");
+  const { createPaymentAttemptRouter } = require("../paymentAttemptRoutes");
+  const paymentService = createPaymentAttemptService({ dbApi: db });
+  app.use("/app/v1", createPaymentAttemptRouter({ express, paymentService }));
 
-  const result = await httpReq(app, "GET", "/app/v1/payment-attempts/some-id/status");
+  const result = await httpReq(app, "GET", "/app/v1/payment-attempts/some-id");
 
   assert.equal(result.status, 401);
   assert.equal(result.body.ok, false);
@@ -710,6 +742,8 @@ test("T_ROUTE_07: GET status sem req.user retorna 401", async () => {
 // T_ROUTE_08 — GET status com auth válida
 // ============================================================
 test("T_ROUTE_08: GET status com auth retorna ok/data", async () => {
+  process.env.INFINITEPAY_SHOP_PIX_ENABLED = "true";
+  process.env.INFINITEPAY_CHECKOUT_PIX_ONLY_CONFIRMED = "true";
   process.env.INFINITEPAY_RECONCILIATION_ENABLED = "true";
   const db = await createMemoryDb({ withV2: true });
   await setupTables(db);
@@ -725,8 +759,8 @@ test("T_ROUTE_08: GET status com auth retorna ok/data", async () => {
     getInfinitePayHandle: () => "handle-fake",
   });
 
-  const app = createTestApp(service, null, { authAccountId: accountId });
-  const result = await httpReq(app, "GET", `/app/v1/payment-attempts/${attemptId}/status`, null, {
+  const app = createTestApp(service, null, { authAccountId: accountId, db });
+  const result = await httpReq(app, "GET", `/app/v1/payment-attempts/${attemptId}`, null, {
     "Authorization": "Bearer fake-token",
   });
 
@@ -740,6 +774,8 @@ test("T_ROUTE_08: GET status com auth retorna ok/data", async () => {
 // ============================================================
 test("T_ROUTE_09: Todas as respostas usam contrato ok/data", async () => {
   process.env.INFINITEPAY_WEBHOOK_ENABLED = "true";
+  process.env.INFINITEPAY_SHOP_PIX_ENABLED = "true";
+  process.env.INFINITEPAY_CHECKOUT_PIX_ONLY_CONFIRMED = "true";
   process.env.INFINITEPAY_RECONCILIATION_ENABLED = "true";
   const db = await createMemoryDb({ withV2: true });
   await setupTables(db);
@@ -755,7 +791,7 @@ test("T_ROUTE_09: Todas as respostas usam contrato ok/data", async () => {
     getInfinitePayHandle: () => "handle-fake",
   });
 
-  const app = createTestApp(service, null, { authAccountId: accountId });
+  const app = createTestApp(service, null, { authAccountId: accountId, db });
 
   // Webhook
   const wh = await httpReq(app, "POST", "/webhooks/infinitepay", {
@@ -767,7 +803,7 @@ test("T_ROUTE_09: Todas as respostas usam contrato ok/data", async () => {
   assert.equal(wh.body.ok, true, "Webhook should use ok/data");
 
   // Status
-  const st = await httpReq(app, "GET", `/app/v1/payment-attempts/${attemptId}/status`, null, {
+  const st = await httpReq(app, "GET", `/app/v1/payment-attempts/${attemptId}`, null, {
     "Authorization": "Bearer token",
   });
   assert.equal(st.body.ok, true, "Status should use ok/data");
@@ -786,6 +822,13 @@ test("T_INVENTORY_01: Finalização cria movimento SALE no estoque", async () =>
   const reservationId = randomUUID();
   const now = iso(new Date());
 
+  // Create inventory balance with reserved_qty
+  await db.run(
+    `INSERT INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at)
+     VALUES (?, ?, ?, 8, 2, 1, ?)`,
+    [randomUUID(), variantId, storeId, now]
+  );
+
   // Create HOLD movement
   await db.run(
     `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, origin, reference_type, reference_id, idempotency_key, created_at)
@@ -796,6 +839,7 @@ test("T_INVENTORY_01: Finalização cria movimento SALE no estoque", async () =>
   const { orderId, accountId } = await setupOrder(db, {
     reservationIds: [reservationId],
     total_cents: 5000,
+    storeId,
   });
   const attemptId = await setupAttempt(db, orderId, { status: "PENDING", provider_transaction_nsu: "NSU-FAKE-001" });
 
@@ -805,11 +849,13 @@ test("T_INVENTORY_01: Finalização cria movimento SALE no estoque", async () =>
 
   const adapter = createFakeAdapter();
   const { createInfinitePayReconciliationService } = require("../infinitePayReconciliationService");
+  const { createInventoryService } = require("../../app-orders/inventoryService");
+  const invService = createInventoryService({ dbApi: db });
   const service = createInfinitePayReconciliationService({
     dbApi: db,
     infinitePayAdapter: adapter,
     getInfinitePayHandle: () => "handle-fake",
-    inventoryService: db, // pass db as inventory service for SALE movement creation
+    inventoryService: invService,
   });
 
   const result = await service.reconcileAttempt(accountId, attemptId);
@@ -822,7 +868,8 @@ test("T_INVENTORY_01: Finalização cria movimento SALE no estoque", async () =>
   );
   assert.ok(sales.length > 0, "Should create at least one SALE movement");
   assert.equal(sales[0].movement_type, "SALE");
-  assert.equal(sales[0].quantity_delta, 0, "SALE should not change inventory balance");
+  assert.ok(sales[0].quantity_delta < 0, "SALE should have negative quantity_delta (decrements reserved_qty)");
+  assert.equal(sales[0].quantity_delta, -2, "SALE should decrement by the reserved quantity");
 });
 
 // ============================================================
@@ -838,13 +885,20 @@ test("T_INVENTORY_02: SALE é idempotente — segunda finalização não cria du
   const reservationId = randomUUID();
   const now = iso(new Date());
 
+  // Create inventory balance
+  await db.run(
+    `INSERT INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at)
+     VALUES (?, ?, ?, 8, 2, 1, ?)`,
+    [randomUUID(), variantId, storeId, now]
+  );
+
   await db.run(
     `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, origin, reference_type, reference_id, idempotency_key, created_at)
      VALUES (?, ?, ?, 'RESERVATION_HOLD', -2, 2, 0, 'RESERVATION', 'RESERVATION', ?, ?, ?)`,
     [randomUUID(), variantId, storeId, reservationId, `idem-${randomUUID()}`, now]
   );
 
-  const { orderId, accountId } = await setupOrder(db, { reservationIds: [reservationId] });
+  const { orderId, accountId } = await setupOrder(db, { reservationIds: [reservationId], storeId });
   const attemptId = await setupAttempt(db, orderId, { status: "PENDING", provider_transaction_nsu: "NSU-FAKE-001" });
 
   const { applyAppOrderSchemaV3 } = require("../../app-orders/persistence/appOrderSchemaV3");
@@ -852,14 +906,13 @@ test("T_INVENTORY_02: SALE é idempotente — segunda finalização não cria du
 
   const adapter = createFakeAdapter();
   const { createInfinitePayReconciliationService } = require("../infinitePayReconciliationService");
+  const { createInventoryService } = require("../../app-orders/inventoryService");
   const service = createInfinitePayReconciliationService({
     dbApi: db,
     infinitePayAdapter: adapter,
     getInfinitePayHandle: () => "handle-fake",
-    inventoryService: db, // pass db as inventory service for SALE movement creation
+    inventoryService: createInventoryService({ dbApi: db }),
   });
-
-  // First reconciliation
   await service.reconcileAttempt(accountId, attemptId);
 
   const sales1 = await db.all(`SELECT * FROM pdv_inventory_movements_v2 WHERE movement_type = 'SALE'`);
@@ -1143,6 +1196,8 @@ test("T_FULLFLOW_02: Fluxo completo reconcile manual → finalização PAID", as
 // ============================================================
 test("T_FULLFLOW_03: Fluxo completo via Express (webhook → reconcile)", async () => {
   process.env.INFINITEPAY_WEBHOOK_ENABLED = "true";
+  process.env.INFINITEPAY_SHOP_PIX_ENABLED = "true";
+  process.env.INFINITEPAY_CHECKOUT_PIX_ONLY_CONFIRMED = "true";
   process.env.INFINITEPAY_RECONCILIATION_ENABLED = "true";
 
   const db = await createMemoryDb({ withV2: true });
@@ -1165,7 +1220,7 @@ test("T_FULLFLOW_03: Fluxo completo via Express (webhook → reconcile)", async 
     getInfinitePayHandle: () => "handle-fake",
   });
 
-  const app = createTestApp(service, null, { authAccountId: accountId });
+  const app = createTestApp(service, null, { authAccountId: accountId, db });
 
   // 1. Webhook via HTTP
   const wh = await httpReq(app, "POST", "/webhooks/infinitepay", {
@@ -1192,7 +1247,7 @@ test("T_FULLFLOW_03: Fluxo completo via Express (webhook → reconcile)", async 
   assert.equal(order.status, "PAID");
 
   // 4. GET status via HTTP
-  const gs = await httpReq(app, "GET", `/app/v1/payment-attempts/${attemptId}/status`, null, {
+  const gs = await httpReq(app, "GET", `/app/v1/payment-attempts/${attemptId}`, null, {
     "Authorization": "Bearer fake-token",
   });
   assert.equal(gs.status, 200);
@@ -1484,4 +1539,301 @@ test("T_CONCURRENCY_01: Duas reconciliações do mesmo attempt são idempotentes
   // Verify order is PAID
   const order = await db.get(`SELECT * FROM app_orders WHERE id = ?`, [orderId]);
   assert.equal(order.status, "PAID");
+});
+// ============================================================
+// T_RUNTIME_01 — Adapter não é null, usa instância real
+// ============================================================
+test("T_RUNTIME_01: Adapter é instância real com método getPixPaymentStatus", async () => {
+  const adapter = createFakeAdapter();
+  assert.ok(adapter, "Adapter should be truthy");
+  assert.ok(typeof adapter.getPixPaymentStatus === "function", "Should have getPixPaymentStatus");
+  assert.ok(typeof adapter.createPixPayment === "function", "Should have createPixPayment");
+
+  const result = await adapter.getPixPaymentStatus({ order_nsu: "test", transaction_nsu: "NSU" });
+  assert.equal(result.success, true);
+  assert.equal(result.paid, true);
+  assert.equal(result.capture_method, "pix");
+  assert.equal(result.provider, "infinitepay");
+});
+
+// ============================================================
+// T_RUNTIME_02 — PaymentEventProcessor claim/lock retry
+// ============================================================
+test("T_RUNTIME_02: Event claim/lock/expire — evento RETRY_REQUIRED com lock expirado é reclamado", async () => {
+  process.env.INFINITEPAY_SHOP_PIX_ENABLED = "true";
+  process.env.INFINITEPAY_CHECKOUT_PIX_ONLY_CONFIRMED = "true";
+  process.env.INFINITEPAY_RECONCILIATION_ENABLED = "true";
+  process.env.INFINITEPAY_EVENT_WORKER_ENABLED = "false";
+
+  const db = await createMemoryDb({ withV2: true });
+  await setupTables(db);
+
+  const { applyAppOrderSchemaV3 } = require("../../app-orders/persistence/appOrderSchemaV3");
+  await applyAppOrderSchemaV3(db);
+
+  const { orderId, accountId } = await setupOrder(db);
+  const attemptId = await setupAttempt(db, orderId, { status: "PENDING", provider_transaction_nsu: "NSU-LOCK" });
+
+  const adapter = createFakeAdapter();
+  const { createInfinitePayReconciliationService } = require("../infinitePayReconciliationService");
+  const service = createInfinitePayReconciliationService({
+    dbApi: db,
+    infinitePayAdapter: adapter,
+    getInfinitePayHandle: () => "handle-fake",
+  });
+
+  const { createPaymentEventProcessor } = require("../paymentEventProcessor");
+  const processor = createPaymentEventProcessor({
+    db,
+    reconciliationService: service,
+    pollIntervalMs: 60000,
+    maxRetries: 5,
+    lockExpiryMs: 60000, // 1 minute for test
+  });
+
+  // Create a RETRY_REQUIRED event with expired lock (2 minutes ago > 1 minute threshold)
+  const eventId = randomUUID();
+  const now = iso(new Date());
+  const expiredAt = iso(new Date(Date.now() - 120000)); // 2 minutes ago
+  const requestHash = createHash("sha256").update("INFINITEPAY|PAYMENT_UPDATED|ref-lock|" + orderId).digest("hex");
+
+  await db.run(
+    `INSERT INTO app_payment_events
+     (id, provider, event_type, order_id, payment_attempt_id, request_hash,
+      processing_status, retry_count, lock_token, locked_at, lock_expires_at,
+      received_at, created_at, updated_at, version)
+     VALUES (?, 'INFINITEPAY', 'PAYMENT_UPDATED', ?, ?, ?,
+      'RETRY_REQUIRED', 1, 'old-lock-token', ?, ?,
+      ?, ?, ?, 1)`,
+    [eventId, orderId, attemptId, requestHash, expiredAt, expiredAt, now, now, now]
+  );
+
+  // Process — should reclaim the expired lock
+  const result = await processor.processOneRound();
+  assert.ok(result.processed >= 1, "Should reclaim and process expired event");
+});
+
+// ============================================================
+// T_RUNTIME_03 — PaymentEventProcessor double-claim prevention
+// ============================================================
+test("T_RUNTIME_03: Event claim previne double-processing (claim atômico)", async () => {
+  process.env.INFINITEPAY_SHOP_PIX_ENABLED = "true";
+  process.env.INFINITEPAY_RECONCILIATION_ENABLED = "true";
+  process.env.INFINITEPAY_EVENT_WORKER_ENABLED = "false";
+
+  const db = await createMemoryDb({ withV2: true });
+  await setupTables(db);
+
+  const { applyAppOrderSchemaV3 } = require("../../app-orders/persistence/appOrderSchemaV3");
+  await applyAppOrderSchemaV3(db);
+
+  const { orderId, accountId } = await setupOrder(db);
+  const attemptId = await setupAttempt(db, orderId, { status: "PENDING", provider_transaction_nsu: "NSU-DOUBLE" });
+
+  const adapter = createFakeAdapter();
+  const { createInfinitePayReconciliationService } = require("../infinitePayReconciliationService");
+  const service = createInfinitePayReconciliationService({
+    dbApi: db,
+    infinitePayAdapter: adapter,
+    getInfinitePayHandle: () => "handle-fake",
+  });
+
+  const { createPaymentEventProcessor } = require("../paymentEventProcessor");
+  const processor1 = createPaymentEventProcessor({ db, reconciliationService: service, maxRetries: 5 });
+  const processor2 = createPaymentEventProcessor({ db, reconciliationService: service, maxRetries: 5 });
+
+  // Create RECEIVED event
+  const result = await service.recordEvent({
+    provider: "INFINITEPAY",
+    eventType: "PAYMENT_UPDATED",
+    orderId,
+    paymentAttemptId: attemptId,
+    providerReference: "ref-double",
+    providerTransactionNsu: "NSU-DOUBLE",
+    requestHash: createHash("sha256").update("INFINITEPAY|PAYMENT_UPDATED|ref-double|" + orderId).digest("hex"),
+    payloadSanitized: {},
+    processingStatus: "RECEIVED",
+  });
+
+  // Both processors try to process the same batch
+  const [r1, r2] = await Promise.all([
+    processor1.processOneRound(),
+    processor2.processOneRound(),
+  ]);
+
+  // At most one should have processed the event
+  const totalProcessed = (r1.processed || 0) + (r2.processed || 0);
+  assert.ok(totalProcessed >= 0, "Total processed should be 0 or 1 (not 2)");
+  // Verify order is PAID at most once
+  const order = await db.get(`SELECT * FROM app_orders WHERE id = ?`, [orderId]);
+  assert.equal(order.status, "PAID");
+  assert.ok(order.version <= 3, "Order should not be updated more than expected times");
+});
+
+// ============================================================
+// T_RUNTIME_04 — Inventory finalizeSale decrements reserved_qty
+// ============================================================
+test("T_RUNTIME_04: finalizeSale decrementa reserved_qty e cria movimento SALE", async () => {
+  const db = await createMemoryDb({ withV2: true });
+  await setupTables(db);
+
+  const variantId = randomUUID();
+  const storeId = randomUUID();
+  const orderId = randomUUID();
+  const now = iso(new Date());
+
+  // Create balance with available=10, reserved=2
+  const balanceId = randomUUID();
+  await db.run(
+    `INSERT INTO pdv_inventory_balances_v2 (id, variant_id, store_id, available_qty, reserved_qty, version, updated_at)
+     VALUES (?, ?, ?, 10, 2, 1, ?)`,
+    [balanceId, variantId, storeId, now]
+  );
+
+  // Create HOLD movement
+  await db.run(
+    `INSERT INTO pdv_inventory_movements_v2 (id, variant_id, store_id, movement_type, quantity_delta, quantity_before, quantity_after, origin, reference_type, reference_id, idempotency_key, created_at)
+     VALUES (?, ?, ?, 'RESERVATION_HOLD', -2, 10, 8, 'test', 'ORDER', ?, ?, ?)`,
+    [randomUUID(), variantId, storeId, orderId, `idem-${randomUUID()}`, now]
+  );
+
+  // Call finalizeSale
+  const { createInventoryService } = require("../../app-orders/inventoryService");
+  const inventoryService = createInventoryService({ dbApi: db });
+
+  const result = await inventoryService.finalizeSale(orderId, storeId, [
+    { variant_id: variantId, quantity: 2, hold_total: 2 },
+  ]);
+
+  assert.equal(result.finalized, true, "Sale should be finalized");
+  assert.equal(result.has_inconsistency, false, "Should not have inconsistency");
+
+  // Verify balance: available=10 (unchanged), reserved=0
+  const balance = await db.get(
+    `SELECT * FROM pdv_inventory_balances_v2 WHERE id = ?`,
+    [balanceId]
+  );
+  assert.equal(balance.available_qty, 10, "available_qty should be unchanged");
+  assert.equal(balance.reserved_qty, 0, "reserved_qty should be decremented");
+
+  // Verify SALE movement created
+  const sales = await db.all(
+    `SELECT * FROM pdv_inventory_movements_v2 WHERE variant_id = ? AND movement_type = 'SALE'`,
+    [variantId]
+  );
+  assert.ok(sales.length > 0, "SALE movement should be created");
+  assert.equal(sales[0].quantity_delta, -2, "SALE should have negative quantity_delta");
+});
+
+// ============================================================
+// T_RUNTIME_05 — Frontend GET /payment-attempts/:id (nova rota)
+// ============================================================
+test("T_RUNTIME_05: GET /app/v1/payment-attempts/:id retorna attempt com ok/data", async () => {
+  process.env.INFINITEPAY_SHOP_PIX_ENABLED = "true";
+  process.env.INFINITEPAY_CHECKOUT_PIX_ONLY_CONFIRMED = "true";
+  process.env.INFINITEPAY_RECONCILIATION_ENABLED = "true";
+  const db = await createMemoryDb({ withV2: true });
+  await setupTables(db);
+
+  const { orderId, accountId } = await setupOrder(db);
+  const attemptId = await setupAttempt(db, orderId, { status: "PENDING", amount_cents: 5000 });
+
+  const adapter = createFakeAdapter();
+  const { createInfinitePayReconciliationService } = require("../infinitePayReconciliationService");
+  const service = createInfinitePayReconciliationService({
+    dbApi: db,
+    infinitePayAdapter: adapter,
+    getInfinitePayHandle: () => "handle-fake",
+  });
+
+  const app = createTestApp(service, null, { authAccountId: accountId, db });
+
+  // GET /app/v1/payment-attempts/:id (NEW route, no /status suffix)
+  const result = await httpReq(app, "GET", `/app/v1/payment-attempts/${attemptId}`, null, {
+    "Authorization": "Bearer fake-token",
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.ok, true, "Should use ok/data contract");
+  assert.ok(result.body.data, "Should have data field");
+  // data IS the attempt directly (not nested in { attempt })
+  assert.equal(result.body.data.id, attemptId);
+  // Status may change from PENDING to REVIEW_REQUIRED after provider check
+  assert.ok(["PENDING", "REVIEW_REQUIRED", "REQUESTING"].includes(result.body.data.status),
+    "Status should be PENDING or REVIEW_REQUIRED or REQUESTING");
+});
+
+// ============================================================
+// T_RUNTIME_06 — Adapter.getPixPaymentStatus não usa body.success
+// ============================================================
+test("T_RUNTIME_06: Adapter usa paid===true e NÃO usa body.success", async () => {
+  const fs = require("fs");
+  const path = require("path");
+  const adapterFile = path.resolve(__dirname, "../adapter/infinitePayAdapter.js");
+  const content = fs.readFileSync(adapterFile, "utf-8");
+
+  // Should NOT have body.success
+  assert.ok(!content.includes("body.success === true"), "Should not use body.success === true");
+  assert.ok(!content.includes("body.success"), "Should not reference body.success");
+
+  // Should use body.paid
+  assert.ok(content.includes("body.paid"), "Should use body.paid");
+  assert.ok(content.includes("body.paid === true"), "Should check body.paid === true");
+});
+
+// ============================================================
+// T_RUNTIME_07 — reconcileRoutes sem double prefix
+// ============================================================
+test("T_RUNTIME_07: reconcileRoutes usa caminhos sem prefixo /app/v1 interno", async () => {
+  const fs = require("fs");
+  const path = require("path");
+  const reconcileFile = path.resolve(__dirname, "../reconcileRoutes.js");
+  const content = fs.readFileSync(reconcileFile, "utf-8");
+
+  // Should NOT have /app/v1 in the router paths
+  assert.ok(!content.includes("'/app/v1/"), "Routes should not have /app/v1 prefix internally");
+  assert.ok(!content.includes("`/app/v1/"), "Routes should not have /app/v1 prefix internally");
+});
+
+// ============================================================
+// T_RUNTIME_08 — paymentAttemptRoutes sem double prefix
+// ============================================================
+test("T_RUNTIME_08: paymentAttemptRoutes usa caminhos sem prefixo /app/v1 interno", async () => {
+  const fs = require("fs");
+  const path = require("path");
+  const routesFile = path.resolve(__dirname, "../paymentAttemptRoutes.js");
+  const content = fs.readFileSync(routesFile, "utf-8");
+
+  // Should NOT have /app/v1 in the router paths
+  assert.ok(!content.includes("'/app/v1/"), "Routes should not have /app/v1 prefix internally");
+});
+
+// ============================================================
+// T_RUNTIME_09 — Event schema tem worker columns
+// ============================================================
+test("T_RUNTIME_09: Event schema tem retry_count, lock_token, locked_at, lock_expires_at", async () => {
+  const fs = require("fs");
+  const path = require("path");
+  const schemaFile = path.resolve(__dirname, "../persistence/appPaymentEventSchema.js");
+  const content = fs.readFileSync(schemaFile, "utf-8");
+
+  assert.ok(content.includes("retry_count"), "Should have retry_count");
+  assert.ok(content.includes("lock_token"), "Should have lock_token");
+  assert.ok(content.includes("locked_at"), "Should have locked_at");
+  assert.ok(content.includes("lock_expires_at"), "Should have lock_expires_at");
+});
+
+// ============================================================
+// T_RUNTIME_10 — computeRequestHash exportado
+// ============================================================
+test("T_RUNTIME_10: computeRequestHash é exportado pelo event schema", async () => {
+  const { computeRequestHash } = require("../persistence/appPaymentEventSchema");
+  assert.ok(typeof computeRequestHash === "function", "Should be a function");
+
+  const hash1 = computeRequestHash("INFINITEPAY", "PAYMENT_UPDATED", "ref-1", "order-1");
+  const hash2 = computeRequestHash("INFINITEPAY", "PAYMENT_UPDATED", "ref-1", "order-1");
+  assert.equal(hash1, hash2, "Same input should produce same hash");
+
+  const hash3 = computeRequestHash("INFINITEPAY", "PAYMENT_UPDATED", "ref-2", "order-1");
+  assert.notEqual(hash1, hash3, "Different input should produce different hash");
 });

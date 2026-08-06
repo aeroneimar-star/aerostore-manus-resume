@@ -117,7 +117,7 @@ function createHttpPaymentClient(): PaymentClient {
       return result as CreatePaymentAttemptResponse;
     },
     async getPaymentAttempt(attemptId: string) {
-      const result = await request(`/app/v1/payment-attempts/${attemptId}/status`);
+      const result = await request(`/app/v1/payment-attempts/${attemptId}`);
       return result as GetPaymentAttemptResponse;
     },
   };

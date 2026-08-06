@@ -18708,10 +18708,14 @@ try {
   const eventSchema = createPaymentEventSchema({ db: { run, get, all } });
   await eventSchema.ensureSchema();
 
+  // Criar adapter real (transporte HTTP real — sem credenciais, sem chamada em testes)
+  const { createInfinitePayAdapter } = require("./modules/customers/app-payments/adapter/infinitePayAdapter");
+  const infinitePayAdapter = createInfinitePayAdapter({ httpTransport: null });
+
   // Criar serviço de reconciliação (usa inventoryService existente)
   const reconciliationService = createInfinitePayReconciliationService({
     dbApi: { run, get, all },
-    infinitePayAdapter: null, // Será injetado quando o adapter estiver disponível
+    infinitePayAdapter,
     getInfinitePayHandle,
     getRedirectUrl: getInfinitePayRedirectUrl,
     getWebhookUrl: getInfinitePayWebhookUrl,
@@ -18722,7 +18726,7 @@ try {
   const { createPaymentAttemptService } = require("./modules/customers/app-payments/paymentAttemptService");
   const paymentAttemptService = createPaymentAttemptService({
     dbApi: { run, get, all },
-    infinitePayAdapter: null,
+    infinitePayAdapter,
     getInfinitePayHandle,
   });
 

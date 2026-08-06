@@ -1,22 +1,16 @@
 "use strict";
 
 /**
- * reconcileRoutes — Endpoints de reconciliação manual e consulta de status.
+ * reconcileRoutes — Endpoint de reconciliação manual.
  *
- * POST /app/v1/payment-attempts/:id/reconcile
- *   - Autenticado via req.user (middleware existente)
- *   - Consulta payment_check
- *   - Valida 7 condições
- *   - Finaliza atomicamente
+ * Rotas internas SEM /app/v1 (o prefixo é adicionado no server.js via app.use).
  *
- * GET /app/v1/payment-attempts/:id/status
- *   - Autenticado via req.user (middleware existente)
- *   - Retorna estado público seguro
- *   - NUNCA retorna payload bruto do provider
+ * POST /payment-attempts/:id/reconcile — Reconcilia manualmente via payment_check.
+ *
+ * NÃO há GET /status aqui — movido para paymentAttemptRoutes (GET /payment-attempts/:id).
  *
  * Contrato HTTP:
- *   SUCESSO: { ok: true, data: ... }
- *   ERRO:    { ok: false, error: { code, message, details } }
+ *   { ok: true, data: ReconciliationResult }
  *
  * Autenticação: usar exclusivamente req.user.id ou req.user.accountId
  * (middleware existente). Sem fallback por query string.
@@ -43,6 +37,7 @@ function sendError(res, code, message, status = 500, details = null) {
 function createReconcileRouter(options = {}) {
   const { Router } = options.express || express;
   const reconciliationService = options.reconciliationService;
+  const paymentService = options.paymentService;
   if (!reconciliationService) {
     throw new Error("RECONCILIATION_SERVICE_REQUIRED for reconcileRouter");
   }
@@ -59,8 +54,8 @@ function createReconcileRouter(options = {}) {
     return null;
   }
 
-  // POST /app/v1/payment-attempts/:id/reconcile
-  router.post("/app/v1/payment-attempts/:id/reconcile", async (req, res) => {
+  // POST /payment-attempts/:id/reconcile
+  router.post("/payment-attempts/:id/reconcile", async (req, res) => {
     const accountId = extractAccountId(req);
     if (!accountId) {
       return sendError(res, "UNAUTHORIZED", "Autenticação necessária", 401);
@@ -73,30 +68,6 @@ function createReconcileRouter(options = {}) {
 
     try {
       const result = await reconciliationService.reconcileAttempt(accountId, attemptId);
-      sendSuccess(res, result);
-    } catch (err) {
-      if (err instanceof ReconciliationError) {
-        sendError(res, err.code, err.message, err.status || 400, err.details);
-      } else {
-        sendError(res, "INTERNAL_ERROR", err.message || "Erro interno", 500);
-      }
-    }
-  });
-
-  // GET /app/v1/payment-attempts/:id/status
-  router.get("/app/v1/payment-attempts/:id/status", async (req, res) => {
-    const accountId = extractAccountId(req);
-    if (!accountId) {
-      return sendError(res, "UNAUTHORIZED", "Autenticação necessária", 401);
-    }
-
-    const attemptId = req.params.id;
-    if (!attemptId) {
-      return sendError(res, "ATTEMPT_ID_REQUIRED", "ID da tentativa obrigatório", 400);
-    }
-
-    try {
-      const result = await reconciliationService.getAttemptStatus(accountId, attemptId);
       sendSuccess(res, result);
     } catch (err) {
       if (err instanceof ReconciliationError) {

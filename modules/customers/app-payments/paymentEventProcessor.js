@@ -6,6 +6,15 @@
  * Busca eventos em status RECEIVED ou RETRY_REQUIRED e executa payment_check.
  * Usa polling interno controlado no staging.
  *
+ * CLAIM/LOCK ATÔMICO:
+ *   UPDATE ... WHERE id=? AND processing_status IN ('RECEIVED','RETRY_REQUIRED')
+ *   Se changes=0 → outro worker já reclamou (idempotente, SKIP).
+ *
+ * RETRY:
+ *   retry_count é incrementado no momento do mark-failed.
+ *   Se retry_count >= maxRetries → status = FAILED (sem retry).
+ *   LOCK_EXPIRES_AT: se locked_at > 2min ago → reclaims como RETRY_REQUIRED.
+ *
  * REGRAS:
  *   - Só inicia com flags habilitadas
  *   - Eventos permanecem no banco após restart
@@ -25,6 +34,7 @@ const WORKER_ENABLED_FLAG = "INFINITEPAY_EVENT_WORKER_ENABLED";
 
 const MAX_RETRIES = 5;
 const POLL_INTERVAL_MS = 10000; // 10 segundos
+const LOCK_EXPIRY_MS = 120000; // 2 minutos
 
 function iso(d) {
   return (d instanceof Date ? d : new Date(d)).toISOString();
@@ -35,6 +45,7 @@ function createPaymentEventProcessor(options = {}) {
   const reconciliationService = options.reconciliationService;
   const pollIntervalMs = options.pollIntervalMs || POLL_INTERVAL_MS;
   const maxRetries = options.maxRetries || MAX_RETRIES;
+  const lockExpiryMs = options.lockExpiryMs || LOCK_EXPIRY_MS;
 
   if (!db) {
     throw new Error("DB_REQUIRED for paymentEventProcessor");
@@ -54,64 +65,85 @@ function createPaymentEventProcessor(options = {}) {
   }
 
   /**
-   * findPendingEvents — Busca eventos RECEIVED ou RETRY_REQUIRED
-   * com retry_count < maxRetries.
+   * claimEvent — ATOMIC UPDATE: reclama um evento para processamento.
+   * Usa lock_token = UUID único. Retorna null se outro worker já reclamou.
+   * Também faz reclaim de eventos locked há mais de lockExpiryMs.
    */
-  async function findPendingEvents() {
-    return db.all(
-      `SELECT * FROM app_payment_events
-       WHERE processing_status IN ('RECEIVED', 'RETRY_REQUIRED')
-         AND COALESCE((SELECT CAST(value AS INTEGER)
-                        FROM json_each(CASE WHEN failure_code IS NOT NULL
-                                          THEN '{"retry_count":' || (SELECT COALESCE((SELECT COUNT(*) FROM app_payment_events WHERE id=app_payment_events.id AND failure_code IS NOT NULL), 0)) || '}')
-                        WHERE key = 'retry_count') IS NOT NULL, 0) < ?
-       ORDER BY received_at ASC
-       LIMIT 10`,
-      [maxRetries]
+  async function claimEvent() {
+    const now = iso(new Date());
+    const lockToken = randomUUID();
+    const lockExpiresAt = iso(new Date(Date.now() + lockExpiryMs));
+
+    // Tentar reclamar um evento RECEIVED
+    const claimReceived = await db.run(
+      `UPDATE app_payment_events
+       SET processing_status = 'PROCESSING',
+           locked_at = ?, lock_token = ?, lock_expires_at = ?,
+           retry_count = COALESCE(retry_count, 0) + 1,
+           updated_at = ?
+       WHERE id = (
+         SELECT id FROM app_payment_events
+         WHERE processing_status = 'RECEIVED'
+         ORDER BY received_at ASC
+         LIMIT 1
+       ) AND processing_status = 'RECEIVED'`,
+      [now, lockToken, lockExpiresAt, now]
     );
+
+    if ((claimReceived?.changes || 0) > 0) {
+      const event = await db.get(
+        `SELECT * FROM app_payment_events WHERE lock_token = ?`,
+        [lockToken]
+      );
+      return event || null;
+    }
+
+    // Tentar reclaim de evento RETRY_REQUIRED com lock expirado
+    const reclaimSql = `
+      UPDATE app_payment_events
+      SET processing_status = 'RECEIVED',
+          lock_token = NULL, locked_at = NULL, lock_expires_at = NULL,
+          updated_at = ?
+      WHERE processing_status = 'RETRY_REQUIRED'
+        AND datetime(locked_at) < datetime('now', '-${Math.ceil(lockExpiryMs / 60000)} minutes')
+        AND retry_count < ?
+    `;
+    await db.run(reclaimSql, [now, maxRetries]);
+
+    // Tentar reclamar novamente após reclaim
+    const claimRetry = await db.run(
+      `UPDATE app_payment_events
+       SET processing_status = 'PROCESSING',
+           locked_at = ?, lock_token = ?, lock_expires_at = ?,
+           updated_at = ?
+       WHERE id = (
+         SELECT id FROM app_payment_events
+         WHERE processing_status = 'RECEIVED'
+         ORDER BY received_at ASC
+         LIMIT 1
+       ) AND processing_status = 'RECEIVED'`,
+      [now, lockToken, lockExpiresAt, now]
+    );
+
+    if ((claimRetry?.changes || 0) > 0) {
+      const event = await db.get(
+        `SELECT * FROM app_payment_events WHERE lock_token = ?`,
+        [lockToken]
+      );
+      return event || null;
+    }
+
+    return null; // Nenhum evento para processar
   }
 
   /**
-   * Simple retry counter via separate column approach.
-   * Uses processing_status to track state.
-   */
-  async function findPendingEventsSimple() {
-    return db.all(
-      `SELECT * FROM app_payment_events
-       WHERE processing_status IN ('RECEIVED', 'RETRY_REQUIRED')
-       ORDER BY received_at ASC
-       LIMIT 10`
-    );
-  }
-
-  /**
-   * processEvent — Processa um evento individual.
-   * 1. Marca como PROCESSING
-   * 2. Localiza pedido e tentativa
-   * 3. Executa reconciliation (payment_check + finalization)
-   * 4. Marca como PROCESSED ou FAILED
+   * processEvent — Processa um evento já reclamado (locked).
+   * 1. Localiza pedido e tentativa
+   * 2. Executa reconciliation (payment_check + finalization)
+   * 3. Marca como PROCESSED ou FAILED/RETRY_REQUIRED
    */
   async function processEvent(event) {
     const now = iso(new Date());
-
-    // Marcar como PROCESSING
-    await db.run(
-      `UPDATE app_payment_events
-       SET processing_status = 'PROCESSING', updated_at = ?
-       WHERE id = ? AND processing_status IN ('RECEIVED', 'RETRY_REQUIRED')`,
-      [now, event.id]
-    );
-
-    // Reler para verificar se ainda está PROCESSING (concorrência)
-    const current = await db.get(
-      `SELECT * FROM app_payment_events WHERE id = ?`,
-      [event.id]
-    );
-
-    if (!current || current.processing_status !== "PROCESSING") {
-      // Outro worker já processou — idempotente
-      return { eventId: event.id, status: "SKIP_DUPLICATE" };
-    }
 
     try {
       // Localizar pedido
@@ -127,9 +159,10 @@ function createPaymentEventProcessor(options = {}) {
            SET processing_status = 'FAILED',
                failure_code = 'ORDER_NOT_FOUND',
                failure_message_sanitized = 'Pedido não encontrado',
+               lock_token = NULL, locked_at = NULL, lock_expires_at = NULL,
                processed_at = ?, updated_at = ?
-           WHERE id = ?`,
-          [now, now, event.id]
+           WHERE id = ? AND processing_status = 'PROCESSING' AND lock_token = ?`,
+          [now, now, event.id, event.lock_token]
         );
         return { eventId: event.id, status: "FAILED", reason: "ORDER_NOT_FOUND" };
       }
@@ -141,15 +174,15 @@ function createPaymentEventProcessor(options = {}) {
       );
 
       if (!attempt) {
-        // Tentativa não encontrada — marcar como FAILED
         await db.run(
           `UPDATE app_payment_events
            SET processing_status = 'FAILED',
                failure_code = 'ATTEMPT_NOT_FOUND',
                failure_message_sanitized = 'Tentativa de pagamento não encontrada',
+               lock_token = NULL, locked_at = NULL, lock_expires_at = NULL,
                processed_at = ?, updated_at = ?
-           WHERE id = ?`,
-          [now, now, event.id]
+           WHERE id = ? AND processing_status = 'PROCESSING' AND lock_token = ?`,
+          [now, now, event.id, event.lock_token]
         );
         return { eventId: event.id, status: "FAILED", reason: "ATTEMPT_NOT_FOUND" };
       }
@@ -172,35 +205,28 @@ function createPaymentEventProcessor(options = {}) {
       await db.run(
         `UPDATE app_payment_events
          SET processing_status = 'PROCESSED',
+             lock_token = NULL, locked_at = NULL, lock_expires_at = NULL,
              processed_at = ?, updated_at = ?
-         WHERE id = ?`,
-        [now, now, event.id]
+         WHERE id = ? AND processing_status = 'PROCESSING' AND lock_token = ?`,
+        [now, now, event.id, event.lock_token]
       );
 
       return { eventId: event.id, status: "PROCESSED", result };
     } catch (err) {
-      // Falha — marcar como RETRY_REQUIRED (se retry < max) ou FAILED
+      // Falha — decidir entre RETRY_REQUIRED e FAILED
       const failureCode = err.code || "PROCESSING_ERROR";
       const failureMsg = err.message || "Erro desconhecido";
+      const retryCount = event.retry_count || 1;
 
-      // Contar retentativas existentes para este evento
-      const retryCount = await db.get(
-        `SELECT COUNT(*) as cnt FROM app_payment_events
-         WHERE order_id = ? AND processing_status = 'RETRY_REQUIRED'
-           AND id != ?`,
-        [event.order_id, event.id]
-      );
-
-      const currentRetries = retryCount ? retryCount.cnt : 0;
-
-      if (currentRetries < maxRetries) {
+      if (retryCount < maxRetries) {
         await db.run(
           `UPDATE app_payment_events
            SET processing_status = 'RETRY_REQUIRED',
                failure_code = ?, failure_message_sanitized = ?,
+               lock_token = NULL, locked_at = NULL, lock_expires_at = NULL,
                updated_at = ?
-           WHERE id = ?`,
-          [failureCode, failureMsg, now, event.id]
+           WHERE id = ? AND processing_status = 'PROCESSING' AND lock_token = ?`,
+          [failureCode, failureMsg, now, event.id, event.lock_token]
         );
         return { eventId: event.id, status: "RETRY_REQUIRED", reason: failureCode };
       } else {
@@ -208,9 +234,10 @@ function createPaymentEventProcessor(options = {}) {
           `UPDATE app_payment_events
            SET processing_status = 'FAILED',
                failure_code = ?, failure_message_sanitized = ?,
+               lock_token = NULL, locked_at = NULL, lock_expires_at = NULL,
                processed_at = ?, updated_at = ?
-           WHERE id = ?`,
-          [failureCode, failureMsg, now, now, event.id]
+           WHERE id = ? AND processing_status = 'PROCESSING' AND lock_token = ?`,
+          [failureCode, failureMsg, now, now, event.id, event.lock_token]
         );
         return { eventId: event.id, status: "FAILED", reason: failureCode };
       }
@@ -218,23 +245,25 @@ function createPaymentEventProcessor(options = {}) {
   }
 
   /**
-   * processBatch — Processa um lote de eventos pendentes.
+   * processBatch — Processa eventos pendentes (claim + process).
+   * Usa claim atômico para evitar double-processing.
    */
   async function processBatch() {
     if (processingCurrent) return { processed: 0, reason: "CONCURRENT_SKIP" };
 
     processingCurrent = true;
     try {
-      const events = await findPendingEventsSimple();
       let processed = 0;
-
-      for (const event of events) {
+      while (true) {
+        const event = await claimEvent();
+        if (!event) break; // Nenhum evento para processar
         const result = await processEvent(event);
         if (result.status === "PROCESSED") {
           processed++;
         }
+        // Pequeno delay para evitar starvation de outros workers
+        await new Promise(r => setTimeout(r, 50));
       }
-
       return { processed };
     } finally {
       processingCurrent = false;
@@ -266,7 +295,6 @@ function createPaymentEventProcessor(options = {}) {
       try {
         await processBatch();
       } catch (err) {
-        // Logging controlado
         console.error("[paymentEventProcessor] Erro no polling:", err.message);
       }
     }, pollIntervalMs);
@@ -297,6 +325,7 @@ function createPaymentEventProcessor(options = {}) {
     processBatch,
     processOneRound,
     processEvent,
+    claimEvent,
     start,
     stop,
     isRunning,

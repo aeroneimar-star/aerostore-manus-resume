@@ -470,61 +470,40 @@ function createInfinitePayReconciliationService(options = {}) {
           );
         }
 
-        // 10. Finalizar estoque (conversão HOLD → SALE)
-        // O inventoryService já tem releaseReservation, mas precisamos de SALE.
-        // SALE = confirmar que a reserva se tornou venda.
-        // Padrão: criar movimento SALE com quantity_delta = 0 (estoque já está reserved,
-        // não precisa mudar disponível, apenas marcar como vendido).
-        if (inventoryService && reservationIds.length > 0) {
-          const saleKey = `SALE::${order.id}`;
-          // Verificar idempotência da venda
-          const existingSale = await runner.get(
-            `SELECT id FROM pdv_inventory_movements_v2
-             WHERE idempotency_key = ? AND movement_type = 'SALE'`,
-            [saleKey]
-          );
+        // 10. Finalizar estoque via inventoryService.canonical finalizeSale
+        // Usa o método canônico do inventoryService que:
+        //   - Decrementa reserved_qty (confirmar venda)
+        //   - available_qty NÃO muda (já foi decrementado no HOLD)
+        //   - Cria movimento SALE com quantity_delta negativo
+        //   - Idempotência cumulativa por TARGET
+        if (inventoryService && storeId && reservationIds.length > 0) {
+          // Construir items para finalizeSale a partir dos movimentos HOLD existentes
+          const saleItems = [];
+          for (const reservationId of reservationIds) {
+            const holdMovements = await runner.all(
+              `SELECT * FROM pdv_inventory_movements_v2
+               WHERE reference_id = ? AND movement_type = 'RESERVATION_HOLD'`,
+              [reservationId]
+            );
+            for (const hold of holdMovements) {
+              const quantity = Math.abs(hold.quantity_delta);
+              saleItems.push({
+                variant_id: hold.variant_id,
+                quantity,
+                hold_total: quantity,
+              });
+            }
+          }
 
-          if (!existingSale) {
-            // Para cada reserva, encontrar os movimentos HOLD e criar SALE correspondentes
-            for (const reservationId of reservationIds) {
-              // Buscar movimentos HOLD para esta reserva
-              const holdMovements = await runner.all(
-                `SELECT * FROM pdv_inventory_movements_v2
-                 WHERE reference_id = ? AND movement_type = 'RESERVATION_HOLD'`,
-                [reservationId]
+          if (saleItems.length > 0) {
+            // Chamar inventoryService.canonical com runner da transação
+            const saleResult = await inventoryService.finalizeSale(order.id, storeId, saleItems, { db: runner });
+            if (saleResult.has_inconsistency) {
+              throw new ReconciliationError(
+                "INVENTORY_FINALIZE_FAILED",
+                `Falha ao finalizar estoque: ${saleResult.reason}`,
+                { status: 409, details: { results: saleResult.results } }
               );
-
-              for (const hold of holdMovements) {
-                const quantity = Math.abs(hold.quantity_delta);
-                const saleId = randomUUID();
-                const now2 = iso(new Date());
-
-                await runner.run(
-                  `INSERT INTO pdv_inventory_movements_v2
-                   (id, variant_id, store_id, movement_type, quantity_delta, quantity_before,
-                    quantity_after, origin, reference_type, reference_id, idempotency_key,
-                    actor_user_id, actor_name, metadata_json, created_at)
-                   VALUES (?, ?, ?, 'SALE', 0, ?, ?, 'app_order_shop', 'ORDER', ?, ?, ?, 'system', ?, ?)`,
-                  [
-                    saleId,
-                    hold.variant_id,
-                    hold.store_id,
-                    hold.quantity_before, // quantity_before (sem mudança de saldo)
-                    hold.quantity_before, // quantity_after (sem mudança de saldo)
-                    order.id,
-                    saleKey,
-                    null,
-                    JSON.stringify({
-                      order_id: order.id,
-                      attempt_id: currentAttempt.id,
-                      transaction_nsu: transactionNsu,
-                      reservation_id: reservationId,
-                      hold_movement_id: hold.id,
-                    }),
-                    now2,
-                  ]
-                );
-              }
             }
           }
         }
