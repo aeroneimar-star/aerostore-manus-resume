@@ -1,8 +1,17 @@
 const OpenAI = require("openai");
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+// Lazy init: o client so e criado quando um recurso de IA e realmente usado.
+// Assim o servidor sobe mesmo sem OPENAI_API_KEY configurada.
+let openaiClient = null;
+
+function getOpenAI() {
+  if (!openaiClient) {
+    openaiClient = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
+    });
+  }
+  return openaiClient;
+}
 
 const OPENAI_RETRY_DELAYS_MS = [800, 1600, 3200];
 const OPENAI_RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
@@ -360,7 +369,7 @@ function fallbackResposta({ intencao, nome = "" }) {
 
 async function gerarRespostaVendedor(mensagemCliente, conversationHistory = []) {
   try {
-    const response = await callOpenAIWithRetry(() => openai.chat.completions.create({
+    const response = await callOpenAIWithRetry(() => getOpenAI().chat.completions.create({
       model: "gpt-4o-mini",
       messages: buildConversationMessages({
         systemPrompt: VENDEDOR_SYSTEM_PROMPT,
@@ -405,7 +414,7 @@ async function gerarRespostaAtendimentoAerostore({
       contexto_adicional: contexto || ""
     };
 
-    const response = await callOpenAIWithRetry(() => openai.chat.completions.create({
+    const response = await callOpenAIWithRetry(() => getOpenAI().chat.completions.create({
       model: "gpt-4o-mini",
       response_format: { type: "json_object" },
       messages: buildConversationMessages({
@@ -464,7 +473,7 @@ async function gerarDecisaoConversacionalAerostore(context = {}, conversationHis
   };
 
   try {
-    const response = await callOpenAIWithRetry(() => openai.chat.completions.create({
+    const response = await callOpenAIWithRetry(() => getOpenAI().chat.completions.create({
       model: "gpt-4o-mini",
       response_format: { type: "json_object" },
       messages: buildConversationMessages({
